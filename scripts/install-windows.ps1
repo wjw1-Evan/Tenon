@@ -35,7 +35,16 @@ wsl bash -lc "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s 
 wsl bash -lc "command -v node >/dev/null || (curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash - && sudo apt-get install -y nodejs)"
 wsl bash -lc "npm install -g pnpm@10"
 
-# 3. 构建（假定仓库已克隆至 WSL 内 ~/tenon）
+# 3a. 优先使用预编译 daemon（dist/wsl2-installer/tenon-daemon，musl 静态链接）
+$prebuilt = Join-Path $PSScriptRoot "dist\wsl2-installer\tenon-daemon"
+if (Test-Path $prebuilt) {
+    Info "使用预编译 daemon 二进制（复制进 WSL 主目录）..."
+    wsl bash -lc "mkdir -p ~/tenon && cp /mnt/c/$(($prebuilt -replace '^([A-Za-z]):', '$1').Replace('\','/').SubString(3)) ~/tenon/tenon-daemon 2>/dev/null || cp $(($prebuilt -replace '^([A-Za-z]):', '/mnt/$1').Replace('\','/')) ~/tenon/tenon-daemon; chmod +x ~/tenon/tenon-daemon"
+    Info "启动：wsl bash -c 'cd ~/tenon && ./tenon-daemon --db ~/tenon.db'"
+    exit 0
+}
+
+# 3b. 无预编译产物 → 源码构建（假定仓库已克隆至 WSL 内 ~/tenon）
 Info "构建 daemon + UI（WSL2）..."
 wsl bash -lc "cd ~/tenon && ~/.cargo/bin/cargo build --release -p tenon-daemon --bin tenon-daemon && pnpm install && pnpm --filter tenon-ui build"
 
