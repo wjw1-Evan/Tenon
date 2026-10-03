@@ -35,6 +35,10 @@ jobs:
         env:
           # GLM 联调测试在无 config.local.toml 时自动跳过
           TENON_SKIP_LIVE: "1"
+      # 性能基准（§18.4 / §8.7 预算进 CI）：cargo bench 任务挂载位——
+      # snapshot/exec/merge 基准随 M3 性能打磨补 criterion 配置
+      # - name: benches
+      #   run: cargo bench --workspace
 
   ui:
     name: UI (vitest)

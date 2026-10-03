@@ -57,6 +57,7 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
         .route("/file/ops", post(file_ops))
         .route("/search", get(search))
         .route("/lsp", post(lsp_proxy))
+        .route("/lsp/openvsx", post(register_openvsx))
         // ---------- 管理（§15） ----------
         .route("/project", get(list_projects).put(register_project))
         .route("/project/trust", put(set_project_trust))
@@ -562,6 +563,26 @@ async fn search(State(state): State<Arc<DaemonState>>, Query(q): Query<SearchQue
             Ok(hits) => Json(json!({"hits": hits})).into_response(),
             Err(e) => api_err(StatusCode::BAD_REQUEST, e.to_string()),
         },
+    }
+}
+
+/// Open VSX 语言子集实验兼容（§13.3）：languageContribution → 内部语言包。
+async fn register_openvsx(Json(body): Json<Value>) -> Response {
+    let Some(package_json) = body.get("package_json").and_then(|p| p.as_str()) else {
+        return api_err(StatusCode::BAD_REQUEST, "缺少 package_json");
+    };
+    match tenon_lsp::convert_extension(package_json) {
+        Ok(converted) => {
+            tenon_lsp::register_dynamic_pack(converted.pack.clone());
+            Json(json!({
+                "registered": true,
+                "language": converted.language,
+                "extension": converted.extension,
+                "experimental": true,
+            }))
+            .into_response()
+        }
+        Err(e) => api_err(StatusCode::BAD_REQUEST, e.to_string()),
     }
 }
 

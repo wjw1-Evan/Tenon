@@ -253,6 +253,14 @@ impl LspManager {
                     "context": { "includeDeclaration": true },
                 }),
             ),
+            "codeaction" => (
+                "textDocument/codeAction",
+                serde_json::json!({
+                    "textDocument": text_doc,
+                    "range": { "start": position, "end": position },
+                    "context": { "diagnostics": [], "only": ["quickfix"] },
+                }),
+            ),
             "format" => (
                 "textDocument/formatting",
                 serde_json::json!({
