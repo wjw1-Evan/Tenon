@@ -1,0 +1,22 @@
+# macOS
+.DS_Store
+
+# Rust / daemon
+target/
+*.rs.bk
+
+# Node / 前端
+node_modules/
+dist/
+*.local
+
+# Tauri
+src-tauri/gen/
+
+# IDE
+.idea/
+.vscode/
+
+# 环境变量
+.env
+.env.*
