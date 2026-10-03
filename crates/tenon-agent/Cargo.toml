@@ -1,0 +1,28 @@
+[package]
+name = "tenon-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+tenon-config = { workspace = true }
+tenon-core = { workspace = true }
+tenon-store = { workspace = true }
+tenon-snapshot = { workspace = true }
+tenon-sandbox = { workspace = true }
+tenon-fs = { workspace = true }
+tenon-models = { workspace = true }
+tenon-mcp = { workspace = true }
+tenon-laya = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+similar = { workspace = true }
+reqwest = { workspace = true }
+tempfile = { workspace = true }
+ignore = { workspace = true }
+
+[dev-dependencies]

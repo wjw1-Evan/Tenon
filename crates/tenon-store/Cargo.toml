@@ -1,0 +1,21 @@
+[package]
+name = "tenon-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+tenon-config = { workspace = true }
+rusqlite = { workspace = true, features = ["load_extension"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+flate2 = "1"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+sqlite-vec = "0.1.9"
+rusqlite = { workspace = true, features = ["load_extension"] }

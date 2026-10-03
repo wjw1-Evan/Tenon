@@ -1,0 +1,22 @@
+[package]
+name = "tenon-evals"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "tenon-evals"
+path = "src/main.rs"
+
+[dependencies]
+tenon-agent = { workspace = true }
+tenon-config = { workspace = true }
+tenon-models = { workspace = true }
+tenon-store = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }

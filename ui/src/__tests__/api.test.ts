@@ -1,0 +1,70 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { TenonApi } from "../lib/api";
+
+const fetchMock = vi.fn();
+vi.stubGlobal("fetch", fetchMock);
+// WebSocket mock（connectEvents 用）
+class FakeWebSocket {
+  // 测试桩：记录 send 的帧
+
+  static last: FakeWebSocket | null = null;
+  url: string;
+  sent: string[] = [];
+  onopen: (() => void) | null = null;
+  onmessage: ((m: { data: string }) => void) | null = null;
+  onerror: (() => void) | null = null;
+  constructor(url: string) {
+    this.url = url;
+    FakeWebSocket.last = this;
+    queueMicrotask(() => this.onopen?.());
+  }
+  send(data: string) {
+    this.sent.push(data);
+    queueMicrotask(() => this.onmessage?.({ data: "auth ok" }));
+    queueMicrotask(() => this.onmessage?.({ data: JSON.stringify({ type: "user_input" }) }));
+  }
+}
+vi.stubGlobal("WebSocket", FakeWebSocket);
+
+afterEach(() => fetchMock.mockReset());
+
+describe("TenonApi（§15 客户端）", () => {
+  it("所有请求携带 X-Tenon-Token 头", async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({}), { status: 200 }));
+    const api = new TenonApi({ port: 9999, token: "tok-1" });
+    await api.getSession("s1");
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://127.0.0.1:9999/session/s1");
+    expect(init.headers["X-Tenon-Token"]).toBe("tok-1");
+  });
+
+  it("json 请求设置 Content-Type 并序列化", async () => {
+    fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+    const api = new TenonApi({ port: 9999, token: "t" });
+    await api.sendMessage("s1", "hello");
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.method).toBe("POST");
+    expect(init.headers["Content-Type"]).toBe("application/json");
+    expect(init.body).toBe(JSON.stringify({ text: "hello" }));
+  });
+
+  it("非 2xx 抛出错误信息", async () => {
+    fetchMock.mockResolvedValue(new Response("denied", { status: 403 }));
+    const api = new TenonApi({ port: 9999, token: "t" });
+    await expect(api.models()).rejects.toThrow("API 403");
+  });
+
+  it("connectEvents 先换票、首帧携带 ticket（ADR-10）", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ ticket: "one-time", expires_in_s: 60 }), { status: 200 })
+    );
+    const api = new TenonApi({ port: 9999, token: "t" });
+    const events: unknown[] = [];
+    const ws = (await api.connectEvents((ev) => events.push(ev))) as unknown as FakeWebSocket;
+    expect(ws.url).toContain("127.0.0.1:9999/ws");
+    // 首帧必须是票据而非头（浏览器 WS 限制，ADR-10）
+    expect(ws.sent[0]).toBe("one-time");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(events).toEqual([{ type: "user_input" }]);
+  });
+});

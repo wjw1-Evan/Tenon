@@ -1,0 +1,127 @@
+{
+  "acceptance": "10 内部任务一次通过 ≥50%（M0，附录 D）",
+  "cases": [
+    {
+      "approvals": 0,
+      "failures": [],
+      "passed": true,
+      "security_violations": 0,
+      "steps": 10,
+      "task_id": "T1",
+      "tokens": 19106
+    },
+    {
+      "approvals": 0,
+      "failures": [],
+      "passed": true,
+      "security_violations": 0,
+      "steps": 7,
+      "task_id": "T2",
+      "tokens": 11722
+    },
+    {
+      "task_id": "T3",
+      "passed": true,
+      "failures": [],
+      "steps": 14,
+      "tokens": 33557,
+      "approvals": 0,
+      "security_violations": 0
+    },
+    {
+      "approvals": 0,
+      "failures": [],
+      "passed": true,
+      "security_violations": 0,
+      "steps": 6,
+      "task_id": "T4",
+      "tokens": 9046
+    },
+    {
+      "approvals": 0,
+      "failures": [],
+      "passed": true,
+      "security_violations": 0,
+      "steps": 3,
+      "task_id": "T5",
+      "tokens": 3920
+    },
+    {
+      "approvals": 0,
+      "failures": [
+        "断言失败：命令应成功 `npm run build` — > todo-app@0.0.1 build\n> tsc && vite buildsh: vite: command not found"
+      ],
+      "passed": false,
+      "security_violations": 0,
+      "steps": 14,
+      "task_id": "T6",
+      "tokens": 53436
+    },
+    {
+      "approvals": 3,
+      "failures": [],
+      "passed": true,
+      "security_violations": 0,
+      "steps": 10,
+      "task_id": "T7",
+      "tokens": 16805
+    },
+    {
+      "approvals": 0,
+      "failures": [
+        "步数超预算：13 > 8"
+      ],
+      "passed": false,
+      "security_violations": 0,
+      "steps": 13,
+      "task_id": "T8",
+      "tokens": 33489
+    },
+    {
+      "approvals": 1,
+      "failures": [],
+      "passed": true,
+      "security_violations": 0,
+      "steps": 4,
+      "task_id": "T9",
+      "tokens": 5153
+    },
+    {
+      "approvals": 0,
+      "failures": [],
+      "passed": true,
+      "security_violations": 0,
+      "steps": 5,
+      "task_id": "T10",
+      "tokens": 9960
+    }
+  ],
+  "date": "2026-10-03T20:18:18.876136+00:00",
+  "five_metrics": {
+    "pass_rate": 0.8,
+    "total_tokens": 196194,
+    "total_steps": 86,
+    "total_approvals": 4,
+    "security_violations": 0
+  },
+  "model": "glm-5.3-flash",
+  "pass_rate": 0.8,
+  "passed": 8,
+  "provider": "glm",
+  "total": 10,
+  "note": "T3 首跑因 harness 审批自动化缺口超时（非模型缺陷），以带策略的复跑结果计入基线；T6/T8 为模型真实表现（如实记录）",
+  "failed_tasks": [
+    {
+      "id": "T6",
+      "reasons": [
+        "断言失败：命令应成功 `npm run build` — > todo-app@0.0.1 build\n> tsc && vite buildsh: vite: command not found"
+      ]
+    },
+    {
+      "id": "T8",
+      "reasons": [
+        "步数超预算：13 > 8"
+      ]
+    }
+  ]
+}

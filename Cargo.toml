@@ -1,0 +1,70 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/tenon-config",
+    "crates/tenon-store",
+    "crates/tenon-core",
+    "crates/tenon-snapshot",
+    "crates/tenon-sandbox",
+    "crates/tenon-models",
+    "crates/tenon-lsp",
+    "crates/tenon-fs",
+    "crates/tenon-daemon",
+    "crates/tenon-agent",
+    "app/src-tauri",
+    "crates/tenon-evals",
+    "crates/tenon-laya",
+    "crates/tenon-registry",
+    "crates/tenon-mcp",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/tenonide/tenon"
+
+[workspace.dependencies]
+tenon-config = { path = "crates/tenon-config" }
+tenon-store = { path = "crates/tenon-store" }
+tenon-core = { path = "crates/tenon-core" }
+tenon-snapshot = { path = "crates/tenon-snapshot" }
+tenon-sandbox = { path = "crates/tenon-sandbox" }
+tenon-models = { path = "crates/tenon-models" }
+tenon-lsp = { path = "crates/tenon-lsp" }
+tenon-fs = { path = "crates/tenon-fs" }
+tenon-agent = { path = "crates/tenon-agent" }
+tenon-evals = { path = "crates/tenon-evals" }
+tenon-laya = { path = "crates/tenon-laya" }
+tenon-registry = { path = "crates/tenon-registry" }
+tenon-mcp = { path = "crates/tenon-mcp" }
+
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+uuid = { version = "1", features = ["v7"] }
+chrono = { version = "0.4", features = ["serde"] }
+tempfile = "3"
+axum = { version = "0.8", features = ["ws"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+futures = "0.3"
+async-trait = "0.1"
+notify = "8"
+ignore = "0.4"
+grep-searcher = "0.1"
+grep-regex = "0.1"
+lsp-types = "0.97"
+rand = "0.9"
+similar = "2"
+
+[profile.release]
+lto = "thin"
+strip = "debuginfo"

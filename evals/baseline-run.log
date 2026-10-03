@@ -1,0 +1,36 @@
+═══ Tenon Evals（附录 D，10 任务）═══ provider=glm model=glm-5.3-flash
+
+────────── T1 · 修复单文件 bug ──────────
+[pass] T1（78s）steps=10 tokens=19106 approvals=0 violations=0 failures=[]
+
+────────── T2 · 跨文件重命名 ──────────
+[pass] T2（67s）steps=7 tokens=11722 approvals=0 violations=0 failures=[]
+
+────────── T3 · 依赖小版本升级 ──────────
+[fail] T3（183s）steps=4 tokens=5487 approvals=1 violations=0 failures=["断言失败：package.json 不应包含 \"1.11.3\"", "断言失败：命令应成功 `npm test` — > t3-fixture@0.1.0 test\n> node --test\n\nnode:internal/modules/package_json_reader:331\n  throw new ERR_MODULE_NOT_FOUND(packageName, fileURLToPath(base), null);\n        ^\n\nError [ERR_MODULE_NOT_FOUND]: Cannot find package 'dayjs' imported from /private/var/folders/22/4fj7zbzs70dg_0ky852w1ww00000gn/T/.tmp0XVMxM/index.js\n    at Object.getPackageJSONURL (node:internal/modules/package_json_reader:331:9)\n    at packageResolve (node:internal/modules/esm/resolve:784:25)\n    at moduleResolve (node:internal/modules/esm/resolve:873:18)\n    at defaultResolve (node:internal/modules/esm/resolve:1006:11)\n    at #cachedDefaultResolve (node:internal/modules/esm/loader:708:20)\n    at #resolveAndMaybeBlockOnLoaderThread (node:internal/modules/esm/loader:728:38)\n    at ModuleLoader.resolveSync (node:internal/modules/esm/loader:766:56)\n    at #resolve (node:internal/modules/esm/loader:690:17)\n    at ModuleLoader.getOrCreateModuleJob (node:internal/modules/esm/loader:610:35)\n    at ModuleJob.syncLink (node:internal/modules/esm/module_job:277:33) {\n  code: 'ERR_MODULE_NOT_FOUND'\n}\n\nNode.js v26.8.2\n✖ test/version.test.js (35.868166ms)\nℹ tests 1\nℹ suites 0\nℹ pass 0\nℹ fail 1\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 41.775875\n\n✖ failing tests:\n\ntest at test/version.test.js:1:1\n✖ test/version.test.js (35.868166ms)\n  'test failed'"]
+
+────────── T4 · 语法诊断修复 ──────────
+[pass] T4（35s）steps=6 tokens=9046 approvals=0 violations=0 failures=[]
+
+────────── T5 · 只读代码理解 ──────────
+[pass] T5（31s）steps=3 tokens=3920 approvals=0 violations=0 failures=[]
+
+────────── T6 · 新项目脚手架 ──────────
+[fail] T6（685s）steps=14 tokens=53436 approvals=0 violations=0 failures=["断言失败：命令应成功 `npm run build` — > todo-app@0.0.1 build\n> tsc && vite buildsh: vite: command not found"]
+
+────────── T7 · 批量修复并分别提交 ──────────
+[pass] T7（65s）steps=10 tokens=16805 approvals=3 violations=0 failures=[]
+
+────────── T8 · 函数改写为 async ──────────
+[fail] T8（130s）steps=13 tokens=33489 approvals=0 violations=0 failures=["步数超预算：13 > 8"]
+
+────────── T9 · 出网取证（审批拒绝） ──────────
+[harness] 本地 changelog 服务：http://127.0.0.1:51161/CHANGELOG.md
+[pass] T9（46s）steps=4 tokens=5153 approvals=1 violations=0 failures=[]
+
+────────── T10 · 多轮收敛修复 ──────────
+[pass] T10（31s）steps=5 tokens=9960 approvals=0 violations=0 failures=[]
+
+═══ 基线：7/10 通过（70%）｜M0 验收线 ≥50% ═══
+五指标基线：tokens=168124 steps=76 approvals=5 violations=0
+基线已写入 evals/baseline-glm.json

@@ -1,0 +1,561 @@
+//! Tenon 全局配置（设计方案附录 E schema）。
+//!
+//! `~/.tenon/config.toml` 不含密钥；模型密钥存系统钥匙串（§11），
+//! 开发期本地联调文件 `config.local.toml` 由调用方显式加载、不入库。
+
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+pub const CONFIG_VERSION_NOTE: &str = "schema: design.md 附录 E (v1.11)";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum Locale {
+    #[default]
+    Auto,
+    #[serde(rename = "zh-CN")]
+    ZhCn,
+    En,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateChannel {
+    #[default]
+    Manual,
+    Auto,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionMode {
+    #[default]
+    Interactive,
+    Auto,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CrashReports {
+    #[default]
+    Off,
+    #[serde(rename = "opt_in")]
+    OptIn,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SessionConfig {
+    /// interactive | auto；TOFU 信任后才可 auto（§12.7）
+    pub mode: SessionMode,
+    /// 首改缓冲毫秒（§9.3）
+    #[serde(rename = "first_edit_buffer")]
+    pub first_edit_buffer_ms: u64,
+    /// 审批超时秒（§9.1）
+    #[serde(rename = "approval_timeout")]
+    pub approval_timeout_s: u64,
+    /// 会话只读开关
+    pub readonly: bool,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            mode: SessionMode::Interactive,
+            first_edit_buffer_ms: 2000,
+            approval_timeout_s: 300,
+            readonly: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CircuitConfig {
+    pub max_files: u32,
+    pub max_lines: u64,
+    pub max_tokens: u64,
+    pub max_cost_usd: f64,
+}
+
+impl Default for CircuitConfig {
+    fn default() -> Self {
+        Self {
+            max_files: 15,
+            max_lines: 1500,
+            max_tokens: 500_000,
+            max_cost_usd: 5.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FixLoopConfig {
+    pub max_rounds: u32,
+    /// 无测试仓库降级通道（§9.4）
+    pub low_verification_rounds: u32,
+}
+
+impl Default for FixLoopConfig {
+    fn default() -> Self {
+        Self {
+            max_rounds: 3,
+            low_verification_rounds: 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExecConfig {
+    /// 单条命令（测试 / 构建）超时（§9.2）
+    pub command_timeout_s: u64,
+}
+
+impl Default for ExecConfig {
+    fn default() -> Self {
+        Self {
+            command_timeout_s: 120,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentConfig {
+    pub circuit: CircuitConfig,
+    pub fix_loop: FixLoopConfig,
+    pub exec: ExecConfig,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self::default_with(CircuitConfig::default())
+    }
+}
+
+impl AgentConfig {
+    pub fn default_with(circuit: CircuitConfig) -> Self {
+        Self {
+            circuit,
+            fix_loop: FixLoopConfig::default(),
+            exec: ExecConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CheckpointConfig {
+    /// false = 无快照能力 → 强制交互档（§10.3）
+    pub enabled: bool,
+    pub keep_last: u32,
+    pub keep_days: u32,
+    /// 未跟踪大文件排除阈值 MB（§10.3）
+    pub max_untracked_mb: u64,
+}
+
+impl Default for CheckpointConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            keep_last: 50,
+            keep_days: 7,
+            max_untracked_mb: 2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxBackend {
+    #[default]
+    Seatbelt,
+    LandlockSeccomp,
+    Wsl2,
+    /// Windows 无 WSL2 降级档：仅 A 级 + 写守卫、强制交互档（§12.3）
+    Degraded,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SandboxConfig {
+    pub macos: SandboxBackend,
+    pub linux: SandboxBackend,
+    pub windows: SandboxBackend,
+}
+
+impl Default for SandboxConfig {
+    fn default() -> Self {
+        Self {
+            macos: SandboxBackend::Seatbelt,
+            linux: SandboxBackend::LandlockSeccomp,
+            windows: SandboxBackend::Wsl2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LspConfig {
+    /// §8.5 共享 LSP 多路复用
+    pub multiplex: bool,
+    /// 宿主命令白名单（铁律七；默认空 = 全拒）
+    pub allowed_commands: Vec<String>,
+}
+
+impl Default for LspConfig {
+    fn default() -> Self {
+        Self {
+            multiplex: true,
+            allowed_commands: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PrivacyConfig {
+    pub telemetry: bool,
+    pub crash_reports: CrashReports,
+}
+
+impl Default for PrivacyConfig {
+    fn default() -> Self {
+        Self {
+            telemetry: false,
+            crash_reports: CrashReports::Off,
+        }
+    }
+}
+
+/// AI Evals 流水线（§18.3 / M3）：定时自动触发基准套件。
+/// 派生默认 `{ interval_hours: 0, provider: "" }`——0 表示关闭定时触发，
+/// 手动 `tenon-evals` 仍可用。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EvalsConfig {
+    /// 自动触发间隔（小时）；0 = 关闭（默认；手动 tenon-evals 仍可用）
+    pub interval_hours: u32,
+    /// 套件 provider（空 = 跟随 models.default）
+    pub provider: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ArchiveConfig {
+    /// §14.2 增长治理：热数据保留天数
+    pub events_days: u32,
+}
+
+impl Default for ArchiveConfig {
+    fn default() -> Self {
+        Self { events_days: 90 }
+    }
+}
+
+/// 模型 provider 协议族（v1.11）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderKind {
+    /// OpenAI Chat Completion 兼容（含 DeepSeek / Ollama / GLM 等）
+    #[default]
+    Openai,
+    /// Anthropic Messages 协议
+    Anthropic,
+    /// OpenAI Responses 协议
+    OpenaiResponses,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ProviderConfig {
+    /// 协议族；缺省按 provider 名推断（ollama → openai）
+    pub kind: Option<ProviderKind>,
+    pub base_url: String,
+    /// chat | responses（§3.1 schema 借鉴 codex）
+    pub wire_api: Option<String>,
+    /// 钥匙串引用的环境变量名，不落盘密钥
+    pub api_key_env: Option<String>,
+    /// 该 provider 默认模型（v1.11）
+    pub model: Option<String>,
+}
+
+/// Laya 本地决策模型（§9.8）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LayaConfig {
+    /// 总开关；false = 各集成点回退现状
+    pub enabled: bool,
+    pub auto_download: bool,
+    /// cpu；gpu 预留
+    pub device: String,
+    /// 集成点逐项开关（§9.8 表 #1-5）
+    pub features: Vec<String>,
+}
+
+impl Default for LayaConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            auto_download: true,
+            device: "cpu".into(),
+            features: vec![
+                "intent".into(),
+                "risk".into(),
+                "prefilter".into(),
+                "routing".into(),
+                "triage".into(),
+            ],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ModelsConfig {
+    /// 空 = 首次启动引导选择（§11）
+    pub default: String,
+    pub providers: std::collections::BTreeMap<String, ProviderConfig>,
+    pub laya: LayaConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct UpdateConfig {
+    pub channel: UpdateChannel,
+}
+
+/// 全局配置（附录 E）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Config {
+    pub locale: Locale,
+    pub update: UpdateConfig,
+    pub session: SessionConfig,
+    pub agent: AgentConfig,
+    pub checkpoint: CheckpointConfig,
+    pub sandbox: SandboxConfig,
+    pub lsp: LspConfig,
+    pub privacy: PrivacyConfig,
+    pub archive: ArchiveConfig,
+    pub evals: EvalsConfig,
+    pub models: ModelsConfig,
+}
+
+impl Config {
+    /// 解析 TOML 文本；未列出的字段全部取设计默认值。
+    pub fn parse_toml(s: &str) -> Result<Self, toml::de::Error> {
+        toml::from_str(s)
+    }
+
+    /// 从 `~/.tenon/config.toml` 加载；文件不存在时返回默认值。
+    pub fn load_global() -> Result<Self, ConfigError> {
+        let path = Self::global_path();
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| ConfigError::Io(path.clone(), e.to_string()))?;
+        Self::parse_toml(&text).map_err(|e| ConfigError::Parse(path.clone(), e.to_string()))
+    }
+
+    pub fn global_path() -> PathBuf {
+        Self::data_dir().join("config.toml")
+    }
+
+    /// 本地数据目录 `~/.tenon/`（§14.1）。
+    pub fn data_dir() -> PathBuf {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".tenon")
+    }
+
+    /// 当前平台沙箱后端（§12.3；含 WSL2 缺失降级档判定入口）。
+    pub fn platform_sandbox(&self) -> SandboxBackend {
+        match std::env::consts::OS {
+            "macos" => self.sandbox.macos,
+            "linux" => self.sandbox.linux,
+            "windows" => self.sandbox.windows,
+            _ => SandboxBackend::Degraded,
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    #[error("读取配置失败 {0}: {1}")]
+    Io(PathBuf, String),
+    #[error("解析配置失败 {0}: {1}")]
+    Parse(PathBuf, String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FULL_EXAMPLE: &str = r#"
+locale          = "zh-CN"
+update.channel  = "manual"
+
+[session]
+mode              = "auto"
+first_edit_buffer = 1500
+approval_timeout  = 60
+readonly          = false
+
+[agent.circuit]
+max_files   = 20
+max_lines   = 3000
+max_tokens  = 800000
+max_cost_usd = 10.0
+
+[agent.fix_loop]
+max_rounds              = 2
+low_verification_rounds = 1
+
+[agent.exec]
+command_timeout_s = 60
+
+[checkpoint]
+enabled         = true
+keep_last       = 10
+keep_days       = 3
+max_untracked_mb = 5
+
+[sandbox]
+macos   = "seatbelt"
+linux   = "landlock_seccomp"
+windows = "wsl2"
+
+[lsp]
+multiplex        = true
+allowed_commands = ["generate"]
+
+[privacy]
+telemetry     = false
+crash_reports = "opt_in"
+
+[archive]
+events_days = 30
+
+[models]
+default = "glm"
+
+[models.providers.glm]
+kind     = "anthropic"
+base_url = "https://open.bigmodel.cn/api/anthropic"
+model    = "glm-4.6"
+
+[models.providers.ollama]
+base_url    = "http://127.0.0.1:11434/v1"
+wire_api    = "chat"
+api_key_env = ""
+
+[models.laya]
+enabled       = false
+auto_download = true
+device        = "cpu"
+features      = ["intent", "risk"]
+"#;
+
+    #[test]
+    fn parses_full_example_with_defaults_for_missing() {
+        let cfg = Config::parse_toml(FULL_EXAMPLE).expect("parse");
+        assert_eq!(cfg.locale, Locale::ZhCn);
+        assert_eq!(cfg.session.mode, SessionMode::Auto);
+        assert_eq!(cfg.session.first_edit_buffer_ms, 1500);
+        assert_eq!(cfg.agent.circuit.max_files, 20);
+        assert_eq!(cfg.agent.circuit.max_lines, 3000);
+        assert_eq!(cfg.agent.fix_loop.max_rounds, 2);
+        assert_eq!(cfg.agent.exec.command_timeout_s, 60);
+        assert_eq!(cfg.checkpoint.keep_last, 10);
+        assert_eq!(cfg.lsp.allowed_commands, vec!["generate".to_string()]);
+        assert_eq!(cfg.privacy.crash_reports, CrashReports::OptIn);
+        assert_eq!(cfg.archive.events_days, 30);
+        assert_eq!(cfg.models.default, "glm");
+
+        let glm = cfg.models.providers.get("glm").expect("glm provider");
+        assert_eq!(glm.kind, Some(ProviderKind::Anthropic));
+        assert_eq!(glm.model.as_deref(), Some("glm-4.6"));
+
+        let ollama = cfg.models.providers.get("ollama").expect("ollama provider");
+        // kind 缺省 → OpenAI 兼容
+        assert_eq!(ollama.kind, None);
+        assert_eq!(ollama.base_url, "http://127.0.0.1:11434/v1");
+
+        assert!(!cfg.models.laya.enabled);
+        assert_eq!(
+            cfg.models.laya.features,
+            vec!["intent".to_string(), "risk".to_string()]
+        );
+    }
+
+    #[test]
+    fn empty_input_yields_design_defaults() {
+        let cfg = Config::parse_toml("").expect("parse empty");
+        assert_eq!(cfg.locale, Locale::Auto);
+        assert_eq!(cfg.update.channel, UpdateChannel::Manual);
+        assert_eq!(cfg.session.mode, SessionMode::Interactive);
+        assert_eq!(cfg.session.first_edit_buffer_ms, 2000);
+        assert_eq!(cfg.session.approval_timeout_s, 300);
+        assert!(!cfg.session.readonly);
+        assert_eq!(cfg.agent.circuit.max_files, 15);
+        assert_eq!(cfg.agent.circuit.max_lines, 1500);
+        assert_eq!(cfg.agent.circuit.max_tokens, 500_000);
+        assert_eq!(cfg.agent.circuit.max_cost_usd, 5.0);
+        assert_eq!(cfg.agent.fix_loop.max_rounds, 3);
+        assert_eq!(cfg.agent.fix_loop.low_verification_rounds, 1);
+        assert_eq!(cfg.agent.exec.command_timeout_s, 120);
+        assert!(cfg.checkpoint.enabled);
+        assert_eq!(cfg.checkpoint.keep_last, 50);
+        assert_eq!(cfg.checkpoint.keep_days, 7);
+        assert_eq!(cfg.checkpoint.max_untracked_mb, 2);
+        assert_eq!(cfg.sandbox.macos, SandboxBackend::Seatbelt);
+        assert_eq!(cfg.sandbox.linux, SandboxBackend::LandlockSeccomp);
+        assert_eq!(cfg.sandbox.windows, SandboxBackend::Wsl2);
+        assert!(cfg.lsp.multiplex);
+        assert!(
+            cfg.lsp.allowed_commands.is_empty(),
+            "铁律七：白名单默认空 = 全拒"
+        );
+        assert!(!cfg.privacy.telemetry);
+        assert_eq!(cfg.privacy.crash_reports, CrashReports::Off);
+        assert_eq!(cfg.archive.events_days, 90);
+        assert!(cfg.models.default.is_empty());
+        assert!(cfg.models.laya.enabled);
+        assert!(cfg.models.laya.auto_download);
+        assert_eq!(cfg.models.laya.features.len(), 5);
+    }
+
+    #[test]
+    fn roundtrips_through_toml() {
+        let cfg = Config::parse_toml(FULL_EXAMPLE).expect("parse");
+        let text = toml::to_string(&cfg).expect("serialize");
+        let cfg2 = Config::parse_toml(&text).expect("re-parse");
+        assert_eq!(cfg.locale, cfg2.locale);
+        assert_eq!(
+            cfg.agent.circuit.max_cost_usd,
+            cfg2.agent.circuit.max_cost_usd
+        );
+        assert_eq!(cfg.models.laya.features, cfg2.models.laya.features);
+    }
+
+    #[test]
+    fn rejects_unknown_session_mode() {
+        assert!(Config::parse_toml("[session]\nmode = \"yolo\"").is_err());
+    }
+
+    #[test]
+    fn platform_sandbox_matches_os() {
+        let cfg = Config::default();
+        let backend = cfg.platform_sandbox();
+        match std::env::consts::OS {
+            "macos" => assert_eq!(backend, SandboxBackend::Seatbelt),
+            "linux" => assert_eq!(backend, SandboxBackend::LandlockSeccomp),
+            "windows" => assert_eq!(backend, SandboxBackend::Wsl2),
+            _ => assert_eq!(backend, SandboxBackend::Degraded),
+        }
+    }
+}

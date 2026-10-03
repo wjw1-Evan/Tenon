@@ -1,0 +1,1115 @@
+//! Agent 会话（设计方案 §9.1 / §9.3 / §9.4 / §9.7 / §10.3）：
+//! 状态机驱动任务循环，联动权限、审批、快照、熔断与事件流。
+//!
+//! 转移规则由 `tenon_core::machine::StateMachine` 单测覆盖；运行态经
+//! `force_state` 对齐并保留计数（拒绝改案 ≤2、模型重试 ≤2、修复轮次）。
+
+use std::collections::BTreeSet;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc as StdArc;
+use std::sync::Arc;
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+use tokio::sync::{broadcast, mpsc, Mutex, Notify, RwLock};
+
+use tenon_core::circuit::{CircuitBreaker, CircuitLimits, CircuitStatus, PatchFootprint};
+use tenon_core::context::{ProjectRules, SessionMemory};
+use tenon_core::machine::{Limits as MachineLimits, State, StateMachine};
+use tenon_core::policy::{Action, Decision, Level, Mode, Policy};
+use tenon_core::tools::Tool;
+use tenon_models::{ChatMessage, ChatRequest, ModelProvider, ToolSpec, Usage};
+use tenon_snapshot::SnapshotStore;
+use tenon_store::{ApprovalDecision, Event, EventKind, Level as StoreLevel, SessionStatus, Store};
+
+use crate::executor::{execute_tool, ToolContext};
+
+#[derive(Debug, Clone)]
+pub struct AgentConfig {
+    pub project_root: PathBuf,
+    pub snapshots_root: PathBuf,
+    pub project_id: String,
+    pub policy: Policy,
+    /// 首改缓冲毫秒（§9.3）。
+    pub first_edit_buffer_ms: u64,
+    /// 审批超时秒（§9.1）。
+    pub approval_timeout_s: u64,
+    pub circuit: CircuitLimits,
+    /// 修复循环轮次上限（§9.4；无测试仓库降为 1）。
+    pub fix_rounds: u32,
+    /// 单命令超时秒（§9.2）。
+    pub command_timeout_s: u64,
+    /// 每任务最大模型回合数（防失控；收敛条件之一）。
+    pub max_tool_rounds: u32,
+    /// Laya 本地决策模型（§9.8；None = 未启用，各集成点回退现状）。
+    pub laya: Option<Arc<tenon_laya::LayaRuntime>>,
+    /// 脏缓冲注册表（§8.6 人机共编；None = daemon 未接入）。
+    pub dirty: Option<Arc<tenon_fs::DirtyBufferRegistry>>,
+}
+
+impl AgentConfig {
+    pub fn for_project(project_root: PathBuf, project_id: &str, trusted: bool, mode: Mode) -> Self {
+        Self {
+            snapshots_root: tenon_config::Config::data_dir().join("snapshots"),
+            project_root,
+            project_id: project_id.to_string(),
+            policy: Policy {
+                mode,
+                trusted,
+                ..Policy::default()
+            },
+            first_edit_buffer_ms: 2000,
+            approval_timeout_s: 300,
+            circuit: CircuitLimits::default(),
+            fix_rounds: 3,
+            command_timeout_s: 120,
+            max_tool_rounds: 24,
+            laya: None,
+            dirty: None,
+        }
+    }
+}
+
+/// 任务结果（证据卡，§9.4 SUMMARIZING）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvidenceCard {
+    pub answer: String,
+    pub changed_files: Vec<String>,
+    pub verification: String,
+    /// high（测试通道）/ low（降级通道）/ none（纯回答）。
+    pub verification_strength: String,
+    pub steps: u32,
+    pub rolled_back: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TaskOutcome {
+    Done(EvidenceCard),
+    Paused { state: String, reason: String },
+    Error(String),
+}
+
+/// 控制命令（§15 `/session/:id/control`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlCommand {
+    Pause,
+    Resume,
+    Stop,
+    SetReadonly(bool),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum AgentError {
+    #[error("存储错误: {0}")]
+    Store(String),
+    #[error("快照错误: {0}")]
+    Snapshot(String),
+    #[error("审批不存在或已决策")]
+    ApprovalInvalid,
+}
+
+/// 项目级写锁（§9.7：同一项目同一时刻仅一个会话 EXECUTING）。
+#[derive(Default, Clone)]
+pub struct ProjectWriteLock {
+    inner: Arc<tokio::sync::Mutex<()>>,
+}
+
+impl ProjectWriteLock {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// Agent 会话：一个会话一个状态机 + 事件流。
+pub struct AgentSession {
+    pub session_id: String,
+    config: AgentConfig,
+    machine: Mutex<StateMachine>,
+    circuit: Mutex<CircuitBreaker>,
+    memory: Mutex<SessionMemory>,
+    rules: Mutex<ProjectRules>,
+    store: Arc<Mutex<Store>>,
+    snapshots: Arc<SnapshotStore>,
+    /// 会话模型（§11 显式路由：可切换，上下文随迁）。
+    provider: RwLock<StdArc<dyn ModelProvider>>,
+    tool_ctx: ToolContext,
+    /// 任务级写互斥（§9.7）。
+    write_lock: ProjectWriteLock,
+    control_tx: mpsc::UnboundedSender<ControlCommand>,
+    control_rx: Mutex<mpsc::UnboundedReceiver<ControlCommand>>,
+    approvals: Mutex<std::collections::HashMap<String, mpsc::Sender<ApprovalDecision>>>,
+    /// 「本会话记住」的审批动作（§7.3 允许一次 / 本会话记住）。
+    session_approved: Mutex<BTreeSet<String>>,
+    events_tx: broadcast::Sender<Event>,
+    first_edit_done: AtomicBool,
+    touched_files: Mutex<BTreeSet<String>>,
+    deny_count: AtomicU32,
+    /// 最近一次回滚前的安全快照（unrevert 恢复点，§10.3）。
+    pre_rollback_tree: Mutex<Option<String>>,
+    interrupt: Notify,
+}
+
+fn tool_specs() -> Vec<ToolSpec> {
+    [
+        ("read_file", "读取文本文件", serde_json::json!({
+            "type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]
+        })),
+        ("list_dir", "列出目录", serde_json::json!({
+            "type": "object", "properties": {"path": {"type": "string"}}
+        })),
+        ("grep", "正则搜索代码", serde_json::json!({
+            "type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"]
+        })),
+        ("git_read", "只读 git：status/log/diff", serde_json::json!({
+            "type": "object", "properties": {"sub": {"type": "string", "enum": ["status", "log", "diff"]}}
+        })),
+        ("apply_patch", "编辑文件：file + range(1-based 行区间含端点，缺省追加) + content", serde_json::json!({
+            "type": "object",
+            "properties": {
+                "file": {"type": "string"},
+                "range": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
+                "content": {"type": "string"}
+            },
+            "required": ["file", "content"]
+        })),
+        ("run_tests", "运行测试（沙箱断网）", serde_json::json!({
+            "type": "object", "properties": {"command": {"type": "string"}}
+        })),
+        ("run_build", "构建（沙箱断网）", serde_json::json!({
+            "type": "object", "properties": {"command": {"type": "string"}}
+        })),
+        ("http_fetch", "抓取 URL（C 级审批）", serde_json::json!({
+            "type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]
+        })),
+        ("git_commit", "git 提交（D 级恒审批）", serde_json::json!({
+            "type": "object", "properties": {"message": {"type": "string"}}, "required": ["message"]
+        })),
+    ]
+    .into_iter()
+    .map(|(name, desc, params)| ToolSpec {
+        name: name.to_string(),
+        description: desc.to_string(),
+        parameters: params,
+    })
+    .collect()
+}
+
+/// 只读工具目录（意图预判为只读/问答时的首轮收窄；§9.8 预筛语义）。
+fn tool_specs_read_only() -> Vec<ToolSpec> {
+    tool_specs()
+        .into_iter()
+        .filter(|t| {
+            matches!(
+                t.name.as_str(),
+                "read_file" | "list_dir" | "grep" | "git_read"
+            )
+        })
+        .collect()
+}
+
+impl AgentSession {
+    /// 创建会话（store 会话行 + shadow 快照库）。
+    pub async fn create(
+        store: Arc<Mutex<Store>>,
+        snapshots: Arc<SnapshotStore>,
+        provider: Arc<dyn ModelProvider>,
+        config: AgentConfig,
+        write_lock: ProjectWriteLock,
+        rules: ProjectRules,
+    ) -> Result<Arc<Self>, AgentError> {
+        let model = provider.default_model();
+        let session = {
+            let mut st = store.lock().await;
+            st.create_session(&config.project_id, &model)
+                .map_err(|e| AgentError::Store(e.to_string()))?
+        };
+        let readonly = config.policy.readonly || rules.readonly == Some(true);
+        let mut tool_ctx = ToolContext::new(
+            &config.project_root,
+            Duration::from_secs(config.command_timeout_s),
+        );
+        tool_ctx.readonly = readonly;
+        tool_ctx.dirty = config.dirty.clone();
+        let (control_tx, control_rx) = mpsc::unbounded_channel();
+        let (events_tx, _) = broadcast::channel(1024);
+        let circuit_limits = config.circuit;
+        let machine = StateMachine::with_limits(MachineLimits {
+            deny_retries: 2,
+            model_retries: 2,
+            fix_rounds: config.fix_rounds,
+        });
+        Ok(Arc::new(Self {
+            session_id: session.id,
+            config,
+            circuit: Mutex::new(CircuitBreaker::new(circuit_limits)),
+            machine: Mutex::new(machine),
+            memory: Mutex::new(SessionMemory::default()),
+            rules: Mutex::new(rules),
+            store,
+            snapshots,
+            provider: RwLock::new(provider),
+            tool_ctx,
+            write_lock,
+            control_tx,
+            control_rx: Mutex::new(control_rx),
+            approvals: Mutex::new(std::collections::HashMap::new()),
+            session_approved: Mutex::new(BTreeSet::new()),
+            events_tx,
+            first_edit_done: AtomicBool::new(false),
+            touched_files: Mutex::new(BTreeSet::new()),
+            deny_count: AtomicU32::new(0),
+            pre_rollback_tree: Mutex::new(None),
+            interrupt: Notify::new(),
+        }))
+    }
+
+    /// 切换会话模型（§11 显式路由 / 降级：上下文随迁——消息流不动，
+    /// 仅替换 provider，下一回合生效；model_fallback 事件入 Trace）。
+    pub async fn switch_provider(&self, new_provider: std::sync::Arc<dyn ModelProvider>) {
+        let old = self.provider.read().await.default_model();
+        {
+            let mut guard = self.provider.write().await;
+            *guard = new_provider;
+        }
+        let new_model = self.provider.read().await.default_model();
+        self.emit(
+            EventKind::ModelFallback,
+            &serde_json::json!({
+                "from": old,
+                "to": new_model,
+                "context_migrated": true,
+            }),
+        )
+        .await;
+        let mut st = self.store.lock().await;
+        let _ = st.set_session_model(&self.session_id, &new_model);
+    }
+
+    /// 当前会话模型名。
+    pub async fn current_model(&self) -> String {
+        self.provider.read().await.default_model()
+    }
+
+    /// 设置熔断器预算（创建后按 config.toml 覆盖）。
+    pub async fn set_circuit_limits(&self, limits: CircuitLimits) {
+        *self.circuit.lock().await = CircuitBreaker::new(limits);
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<Event> {
+        self.events_tx.subscribe()
+    }
+
+    pub fn control(&self, cmd: ControlCommand) {
+        let _ = self.control_tx.send(cmd);
+    }
+
+    pub fn interrupt_first_edit_buffer(&self) {
+        self.interrupt.notify_one();
+    }
+
+    pub async fn current_state(&self) -> State {
+        self.machine.lock().await.state()
+    }
+
+    async fn force_state(&self, next: State) {
+        self.machine.lock().await.force_state(next);
+    }
+
+    async fn emit(&self, kind: EventKind, payload: &serde_json::Value) -> Option<Event> {
+        let ev = {
+            let mut st = self.store.lock().await;
+            st.append_event(&self.session_id, kind, payload).ok()?
+        };
+        let _ = self.events_tx.send(ev.clone());
+        Some(ev)
+    }
+
+    async fn set_status(&self, status: SessionStatus) {
+        let mut st = self.store.lock().await;
+        let _ = st.set_session_status(&self.session_id, status);
+    }
+
+    async fn record_usage(&self, usage: Usage) {
+        if usage.input_tokens == 0 && usage.output_tokens == 0 {
+            return;
+        }
+        let provider = self.provider.read().await.clone();
+        let model = provider.default_model();
+        let mut st = self.store.lock().await;
+        let _ = st.record_model_usage(
+            &self.session_id,
+            provider.name(),
+            &model,
+            usage.input_tokens as i64,
+            usage.output_tokens as i64,
+            0.0, // 成本折算由 daemon 按价格表进行；本地模型恒 0
+        );
+    }
+
+    /// 提交审批决策（§15 `POST /approval/:id`）。
+    pub async fn decide_approval(
+        &self,
+        approval_id: &str,
+        decision: ApprovalDecision,
+        action: &str,
+    ) -> Result<(), AgentError> {
+        {
+            let mut st = self.store.lock().await;
+            let decided = st
+                .decide_approval(approval_id, decision)
+                .map_err(|e| AgentError::Store(e.to_string()))?;
+            if decided.is_none() {
+                return Err(AgentError::ApprovalInvalid);
+            }
+        }
+        if decision == ApprovalDecision::Session {
+            self.session_approved
+                .lock()
+                .await
+                .insert(action.to_string());
+        }
+        self.emit(
+            EventKind::ApprovalDecision,
+            &serde_json::json!({"approval_id": approval_id, "decision": decision}),
+        )
+        .await;
+        if let Some(tx) = self.approvals.lock().await.remove(approval_id) {
+            let _ = tx.send(decision).await;
+        }
+        Ok(())
+    }
+
+    /// 执行一个任务（完整 §9.1 循环）。
+    pub async fn run_task(&self, user_text: &str) -> TaskOutcome {
+        let _guard = self.write_lock.inner.lock().await;
+        self.first_edit_done.store(false, Ordering::SeqCst);
+        self.touched_files.lock().await.clear();
+        self.deny_count.store(0, Ordering::SeqCst);
+        self.memory.lock().await.goals.push(user_text.to_string());
+
+        // ---- IDLE → SENSING ----
+        self.emit(
+            EventKind::UserInput,
+            &serde_json::json!({"text": user_text}),
+        )
+        .await;
+        self.force_state(State::Sensing).await;
+        self.set_status(SessionStatus::Sensing).await;
+
+        // ---- Laya 意图预判（§9.8 集成点 #1）：只读先验 → 首轮收窄工具目录；
+        // 不改变状态机转移，判定失败即回退（不阻塞）----
+        let mut read_only_prior = false;
+        if let Some(laya) = &self.config.laya {
+            match laya.intent(user_text).await {
+                tenon_laya::LayaOutcome::Success {
+                    value, duration_ms, ..
+                } => {
+                    read_only_prior = matches!(
+                        value,
+                        tenon_laya::IntentLabel::PureQa | tenon_laya::IntentLabel::ReadOnlyAnalysis
+                    );
+                    self.emit(
+                        EventKind::DeciderCall,
+                        &serde_json::json!({
+                            "feature": "intent",
+                            "kind": "choice",
+                            "result": value.as_str(),
+                            "duration_ms": duration_ms,
+                            "fallback": false,
+                        }),
+                    )
+                    .await;
+                }
+                tenon_laya::LayaOutcome::Disabled => {}
+                other => {
+                    let reason = match &other {
+                        tenon_laya::LayaOutcome::Unavailable(r) => (*r).to_string(),
+                        tenon_laya::LayaOutcome::TimedOut => "timeout".to_string(),
+                        _ => String::new(),
+                    };
+                    self.emit(
+                        EventKind::DeciderCall,
+                        &serde_json::json!({
+                            "feature": "intent",
+                            "kind": "choice",
+                            "fallback": true,
+                            "reason": reason,
+                        }),
+                    )
+                    .await;
+                }
+            }
+        }
+
+        // 任务前快照（§10.3）
+        let mut last_tree = match self.snapshots.snapshot() {
+            Ok(t) => t,
+            Err(e) => return self.snapshot_unavailable(e).await,
+        };
+
+        let mut messages: Vec<ChatMessage> = vec![
+            ChatMessage::system(tenon_core::prompt::build_system_prompt(
+                &self.rules.lock().await.clone(),
+                &self.memory.lock().await.clone(),
+            )),
+            ChatMessage::user(user_text),
+        ];
+
+        let mut changed_files: Vec<String> = Vec::new();
+        let mut last_pre_tree: Option<String> = None;
+        let mut final_answer: Option<String> = None;
+        let mut steps = 0u32;
+        let mut verification = String::new();
+        let mut verification_strength = "none";
+
+        let mut paused_reason: Option<String> = None;
+        let mut error_msg: Option<String> = None;
+
+        // ---- 模型回合循环（SENSING / DECIDING / EXECUTING 在回合内展开）----
+        'rounds: for _round in 0..self.config.max_tool_rounds {
+            self.force_state(State::Deciding).await;
+            self.set_status(SessionStatus::Deciding).await;
+
+            // 只读先验：首轮仅开放 A 级工具（§9.8 预筛语义，只收窄不放宽）；
+            // 模型判断确需改动 → 后续回合恢复全目录
+            let tools = if read_only_prior && _round == 0 {
+                tool_specs_read_only()
+            } else {
+                tool_specs()
+            };
+            let provider = self.provider.read().await.clone();
+            let request = ChatRequest {
+                model: provider.default_model(),
+                messages: messages.clone(),
+                tools,
+                max_tokens: 4096,
+                temperature: 0.2,
+            };
+            let resp = match provider.chat(&request).await {
+                Ok(r) => r,
+                Err(e) => {
+                    // 侧向出口：模型失败 → ERROR（重试语义由 daemon 的 model_fallback 承接）
+                    self.force_state(State::Error).await;
+                    self.set_status(SessionStatus::Error).await;
+                    self.emit(
+                        EventKind::Error,
+                        &serde_json::json!({"error": e.to_string()}),
+                    )
+                    .await;
+                    error_msg = Some(format!("模型调用失败: {e}"));
+                    break 'rounds;
+                }
+            };
+            self.record_usage(resp.usage).await;
+            steps += 1;
+
+            // 决策意图卡
+            self.emit(
+                EventKind::Decision,
+                &serde_json::json!({"intent": resp.content, "tool_calls": resp.tool_calls.len()}),
+            )
+            .await;
+
+            if resp.tool_calls.is_empty() && changed_files.is_empty() {
+                // ---- 纯回答（无需改动）：ANSWERING → SUMMARIZING → DONE ----
+                self.force_state(State::Summarizing).await;
+                self.set_status(SessionStatus::Done).await;
+                self.force_state(State::Done).await;
+                return TaskOutcome::Done(EvidenceCard {
+                    answer: resp.content,
+                    changed_files: vec![],
+                    verification: String::new(),
+                    verification_strength: "none".into(),
+                    steps,
+                    rolled_back: false,
+                });
+            }
+            if resp.tool_calls.is_empty() {
+                // 有改动后的收尾回答：跳出循环进入验证（回答入证据卡）
+                messages.push(ChatMessage::assistant(resp.content.clone()));
+                final_answer = Some(resp.content.clone());
+                break 'rounds;
+            }
+
+            // ---- EXECUTING ----
+            self.force_state(State::Executing).await;
+            self.set_status(SessionStatus::Executing).await;
+
+            let mut assistant = ChatMessage::assistant(resp.content.clone());
+            assistant.tool_calls = resp.tool_calls.clone();
+            let mut tool_messages: Vec<ChatMessage> = Vec::new();
+            let mut denied_any = false;
+
+            for call in &resp.tool_calls {
+                // Esc / 熔断暂停检查点
+                if let Some(cmd) = self.drain_control().await {
+                    match cmd {
+                        ControlCommand::Pause | ControlCommand::Stop => {
+                            self.force_state(State::Paused).await;
+                            self.set_status(SessionStatus::Paused).await;
+                            paused_reason = Some("用户暂停".into());
+                            break 'rounds;
+                        }
+                        ControlCommand::Resume | ControlCommand::SetReadonly(_) => {}
+                    }
+                }
+
+                let tool = Tool::from_name(&call.name);
+                let level = tool.and_then(|t| t.level()).unwrap_or(Level::C);
+
+                // 「本会话记住」的审批动作直通（§7.3）
+                let session_ok =
+                    level == Level::C && self.session_approved.lock().await.contains(&call.name);
+                let decision = if session_ok {
+                    Decision::Auto
+                } else if self.tool_ctx.readonly && level != Level::A {
+                    Decision::Denied("readonly")
+                } else {
+                    self.config.policy.decide(Action { level })
+                };
+
+                match decision {
+                    Decision::Denied(reason) => {
+                        self.emit(
+                            EventKind::Error,
+                            &serde_json::json!({"denied": call.name, "reason": reason}),
+                        )
+                        .await;
+                        tool_messages.push(ChatMessage::tool_result(
+                            call.id.clone(),
+                            format!("拒绝（{reason}）：会话为只读，无法执行 {}", call.name),
+                        ));
+                        continue;
+                    }
+                    Decision::NeedsApproval => {
+                        self.force_state(State::AwaitingApproval).await;
+                        self.set_status(SessionStatus::AwaitingApproval).await;
+                        match self
+                            .request_approval(&call.name, level, &call.arguments)
+                            .await
+                        {
+                            ApprovalFlow::Approved(host) => {
+                                if let Some(h) = host {
+                                    self.tool_ctx.allow_host(&h);
+                                }
+                                self.force_state(State::Executing).await;
+                                self.set_status(SessionStatus::Executing).await;
+                            }
+                            ApprovalFlow::Denied => {
+                                denied_any = true;
+                                tool_messages.push(ChatMessage::tool_result(
+                                    call.id.clone(),
+                                    "用户拒绝了该操作。请调整方案（改案最多重试 2 次）。",
+                                ));
+                                continue;
+                            }
+                            ApprovalFlow::Timeout => {
+                                paused_reason = Some("审批超时".into());
+                                self.set_status(SessionStatus::Paused).await;
+                                break 'rounds;
+                            }
+                        }
+                    }
+                    Decision::Auto => {}
+                }
+
+                // ---- 首改缓冲（§9.3：首个 B 级前，Esc 可断）----
+                if level == Level::B && !self.first_edit_done.load(Ordering::SeqCst) {
+                    self.emit(
+                        EventKind::Decision,
+                        &serde_json::json!({"first_edit": true, "tool": call.name}),
+                    )
+                    .await;
+                    if self
+                        .wait_first_edit_buffer(self.config.first_edit_buffer_ms)
+                        .await
+                    {
+                        self.force_state(State::Paused).await;
+                        self.set_status(SessionStatus::Paused).await;
+                        paused_reason = Some("首改缓冲被打断（Esc）".into());
+                        break 'rounds;
+                    }
+                    self.first_edit_done.store(true, Ordering::SeqCst);
+                }
+
+                // ---- B 级写前：熔断预检（文件预算，写前拦截）+ 快照（§10.3）----
+                let mut pre_tree: Option<String> = None;
+                if level == Level::B {
+                    let prospective_new = call.name == "apply_patch"
+                        && !self
+                            .config
+                            .project_root
+                            .join(
+                                call.arguments
+                                    .get("file")
+                                    .and_then(|f| f.as_str())
+                                    .unwrap_or(""),
+                            )
+                            .exists();
+                    {
+                        let touched = self.touched_files.lock().await;
+                        let circuit = self.circuit.lock().await;
+                        let prospective = touched.len() as u32
+                            + u32::from(
+                                prospective_new
+                                    && !touched.contains(
+                                        &call
+                                            .arguments
+                                            .get("file")
+                                            .and_then(|f| f.as_str())
+                                            .unwrap_or("")
+                                            .to_string(),
+                                    ),
+                            );
+                        if prospective > circuit.limits().max_files {
+                            drop(circuit);
+                            drop(touched);
+                            self.emit(
+                                EventKind::Error,
+                                &serde_json::json!({"circuit_tripped": "max_files"}),
+                            )
+                            .await;
+                            self.force_state(State::Paused).await;
+                            self.set_status(SessionStatus::Paused).await;
+                            paused_reason = Some("熔断器触发（max_files）——写前拦截".into());
+                            break 'rounds;
+                        }
+                    }
+                    match self.snapshots.snapshot() {
+                        Ok(t) => {
+                            let anticipated: Vec<String> = call
+                                .arguments
+                                .get("file")
+                                .and_then(|f| f.as_str())
+                                .map(|f| vec![f.to_string()])
+                                .unwrap_or_default();
+                            // 「先快照后写入，同事务」（§10.3）：checkpoint 行在写盘前
+                            // 落库——EXECUTING 中崩溃也能取到最近恢复点
+                            let mut st = self.store.lock().await;
+                            let _ = st.insert_checkpoint(&self.session_id, &t, &anticipated, None);
+                            drop(st);
+                            pre_tree = Some(t.clone());
+                            last_pre_tree = Some(t);
+                        }
+                        Err(e) => return self.snapshot_unavailable(e).await,
+                    }
+                }
+
+                // ---- 执行 ----
+                let output = execute_tool(&self.tool_ctx, &call.name, &call.arguments);
+                let output_json = serde_json::to_value(&output).unwrap_or_default();
+                let ev = self
+                    .emit(
+                        if output.changed_files.is_empty() {
+                            EventKind::CommandRun
+                        } else {
+                            EventKind::PatchApplied
+                        },
+                        &serde_json::json!({"tool": call.name, "output": output_json}),
+                    )
+                    .await;
+                // 人机共编冲突（§8.6）：三栏预览事件（你的改动 / 代理改动 / base）
+                if let Some(view) = &output.dirty_conflict {
+                    self.emit(
+                        EventKind::Diagnostics,
+                        &serde_json::json!({
+                            "dirty_conflict": true,
+                            "path": view.path,
+                            "base": view.base,
+                            "ours": view.ours,
+                            "theirs": view.theirs,
+                        }),
+                    )
+                    .await;
+                }
+
+                // AgentTrace 明细（§14.2）
+                if let Some(ev) = &ev {
+                    let mut st = self.store.lock().await;
+                    let _ = st.insert_tool_call(
+                        &self.session_id,
+                        ev.id,
+                        &call.name,
+                        match level {
+                            Level::A => StoreLevel::A,
+                            Level::B => StoreLevel::B,
+                            Level::C => StoreLevel::C,
+                            Level::D => StoreLevel::D,
+                        },
+                        0,
+                    );
+                }
+
+                // 熔断记账 + 事件级快照链（B 级）
+                if level == Level::B {
+                    {
+                        let mut touched = self.touched_files.lock().await;
+                        for f in &output.changed_files {
+                            touched.insert(f.clone());
+                            if !changed_files.contains(f) {
+                                changed_files.push(f.clone());
+                            }
+                        }
+                    }
+                    let lines = self.count_project_lines(&output.changed_files);
+                    let status = self.circuit.lock().await.record_patch(PatchFootprint {
+                        total_files_touched: self.touched_files.lock().await.len() as u32,
+                        lines_changed: lines,
+                    });
+                    let post_tree = self
+                        .snapshots
+                        .snapshot()
+                        .unwrap_or_else(|_| last_tree.clone());
+                    // 每步 checkpoint（该步快照点 + 改动文件集，§10.3）
+                    if let Some(ev) = &ev {
+                        let mut st = self.store.lock().await;
+                        let _ = st.insert_checkpoint(
+                            &self.session_id,
+                            &pre_tree.unwrap_or_else(|| post_tree.clone()),
+                            &output.changed_files,
+                            Some(ev.seq),
+                        );
+                    }
+                    last_tree = post_tree;
+
+                    if let CircuitStatus::Tripped(reason) = status {
+                        self.emit(
+                            EventKind::Error,
+                            &serde_json::json!({"circuit_tripped": reason.label()}),
+                        )
+                        .await;
+                        self.force_state(State::Paused).await;
+                        self.set_status(SessionStatus::Paused).await;
+                        paused_reason = Some(format!("熔断器触发（{}）", reason.label()));
+                        break 'rounds;
+                    }
+                }
+
+                tool_messages.push(ChatMessage::tool_result(
+                    call.id.clone(),
+                    if output.ok {
+                        output.content.clone()
+                    } else {
+                        format!("失败: {}", output.content)
+                    },
+                ));
+            }
+
+            // 审批拒绝 → 改案（AWAITING_APPROVAL --Deny--> DECIDING，≤2 次）
+            if denied_any {
+                let prev = self.deny_count.fetch_add(1, Ordering::SeqCst);
+                if prev + 1 > 2 {
+                    self.force_state(State::Paused).await;
+                    self.set_status(SessionStatus::Paused).await;
+                    paused_reason = Some("审批多次被拒，暂停待新指令".into());
+                    break 'rounds;
+                }
+            } else if !tool_messages.is_empty() {
+                self.deny_count.store(0, Ordering::SeqCst);
+            }
+
+            if !tool_messages.is_empty() {
+                messages.push(assistant);
+                messages.extend(tool_messages);
+            }
+        }
+
+        // ---- 验证（VERIFYING，双通道 / 降级通道，§9.4）----
+        if paused_reason.is_none() && error_msg.is_none() && !changed_files.is_empty() {
+            self.force_state(State::Verifying).await;
+            self.set_status(SessionStatus::Verifying).await;
+            let (ok, detail, low) = self.verify(changed_files.clone()).await;
+            verification = format!("{}（{}）", if ok { "通过" } else { "失败" }, detail);
+            verification_strength = if low { "low" } else { "high" };
+            self.emit(
+                EventKind::Diagnostics,
+                &serde_json::json!({"verification": detail, "ok": ok, "low": low}),
+            )
+            .await;
+        }
+
+        // ---- 收尾 ----
+        if let Some(reason) = paused_reason {
+            return TaskOutcome::Paused {
+                state: self.current_state().await.to_string(),
+                reason,
+            };
+        }
+        if let Some(err) = error_msg {
+            // 失败语义：回滚到最近写前快照（§10.3 崩溃恢复：EXECUTING 中失败不保留半成品）
+            if let Some(pre) = last_pre_tree {
+                let _ = self.snapshots.restore(&pre);
+                self.emit(EventKind::Rollback, &serde_json::json!({"to": pre}))
+                    .await;
+            }
+            self.force_state(State::RolledBack).await;
+            self.set_status(SessionStatus::Error).await;
+            return TaskOutcome::Error(err);
+        }
+
+        // 终点 checkpoint（时间轴 + 整体恢复点）
+        {
+            let mut st = self.store.lock().await;
+            let _ = st.insert_checkpoint(&self.session_id, &last_tree, &changed_files, None);
+        }
+        self.emit(
+            EventKind::Checkpoint,
+            &serde_json::json!({"tree": last_tree, "files": changed_files}),
+        )
+        .await;
+        self.force_state(State::Summarizing).await;
+        self.force_state(State::Done).await;
+        self.set_status(SessionStatus::Done).await;
+        TaskOutcome::Done(EvidenceCard {
+            answer: final_answer.unwrap_or_default(),
+            changed_files,
+            verification,
+            verification_strength: verification_strength.into(),
+            steps,
+            rolled_back: false,
+        })
+    }
+
+    fn count_project_lines(&self, files: &[String]) -> u64 {
+        let mut n = 0u64;
+        for f in files {
+            if let Ok(content) = std::fs::read_to_string(self.config.project_root.join(f)) {
+                n += content.lines().count() as u64;
+            }
+        }
+        n
+    }
+
+    async fn snapshot_unavailable(&self, e: tenon_snapshot::SnapshotError) -> TaskOutcome {
+        // 「自动 = 必可回滚」不变式（§10.3）：快照不可用 → 暂停（交互档）
+        self.emit(
+            EventKind::Error,
+            &serde_json::json!({"snapshot_unavailable": e.to_string()}),
+        )
+        .await;
+        self.force_state(State::Paused).await;
+        self.set_status(SessionStatus::Paused).await;
+        TaskOutcome::Paused {
+            state: "paused".into(),
+            reason: format!("快照库不可用，自动档降级为交互档：{e}"),
+        }
+    }
+
+    async fn drain_control(&self) -> Option<ControlCommand> {
+        let mut rx = self.control_rx.lock().await;
+        rx.try_recv().ok()
+    }
+
+    /// 首改缓冲等待：true = 被 Esc 打断。
+    async fn wait_first_edit_buffer(&self, ms: u64) -> bool {
+        let fut = self.interrupt.notified();
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_millis(ms)) => false,
+            _ = fut => true,
+        }
+    }
+
+    /// 审批流程：创建审批行 + 事件，等待决策或超时。
+    async fn request_approval(
+        &self,
+        tool: &str,
+        level: Level,
+        args: &serde_json::Value,
+    ) -> ApprovalFlow {
+        let summary = summarize_action(tool, args);
+        let approval = {
+            let mut st = self.store.lock().await;
+            st.insert_approval(
+                &self.session_id,
+                &summary,
+                match level {
+                    Level::A => StoreLevel::A,
+                    Level::B => StoreLevel::B,
+                    Level::C => StoreLevel::C,
+                    Level::D => StoreLevel::D,
+                },
+            )
+            .expect("insert approval")
+        };
+        self.emit(
+            EventKind::ApprovalRequest,
+            &serde_json::json!({
+                "approval_id": approval.id,
+                "tool": tool,
+                "level": level.as_str(),
+                "summary": summary,
+                "args": args,
+            }),
+        )
+        .await;
+
+        let (tx, mut rx) = mpsc::channel(1);
+        self.approvals.lock().await.insert(approval.id.clone(), tx);
+        match tokio::time::timeout(
+            Duration::from_secs(self.config.approval_timeout_s),
+            rx.recv(),
+        )
+        .await
+        {
+            Ok(Some(ApprovalDecision::Once)) => {
+                let host = extract_host(tool, args);
+                ApprovalFlow::Approved(host)
+            }
+            Ok(Some(ApprovalDecision::Session)) => ApprovalFlow::Approved(extract_host(tool, args)),
+            Ok(Some(ApprovalDecision::Deny)) | Ok(None) => ApprovalFlow::Denied,
+            Err(_) => {
+                self.emit(
+                    EventKind::ApprovalTimeout,
+                    &serde_json::json!({"approval_id": approval.id}),
+                )
+                .await;
+                self.approvals.lock().await.remove(&approval.id);
+                ApprovalFlow::Timeout
+            }
+        }
+    }
+
+    /// 验证（§9.4）：测试双通道；无测试清单走降级通道（低强度）。
+    async fn verify(&self, changed: Vec<String>) -> (bool, String, bool) {
+        let root = self.config.project_root.clone();
+        if let Some(cmd) = crate::executor::detect_test_command(&root) {
+            let spec = tenon_sandbox::SandboxSpec::Offline {
+                project_root: root.clone(),
+            };
+            return match tenon_sandbox::exec_command(
+                &cmd,
+                &root,
+                Duration::from_secs(self.config.command_timeout_s),
+                &spec,
+            ) {
+                Ok(out) => (
+                    out.success(),
+                    format!(
+                        "$ {cmd}\nexit={}\n{}{}",
+                        out.exit_code.unwrap_or(-1),
+                        out.stdout.trim(),
+                        out.stderr.trim()
+                    ),
+                    false,
+                ),
+                Err(e) => (false, format!("测试执行失败: {e}"), false),
+            };
+        }
+        // 降级通道：读回 diff 自检
+        let mut detail = String::from("无测试清单——降级验证：读回改动自检");
+        let mut ok = true;
+        for f in &changed {
+            match std::fs::read_to_string(root.join(f)) {
+                Ok(content) => {
+                    if content.is_empty() {
+                        ok = false;
+                        detail.push_str(&format!("\n{f}: 改后为空"));
+                    }
+                }
+                Err(e) => {
+                    ok = false;
+                    detail.push_str(&format!("\n{f}: 读回失败 {e}"));
+                }
+            }
+        }
+        detail.push_str("\n验证强度：低（建议补测试）");
+        (ok, detail, true)
+    }
+
+    /// 回滚到最近 checkpoint（§15 control rollback）：
+    /// 目标 = 最近一个事件级快照（该事件写入前的状态）；unrevert 快照先行（§10.3）。
+    pub async fn rollback_last(&self) -> Result<Vec<String>, AgentError> {
+        let cps = {
+            let mut st = self.store.lock().await;
+            st.checkpoints(&self.session_id)
+                .map_err(|e| AgentError::Store(e.to_string()))?
+        };
+        // 事件级快照（event_seq 非空）记录的是该步写前状态
+        let target = cps
+            .iter()
+            .rev()
+            .find(|c| c.event_seq.is_some() && !c.files.is_empty())
+            .cloned();
+        let Some(target) = target else {
+            return Ok(vec![]);
+        };
+        let safety = self
+            .snapshots
+            .snapshot()
+            .map_err(|e| AgentError::Snapshot(e.to_string()))?;
+        *self.pre_rollback_tree.lock().await = Some(safety);
+        self.snapshots
+            .restore(&target.tree)
+            .map_err(|e| AgentError::Snapshot(e.to_string()))?;
+        self.emit(
+            EventKind::Rollback,
+            &serde_json::json!({"tree": target.tree, "files": target.files}),
+        )
+        .await;
+        self.force_state(State::RolledBack).await;
+        self.set_status(SessionStatus::RolledBack).await;
+        Ok(target.files.clone())
+    }
+
+    /// 撤销回滚（§10.3 unrevert）：恢复到最近回滚前状态（回滚双向语义）。
+    pub async fn unrevert(&self) -> Result<(), AgentError> {
+        let target = self
+            .pre_rollback_tree
+            .lock()
+            .await
+            .clone()
+            .ok_or_else(|| AgentError::Snapshot("无回滚记录".into()))?;
+        self.snapshots
+            .restore(&target)
+            .map_err(|e| AgentError::Snapshot(e.to_string()))?;
+        self.emit(EventKind::Unrollback, &serde_json::json!({"tree": target}))
+            .await;
+        Ok(())
+    }
+
+    pub fn config(&self) -> &AgentConfig {
+        &self.config
+    }
+}
+
+enum ApprovalFlow {
+    Approved(Option<String>),
+    Denied,
+    Timeout,
+}
+
+fn extract_host(tool: &str, args: &serde_json::Value) -> Option<String> {
+    if tool != "http_fetch" {
+        return None;
+    }
+    args.get("url")
+        .and_then(|u| u.as_str())
+        .and_then(|u| u.split("//").nth(1))
+        .and_then(|rest| rest.split('/').next())
+        .map(String::from)
+}
+
+fn summarize_action(tool: &str, args: &serde_json::Value) -> String {
+    match tool {
+        "http_fetch" => format!(
+            "出网抓取 {}",
+            args.get("url").and_then(|u| u.as_str()).unwrap_or("?")
+        ),
+        "git_commit" => format!(
+            "git 提交：{}",
+            args.get("message").and_then(|m| m.as_str()).unwrap_or("")
+        ),
+        "git_push" => "git 推送到远端".to_string(),
+        "create_pr" => "创建 Pull Request".to_string(),
+        "install_deps" => format!(
+            "安装依赖：{}",
+            args.get("command").and_then(|c| c.as_str()).unwrap_or("?")
+        ),
+        "apply_patch" => format!(
+            "写入 {}",
+            args.get("file").and_then(|f| f.as_str()).unwrap_or("?")
+        ),
+        other => format!("执行 {other}"),
+    }
+}

@@ -1,0 +1,23 @@
+//! Tenon 内核纯逻辑（设计方案第 9 / 10 / 12 章）：
+//! 动作分级与权限（policy）、密钥脱敏（redact）、任务熔断（circuit）、
+//! 自主决策状态机（machine）、内置工具目录（tools）、上下文工程（context）、
+//! 提示组装（prompt）。
+
+pub mod circuit;
+pub mod context;
+pub mod machine;
+pub mod merge;
+pub mod policy;
+pub mod prompt;
+pub mod redact;
+pub mod tools;
+
+pub use circuit::{CircuitBreaker, CircuitLimits, CircuitStatus, PatchFootprint, TripReason};
+pub use context::{
+    estimate_tokens, ContextSlice, IndexEntry, ProjectRules, SessionMemory, TokenBudget, WorkingSet,
+};
+pub use machine::{Event, Limits as StateLimits, State, StateMachine, TransitionError};
+pub use merge::{merge_three_way, MergeConflict};
+pub use policy::{Action, Decision, Level, Mode, Policy};
+pub use redact::{contains_secret, redact, redact_tracked, scan, SecretKind};
+pub use tools::{count_changed_lines, unified_diff, PatchOp, Tool};

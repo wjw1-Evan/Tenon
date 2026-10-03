@@ -1,0 +1,40 @@
+[package]
+name = "tenon-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "tenon-daemon"
+path = "src/main.rs"
+
+[dependencies]
+tenon-config = { workspace = true }
+tenon-core = { workspace = true }
+tenon-store = { workspace = true }
+tenon-snapshot = { workspace = true }
+tenon-sandbox = { workspace = true }
+tenon-fs = { workspace = true }
+tenon-models = { workspace = true }
+tenon-agent = { workspace = true }
+tenon-lsp = { workspace = true }
+tenon-laya = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+rand = { workspace = true }
+futures = { workspace = true }
+reqwest = { workspace = true }
+anyhow = { workspace = true }
+toml = { workspace = true }
+libc = "0.2"
+ed25519-dalek = "2"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio-tungstenite = "0.28"

@@ -1,0 +1,57 @@
+# Tenon CI 骨架（ADR-13：三平台矩阵 = fmt / clippy / cargo test / vitest /
+# Playwright / 性能基准）。M0 交付 fmt + clippy + cargo test + vitest；
+# Windows 作业随 WSL2 沙箱（M1）启用；Playwright E2E 与性能基准随 M1 挂载。
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+        # windows-latest 随 WSL2 沙箱（M1，§12.3）启用
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: test
+        run: cargo test --workspace
+        env:
+          # GLM 联调测试在无 config.local.toml 时自动跳过
+          TENON_SKIP_LIVE: "1"
+
+  ui:
+    name: UI (vitest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+      - name: install
+        run: pnpm --filter tenon-ui install --frozen-lockfile
+      - name: test
+        run: pnpm --filter tenon-ui test
+      - name: build
+        run: pnpm --filter tenon-ui build
