@@ -13,7 +13,7 @@
 
 - **[完整设计方案 v1.13](docs/design.md)** —— 产品定位、需求规格、架构、安全模型、编辑器与语言包、Agent 内核、数据与 API、路线图、测试策略
 
-> v0.1 / v0.3 两轮评审（共 41 项）与 v1.0 复审（21 项）的结论已全部并入设计方案；Roslyn LS spike 受阻（无 VSIX），按附录 C Q2 回退规则 C# 包后移（v1.13 记录）。
+> v0.1 / v0.3 两轮评审（共 41 项）与 v1.0 复审（21 项）的结论已全部并入设计方案；Roslyn LS spike 受阻（无 VSIX），按附录 C Q2 回退规则 C# 包后移（v1.13 记录）。**平台优先级：macOS 为主**（2026-10-04 产品决策）——Windows 走 WSL2 路径以脚本 + 预编译 musl 二进制交付，端到端验证待 Windows 环境。
 >
 > 项目原名 OpenCodex，2026-10 定名 **Tenon**（沿革 OpenCodex → Weft → Tenon，官网 tenonide.dev）。
 
