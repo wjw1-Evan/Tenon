@@ -65,8 +65,16 @@ fn spawn_daemon() -> Result<(Child, Handshake), String> {
             env!("CARGO_MANIFEST_DIR")
         ),
         // 开发态回退
-        concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/release/tenon-daemon").to_string(),
-        concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/debug/tenon-daemon").to_string(),
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../target/release/tenon-daemon"
+        )
+        .to_string(),
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../target/debug/tenon-daemon"
+        )
+        .to_string(),
     ];
     let bin = candidates
         .iter()
@@ -86,9 +94,7 @@ fn spawn_daemon() -> Result<(Child, Handshake), String> {
         cmd.env("TENON_UI_DIST", &ui);
     }
 
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("daemon 启动失败: {e}"))?;
+    let mut child = cmd.spawn().map_err(|e| format!("daemon 启动失败: {e}"))?;
     let stdout = child.stdout.take().expect("piped stdout");
     let reader = std::io::BufReader::new(stdout);
     for line in reader.lines() {
@@ -171,9 +177,11 @@ fn main() {
         .on_window_event(|window, event| {
             // 壳退出时清理 daemon 子进程
             if let tauri::WindowEvent::Destroyed = event {
-                let state = window.state::<AppState>();
-                let child = state._child.lock().unwrap().take();
-                drop(state);
+                let child = {
+                    let state = window.state::<AppState>();
+                    let child = state._child.lock().unwrap().take();
+                    child
+                };
                 if let Some(mut child) = child {
                     let _ = child.kill();
                 }

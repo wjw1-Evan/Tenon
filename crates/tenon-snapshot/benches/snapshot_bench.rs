@@ -11,7 +11,9 @@ fn seed_tree(root: &std::path::Path, files: usize, lines: usize) {
     for i in 0..files {
         let body = format!(
             "fn f{i}() {{\n{}\n}}\n",
-            (0..lines).map(|j| format!("    let _x{j} = {j};")).collect::<String>()
+            (0..lines)
+                .map(|j| format!("    let _x{j} = {j};"))
+                .collect::<String>()
         );
         fs::write(root.join("src").join(format!("m{i}.rs")), body).unwrap();
     }
@@ -23,13 +25,7 @@ fn bench_snapshot(files: usize, lines: usize, rounds: usize) -> (u128, u128) {
     let project = dir.path().join("proj");
     fs::create_dir_all(&project).unwrap();
     let project_id = format!("bench-{files}x{lines}");
-    let store = SnapshotStore::open(
-        &dir.path().join("snaps"),
-        &project_id,
-        &project,
-        2,
-    )
-    .unwrap();
+    let store = SnapshotStore::open(&dir.path().join("snaps"), &project_id, &project, 2).unwrap();
     seed_tree(&project, files, lines);
     // 预热一次（建对象库）；留存首个快照供 restore 计量
     let first_tree = store.snapshot().unwrap();

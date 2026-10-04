@@ -1,6 +1,7 @@
 //! 工具执行器（设计方案 §9.2 内置工具协议）：分级执行 + 写守卫 + 快照联动。
 
 use serde::{Deserialize, Serialize};
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -63,6 +64,8 @@ impl ToolOutput {
 /// 工具执行上下文。
 pub struct ToolContext {
     pub root: PathBuf,
+    /// 命令 cwd；始终位于 `root` 沙箱内（§6.4）。
+    pub command_cwd: PathBuf,
     pub files: Arc<FileService>,
     pub ops: Arc<FileOps>,
     pub guard: WriteGuard,
@@ -91,7 +94,8 @@ impl ToolContext {
             files: Arc::new(FileService::new(&root)),
             ops: Arc::new(FileOps::new(&root)),
             guard: WriteGuard::new(&root),
-            root,
+            root: root.clone(),
+            command_cwd: root.clone(),
             command_timeout,
             allowed_hosts: std::sync::Mutex::new(Vec::new()),
             readonly: false,
@@ -331,7 +335,7 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
             let spec = tenon_sandbox::SandboxSpec::Offline {
                 project_root: ctx.root.clone(),
             };
-            match exec_command(&cmd, &ctx.root, ctx.command_timeout, &spec) {
+            match exec_command(&cmd, &ctx.command_cwd, ctx.command_timeout, &spec) {
                 Ok(out) => ToolOutput {
                     ok: out.success(),
                     content: format!(
@@ -394,35 +398,34 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
             if !allowed.iter().any(|h| h == host) {
                 return ToolOutput::err(format!("域名 {host} 未获审批（C 级恒审批，§12.2）"));
             }
-            // 复用会话的 tokio 运行时（executor 在 async 上下文中被调用）
+            // 复用会话的 tokio 运行时（executor 在 async 上下文中被调用）；
+            // 经独立线程 block_on——worker 线程上直接 block_on 必 panic
+            //（"Cannot start a runtime from within a runtime"）
             let url = url.to_string();
-            let fetched = match tokio::runtime::Handle::try_current() {
-                Ok(handle) => handle.block_on(async {
-                    match reqwest::Client::new()
-                        .get(&url)
-                        .timeout(Duration::from_secs(30))
-                        .send()
-                        .await
-                    {
-                        Ok(resp) => {
-                            let status = resp.status().as_u16();
-                            let body = resp.text().await.unwrap_or_default();
-                            Ok((status, body))
-                        }
-                        Err(e) => Err(e.to_string()),
+            let fetched = run_async(async move {
+                match reqwest::Client::new()
+                    .get(&url)
+                    .timeout(Duration::from_secs(30))
+                    .send()
+                    .await
+                {
+                    Ok(resp) => {
+                        let status = resp.status().as_u16();
+                        let body = resp.text().await.unwrap_or_default();
+                        Ok((status, body))
                     }
-                }),
-                Err(e) => Err(format!("无 tokio 运行时: {e}")),
-            };
+                    Err(e) => Err(e.to_string()),
+                }
+            });
             match fetched {
-                Ok((status, body)) => {
+                Ok(Ok((status, body))) => {
                     let truncated: String = body.chars().take(20_000).collect();
                     ToolOutput::ok(format!(
                         "HTTP {status}\n{}",
                         tenon_core::redact::redact(&truncated)
                     ))
                 }
-                Err(e) => ToolOutput::err(format!("抓取失败: {e}")),
+                Ok(Err(e)) | Err(e) => ToolOutput::err(format!("抓取失败: {e}")),
             }
         }
 
@@ -438,16 +441,14 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
             let conn = conn.clone();
             let tool_owned = tool.to_string();
             let args_owned = args.clone();
-            let call = tokio::runtime::Handle::try_current().map(|h| {
-                h.block_on(async move {
-                    tokio::task::spawn_blocking(move || {
-                        conn.call_tool(&tool_owned, args_owned)
-                            .map_err(|e| e.to_string())
-                    })
-                    .await
-                    .map_err(|e| format!("join: {e}"))
-                    .and_then(|r| r)
+            let call = run_async(async move {
+                tokio::task::spawn_blocking(move || {
+                    conn.call_tool(&tool_owned, args_owned)
+                        .map_err(|e| e.to_string())
                 })
+                .await
+                .map_err(|e| format!("join: {e}"))
+                .and_then(|r| r)
             });
             let result: std::result::Result<String, String> = match call {
                 Ok(Ok(text)) => Ok(text),
@@ -516,6 +517,25 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
 
         other => ToolOutput::err(format!("未知工具: {other}")),
     }
+}
+
+/// sync 工具执行体内的 async 桥：经独立 OS 线程 block_on。
+///
+/// executor 是同步函数但运行在 async 上下文——直接 `Handle::block_on`
+/// 会在 runtime worker 线程上 panic（"Cannot start a runtime from within
+/// a runtime"），`block_in_place` 又要求多线程 runtime 形态；独立线程在
+/// 两种形态下均安全。
+fn run_async<F>(fut: F) -> Result<F::Output, String>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let handle = tokio::runtime::Handle::try_current().map_err(|e| e.to_string())?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(handle.block_on(fut));
+    });
+    rx.recv().map_err(|e| e.to_string())
 }
 
 /// 检测测试命令（项目感知，§8.4 规则的最小子集）。
@@ -671,6 +691,23 @@ mod tests {
         assert!(out.content.contains("cargo test"));
         // 输出包含 exit 码（真实执行了 cargo test）
         assert!(out.content.contains("exit="));
+    }
+
+    #[test]
+    fn commands_execute_in_project_scoped_working_dir() {
+        let (d, mut c) = ctx();
+        let nested = d.path().join("packages/app");
+        std::fs::create_dir_all(&nested).unwrap();
+        c.command_cwd = nested.clone();
+        let out = execute_tool(&c, "run_tests", &serde_json::json!({"command": "pwd"}));
+        assert!(out.ok, "{out:?}");
+        assert_eq!(
+            out.content,
+            format!(
+                "$ pwd\nexit=0\n{}\n",
+                nested.canonicalize().unwrap().display()
+            )
+        );
     }
 
     #[test]

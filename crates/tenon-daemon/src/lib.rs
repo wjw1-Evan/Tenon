@@ -66,9 +66,7 @@ pub async fn serve(options: DaemonOptions) -> std::io::Result<DaemonHandle> {
     };
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     let port = listener.local_addr()?.port();
-    state
-        .port
-        .store(port, std::sync::atomic::Ordering::Relaxed);
+    state.port.store(port, std::sync::atomic::Ordering::Relaxed);
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let shutdown_handle = shutdown_tx.subscribe();
 

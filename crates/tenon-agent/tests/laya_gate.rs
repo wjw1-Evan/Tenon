@@ -290,8 +290,14 @@ async fn risk_assist_rule_hit_records_decider_call_and_hint() {
         .find(|e| e.kind == EventKind2::CommandRun)
         .expect("应有命令执行事件");
     let content = tool_ev.payload["output"]["content"].as_str().unwrap();
-    assert!(content.contains("建议人工确认"), "提示须入工具输出：{content}");
-    assert!(!content.contains("跑一下测试"), "decider 事件不得含任务原文");
+    assert!(
+        content.contains("建议人工确认"),
+        "提示须入工具输出：{content}"
+    );
+    assert!(
+        !content.contains("跑一下测试"),
+        "decider 事件不得含任务原文"
+    );
 }
 
 use tenon_store::EventKind as EventKind2;

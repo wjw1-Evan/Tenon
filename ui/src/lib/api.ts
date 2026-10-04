@@ -6,6 +6,39 @@ export interface Handshake {
   token: string;
 }
 
+export interface ProjectSummary {
+  id: string;
+  path: string;
+  display_name: string;
+  trusted: boolean;
+  open: boolean;
+  sessions: Array<{ id: string; status: string; model: string; updated_at: string }>;
+  active_sessions: number;
+}
+
+export interface OpenedProject {
+  id: string;
+  path: string;
+  display_name: string;
+  trusted: boolean;
+  open: boolean;
+}
+
+export interface PortfolioTask {
+  id: string;
+  title: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  children: Array<{
+    id: string;
+    project_id: string;
+    session_id: string;
+    text: string;
+    status: string;
+  }>;
+}
+
 export class TenonApi {
   private base: string;
   private token: string;
@@ -46,6 +79,26 @@ export class TenonApi {
     });
   }
 
+  listProjects() {
+    return this.request<{ projects: ProjectSummary[]; config: Record<string, unknown> }>(
+      "/projects"
+    );
+  }
+
+  openProject(path: string) {
+    return this.request<OpenedProject>("/projects/open", {
+      method: "POST",
+      json: { path },
+    });
+  }
+
+  closeProject(projectId: string, mode: "drain" | "pause" | "force" = "drain") {
+    return this.request<{ closed: boolean }>(`/projects/${projectId}/close`, {
+      method: "POST",
+      json: { mode },
+    });
+  }
+
   setTrust(projectId: string, trusted: boolean) {
     return this.request<{ ok: boolean }>("/project/trust", {
       method: "PUT",
@@ -53,10 +106,10 @@ export class TenonApi {
     });
   }
 
-  createSession(projectPath: string, mode: "interactive" | "auto", provider = "") {
+  createSession(projectId: string, mode: "interactive" | "auto", provider = "") {
     return this.request<{ session_id: string; project_id: string }>("/session", {
       method: "POST",
-      json: { project_path: projectPath, mode, provider },
+      json: { project_id: projectId, mode, provider },
     });
   }
 
@@ -131,23 +184,43 @@ export class TenonApi {
     }>(`/project/${projectId}/tree`);
   }
 
-  readFile(path: string) {
+  readFile(projectId: string, path: string) {
     return this.request<{ path: string; content: string }>(
-      `/file?path=${encodeURIComponent(path)}`
+      `/project/${projectId}/file?path=${encodeURIComponent(path)}`
     );
   }
 
-  writeFile(path: string, content: string) {
-    return this.request<{ ok: boolean; created: boolean }>("/file", {
+  writeFile(projectId: string, path: string, content: string) {
+    return this.request<{ ok: boolean; created: boolean }>(`/project/${projectId}/file`, {
       method: "PUT",
       json: { path, content },
     });
   }
 
-  search(q: string) {
+  search(projectId: string, q: string) {
     return this.request<{
       hits: Array<{ path: string; line: number; column: number; text: string }>;
-    }>(`/search?q=${encodeURIComponent(q)}`);
+    }>(`/project/${projectId}/search?q=${encodeURIComponent(q)}`);
+  }
+
+  portfolioTasks() {
+    return this.request<{ tasks: PortfolioTask[] }>("/portfolio-tasks");
+  }
+
+  createPortfolioTask(
+    title: string,
+    children: Array<{
+      project_id: string;
+      text: string;
+      mode?: "interactive" | "auto";
+      working_dir?: string;
+    }>,
+    provider = ""
+  ) {
+    return this.request<PortfolioTask>("/portfolio-tasks", {
+      method: "POST",
+      json: { title, children, provider },
+    });
   }
 
   /** AI Evals 报告列表（§18.3 / M3 可视化）。 */

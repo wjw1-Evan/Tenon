@@ -28,7 +28,14 @@ fn rule_risk_single(seg: &str) -> Option<f32> {
         return None;
     }
     // 毁灭性文件系统 / 磁盘操作
-    for pat in ["rm -rf /", "rm -fr /", "mkfs", "dd if=", "> /dev/sd", "> /dev/disk"] {
+    for pat in [
+        "rm -rf /",
+        "rm -fr /",
+        "mkfs",
+        "dd if=",
+        "> /dev/sd",
+        "> /dev/disk",
+    ] {
         if c.contains(pat) {
             return Some(0.98);
         }

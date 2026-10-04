@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 
 use crate::pairing::PairingStore;
 use tenon_agent::session::{AgentSession, ProjectWriteLock, TaskOutcome};
@@ -54,14 +54,35 @@ pub struct SessionEntry {
     pub last_seq: i64,
 }
 
+/// 项目组合任务子项：每条子会话仍强绑定一个项目（§6.4）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PortfolioChild {
+    pub id: String,
+    pub project_id: String,
+    pub session_id: String,
+    pub text: String,
+    pub status: String,
+}
+
+/// 跨项目编排容器：只聚合状态 / 审批 / 成本，不共享代码上下文。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PortfolioTask {
+    pub id: String,
+    pub title: String,
+    pub status: String,
+    pub children: Vec<PortfolioChild>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 pub struct DaemonState {
     pub store: Arc<Mutex<Store>>,
     /// 共享 LSP 管理器（§8.5：一项目 × 语言一个宿主，编辑器与代理共用）。
     pub lsp: Arc<LspManager>,
     /// Laya 本地决策模型运行时（§9.8；未下载即整体回退）。
     pub laya: Arc<LayaRuntime>,
-    /// 脏缓冲注册表（§8.6 人机共编：UI 推未保存缓冲，代理写盘前三方合并）。
-    pub dirty_buffers: Arc<tenon_fs::DirtyBufferRegistry>,
+    /// 脏缓冲注册表按项目隔离（§6.4 / §8.6）；key = project_id，value 是该项目相对路径表。
+    pub dirty_buffers: Mutex<HashMap<String, Arc<tenon_fs::DirtyBufferRegistry>>>,
     /// 局域网配对（M3 §12.6：显式开启 + 一次性码 + 可吊销令牌；默认关闭）。
     pub lan_pairing: Arc<PairingStore>,
     /// daemon 监听端口（/pairing 自发现回传给 UI）。
@@ -78,6 +99,12 @@ pub struct DaemonState {
     pub default_project: Option<String>,
     /// 项目级写锁表（§9.7：同一项目同时刻仅一个会话 EXECUTING）。
     pub project_locks: Mutex<HashMap<String, ProjectWriteLock>>,
+    /// 已打开 ProjectRuntime 的 project_id → canonical root（§6.4）。
+    pub open_projects: Mutex<HashMap<String, std::path::PathBuf>>,
+    /// 跨项目并发调度（§6.4 / §9.7）。
+    pub execution_permits: Arc<Semaphore>,
+    /// v1.15 项目组合任务聚合（父任务内存态；子会话/事件持久于 SQLite）。
+    pub portfolio_tasks: Mutex<HashMap<String, PortfolioTask>>,
     pub snapshots_root: std::path::PathBuf,
 }
 
@@ -119,13 +146,16 @@ impl DaemonState {
             .snapshots_root
             .unwrap_or_else(|| Config::data_dir().join("snapshots"));
         let laya_dir = Config::data_dir().join("models/laya");
+        let execution_permits = Arc::new(Semaphore::new(
+            options.config.projects.max_concurrent_agent_tasks.max(1),
+        ));
         Self {
             store: Arc::new(Mutex::new(store)),
             lsp: Arc::new(LspManager::new()),
             lan_pairing: Arc::new(PairingStore::new()),
             port: std::sync::atomic::AtomicU16::new(0),
             team_policy: load_team_policy(),
-            dirty_buffers: Arc::new(tenon_fs::DirtyBufferRegistry::new()),
+            dirty_buffers: Mutex::new(HashMap::new()),
             laya: Arc::new(LayaRuntime::open(
                 &laya_dir,
                 &options.config.models.laya.features,
@@ -138,8 +168,41 @@ impl DaemonState {
             default_provider,
             default_project: options.project,
             project_locks: Mutex::new(HashMap::new()),
+            open_projects: Mutex::new(HashMap::new()),
+            execution_permits,
+            portfolio_tasks: Mutex::new(HashMap::new()),
             snapshots_root,
         }
+    }
+
+    /// 查询项目 canonical root：打开表优先，随后持久登记。
+    pub async fn project_root(&self, project_id: &str) -> Option<std::path::PathBuf> {
+        {
+            let open = self.open_projects.lock().await;
+            if let Some(root) = open.get(project_id) {
+                return Some(root.clone());
+            }
+        }
+        let mut store = self.store.lock().await;
+        store
+            .project(project_id)
+            .ok()
+            .flatten()
+            .map(|p| std::path::PathBuf::from(p.path))
+    }
+
+    /// 只返回已打开 ProjectRuntime；关闭后的项目不得继续文件 / LSP 操作。
+    pub async fn open_project_root(&self, project_id: &str) -> Option<std::path::PathBuf> {
+        self.open_projects.lock().await.get(project_id).cloned()
+    }
+
+    /// 项目私有脏缓冲表；避免不同项目同名相对路径互相污染。
+    pub async fn dirty_buffers_for(&self, project_id: &str) -> Arc<tenon_fs::DirtyBufferRegistry> {
+        let mut tables = self.dirty_buffers.lock().await;
+        tables
+            .entry(project_id.to_string())
+            .or_insert_with(|| Arc::new(tenon_fs::DirtyBufferRegistry::new()))
+            .clone()
     }
 
     pub async fn write_lock_for(&self, project_id: &str) -> ProjectWriteLock {

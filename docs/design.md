@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v1.14** |
-| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13/v1.14） |
+| 版本 | **v1.15** |
+| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.15） |
 | 状态 | 定稿（v1.10 决策闭环），M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 | 历史评审 | v0.1 / v0.3 两轮共 41 项、v1.0 复审 21 项问题的结论已全部并入本方案（过程文档已清理） |
@@ -46,6 +46,7 @@
 | **v1.12** | **实施期增补（M2/M3 落地同步）：附录 E 增加 `[evals] interval_hours / provider`（M3 流水线定时触发，0=关）；团队策略文件 `~/.tenon/policy.toml`（只收窄：force_interactive / denied_tools / max_cost_usd）；局域网访问落地为 `--lan` 显式绑定 + PairingStore（一次性 6 位码 + 可吊销设备令牌，默认关闭）；签名密钥 `--generate-keys` 生成于 `~/.tenon/keys/signing.*` 并接入 laya/registry 公钥解析链（env → 文件 → 开发模式）；M0 验收基线 8/10=80% 固化于 evals/baseline-glm.json** |
 | **v1.13** | **实施期增补（M2 落地同步）：Open VSX 语言子集实验兼容落地（`contributes.languages` 转内部语言包，服务器命令取实验扩展点 `contributes.tenonLsp`——VS Code API 未标准化清单式 LSP 声明，子集显式要求该字段）；`/lsp` 语义操作增加 codeaction；附录 C Q2 Roslyn LS spike 记录为**受阻**（开发环境无 VSIX 二进制；共享 LSP 宿主/沙箱/守卫基础设施已就绪），**按既定回退规则将 C# 语言包后移**，不降级换 csharp-ls** |
 | **v1.14** | **实施期澄清（桌面端 E2E 驱动）：§7.3「本会话记住」语义定稿——按动作类别记忆，适用于 B / C 级（B 级有沙箱 + 快照可回滚兜底），D 级永不记忆逐次审批；`/pairing` 自发现响应补 `project` 字段（daemon 启动注册的项目根），浏览器访问 UI 据此打开同一项目而非 daemon cwd** |
+| **v1.15** | **多项目运行模型定稿（参考 codex app-server 的 thread/cwd/projectId/runtimeWorkspaceRoots 持久化语义）：项目是 daemon 内一等运行对象；会话强绑定 `project_id` 与规范化项目根；文件 / 搜索 / LSP API 全部按项目作用域；同一 daemon 可并发打开多个项目与项目内多会话，跨项目只做全局任务中心聚合、不做隐式上下文共享；§3.1 / §4.1 / §6-7 / §9-10 / §12 / §14-15 / §17-18 / 附录 A-B/E 同步** |
 
 ---
 
@@ -139,6 +140,7 @@ Codex CLI 已开源且核心为 Rust 实现（codex-rs 工作区，另有遗留 
 | 命令风险判定 | `execpolicy`：规则引擎评估 shell 命令风险 | §9.2 工具分级 | M1 后评估作为命令级分类补充（不替代 C/D 审批） |
 | 模型接入 | `model-provider` / `model-provider-info` / `ollama` / `config-schema`：config.toml `model_providers`（base_url + wire_api）接任意 OpenAI 兼容端点 | §11 通用 provider | config schema 直接参考 |
 | 会话持久化 | `rollout` / `rollout-trace` / `thread-store`：JSONL 会话回放 + resume | §10.3 / §14.2 事件溯源 | 回放与 resume 语义参考 |
+| 多项目 / 多线程 | app-server 的 thread 可携带 `cwd`、`projectId` 与 runtime workspace roots，thread 摘要持久化 cwd / git 信息；同一服务端可管理多个活跃 thread | §6.4 项目运行时 + §9.7 并发 | 会话强绑定项目根与项目 ID；沙箱权限、事件与成本按项目归因 |
 | IDE / 桌面集成 | `app-server` / `app-server-protocol` / `app-server-transport` / `app-server-daemon`：JSON-RPC 进程协议服务 IDE 与桌面壳 | §6.2 daemon + §15 本地 API | 同类问题域，协议形态与演进方式参考 |
 | worktree | `worktree` crate | §9.5 子代理独立 worktree | 实现参考 |
 | Windows 沙箱 | `windows-sandbox-rs` / `windows-sandbox-service`（原生方案，非 WSL2） | §5 非目标 7、§17 后续 | 后续评估「Windows 原生沙箱」时优先研读 |
@@ -180,7 +182,8 @@ Codex CLI 已开源且核心为 Rust 实现（codex-rs 工作区，另有遗留 
 
 | 模块 | 需求 | 级别 |
 |---|---|---|
-| 项目与文件 | 打开/登记项目、拖拽仓库、文件树 CRUD、git 状态装饰 | P0 |
+| 项目与文件 | 多项目登记/打开/关闭、项目状态与任务汇总、拖拽仓库、文件树 CRUD、git 状态装饰 | P0 |
+| 项目与文件 | 会话与所有文件 API 强绑定 `project_id`；同 daemon 并发打开多项目；项目运行时引用计数与空闲回收 | P0 |
 | 项目与文件 | fuzzy 查找、ripgrep 全局搜索替换（预览 diff）、多标签分栏 | P0 |
 | 项目与文件 | LSP 感知重命名/移动；大文件只读分块 | P1 |
 | 编辑器 | Monaco 内核、tree-sitter 高亮、主题、虚拟化 | P0 |
@@ -189,6 +192,7 @@ Codex CLI 已开源且核心为 Rust 实现（codex-rs 工作区，另有遗留 
 | 语言包 | TS/JS、Python 内置；C#、Rust、Go 一键安装；运行时检测引导 | P1 |
 | 语言包 | Open VSX 语言类扩展子集实验兼容 | P1 |
 | 代理 | 自主决策循环（感知→判断→执行→验证→证据） | P0 |
+| 代理 | 项目级写锁与跨项目并发调度；全局项目任务中心 / 成本 / 审批汇总 | P0/P1 |
 | 代理 | 行内指令、诊断发起任务、只读开关、跟随模式 | P1 |
 | 代理 | 并行子代理（不相交调度、预算上限） | P1 |
 | 安全 | 动作四级分级、沙箱三态、审批卡片、密钥拦截 | P0(P1 完整沙箱) |
@@ -255,12 +259,12 @@ Codex CLI 已开源且核心为 Rust 实现（codex-rs 工作区，另有遗留 
 | 进程 | 说明 | 生命周期 |
 |---|---|---|
 | 桌面壳（Tauri） | WebView 承载 UI，本身无业务逻辑 | 用户启停 |
-| 核心服务（Rust daemon） | 唯一业务内核；持有会话、LSP、沙箱、插件 | 壳 sidecar 管理，崩溃自动拉起 |
+| 核心服务（Rust daemon） | 唯一业务内核；持有项目运行时、会话、LSP、沙箱、插件 | 壳 sidecar 管理，崩溃自动拉起 |
 | 沙箱执行进程 | 测试 / 构建 / 依赖安装，一次性 | 任务期 |
-| 语言服务器进程 | 每项目每语言一个，沙箱化 | 项目会话期 |
+| 语言服务器进程 | 每项目每语言一个，沙箱化 | 项目运行时活跃期 |
 | 插件进程 | 外部进程插件 / MCP | 按需 |
 
-**生命周期规则**：动态端口 + 握手；单实例锁（多窗口共享）；退出时清理全部子进程；UI 崩溃不丢会话（状态全在 daemon + 磁盘）。
+**生命周期规则**：动态端口 + 握手；单实例锁（多窗口 / 多项目共享，daemon 不是“单项目进程”）；`--project` 仅作为首屏种子，运行中可通过项目 API 追加打开；退出时清理全部子进程；UI 崩溃不丢会话（状态全在 daemon + 磁盘）。
 
 ### 6.3 插件三档运行时
 
@@ -272,6 +276,33 @@ Codex CLI 已开源且核心为 Rust 实现（codex-rs 工作区，另有遗留 
 
 分发：安装包内置核心与默认语言包；其余按需安装并检测运行时。
 
+### 6.4 多项目运行模型（v1.15）
+
+**核心不变式**：一个 daemon 服务多个项目；一条会话在创建时绑定唯一 `project_id` 与规范化项目根；一个请求只操作其显式声明的项目。不存在“最近打开的第一个项目”这类隐式默认根。
+
+```text
+ProjectRegistry（登记 / 打开 / 关闭 / 最近项）
+  └─ ProjectRuntime: project_id → 规范化 root + 状态 + 引用计数
+        ├─ FileService / Watcher / Git 状态
+        ├─ LSP runtime（每项目 × 语言）
+        ├─ SnapshotStore / ProjectWriteLock
+        ├─ SandboxProfile（root × trust × worktree）
+        └─ ContextIndex（L4，按 project_id 隔离）
+GlobalScheduler（全局并发 / 成本 / 审批 / 通知 / 项目任务中心）
+```
+
+| 概念 | 规则 |
+|---|---|
+| Project | 稳定 `project_id`、显示名、canonical path、TOFU 信任、语言包与项目设置；登记不等于打开 |
+| ProjectRuntime | 打开时懒加载；文件 / LSP / watcher / 快照等资源挂在其下，引用计数归零后空闲回收（默认 10 分钟，可配置） |
+| Session / Thread | 永远归属一个项目；可携带项目内 worktree 或子目录 cwd，但任何 B 级写边界仍由项目根与显式 worktree 白名单决定 |
+| Active surface | UI 的每个编辑窗格都有明确 active `project_id`；项目切换、命令面板与发送任务都会携带该 ID |
+| 跨项目任务 | v1 不允许一条代理会话直接读写多个项目。多项目编排只能由“项目组合任务”创建多条项目内子会话，父任务仅聚合状态 / 成本 / 审批，不透传代码上下文 |
+
+**打开与去重**：打开前 canonicalize + macOS/Linux 大小写校验 + Windows 前缀归一；同一 canonical path 复用既有 `project_id` 与 runtime。嵌套根默认拒绝（例如同时打开 monorepo 与其子包），除非用户确认并创建显式 linked workspace；linked workspace 也只是注册关系，不放宽任何沙箱路径。
+
+**资源与调度**：默认最多 12 个打开项目、跨项目最多 2 个代理同时 EXECUTING、每个项目仍遵守 §9.7 项目级写锁。watcher / LSP / L4 索引按活跃度懒启动；低内存或用户“暂停项目”时关闭非活跃语言服务器与 watcher，但保留会话与 checkpoint 可恢复。
+
 ---
 
 ## 7. 桌面端 UI 设计
@@ -280,7 +311,8 @@ Codex CLI 已开源且核心为 Rust 实现（codex-rs 工作区，另有遗留 
 
 | 界面 | 时机 | 要点 |
 |---|---|---|
-| 启动 / 项目选择 | 冷启动 | 最近项目、拖拽打开、新建；首次打开弹 TOFU 信任卡 |
+| 启动 / 项目选择 | 冷启动 | 最近项目、拖拽打开、新建；可打开多个；首次打开弹 TOFU 信任卡 |
+| **项目中心 / 项目切换器** | 常驻 | 已登记项目、打开状态、活跃任务 / 审批 / 成本 / 未保存缓冲；打开 / 关闭 / 暂停 / 移除登记（不删盘） |
 | **主工作区** | 常驻 | 四区布局（见 7.2） |
 | 审批卡片 | C/D 级动作 | 级别、动作详情、目标域名 / diff 预览、允许一次 / 本会话 / 拒绝 |
 | Checkpoint 时间轴 | 侧栏 | 事件流 + 快照点，任意回滚 / 撤销回滚（unrevert） |
@@ -293,18 +325,20 @@ Codex CLI 已开源且核心为 Rust 实现（codex-rs 工作区，另有遗留 
 
 ```text
 ┌──────────┬──────────────────────────┬────────────────┐
-│ 文件树    │ 编辑器（多标签 / 分栏）     │ 代理会话 / 证据  │
-│ 搜索      │ 行内 AI / 诊断 / diff      │ 审批 / 改动流    │
+│ 项目切换器│ 文件树（active project）    │ 编辑器（多标签 / 分栏）│
+│ 任务中心  │ 搜索 / 行内 AI / diff       │ 代理会话 / 审批  │
 ├──────────┴──────────────────────────┴────────────────┤
 │        诊断面板 · 测试证据 · checkpoint 时间轴           │
 └───────────────────────────────────────────────────────┘
 ```
 
-三区均可全屏 / 折叠 / 左右互换；布局按项目记忆。
+三区均可全屏 / 折叠 / 左右互换；布局按项目记忆。项目切换器可以是顶栏下拉，也可以把另一个项目停靠为独立分栏 / 窗口；每个窗格维护独立 active `project_id`。底部任务中心显示所有打开项目的代理状态，卡片必须带项目名 / 根目录短名，避免多项目通知混淆。
 
 ### 7.3 关键交互流
 
-**打开项目**：拖入仓库 → 识别语言 → 建议 language pack（缺则装）→ TOFU 卡（默认交互档 / 信任后自动档）→ 建 L4 索引（后台）→ 就绪。
+**打开项目**：拖入仓库 → 识别语言 → 建议 language pack（缺则装）→ TOFU 卡（默认交互档 / 信任后自动档）→ 建 L4 索引（后台）→ 就绪。已有项目打开时复用原 `project_id`；再次打开 canonical path 只激活 runtime，不新建登记。
+
+**切换 / 并行操作项目**：项目中心选择目标项目或把项目停靠为新窗格；所有文件 / 搜索 / LSP / 会话请求携带目标 `project_id`。用户可同时保留 A 的执行中任务并在 B 继续；审批队列全局可见且按项目分组。关闭项目前检查活跃任务和脏缓冲，可选择「等任务完成 / 暂停任务 / 强制关闭并保留会话恢复」。
 
 **下达任务**：会话输入 / 行内指令 / 诊断「AI 修复」→ 进入自主循环（§9.1）→ 首改 2s 缓冲（Esc 可断）→ 改动实时高亮 → 证据卡片 → D 级审批提交。
 
@@ -338,11 +372,12 @@ Codex CLI 已开源且核心为 Rust 实现（codex-rs 工作区，另有遗留 
 
 ### 8.1 文件管理
 
-- 文件树：新建 / 重命名 / 移动 / 删除 / 拖拽 + git 状态装饰；
+- 文件树：以 active `project_id` 为唯一根；新建 / 重命名 / 移动 / 删除 / 拖拽 + git 状态装饰；
 - **LSP 感知重命名 / 移动**：跨文件引用更新（B 级 + checkpoint 可回滚）；
 - fuzzy 查找（Cmd+P 文件 / 符号 / 行号）；
 全局搜索替换：核心服务 ripgrep 驱动，正则 / 过滤 / 多文件替换前 diff 预览；
 - 多标签、分栏、布局记忆；源代码视图（分支、改动列表、行内 blame）；
+- 同一窗口可停靠多个项目分栏；标签携带项目徽标，跨项目拖拽默认禁止；
 - 大文件（默认 >10MB）自动只读分块加载。
 
 ### 8.2 编辑器内核
@@ -398,6 +433,8 @@ Codex CLI 已开源且核心为 Rust 实现（codex-rs 工作区，另有遗留 
 | LSP 索引就绪后首个补全（中型 TS 项目） | < 400ms（冷启动到首个可用补全 < 3s） |
 | 补全列表呈现 | < 80ms（P50） |
 | 万行 diff 渲染 | 60fps |
+| 项目切换到可交互 | < 150ms（P50；runtime 已打开；冷项目按打开流程另计） |
+| 多项目稳态 | 12 个打开项目下 UI 主线程不因任一项目 watcher / LSP 输出阻塞；非活跃项目 LSP 可被资源控制器回收 |
 
 ---
 
@@ -495,12 +532,15 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 | OpenAI 兼容端点 | ✅（遵循规范） | ✅ | 通用 provider，覆盖大量供应商 |
 | Ollama 本地 | ✅（带适配层） | ✅ | 零 Key 起步；弱模型自动建议降档 |
 
-### 9.7 同项目多会话并发
+### 9.7 项目内多会话与跨项目并发
 
 - **项目级写锁**：同一项目同一时刻仅允许一个会话处于 EXECUTING；其余会话限 SENSING / 只读，或排队等待写锁；写锁只约束代理会话——用户编辑不受限，与代理的并发冲突仍走 §8.6 脏缓冲协调；
 - **checkpoint 隔离**：快照库按项目 × worktree 隔离（`~/.tenon/snapshots/`，§10.3），不写用户仓库；快照点归属会话（checkpoints 表，§14.2），会话只能回滚自己链上的快照；
 - **回滚冲突检测**：回滚前检查工作区是否含其他会话或用户的未合并改动，有则先出三方合并预览（§8.6），不静默覆盖；
 - 共享 LSP 实例跨会话多路复用，请求按会话路由与限流（§8.5）。
+- **跨项目并发**：全局调度器允许不同项目各自运行一个 EXECUTING 会话，但跨项目并发上限默认 2（可配置）；全局 token / 成本 / CPU / 磁盘预算先到即排队。每个事件、审批、diff 和成本都带 `project_id`，项目中心据此聚合；
+- **跨项目隔离**：A 项目会话的 L1/L2/L4 上下文、审批记忆、沙箱 profile、脏缓冲与 LSP 请求不得进入 B 项目。若用户下达跨项目诉求，系统转「项目组合任务」创建多条项目内子会话；父任务只能携带用户目标与子任务摘要，不能把 A 的文件内容注入 B；
+- **项目生命周期协调**：关闭项目时先拒绝新任务，再暂停 / 排空 EXECUTING 会话并 flush 事件与 checkpoint；崩溃恢复按 `project_id` 分组，恢复一个项目不锁住其他项目。
 
 ### 9.8 本地决策模型（Laya）加速层
 
@@ -537,7 +577,7 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 | L1 工作集 | 任务相关文件 / 符号切片 | 任务内 | 共享 LSP + tree-sitter + 混合检索；Laya 相关性预筛（§9.8） |
 | L2 会话记忆 | 目标 / 步骤 / 决策 | 会话内自动压缩 | 主循环维护 |
 | L3 项目规则 | AGENTS.md、规范、构建命令 | 仓库内 | 文件 + 用户配置 |
-| L4 持久索引 | 符号 / 向量 / 倒排 | 本地跨会话 | **自建索引层**（向量部分用 sqlite-vec，与 `db.sqlite` 同库，Q3；增量更新）；LSP 仅任务期查询活实例——各语言服务器缓存为私有格式，不可跨会话复用 |
+| L4 持久索引 | 符号 / 向量 / 倒排 | 本地跨会话，**按 `project_id` 隔离** | **自建索引层**（向量部分用 sqlite-vec，与 `db.sqlite` 同库，Q3；增量更新）；LSP 仅任务期查询活实例——各语言服务器缓存为私有格式，不可跨会话复用，也不跨项目复用 |
 
 ### 10.2 Token 预算与压缩
 
@@ -563,6 +603,7 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 ### 10.4 Monorepo 与大仓库
 
 L4 按包隔离、语言服务器按需启动；子代理限定单包；检索默认「当前包 + 显式依赖包」。
+同时打开 monorepo 与子包属于 §6.4 显式 linked workspace：索引仍按各自 project_id 分片，跨项目检索必须显式选择目标项目；不自动合并两份索引。
 
 ---
 
@@ -607,7 +648,7 @@ L4 按包隔离、语言服务器按需启动；子代理限定单包；检索�
 | Linux | namespace + seccomp | 同上 |
 | Windows | daemon 于 WSL2，复用 Linux 沙箱；检测不到 WSL2 时以**降级档**运行：仅 A 级 + 写守卫、强制交互档（自动档不可用）、安装向导引导 WSL2 | 完整沙箱经 WSL2 |
 
-网络三态：**断网**（测试/构建/纯分析）→ **镜像代理**（仅预授权 registry：npm/pypi/nuget/crates…，B 级）→ **域名代理**（审批后白名单，C 级）。系统只读、写限项目内、每项目语言服务器隔离。
+网络三态：**断网**（测试/构建/纯分析）→ **镜像代理**（仅预授权 registry：npm/pypi/nuget/crates…，B 级）→ **域名代理**（审批后白名单，C 级）。系统只读、写限当前会话绑定的项目根 / 显式 worktree、每项目语言服务器隔离。多项目打开时为每个执行进程分别物化 project roots；跨项目路径既不是可写根，也不进入 A 级检索范围。
 
 ### 12.4 密钥处理
 
@@ -619,11 +660,11 @@ L4 按包隔离、语言服务器按需启动；子代理限定单包；检索�
 
 ### 12.6 本地服务与浏览器访问
 
-默认仅绑 127.0.0.1 + 随机端口；HTTP 用 `X-Tenon-Token` 头；**WS 用一次性 ticket**（浏览器 WebSocket 无法自定义请求头：`POST /ws-ticket` 换 60 秒一次性票据，连接首帧携带，重放即拒）；校验 Origin/Host；**CORS 仅白名单放行应用自身 origin（Tauri WebView 源）与已配对设备，其余拒绝**；局域网显式开启 + 一次性配对 + 可吊销；浏览器只能切换已登记项目（无法取本地路径）；公网访问非目标。
+默认仅绑 127.0.0.1 + 随机端口；HTTP 用 `X-Tenon-Token` 头；**WS 用一次性 ticket**（浏览器 WebSocket 无法自定义请求头：`POST /ws-ticket` 换 60 秒一次性票据，连接首帧携带，重放即拒）；校验 Origin/Host；**CORS 仅白名单放行应用自身 origin（Tauri WebView 源）与已配对设备，其余拒绝**；局域网显式开启 + 一次性配对 + 可吊销；浏览器只能切换已登记项目，只能提交项目 ID（无法传本地路径，也无法新增本地项目登记）；TOFU 卡仍在桌面优先完成，未信任项目强制交互档；公网访问非目标。
 
 ### 12.7 仓库信任（TOFU）
 
-首次打开默认交互档 → 用户「信任此仓库」后按全局默认档 → 本地可吊销；信任只放宽 B 级档位，永不放宽 C/D。
+每个项目独立 TOFU；首次打开默认交互档 → 用户「信任此仓库」后按全局默认档 → 本地可吊销；信任只放宽 B 级档位，永不放宽 C/D。项目 A 的信任、会话审批记忆与项目设置不适用于项目 B；项目组合任务的每条子会话仍按各自项目 TOFU 判定。
 
 ---
 
@@ -688,14 +729,14 @@ registry 检索 → 展示**权限 diff**（相对已装版本新增权限高亮
 
 | 表 | 关键字段 | 说明 |
 |---|---|---|
-| projects | id, path, trusted, language_packs | 项目登记与 TOFU |
-| sessions | id, project_id, model, status | 会话 |
-| events | id, session_id, seq, type, payload | 事件溯源（只追加） |
+| projects | id, canonical_path, display_name, trusted, status, language_packs, settings_json, last_opened_at | 项目登记 / TOFU / 打开状态与项目覆盖配置；canonical path 唯一 |
+| sessions | id, project_id, cwd, worktree_id, model, status | 会话；project_id 不可空，cwd 必须位于项目根或登记 worktree |
+| events | id, session_id, project_id, seq, type, payload | 事件溯源（只追加；project_id 供跨项目任务中心聚合） |
 | checkpoints | id, session_id, tree, files, created_at | 快照点（tree oid + 该步改动文件集，§10.3） |
 | tool_calls | id, event_id, tool, level, cost_tokens | AgentTrace 明细 |
-| approvals | id, session_id, action, level, decision | 审计 |
+| approvals | id, session_id, project_id, action, level, decision | 审计；通知 UI 按项目分组 |
 | plugins | id, version, permissions, signature | 安装记录 |
-| model_usage | id, session_id, provider, tokens, cost | 成本归因 |
+| model_usage | id, session_id, project_id, provider, tokens, cost | 成本归因；支持会话 / 项目 / 日级 |
 | eval_runs | id, target, metrics_json, verdict | Evals 报告 |
 | l4_chunks | id, project_id, path, symbol, embedding | L4 检索切片与向量（sqlite-vec 虚表，Q3） |
 
@@ -709,16 +750,28 @@ registry 检索 → 展示**权限 diff**（相对已装版本新增权限高亮
 
 认证：HTTP 用 `X-Tenon-Token` 请求头（随机，随端口握手下发）；**WS 先经 `POST /ws-ticket` 换 60 秒一次性 ticket**（浏览器 WebSocket 无法自定义请求头），连接首帧携带、重放即拒；来源校验与 CORS 白名单见 §12.6。
 
+**项目运行时（多项目控制面）**：
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| GET | `/projects` | 已登记项目 + 打开状态、活跃会话、审批 / 任务 / 成本 / 脏缓冲摘要 |
+| POST | `/projects/open` | 按 path 打开或复用登记项目（canonicalize、去重、TOFU、懒启动 runtime） |
+| POST | `/projects/:id/close` | 关闭 / 暂停项目；body 指定 drain / pause / force |
+| DELETE | `/projects/:id` | 移除登记（不删除磁盘内容） |
+| PUT | `/project/:id/trust` | 设置该项目 TOFU 信任 |
+
 **会话与审批**：
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
-| POST | `/session` | 创建会话（项目、模型、档位） |
+| POST | `/session` | 创建会话；body 必须带 `project_id`，可附项目内 `cwd` / `worktree_id`（模型、档位） |
 | POST | `/session/:id/message` | 发送任务 |
 | POST | `/session/:id/control` | pause / resume / stop / rollback（快捷回滚至最近 checkpoint，等价于 `/checkpoint/:id/rollback` 最近点，勿单独实现第二条路径）/ unrollback（撤销最近回滚，§10.3）/ set_readonly |
 | POST | `/approval/:id` | 审批决策（once / session / deny） |
 | GET | `/session/:id/trace` | Trace 查询 |
 | GET | `/session/:id/checkpoints` | checkpoint 时间轴（事件列表 + 快照点） |
+| GET | `/portfolio-tasks` | 跨项目组合任务聚合视图（父任务状态、子会话、审批、成本） |
+| POST | `/portfolio-tasks` | 创建项目组合任务；body 是 project-scoped child task 数组，父任务不共享代码上下文 |
 | POST | `/checkpoint/:id/rollback` | 回滚（body 指定粒度：checkpoint 级 restore / 按事件 revert，§7.3） |
 
 **编辑器与文件**（UI 为纯 React，文件与语言智能全在此 API 之上）：
@@ -726,24 +779,25 @@ registry 检索 → 展示**权限 diff**（相对已装版本新增权限高亮
 | 方法 | 路径 | 用途 |
 |---|---|---|
 | GET | `/project/:id/tree` | 文件树（增量，含 git 状态装饰） |
-| GET / PUT | `/file` | 读取 / 保存文件（保存走脏缓冲协调，§8.6） |
-| POST | `/file/ops` | 新建 / 重命名 / 移动 / 删除 |
-| GET | `/search` | ripgrep 搜索（流式；多文件替换前返回 diff 预览） |
-| POST | `/lsp` | LSP 代理（补全 / hover / 定义 / 引用 / 重命名 / code action / 格式化） |
+| GET / PUT | `/project/:id/file` | 读取 / 保存项目内相对路径文件（保存走脏缓冲协调，§8.6） |
+| POST | `/project/:id/file/ops` | 新建 / 重命名 / 移动 / 删除 |
+| GET | `/project/:id/search` | ripgrep 搜索（流式；多文件替换前返回 diff 预览） |
+| POST | `/project/:id/lsp` | LSP 代理（补全 / hover / 定义 / 引用 / 重命名 / code action / 格式化） |
 
 **管理**：
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
-| GET / PUT | `/project` | 项目登记与信任（TOFU）设置 |
 | GET / POST | `/plugins` | 插件与语言包管理（权限 diff、安装、升级） |
 | GET / PUT | `/settings` | 全局 / 项目设置（模型、权限、隐私、更新） |
 | GET | `/models` | 模型清单与 Laya 状态（版本 / 已下载 / 加载 / 设备，§9.8） |
-| GET | `/costs` | 成本归因（任务 / 会话 / 日级） |
+| GET | `/costs` | 成本归因（任务 / 会话 / 项目 / 日级） |
 | POST | `/ws-ticket` | 一次性 WS 票据 |
 | WS | `/ws` | 事件流（状态机、诊断、diff 流、审批；ticket 鉴权） |
 
-WS 事件与会话 events 表一一对应；断线重连按 seq 续传。
+WS 事件与会话 events 表一一对应，均含 `project_id`；断线重连按 seq 续传。UI 可订阅全部项目或过滤一个项目。
+
+**项目作用域规则**：旧 `/file`、`/search`、`/lsp` 这类隐式首项目接口在 v1.15 后禁止新增调用；迁移期保留时必须带 `project_id`，daemon 找不到显式项目即返回 `409 PROJECT_REQUIRED`。相对路径由 server 端 join + canonicalize + 前缀校验，任何越界路径返回 `400 PATH_ESCAPE`。
 
 ---
 
@@ -776,8 +830,8 @@ WS 事件与会话 events 表一一对应；断线重连按 seq 续传。
 | 阶段 | 周期 | 交付 | 验收 |
 |---|---|---|---|
 | **M0 原型** | 6 周 | Tauri 壳 + daemon（sidecar/端口/单实例）、文件树 + Monaco 基础编辑器（tree-sitter / 标签 / fuzzy / rg 搜索）、单模型会话、A/B 写守卫、diff 面板、签名与 updater 密钥、UI i18n 骨架（英文源 / 中文资源，Q5）、monorepo 脚手架 + CI 骨架（ADR-13）；决策 spike：Roslyn LS 沙箱化、sqlite-vec 冒烟（附录 C） | 10 内部任务一次通过 ≥50%；冷启动 <1.5s |
-| **M1 可用 IDE** | +16 周（分两段：前段 LSP 宿主 + 语言包 + 智能全家桶；后段共生 / 共编 / 完整沙箱 / 恢复） | LSP 宿主 + TS/Py/C#/Rust/Go 语言包 + 智能全家桶、Agent↔编辑器共生、共编冲突合并、完整沙箱三态、shadow git 快照库（回滚 / 撤销回滚，§10.3）、TOFU、崩溃恢复、模型路由（4 家 + 兼容端点）、本地决策模型 Laya（自动下载 + §9.8 集成点 1-4） | 基准通过 ≥60%；索引就绪后首补全 <400ms（冷启动首补全 <3s）；崩溃 100% 恢复（回滚语义，§10.3）；安全违规 0；Laya 集成后基准 token 不升、通过率不降（§18.3） |
-| **M2 生态** | +12 周 | 官方 registry、MCP、Open VSX 语言子集实验、并行子代理、AgentTrace UI、本机浏览器访问（127.0.0.1，含来源校验；局域网后移 M3，Q4）、Laya 批量 triage 与 token 节省归因（§9.8 集成点 5） | 3 并行子代理成功 ≥70%；App 内编辑动作占比 ≥70% |
+| **M1 可用 IDE** | +16 周（分两段：前段 LSP 宿主 + 语言包 + 智能全家桶；后段共生 / 共编 / 完整沙箱 / 恢复） | LSP 宿主 + TS/Py/C#/Rust/Go 语言包 + 智能全家桶、Agent↔编辑器共生、共编冲突合并、完整沙箱三态、shadow git 快照库（回滚 / 撤销回滚，§10.3）、TOFU、崩溃恢复、模型路由（4 家 + 兼容端点）、本地决策模型 Laya（自动下载 + §9.8 集成点 1-4）；**v1.15 补齐项：ProjectRegistry/Runtime、project_id-scoped API、项目切换器 / 任务中心、跨项目并发与关闭协调** | 基准通过 ≥60%；索引就绪后首补全 <400ms（冷启动首补全 <3s）；崩溃 100% 恢复（回滚语义，§10.3）；安全违规 0；Laya 集成后基准 token 不升、通过率不降（§18.3）；3 项目同时打开且 2 项目并发执行，切换可交互 <150ms、无路径越界 |
+| **M2 生态** | +12 周 | 官方 registry、MCP、Open VSX 语言子集实验、并行子代理、AgentTrace UI、本机浏览器访问（127.0.0.1，含来源校验；局域网后移 M3，Q4）、Laya 批量 triage 与 token 节省归因（§9.8 集成点 5）、项目组合任务 v1 | 3 并行子代理成功 ≥70%；App 内编辑动作占比 ≥70%；组合任务子会话均项目隔离且聚合成本一致 |
 | **M3 团队与打磨** | +12 周 | AI Evals 流水线、团队策略、局域网配对浏览器访问（Q4）、Windows WSL2 安装包、**可选**自动更新通道（默认仍为手动检查）、性能打磨 | Evals 报告自动产出；万行 diff 60fps |
 | 后续 | 数据决策 | Windows 原生沙箱（优先研读 codex `windows-sandbox-rs`，§3.1）、auto 路由转正、终端区 / IDE 开放协议（对齐 Zed ACP，不自造，§3.2） | 不预先承诺 |
 
@@ -789,9 +843,9 @@ WS 事件与会话 events 表一一对应；断线重连按 seq 续传。
 
 | 层 | 工具 | 覆盖 |
 |---|---|---|
-| Rust 单元 / 集成 | cargo test | 权限判定、sandbox profile、checkpoint、LSP 宿主 |
-| 前端 | vitest + Playwright | 组件、四区布局、审批流、键盘全可达 |
-| 端到端 | Playwright（真 daemon） | 打开项目 → 任务 → 审批 → 回滚全链路 |
+| Rust 单元 / 集成 | cargo test | 权限判定、sandbox profile、checkpoint、LSP 宿主、ProjectRegistry/Runtime、跨项目路径隔离 |
+| 前端 | vitest + Playwright | 组件、四区布局、项目切换器 / 任务中心、审批流、键盘全可达 |
+| 端到端 | Playwright（真 daemon） | 打开项目 → 任务 → 审批 → 回滚全链路；A 执行中打开 B 并完成任务；关闭 A 不中断 B |
 
 ### 18.2 安全测试
 
@@ -799,6 +853,7 @@ WS 事件与会话 events 表一一对应；断线重连按 seq 续传。
 - **Prompt 注入语料库**：仓库注释 / AGENTS.md / MCP 输出中的注入样本 → 断言不触发 C/D；
 - **本地服务 fuzz**：畸形 Origin / Host / Token、跨站请求、重放、WS ticket 重放与过期；
 - **LSP 客户端表面测试**：恶意语言服务器下发任意 `executeCommand`、动态注册 capability、超范围 workspace edits、`showDocument` 指向项目外路径——必须全部被拒（§12.1 铁律七）；
+- **多项目隔离套件**：同一 daemon 打开 A/B；A 会话工具请求解析到 B 路径、A 的 LSP / 脏缓冲 / L4 检索 / 审批记忆访问 B、未带 `project_id` 的文件 API、重复 canonical path 与嵌套根必须全部被拒或去重；组合任务父任务 payload 不含子项目代码；
 - 供应链：签名校验、权限 diff 单测。
 
 ### 18.3 Agent Evals（升级门禁）
@@ -873,6 +928,8 @@ WS 事件与会话 events 表一一对应；断线重连按 seq 续传。
 | 降级档 | Windows 无 WSL2 时的受限运行档：仅 A 级 + 写守卫、强制交互档 |
 | 按事件撤销 | 基于事件日志只撤销选定 AI 补丁、保留用户手改的回滚粒度 |
 | 复合 D 卡 | 批量任务的多个 commit 合并为一张 D 级审批卡（逐条列明、一次批准） |
+| ProjectRuntime | daemon 内某个已打开项目的资源组：文件服务、watcher、LSP、快照锁、沙箱边界与 L4 索引（§6.4） |
+| 项目组合任务 | 跨项目的编排容器：只聚合多条 project-scoped 子会话的状态 / 审批 / 成本，不共享代码上下文（§6.4 / §9.7） |
 | Laya | 产品自管本地决策模型：分类 / 打分 / 布尔三原语，CPU ~30ms 级、零 token，承接代理循环结构化判定（§9.8） |
 
 ### 附录 B · 关键决策记录（ADR 摘要）
@@ -893,6 +950,7 @@ WS 事件与会话 events 表一一对应；断线重连按 seq 续传。
 | ADR-12 | 定名 Tenon（榫；v1.10 执行全局替换，官网 tenonide.dev；沿革 OpenCodex → Weft → Tenon） | 规避 OpenAI Codex / opencode 撞名（实证：GitHub 151 个同名仓库、榜首 16.8k star 系 Codex 代理工具；opencodex.dev/.com 已被注册）；榫卯隐喻契合共生 / 可回滚 / 无锁定 | 两次替换成本（已付） |
 | ADR-13 | Monorepo：cargo workspace（daemon / 内核）+ pnpm 前端 workspace；CI = GitHub Actions 三平台矩阵（fmt / clippy / cargo test / vitest / Playwright / 性能基准） | 跨语言联调单仓成本最低；矩阵落实 §18.1 / §18.4 | 根构建脚本维护成本 |
 | ADR-14 | 集成 Laya 本地决策模型（自动下载，§9.8） | 代理循环的延迟与 token 成本主要来自大模型回合；结构化判定下沉本地分类器（~30ms、零 token）收益直接，且全程本地契合隐私口径 | 模型分发与版本管理面；误判风险以「仅排序 / 提示 / 预筛 + 规则兜底 + 整体可回退 + Evals 门」控制 |
+| ADR-15 | 单 daemon 内多 ProjectRuntime，而非每项目一个 daemon / 每会话重传项目根 | 保留统一鉴权、审计、成本、审批与崩溃恢复；项目资源可引用计数回收；多项目并发不扩大攻击面。参考 codex app-server：thread 携带 cwd / projectId / workspace roots，多个 thread 由同一服务端管理 | Runtime 状态机、全局调度与项目作用域 API 需要显式实现；单 daemon 故障影响所有项目，靠 WAL/事件溯源与崩溃恢复兜底 |
 
 ### 附录 C · 已决事项（原 Open Questions，v1.2 全部定稿并前置本期）
 
@@ -928,7 +986,7 @@ WS 事件与会话 events 表一一对应；断线重连按 seq 续传。
 
 覆盖核对：S1×3、S2×2、S3 / S4 / S6 各 1、S5×2；A / B / C / D 四级与只读不变式均被至少一个任务断言。M1 起扩至 30+ 任务并按语言包扩展（触发条件见 §18.3）。
 
-### 附录 E · 全局配置项（config.toml，v1.5 定稿）
+### 附录 E · 全局配置项（config.toml，v1.5 定稿；v1.15 增补多项目）
 
 > `~/.tenon/config.toml` 核心字段（非穷尽；后续变更以 ADR 记录）。密钥不入此文件——存系统钥匙串（§11）。
 
@@ -941,6 +999,13 @@ mode              = "interactive"  # interactive | auto；TOFU 信任后才可 a
 first_edit_buffer = 2000           # ms，首改缓冲（§9.3）
 approval_timeout  = 300            # 秒（§9.1）
 readonly          = false
+
+[projects]                         # 多项目运行模型（§6.4 / ADR-15）
+max_open                      = 12 # 同时打开项目上限
+max_concurrent_agent_tasks    = 2  # 跨项目同时 EXECUTING 上限；项目内仍受 §9.7 写锁约束
+idle_runtime_ttl_seconds      = 600 # ProjectRuntime 引用归零后的回收延迟
+recent_limit                  = 20 # 最近项目列表保留数
+allow_linked_workspace        = false # 显式允许打开 monorepo + 子包等嵌套根；仍按 project_id 隔离
 
 [agent.circuit]
 max_files   = 15

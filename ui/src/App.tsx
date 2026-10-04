@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ResizeHandle } from "./components/ResizeHandle";
 import { TenonApi } from "./lib/api";
+import type { PortfolioTask, ProjectSummary } from "./lib/api";
 import { createTranslator, LOCALE_CHANGE, type Locale } from "./lib/i18n";
 import type { AgentStateName } from "./lib/stateColors";
 import { useShortcuts } from "./hooks";
@@ -32,9 +33,12 @@ export default function App({
   const api = useMemo(() => new TenonApi(handshake), [handshake]);
 
   const [projectId, setProjectId] = useState<string | null>(null);
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const [tabs, setTabs] = useState<EditorTab[]>([]);
-  const [activePath, setActivePath] = useState<string | null>(null);
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [portfolioTasks, setPortfolioTasks] = useState<PortfolioTask[]>([]);
+  const [sessionsByProject, setSessionsByProject] = useState<Record<string, string>>({});
+  const [tabsByProject, setTabsByProject] = useState<Record<string, EditorTab[]>>({});
+  const [activePathByProject, setActivePathByProject] = useState<Record<string, string | null>>({});
+  const [openPath, setOpenPath] = useState(projectPath);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [timelineOpen, setTimelineOpen] = useState(true);
   const [latestDiff, setLatestDiff] = useState<string | null>(null);
@@ -51,15 +55,63 @@ export default function App({
   const [rightWidth, setRightWidth] = useState(() => Number(localStorage.getItem("tenon:rightWidth")) || 420);
   const [bottomHeight, setBottomHeight] = useState(() => Number(localStorage.getItem("tenon:bottomHeight")) || 180);
 
-  // 打开项目 + 建会话（§7.3 打开项目流：TOFU 信任卡随 M1 全量；M0 默认交互档）
-  const openProject = useCallback(async () => {
-    const project = await api.registerProject(projectPath);
-    await api.setTrust(project.id, true);
+  const tabs = projectId ? tabsByProject[projectId] ?? [] : [];
+  const activePath = projectId ? activePathByProject[projectId] ?? null : null;
+  const sessionId = projectId ? sessionsByProject[projectId] ?? null : null;
+
+  const refreshProjects = useCallback(async () => {
+    const r = await api.listProjects();
+    setProjects(r.projects);
+    setSessionsByProject((prev) => {
+      const next = { ...prev };
+      for (const project of r.projects) {
+        if (!next[project.id]) {
+          const persisted = project.sessions[0]?.id;
+          if (persisted) next[project.id] = persisted;
+        }
+      }
+      return next;
+    });
+  }, [api]);
+
+  const refreshPortfolio = useCallback(async () => {
+    const r = await api.portfolioTasks();
+    setPortfolioTasks(r.tasks.filter((task) => task.status !== "done"));
+  }, [api]);
+
+  const setActivePath = useCallback((path: string | null) => {
+    if (!projectId) return;
+    setActivePathByProject((prev) => ({ ...prev, [projectId]: path }));
+  }, [projectId]);
+
+  const setTabs = useCallback((updater: (prev: EditorTab[]) => EditorTab[]) => {
+    if (!projectId) return;
+    setTabsByProject((prev) => ({ ...prev, [projectId]: updater(prev[projectId] ?? []) }));
+  }, [projectId]);
+
+  // 打开项目 + 建会话（§7.3：TOFU 现阶段自动信任；后续替换为显式信任卡）
+  const openProject = useCallback(async (path: string) => {
+    const opened = await api.openProject(path);
+    const trusted = window.confirm(`信任项目目录并启用其配置？\n${opened.path}`);
+    if (trusted) await api.setTrust(opened.id, true);
+    await refreshProjects();
+    setProjectId(opened.id);
+    projectIdRef.current = opened.id;
+    const session = await api.createSession(opened.id, "interactive");
+    setSessionsByProject((prev) => ({ ...prev, [opened.id]: session.session_id }));
+  }, [api, refreshProjects]);
+
+  const switchProject = useCallback(async (project: ProjectSummary) => {
     setProjectId(project.id);
     projectIdRef.current = project.id;
-    const session = await api.createSession(projectPath, "interactive");
-    setSessionId(session.session_id);
-  }, [api, projectPath]);
+    const existing = sessionsByProject[project.id] ?? project.sessions[0]?.id;
+    if (!existing) {
+      const session = await api.createSession(project.id, "interactive");
+      setSessionsByProject((prev) => ({ ...prev, [project.id]: session.session_id }));
+    } else if (!sessionsByProject[project.id]) {
+      setSessionsByProject((prev) => ({ ...prev, [project.id]: existing }));
+    }
+  }, [api, sessionsByProject]);
 
   const openFile = useCallback(
     async (path: string) => {
@@ -67,11 +119,12 @@ export default function App({
         setActivePath(path);
         return;
       }
-      const r = await api.readFile(path);
-      setTabs((prev) => [...prev, { path, content: r.content }]);
-      setActivePath(path);
+      if (!projectId) return;
+      const r = await api.readFile(projectId, path);
+      setTabsByProject((prev) => ({ ...prev, [projectId]: [...(prev[projectId] ?? []), { path, content: r.content }] }));
+      setActivePathByProject((prev) => ({ ...prev, [projectId]: path }));
     },
-    [api, tabs]
+    [api, projectId, tabs]
   );
 
   const onStateChange = useCallback((s: AgentStateName) => setAgentState(s), []);
@@ -122,17 +175,61 @@ export default function App({
   // M0：挂载即自动打开项目并建会话（M1 换项目选择页 + TOFU 卡）
   const [openError, setOpenError] = useState<string | null>(null);
   useEffect(() => {
-    openProject().catch((e) => {
+    openProject(projectPath).catch((e) => {
       setOpenError(String(e));
     });
-  }, [openProject]);
-  void openError; // 后续展示在 UI 上（M1 错误态）
+  }, [openProject, projectPath]);
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      void refreshProjects().catch(() => {});
+      void refreshPortfolio().catch(() => {});
+    }, 2000);
+    return () => window.clearInterval(id);
+  }, [refreshProjects, refreshPortfolio]);
 
   return (
     <div className="app" data-testid="app">
       <header className="app-head">
         <strong>{t("app.title")}</strong>
         <span className="muted">{t("app.subtitle")}</span>
+        <select
+          aria-label="active project"
+          data-testid="project-switcher"
+          value={projectId ?? ""}
+          onChange={(e) => {
+            const project = projects.find((p) => p.id === e.target.value);
+            if (project) void switchProject(project);
+          }}
+        >
+          {!projectId && <option value="">No project</option>}
+          {projects.map((project) => (
+            <option key={project.id} value={project.id}>
+              {project.display_name}{project.active_sessions ? ` · ${project.active_sessions} active` : ""}
+            </option>
+          ))}
+          {portfolioTasks.map((task) => (
+            <span className="task-pill" key={task.id} data-testid="portfolio-task">
+              <strong>{task.title}</strong>
+              <span>{task.status}</span>
+            </span>
+          ))}
+        </select>
+        <form
+          className="project-open"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void openProject(openPath).catch((err) => setOpenError(String(err)));
+          }}
+        >
+          <input
+            aria-label="project path"
+            data-testid="project-path"
+            value={openPath}
+            onChange={(e) => setOpenPath(e.target.value)}
+            placeholder="/absolute/path/to/project"
+          />
+          <button type="submit">Open</button>
+        </form>
         <span className="spacer" />
         <ModelRoutingPanel
           api={api}
@@ -148,6 +245,22 @@ export default function App({
       {routeNote && (
         <div className="route-note" data-testid="route-note">
           {routeNote}
+        </div>
+      )}
+      {(openError || projects.length > 0) && (
+        <div className="task-center" data-testid="task-center">
+          {openError && <span className="task-error">{openError}</span>}
+          {projects.map((project) => (
+            <button
+              key={project.id}
+              className={project.id === projectId ? "task-pill active" : "task-pill"}
+              onClick={() => void switchProject(project)}
+              title={project.path}
+            >
+              <strong>{project.display_name}</strong>
+              <span>{project.active_sessions ? `${project.active_sessions} active` : "idle"}</span>
+            </button>
+          ))}
         </div>
       )}
       <div className="workspace">
@@ -188,9 +301,9 @@ export default function App({
             onSelect={setActivePath}
             onClose={(p) => {
               setTabs((prev) => prev.filter((tab) => tab.path !== p));
-              setActivePath((prev) =>
-                prev === p ? (tabs.find((tab) => tab.path !== p)?.path ?? null) : prev
-              );
+              if (activePath === p) {
+                setActivePath(tabs.find((tab) => tab.path !== p)?.path ?? null);
+              }
             }}
             onChange={(p, content) => {
               setTabs((prev) => prev.map((tab) => (tab.path === p ? { ...tab, content } : tab)));
@@ -198,10 +311,11 @@ export default function App({
               setAiLines((prev) => ({ ...prev, [p]: [] }));
               const pid = projectIdRef.current;
               if (pid) {
-                const tid = dirtyTimers.current.get(p);
+                const dirtyKey = `${pid}\u0000${p}`;
+                const tid = dirtyTimers.current.get(dirtyKey);
                 if (tid) window.clearTimeout(tid);
                 dirtyTimers.current.set(
-                  p,
+                  dirtyKey,
                   window.setTimeout(() => {
                     void api.putBuffer(pid, p, content).catch(() => {});
                   }, 400)
@@ -253,8 +367,8 @@ export default function App({
             }}
             onResolve={(path, chosen, clear) => {
               void (async () => {
-                await api.writeFile(path, chosen).catch(() => {});
                 const pid = projectIdRef.current;
+                if (pid) await api.writeFile(pid, path, chosen).catch(() => {});
                 if (pid && clear) await api.clearBuffer(pid, path).catch(() => {});
                 setTabs((prev) =>
                   prev.some((tab) => tab.path === path)

@@ -7,11 +7,12 @@
 - **共生而非外挂**：代理与编辑器共享同一套 LSP 活实例 / 诊断 / 语言包——一次索引、行为一致，编辑器即审查界面；
 - **本地优先隐私**：会话 / Trace / 索引全本地，遥测默认零上报，云模型调用按用户显式配置并明示；
 - **多模型、成本可控**：BYOK + 显式路由 + OpenAI 兼容端点 + 任务级成本归因；
+- **多项目运行模型**：同一 daemon 管理多个已登记项目；会话、文件 / 搜索 / LSP、脏缓冲与事件按 `project_id` 隔离，全局任务中心汇总活跃任务；
 - **审批负担最低且安全不缩水**：动作分级 + 沙箱三态 + 熔断器 + 随时回滚——安全动作自动执行，危险动作才打扰。
 
 ## 文档
 
-- **[完整设计方案 v1.13](docs/design.md)** —— 产品定位、需求规格、架构、安全模型、编辑器与语言包、Agent 内核、数据与 API、路线图、测试策略
+- **[完整设计方案 v1.15](docs/design.md)** —— 产品定位、需求规格、架构、安全模型、编辑器与语言包、Agent 内核、数据与 API、路线图、测试策略
 
 > v0.1 / v0.3 两轮评审（共 41 项）与 v1.0 复审（21 项）的结论已全部并入设计方案；Roslyn LS spike 受阻（无 VSIX），按附录 C Q2 回退规则 C# 包后移（v1.13 记录）。**平台优先级：macOS 为主**（2026-10-04 产品决策）——Windows 走 WSL2 路径以脚本 + 预编译 musl 二进制交付，端到端验证待 Windows 环境。
 >
@@ -40,9 +41,9 @@ Rust 内核 / daemon · Tauri 2 桌面壳 · React + TS + Monaco · tree-sitter 
 
 ## 状态
 
-设计方案 v1.13（决策闭环；产品名 **Tenon**，官网 tenonide.dev）。**M0 已验收**：附录 D 基准 10 任务接 GLM 真实模型跑出基线 **8/10 通过（80%）≥ 50% 验收线，安全违规 0**（五指标基线见 `evals/baseline-glm.json`）。**M1 已实现**：语言包（tsserver / Pyright 共享 LSP 宿主 + 语义端点 + 铁律七守卫）；Laya 本地决策模型（三原语 + 五集成点 + registry 分发 + Evals 门「通过率不降、token 下降」）；沙箱三态（macOS Seatbelt + Linux Landlock/seccomp + §18.2 逃逸套件）；shadow git 快照（revert/restore/unrevert）+ 人机共编三方合并 + 崩溃恢复；模型路由（会话级热切换）+ 语言包向导。**M2 已实现**：官方静态 registry（§13.1 manifest + ed25519 签名 + 权限 diff + 保留字拦截）；MCP 外部进程插件（默认 D 级恒审批 / net:* → C）；并行子代理（worktree 隔离 + 不相交调度 + 复合 D 卡）；Open VSX 语言子集实验兼容 + `/lsp` codeaction；AgentTrace UI + 浏览器访问（CORS 白名单 + 配对入口）。**M3 已实现**：AI Evals 可视化 + 定时触发（`[evals].interval_hours`）；团队策略（`~/.tenon/policy.toml` 只收窄）；局域网配对（`--lan` + PairingStore 一次性码 + 可吊销令牌）；Windows WSL2 安装脚本（`scripts/install-windows.ps1`）。
+设计方案 v1.15（决策闭环；产品名 **Tenon**，官网 tenonide.dev）。**M0 已验收**：附录 D 基准 10 任务接 GLM 真实模型跑出基线 **8/10 通过（80%）≥ 50% 验收线，安全违规 0**（五指标基线见 `evals/baseline-glm.json`）。**M1 已实现**：语言包（tsserver / Pyright 共享 LSP 宿主 + 语义端点 + 铁律七守卫）；Laya 本地决策模型（三原语 + 五集成点 + registry 分发 + Evals 门「通过率不降、token 下降」）；沙箱三态（macOS Seatbelt + Linux Landlock/seccomp + §18.2 逃逸套件）；shadow git 快照（revert/restore/unrevert）+ 人机共编三方合并 + 崩溃恢复；模型路由（会话级热切换）+ 语言包向导。**v1.15 多项目核心已实现**：ProjectRegistry / open / close、canonical path 去重与嵌套根守卫、project-scoped 文件 / 搜索 / LSP / 脏缓冲 API、跨项目执行 semaphore、项目任务摘要与切换器、SQLite v1→v2 项目归属迁移、portfolio task 父任务只聚合多条 project-scoped 子会话。**M2 已实现**：官方静态 registry（§13.1 manifest + ed25519 签名 + 权限 diff + 保留字拦截）；MCP 外部进程插件（默认 D 级恒审批 / net:* → C）；并行子代理（worktree 隔离 + 不相交调度 + 复合 D 卡）；Open VSX 语言子集实验兼容 + `/lsp` codeaction；AgentTrace UI + 浏览器访问（CORS 白名单 + 配对入口）。**M3 已实现**：AI Evals 可视化 + 定时触发（`[evals].interval_hours`）；团队策略（`~/.tenon/policy.toml` 只收窄）；局域网配对（`--lan` + PairingStore 一次性码 + 可吊销令牌）；Windows WSL2 安装脚本（`scripts/install-windows.ps1`）。
 
-测试：**Rust 278 + vitest 24 全绿**；clippy 0 警告；Linux x86_64 交叉检查通过。签名密钥 `--generate-keys` 生成 ed25519 对并接入 laya/registry 公钥解析链。
+测试：**Rust 299 + vitest 30 全绿**；clippy 0 警告；Linux x86_64 交叉检查通过。签名密钥 `--generate-keys` 生成 ed25519 对并接入 laya/registry 公钥解析链。
 
 ## 代码结构（monorepo，ADR-13）
 

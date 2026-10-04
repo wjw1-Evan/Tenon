@@ -140,10 +140,7 @@ async fn session_approval_remembers_b_level_for_session() {
         while let Ok(ev) = rx.recv().await {
             if ev.kind == EventKind::ApprovalRequest {
                 approvals += 1;
-                assert!(
-                    approvals <= 1,
-                    "Session 决策后同类别 B 级不得再次请求审批"
-                );
+                assert!(approvals <= 1, "Session 决策后同类别 B 级不得再次请求审批");
                 let id = ev.payload["approval_id"].as_str().unwrap().to_string();
                 // 路由语义：decide_approval 收到的是库中 action 列（摘要），
                 // 会话记忆须仍以工具名生效
@@ -162,8 +159,14 @@ async fn session_approval_remembers_b_level_for_session() {
         }
         other => panic!("期望 Done，实际 {other:?}"),
     }
-    assert_eq!(std::fs::read_to_string(_dir.path().join("a.txt")).unwrap(), "one\n");
-    assert_eq!(std::fs::read_to_string(_dir.path().join("b.txt")).unwrap(), "two\n");
+    assert_eq!(
+        std::fs::read_to_string(_dir.path().join("a.txt")).unwrap(),
+        "one\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(_dir.path().join("b.txt")).unwrap(),
+        "two\n"
+    );
 }
 
 #[tokio::test]

@@ -242,6 +242,34 @@ pub struct EvalsConfig {
     pub provider: String,
 }
 
+/// 多项目运行模型（§6.4 / ADR-15）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProjectsConfig {
+    /// 同时打开项目上限。
+    pub max_open: usize,
+    /// 跨项目同时 EXECUTING 的全局上限；项目内仍受写锁约束。
+    pub max_concurrent_agent_tasks: usize,
+    /// ProjectRuntime 引用归零后的空闲回收延迟。
+    pub idle_runtime_ttl_seconds: u64,
+    /// 最近项目列表保留数。
+    pub recent_limit: usize,
+    /// 显式允许打开 monorepo + 子包等嵌套根；仍按 project_id 隔离。
+    pub allow_linked_workspace: bool,
+}
+
+impl Default for ProjectsConfig {
+    fn default() -> Self {
+        Self {
+            max_open: 12,
+            max_concurrent_agent_tasks: 2,
+            idle_runtime_ttl_seconds: 600,
+            recent_limit: 20,
+            allow_linked_workspace: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ArchiveConfig {
@@ -343,6 +371,7 @@ pub struct Config {
     pub privacy: PrivacyConfig,
     pub archive: ArchiveConfig,
     pub evals: EvalsConfig,
+    pub projects: ProjectsConfig,
     pub models: ModelsConfig,
 }
 
@@ -532,6 +561,11 @@ features      = ["intent", "risk"]
         assert!(!cfg.privacy.telemetry);
         assert_eq!(cfg.privacy.crash_reports, CrashReports::Off);
         assert_eq!(cfg.archive.events_days, 90);
+        assert_eq!(cfg.projects.max_open, 12);
+        assert_eq!(cfg.projects.max_concurrent_agent_tasks, 2);
+        assert_eq!(cfg.projects.idle_runtime_ttl_seconds, 600);
+        assert_eq!(cfg.projects.recent_limit, 20);
+        assert!(!cfg.projects.allow_linked_workspace);
         assert!(cfg.models.default.is_empty());
         assert!(cfg.models.laya.enabled);
         assert!(cfg.models.laya.auto_download);

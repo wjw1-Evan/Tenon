@@ -160,7 +160,7 @@ async fn full_session_flow_over_http() {
 
     // 1. 注册项目 → TOFU 信任 → 建会话（会话继承信任状态，§12.7）
     let registered: serde_json::Value = client
-        .put(format!("{}/project", base(port)))
+        .post(format!("{}/projects/open", base(port)))
         .json(&serde_json::json!({"path": project.to_string_lossy()}))
         .send()
         .await
@@ -410,7 +410,7 @@ async fn file_api_endpoints() {
         .unwrap();
 
     // 文件树
-    let sid = {
+    let pid = {
         let projects: serde_json::Value = client
             .get(format!("{}/project", base(port)))
             .send()
@@ -422,7 +422,7 @@ async fn file_api_endpoints() {
         projects["projects"][0]["id"].as_str().unwrap().to_string()
     };
     let tree: serde_json::Value = client
-        .get(format!("{}/project/{sid}/tree", base(port)))
+        .get(format!("{}/project/{pid}/tree", base(port)))
         .send()
         .await
         .unwrap()
@@ -439,7 +439,7 @@ async fn file_api_endpoints() {
 
     // 读 / 写
     let read: serde_json::Value = client
-        .get(format!("{}/file?path=a.txt", base(port)))
+        .get(format!("{}/project/{pid}/file?path=a.txt", base(port)))
         .send()
         .await
         .unwrap()
@@ -448,7 +448,7 @@ async fn file_api_endpoints() {
         .unwrap();
     assert_eq!(read["content"], "alpha\nbeta\n");
     client
-        .put(format!("{}/file", base(port)))
+        .put(format!("{}/project/{pid}/file", base(port)))
         .json(&serde_json::json!({"path": "a.txt", "content": "changed\n"}))
         .send()
         .await
@@ -460,7 +460,10 @@ async fn file_api_endpoints() {
 
     // 路径越界被拒
     let escape = client
-        .get(format!("{}/file?path=../etc/passwd", base(port)))
+        .get(format!(
+            "{}/project/{pid}/file?path=../etc/passwd",
+            base(port)
+        ))
         .send()
         .await
         .unwrap();
@@ -468,7 +471,7 @@ async fn file_api_endpoints() {
 
     // 搜索
     let hits: serde_json::Value = client
-        .get(format!("{}/search?q=beta", base(port)))
+        .get(format!("{}/project/{pid}/search?q=beta", base(port)))
         .send()
         .await
         .unwrap()
@@ -481,7 +484,10 @@ async fn file_api_endpoints() {
     );
     // 替换预览（不落盘）
     let previews: serde_json::Value = client
-        .get(format!("{}/search?q=beta&replace=BETA", base(port)))
+        .get(format!(
+            "{}/project/{pid}/search?q=beta&replace=BETA",
+            base(port)
+        ))
         .send()
         .await
         .unwrap()
@@ -497,12 +503,179 @@ async fn file_api_endpoints() {
 
     // file ops
     client
-        .post(format!("{}/file/ops", base(port)))
+        .post(format!("{}/project/{pid}/file/ops", base(port)))
         .json(&serde_json::json!({"ops": [{"op": "create_file", "path": "new.rs", "content": "fn a() {}\n"}]}))
         .send()
         .await
         .unwrap();
     assert!(project.join("new.rs").exists());
+
+    // v1.15 兼容层：legacy 隐式项目必须显式 project_id。
+    let legacy = client
+        .get(format!("{}/file?path=a.txt", base(port)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(legacy.status(), 409);
+}
+
+#[tokio::test]
+async fn multiproject_registry_isolation_and_lifecycle() {
+    let dir = tempfile::tempdir().unwrap();
+    let alpha = dir.path().join("alpha");
+    let beta = dir.path().join("beta");
+    std::fs::create_dir_all(&alpha).unwrap();
+    std::fs::create_dir_all(&beta).unwrap();
+    std::fs::write(alpha.join("root.txt"), "alpha\n").unwrap();
+    std::fs::write(beta.join("root.txt"), "beta\n").unwrap();
+
+    let (_tmp, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let open = |path: &std::path::Path| {
+        let client = client.clone();
+        let path = path.to_path_buf();
+        async move {
+            client
+                .post(format!("{}/projects/open", base(port)))
+                .json(&serde_json::json!({"path": path.to_string_lossy()}))
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+    let ra: serde_json::Value = open(&alpha).await.json().await.unwrap();
+    let rb: serde_json::Value = open(&beta).await.json().await.unwrap();
+    let ai = ra["id"].as_str().unwrap();
+    let bi = rb["id"].as_str().unwrap();
+    assert_ne!(ai, bi);
+
+    // 再次打开 canonical path 去重。
+    let duplicate: serde_json::Value = open(&alpha).await.json().await.unwrap();
+    assert_eq!(duplicate["id"].as_str().unwrap(), ai);
+
+    let list: serde_json::Value = client
+        .get(format!("{}/projects", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(list["projects"].as_array().unwrap().len(), 2);
+    assert!(list["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|p| p["open"].as_bool().unwrap()));
+
+    // 文件 API 只读显式项目根。
+    let pa: serde_json::Value = client
+        .get(format!("{}/project/{ai}/file?path=root.txt", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let pb: serde_json::Value = client
+        .get(format!("{}/project/{bi}/file?path=root.txt", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(pa["content"], "alpha\n");
+    assert_eq!(pb["content"], "beta\n");
+
+    // 同名相对路径的脏缓冲按项目隔离。
+    for (project_id, content) in [(ai, "alpha dirty"), (bi, "beta dirty")] {
+        let resp = client
+            .put(format!("{}/project/{project_id}/buffers", base(port)))
+            .json(&serde_json::json!({"path": "buffer.txt", "dirty": content}))
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_success());
+    }
+    let a_buffers: serde_json::Value = client
+        .get(format!("{}/project/{ai}/buffers", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let b_buffers: serde_json::Value = client
+        .get(format!("{}/project/{bi}/buffers", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        a_buffers["paths"].as_array().unwrap().len(),
+        b_buffers["paths"].as_array().unwrap().len()
+    );
+    client
+        .delete(format!(
+            "{}/project/{ai}/buffers?path=buffer.txt",
+            base(port)
+        ))
+        .send()
+        .await
+        .unwrap();
+    let a_after: serde_json::Value = client
+        .get(format!("{}/project/{ai}/buffers", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(a_after["paths"].as_array().unwrap().is_empty());
+    let b_after: serde_json::Value = client
+        .get(format!("{}/project/{bi}/buffers", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(b_after["paths"].as_array().unwrap().len(), 1);
+
+    // 嵌套根默认拒绝。
+    let nested_root = beta.join("nested-root");
+    std::fs::create_dir_all(&nested_root).unwrap();
+    let nested = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({"path": nested_root.to_string_lossy()}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(nested.status(), 409, "嵌套项目根默认拒绝");
+
+    // 关闭只摘除 runtime，不删除登记或磁盘。
+    let closed: serde_json::Value = client
+        .post(format!("{}/projects/{bi}/close", base(port)))
+        .json(&serde_json::json!({"mode": "force"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(closed["closed"], true);
+    assert!(beta.join("root.txt").exists());
+
+    // 关闭后文件 API 不得继续访问该 ProjectRuntime。
+    let closed_file = client
+        .get(format!("{}/project/{bi}/file?path=root.txt", base(port)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(closed_file.status(), 404);
 }
 
 #[tokio::test]
@@ -665,7 +838,7 @@ async fn language_pack_detect_and_wizard_flow() {
     let client = client_with_token(&token);
 
     let registered: serde_json::Value = client
-        .put(format!("{}/project", base(port)))
+        .post(format!("{}/projects/open", base(port)))
         .json(&serde_json::json!({"path": project.to_string_lossy()}))
         .send()
         .await
@@ -1082,4 +1255,81 @@ async fn static_ui_serving_and_pairing_self_discovery() {
     assert!(pairing["ws_ticket"].as_str().is_some());
 
     std::env::remove_var("TENON_UI_DIST");
+}
+
+#[tokio::test]
+async fn portfolio_task_orchestrates_project_scoped_children() {
+    let dir = tempfile::tempdir().unwrap();
+    let alpha = dir.path().join("alpha");
+    let beta = dir.path().join("beta");
+    std::fs::create_dir_all(&alpha).unwrap();
+    std::fs::create_dir_all(&beta).unwrap();
+
+    let (_tmp, port, token) = start_daemon(vec![
+        ScriptedReply::Text("alpha done".into()),
+        ScriptedReply::Text("beta done".into()),
+    ])
+    .await;
+    let client = client_with_token(&token);
+    let open = |path: &std::path::Path| {
+        let client = client.clone();
+        let path = path.to_path_buf();
+        async move {
+            client
+                .post(format!("{}/projects/open", base(port)))
+                .json(&serde_json::json!({"path": path.to_string_lossy()}))
+                .send()
+                .await
+                .unwrap()
+                .json::<serde_json::Value>()
+                .await
+                .unwrap()
+        }
+    };
+    let a = open(&alpha).await;
+    let b = open(&beta).await;
+
+    let created: serde_json::Value = client
+        .post(format!("{}/portfolio-tasks", base(port)))
+        .json(&serde_json::json!({
+            "title": "two projects",
+            "provider": "mock",
+            "children": [
+                {"project_id": a["id"], "text": "alpha task"},
+                {"project_id": b["id"], "text": "beta task"}
+            ]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(created["children"].as_array().unwrap().len(), 2);
+    assert_ne!(
+        created["children"][0]["session_id"],
+        created["children"][1]["session_id"]
+    );
+
+    for _ in 0..100 {
+        let tasks: serde_json::Value = client
+            .get(format!("{}/portfolio-tasks", base(port)))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let task = &tasks["tasks"][0];
+        if task["status"] == "done" {
+            assert!(task["children"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|c| c["status"] == "done"));
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("组合任务应在预算内完成");
 }

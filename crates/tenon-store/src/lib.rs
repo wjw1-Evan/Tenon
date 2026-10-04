@@ -191,6 +191,8 @@ pub struct Event {
     /// 全局自增 id（跨会话全序）。
     pub id: i64,
     pub session_id: String,
+    /// 项目归属（§14.2 / §6.4：多项目聚合与隔离）。
+    pub project_id: String,
     /// per-session 单调递增（WS 断线续传游标，§15）。
     pub seq: i64,
     #[serde(rename = "type")]
@@ -235,6 +237,7 @@ pub enum ApprovalDecision {
 pub struct Approval {
     pub id: String,
     pub session_id: String,
+    pub project_id: String,
     pub action: String,
     pub level: Level,
     /// None = 待决策
@@ -247,6 +250,7 @@ pub struct Approval {
 pub struct ModelUsage {
     pub id: i64,
     pub session_id: String,
+    pub project_id: String,
     pub provider: String,
     pub model: String,
     pub input_tokens: i64,
@@ -284,7 +288,7 @@ pub struct Plugin {
     pub installed_at: String,
 }
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 const DDL: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -314,6 +318,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL,
+    project_id TEXT NOT NULL DEFAULT '',
     seq INTEGER NOT NULL,
     type TEXT NOT NULL,
     payload TEXT NOT NULL,
@@ -346,13 +351,13 @@ CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(session_id);
 CREATE TABLE IF NOT EXISTS approvals (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
+    project_id TEXT NOT NULL DEFAULT '',
     action TEXT NOT NULL,
     level TEXT NOT NULL,
     decision TEXT,
     created_at TEXT NOT NULL,
     decided_at TEXT
 );
-
 CREATE TABLE IF NOT EXISTS plugins (
     id TEXT PRIMARY KEY,
     version TEXT NOT NULL,
@@ -364,6 +369,7 @@ CREATE TABLE IF NOT EXISTS plugins (
 CREATE TABLE IF NOT EXISTS model_usage (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL,
+    project_id TEXT NOT NULL DEFAULT '',
     provider TEXT NOT NULL,
     model TEXT NOT NULL DEFAULT '',
     input_tokens INTEGER NOT NULL DEFAULT 0,
@@ -434,11 +440,47 @@ impl Store {
                 )?;
             }
             Some(v) if v < SCHEMA_VERSION => {
-                // 未来迁移在此按版本递增执行。
+                // v1 → v2：多项目归属字段（§6.4 / §14.2）。SQLite ADD COLUMN
+                // 不支持无默认 NOT NULL，先加默认列再由 sessions 回填。
+                if !Self::column_exists(&conn, "events", "project_id")? {
+                    conn.execute(
+                        "ALTER TABLE events ADD COLUMN project_id TEXT NOT NULL DEFAULT ''",
+                        [],
+                    )?;
+                }
+                if !Self::column_exists(&conn, "approvals", "project_id")? {
+                    conn.execute(
+                        "ALTER TABLE approvals ADD COLUMN project_id TEXT NOT NULL DEFAULT ''",
+                        [],
+                    )?;
+                }
+                if !Self::column_exists(&conn, "model_usage", "project_id")? {
+                    conn.execute(
+                        "ALTER TABLE model_usage ADD COLUMN project_id TEXT NOT NULL DEFAULT ''",
+                        [],
+                    )?;
+                }
+                conn.execute_batch(
+                    "UPDATE events SET project_id = COALESCE((SELECT project_id FROM sessions WHERE sessions.id = events.session_id), '')
+                     WHERE project_id = '';
+                     UPDATE approvals SET project_id = COALESCE((SELECT project_id FROM sessions WHERE sessions.id = approvals.session_id), '')
+                     WHERE project_id = '';
+                     UPDATE model_usage SET project_id = COALESCE((SELECT project_id FROM sessions WHERE sessions.id = model_usage.session_id), '')
+                     WHERE project_id = '';
+                     CREATE INDEX IF NOT EXISTS idx_events_project ON events(project_id, id);
+                     CREATE INDEX IF NOT EXISTS idx_approvals_project ON approvals(project_id, created_at);
+                     CREATE INDEX IF NOT EXISTS idx_model_usage_project ON model_usage(project_id, id);",
+                )?;
                 conn.execute("UPDATE schema_version SET version = ?1", [SCHEMA_VERSION])?;
             }
             Some(_) => {}
         }
+        // v2 项目归属索引在 v1 → v2 ALTER 后才可安全创建；IF NOT EXISTS 兼容新库。
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_events_project ON events(project_id, id);
+             CREATE INDEX IF NOT EXISTS idx_approvals_project ON approvals(project_id, created_at);
+             CREATE INDEX IF NOT EXISTS idx_model_usage_project ON model_usage(project_id, id);",
+        )?;
         Ok(Self { conn })
     }
 
@@ -449,6 +491,24 @@ impl Store {
 
     fn now() -> String {
         Utc::now().to_rfc3339()
+    }
+
+    fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let found = stmt
+            .query_map([], |r| r.get::<_, String>(1))?
+            .any(|name| name.map(|n| n == column).unwrap_or(false));
+        Ok(found)
+    }
+
+    fn project_id_for_session(&self, session_id: &str) -> String {
+        self.conn
+            .query_row(
+                "SELECT project_id FROM sessions WHERE id = ?1",
+                [session_id],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap_or_default()
     }
 
     // ---------- projects ----------
@@ -493,6 +553,14 @@ impl Store {
         )?;
         let rows = stmt.query_map([], row_to_project)?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// 移除登记；磁盘内容由调用方保证不删除（§6.4）。
+    pub fn remove_project(&mut self, id: &str) -> Result<bool> {
+        Ok(self
+            .conn
+            .execute("DELETE FROM projects WHERE id = ?1", [id])?
+            > 0)
     }
 
     /// TOFU 信任设置（§12.7）：信任只放宽 B 级档位，永不放宽 C/D。
@@ -592,19 +660,28 @@ impl Store {
         payload: &serde_json::Value,
     ) -> Result<Event> {
         let now = Self::now();
+        let project_id = self.project_id_for_session(session_id);
         let seq: i64 = self.conn.query_row(
             "SELECT COALESCE(MAX(seq), 0) + 1 FROM events WHERE session_id = ?1",
             [session_id],
             |r| r.get(0),
         )?;
         self.conn.execute(
-            "INSERT INTO events (session_id, seq, type, payload, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![session_id, seq, kind.as_str(), payload.to_string(), now],
+            "INSERT INTO events (session_id, project_id, seq, type, payload, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                session_id,
+                project_id,
+                seq,
+                kind.as_str(),
+                payload.to_string(),
+                now
+            ],
         )?;
         Ok(Event {
             id: self.conn.last_insert_rowid(),
             session_id: session_id.to_string(),
+            project_id,
             seq,
             kind,
             payload: payload.clone(),
@@ -620,7 +697,7 @@ impl Store {
     /// 断线续传：返回 seq > after_seq 的事件（§15）。
     pub fn events_since(&mut self, session_id: &str, after_seq: i64) -> Result<Vec<Event>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, session_id, seq, type, payload, created_at
+            "SELECT id, session_id, project_id, seq, type, payload, created_at
              FROM events WHERE session_id = ?1 AND seq > ?2 ORDER BY seq ASC",
         )?;
         let rows = stmt.query_map(params![session_id, after_seq], row_to_event)?;
@@ -630,7 +707,7 @@ impl Store {
     /// 全局事件流（WS 推送用）：id 升序、跨会话、限量。
     pub fn recent_events(&mut self, after_global_id: i64, limit: i64) -> Result<Vec<Event>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, session_id, seq, type, payload, created_at
+            "SELECT id, session_id, project_id, seq, type, payload, created_at
              FROM events WHERE id > ?1 ORDER BY id ASC LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![after_global_id, limit], row_to_event)?;
@@ -760,6 +837,7 @@ impl Store {
         let a = Approval {
             id: Uuid::now_v7().to_string(),
             session_id: session_id.to_string(),
+            project_id: self.project_id_for_session(session_id),
             action: action.to_string(),
             level,
             decision: None,
@@ -767,9 +845,9 @@ impl Store {
             decided_at: None,
         };
         self.conn.execute(
-            "INSERT INTO approvals (id, session_id, action, level, decision, created_at, decided_at)
-             VALUES (?1, ?2, ?3, ?4, NULL, ?5, NULL)",
-            params![a.id, a.session_id, a.action, a.level.as_str(), a.created_at],
+            "INSERT INTO approvals (id, session_id, project_id, action, level, decision, created_at, decided_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, NULL)",
+            params![a.id, a.session_id, a.project_id, a.action, a.level.as_str(), a.created_at],
         )?;
         Ok(a)
     }
@@ -793,7 +871,7 @@ impl Store {
 
     pub fn approval(&mut self, id: &str) -> Result<Option<Approval>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, session_id, action, level, decision, created_at, decided_at
+            "SELECT id, session_id, project_id, action, level, decision, created_at, decided_at
              FROM approvals WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map([id], row_to_approval)?;
@@ -802,7 +880,7 @@ impl Store {
 
     pub fn approvals(&mut self, session_id: &str) -> Result<Vec<Approval>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, session_id, action, level, decision, created_at, decided_at
+            "SELECT id, session_id, project_id, action, level, decision, created_at, decided_at
              FROM approvals WHERE session_id = ?1 ORDER BY created_at ASC",
         )?;
         let rows = stmt.query_map([session_id], row_to_approval)?;
@@ -821,10 +899,11 @@ impl Store {
         cost_usd: f64,
     ) -> Result<ModelUsage> {
         let now = Self::now();
+        let project_id = self.project_id_for_session(session_id);
         self.conn.execute(
-            "INSERT INTO model_usage (session_id, provider, model, input_tokens, output_tokens, cost_usd, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![session_id, provider, model, input_tokens, output_tokens, cost_usd, now],
+            "INSERT INTO model_usage (session_id, project_id, provider, model, input_tokens, output_tokens, cost_usd, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![session_id, project_id, provider, model, input_tokens, output_tokens, cost_usd, now],
         )?;
         // 按月聚合（永久，§14.2）
         let month = &now[..7];
@@ -840,6 +919,7 @@ impl Store {
         Ok(ModelUsage {
             id: self.conn.last_insert_rowid(),
             session_id: session_id.to_string(),
+            project_id,
             provider: provider.to_string(),
             model: model.to_string(),
             input_tokens,
@@ -851,7 +931,7 @@ impl Store {
 
     pub fn session_usage(&mut self, session_id: &str) -> Result<Vec<ModelUsage>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, session_id, provider, model, input_tokens, output_tokens, cost_usd, created_at
+            "SELECT id, session_id, project_id, provider, model, input_tokens, output_tokens, cost_usd, created_at
              FROM model_usage WHERE session_id = ?1 ORDER BY id ASC",
         )?;
         let rows = stmt.query_map([session_id], row_to_usage)?;
@@ -1123,10 +1203,11 @@ fn row_to_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
     Ok(Event {
         id: r.get(0)?,
         session_id: r.get(1)?,
-        seq: r.get(2)?,
-        kind: EventKind::parse(&r.get::<_, String>(3)?).unwrap_or(EventKind::Error),
-        payload: serde_json::from_str(&r.get::<_, String>(4)?).unwrap_or(serde_json::Value::Null),
-        created_at: r.get(5)?,
+        project_id: r.get(2)?,
+        seq: r.get(3)?,
+        kind: EventKind::parse(&r.get::<_, String>(4)?).unwrap_or(EventKind::Error),
+        payload: serde_json::from_str(&r.get::<_, String>(5)?).unwrap_or(serde_json::Value::Null),
+        created_at: r.get(6)?,
     })
 }
 
@@ -1145,18 +1226,19 @@ fn row_to_approval(r: &rusqlite::Row<'_>) -> rusqlite::Result<Approval> {
     Ok(Approval {
         id: r.get(0)?,
         session_id: r.get(1)?,
-        action: r.get(2)?,
-        level: parse_level(&r.get::<_, String>(3)?),
+        project_id: r.get(2)?,
+        action: r.get(3)?,
+        level: parse_level(&r.get::<_, String>(4)?),
         decision: r
-            .get::<_, Option<String>>(4)?
+            .get::<_, Option<String>>(5)?
             .and_then(|s| match s.as_str() {
                 "once" => Some(ApprovalDecision::Once),
                 "session" => Some(ApprovalDecision::Session),
                 "deny" => Some(ApprovalDecision::Deny),
                 _ => None,
             }),
-        created_at: r.get(5)?,
-        decided_at: r.get(6)?,
+        created_at: r.get(6)?,
+        decided_at: r.get(7)?,
     })
 }
 
@@ -1164,12 +1246,13 @@ fn row_to_usage(r: &rusqlite::Row<'_>) -> rusqlite::Result<ModelUsage> {
     Ok(ModelUsage {
         id: r.get(0)?,
         session_id: r.get(1)?,
-        provider: r.get(2)?,
-        model: r.get(3)?,
-        input_tokens: r.get(4)?,
-        output_tokens: r.get(5)?,
-        cost_usd: r.get(6)?,
-        created_at: r.get(7)?,
+        project_id: r.get(2)?,
+        provider: r.get(3)?,
+        model: r.get(4)?,
+        input_tokens: r.get(5)?,
+        output_tokens: r.get(6)?,
+        cost_usd: r.get(7)?,
+        created_at: r.get(8)?,
     })
 }
 
@@ -1247,6 +1330,68 @@ mod tests {
     }
 
     #[test]
+    fn migrates_v1_rows_to_project_scoped_v2() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("db.sqlite");
+        let project_id = "project-v1";
+        let session_id = "session-v1";
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(
+                r#"
+                CREATE TABLE schema_version (version INTEGER NOT NULL);
+                INSERT INTO schema_version VALUES (1);
+                CREATE TABLE projects (
+                  id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE, trusted INTEGER NOT NULL DEFAULT 0,
+                  language_packs TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL
+                );
+                CREATE TABLE sessions (
+                  id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), model TEXT NOT NULL DEFAULT '',
+                  status TEXT NOT NULL DEFAULT 'idle', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                );
+                CREATE TABLE events (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, seq INTEGER NOT NULL,
+                  type TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(session_id, seq)
+                );
+                CREATE TABLE approvals (
+                  id TEXT PRIMARY KEY, session_id TEXT NOT NULL, action TEXT NOT NULL, level TEXT NOT NULL,
+                  decision TEXT, created_at TEXT NOT NULL, decided_at TEXT
+                );
+                CREATE TABLE model_usage (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, provider TEXT NOT NULL,
+                  model TEXT NOT NULL DEFAULT '', input_tokens INTEGER NOT NULL DEFAULT 0,
+                  output_tokens INTEGER NOT NULL DEFAULT 0, cost_usd REAL NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+                );
+                INSERT INTO projects VALUES ('project-v1', '/tmp/v1', 0, '[]', '2026-01-01');
+                INSERT INTO sessions VALUES ('session-v1', 'project-v1', 'mock', 'idle', '2026-01-01', '2026-01-01');
+                INSERT INTO events VALUES (1, 'session-v1', 1, 'user_input', '{}', '2026-01-01');
+                INSERT INTO approvals VALUES ('approval-v1', 'session-v1', 'legacy', 'b', NULL, '2026-01-01', NULL);
+                INSERT INTO model_usage VALUES (1, 'session-v1', 'mock', 'm', 1, 2, 0.0, '2026-01-01');
+                "#,
+            )
+            .unwrap();
+        }
+        let mut store = Store::open(&db).unwrap();
+        assert_eq!(
+            store
+                .connection_for_tests()
+                .query_row("SELECT version FROM schema_version", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        assert_eq!(store.events(session_id).unwrap()[0].project_id, project_id);
+        assert_eq!(
+            store.approval("approval-v1").unwrap().unwrap().project_id,
+            project_id
+        );
+        assert_eq!(
+            store.session_usage(session_id).unwrap()[0].project_id,
+            project_id
+        );
+    }
+
+    #[test]
     fn events_are_append_only_with_monotonic_seq() {
         let mut s = mem();
         let dir = tempfile::tempdir().unwrap();
@@ -1260,6 +1405,8 @@ mod tests {
             .append_event(&sess.id, EventKind::Sensing, &json!({"tool": "list_dir"}))
             .unwrap();
         assert_eq!((e1.seq, e2.seq), (1, 2));
+        assert_eq!(e1.project_id, p.id);
+        assert_eq!(e2.project_id, p.id);
         assert_eq!(s.latest_seq(&sess.id).unwrap(), 2);
 
         let all = s.events(&sess.id).unwrap();

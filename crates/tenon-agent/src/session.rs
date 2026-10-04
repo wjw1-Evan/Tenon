@@ -48,6 +48,8 @@ pub struct AgentConfig {
     pub dirty: Option<Arc<tenon_fs::DirtyBufferRegistry>>,
     /// 团队策略工具黑名单（M3：跨会话只收窄）。
     pub team_denied_tools: Vec<String>,
+    /// 项目内相对 / 绝对 cwd；命令在项目根沙箱内切到这里执行（§6.4）。
+    pub working_dir: Option<PathBuf>,
 }
 
 impl AgentConfig {
@@ -70,6 +72,7 @@ impl AgentConfig {
             laya: None,
             dirty: None,
             team_denied_tools: Vec::new(),
+            working_dir: None,
         }
     }
 }
@@ -184,6 +187,9 @@ fn tool_specs() -> Vec<ToolSpec> {
         ("run_build", "构建（沙箱断网）", serde_json::json!({
             "type": "object", "properties": {"command": {"type": "string"}}
         })),
+        ("install_deps", "安装依赖（沙箱镜像代理，如 npm install）", serde_json::json!({
+            "type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]
+        })),
         ("http_fetch", "抓取 URL（C 级审批）", serde_json::json!({
             "type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]
         })),
@@ -235,6 +241,20 @@ impl AgentSession {
             Duration::from_secs(config.command_timeout_s),
         );
         tool_ctx.readonly = readonly;
+        if let Some(working_dir) = &config.working_dir {
+            let joined = if working_dir.is_absolute() {
+                working_dir.clone()
+            } else {
+                config.project_root.join(working_dir)
+            };
+            let canonical = joined
+                .canonicalize()
+                .map_err(|e| AgentError::Store(format!("working_dir 无效: {e}")))?;
+            if !canonical.starts_with(&config.project_root) {
+                return Err(AgentError::Store("working_dir 越出项目根".into()));
+            }
+            tool_ctx.command_cwd = canonical;
+        }
         tool_ctx.dirty = config.dirty.clone();
         tool_ctx.team_denied_tools = config.team_denied_tools.clone();
         tool_ctx.laya = config.laya.clone();
@@ -381,10 +401,7 @@ impl AgentSession {
                 .get(approval_id)
                 .cloned()
                 .unwrap_or_else(|| action.to_string());
-            self.session_approved
-                .lock()
-                .await
-                .insert(tool);
+            self.session_approved.lock().await.insert(tool);
         }
         self.emit(
             EventKind::ApprovalDecision,
@@ -750,7 +767,9 @@ impl AgentSession {
                                 if let Some(laya) = &self.config.laya {
                                     match laya.risk(cmd).await {
                                         tenon_laya::LayaOutcome::Success {
-                                            value, duration_ms, ..
+                                            value,
+                                            duration_ms,
+                                            ..
                                         } => {
                                             let score = (f64::from(value) * 100.0).round() / 100.0;
                                             self.emit(

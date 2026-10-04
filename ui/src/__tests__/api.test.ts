@@ -39,7 +39,7 @@ describe("TenonApi（§15 客户端）", () => {
   });
 
   it("json 请求设置 Content-Type 并序列化", async () => {
-    fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+    fetchMock.mockImplementation(async () => new Response("{}", { status: 200 }));
     const api = new TenonApi({ port: 9999, token: "t" });
     await api.sendMessage("s1", "hello");
     const [, init] = fetchMock.mock.calls[0];
@@ -52,6 +52,40 @@ describe("TenonApi（§15 客户端）", () => {
     fetchMock.mockResolvedValue(new Response("denied", { status: 403 }));
     const api = new TenonApi({ port: 9999, token: "t" });
     await expect(api.models()).rejects.toThrow("API 403");
+  });
+
+  it("多项目文件 API 绑定 project_id（§6.4）", async () => {
+    fetchMock.mockImplementation(async () => new Response("{}", { status: 200 }));
+    const api = new TenonApi({ port: 9999, token: "t" });
+    await api.readFile("project-a", "src/a.txt");
+    await api.writeFile("project-b", "src/b.txt", "hello");
+    await api.search("project-c", "beta");
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "http://127.0.0.1:9999/project/project-a/file?path=src%2Fa.txt"
+    );
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      "http://127.0.0.1:9999/project/project-b/file"
+    );
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).path).toBe("src/b.txt");
+    expect(fetchMock.mock.calls[2][0]).toBe(
+      "http://127.0.0.1:9999/project/project-c/search?q=beta"
+    );
+  });
+
+  it("组合任务只提交 project-scoped children", async () => {
+    fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+    const api = new TenonApi({ port: 9999, token: "t" });
+    await api.createPortfolioTask("release", [
+      { project_id: "p-a", text: "run A" },
+      { project_id: "p-b", text: "run B" },
+    ]);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://127.0.0.1:9999/portfolio-tasks");
+    const body = JSON.parse(init.body);
+    expect(body.children.map((c: { project_id: string }) => c.project_id)).toEqual([
+      "p-a",
+      "p-b",
+    ]);
   });
 
   it("connectEvents 先换票、首帧携带 ticket（ADR-10）", async () => {
