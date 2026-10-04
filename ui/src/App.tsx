@@ -763,6 +763,8 @@ export default function App({
             />
           </>
         )}
+        {/* v1.64：无打开文件 tab 时中区编辑器整体隐藏（§7.2） */}
+        {tabs.length > 0 && (<>
         <section
           className="zone zone-center"
           style={{ flex: 1, minWidth: 200 }}
@@ -822,7 +824,11 @@ export default function App({
           }
           onDoubleClick={() => setRightWidth(420)}
         />
-        <section className="zone zone-right" style={{ width: rightWidth, minWidth: 260, maxWidth: 720 }}>
+        </>)}
+        <section
+          className="zone zone-right"
+          style={tabs.length > 0 ? { width: rightWidth, minWidth: 260, maxWidth: 720 } : { flex: 1, minWidth: 260 }}
+        >
           <AgentPanel
             api={api}
             t={t}
