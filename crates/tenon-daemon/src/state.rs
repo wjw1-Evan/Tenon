@@ -139,6 +139,12 @@ pub struct DaemonOptions {
     pub project: Option<String>,
     /// 握手 endpoint 文件；None = `~/.tenon/daemon.endpoint`（测试必须覆盖避免并行竞争）。
     pub endpoint_path: Option<std::path::PathBuf>,
+    /// Laya 自动下载 registry 覆盖（§9.8 v1.71；None = 官方静态 registry；测试注入本地地址）。
+    pub laya_registry_url: Option<String>,
+    /// Laya 清单验签公钥覆盖（§9.8；None = 官方解析链；测试注入，不读进程 env）。
+    pub laya_public_key: Option<String>,
+    /// Laya 模型目录覆盖（§9.8；None = ~/.tenon/models/laya；测试注入临时目录）。
+    pub laya_models_dir: Option<std::path::PathBuf>,
 }
 
 impl DaemonOptions {
@@ -146,12 +152,21 @@ impl DaemonOptions {
         Self {
             db_path: None,
             lan_bind: false,
-            config: Config::default(),
+            // 测试基座不出网（§9.8）：Laya 自动下载默认关，
+            // 需要时显式打开并注入 laya_registry_url 指向本地 registry
+            config: {
+                let mut cfg = Config::default();
+                cfg.models.laya.auto_download = false;
+                cfg
+            },
             providers: vec![],
             default_provider: String::new(),
             snapshots_root: None,
             project: None,
             endpoint_path: None,
+            laya_registry_url: None,
+            laya_public_key: None,
+            laya_models_dir: None,
         }
     }
 }
@@ -286,6 +301,8 @@ pub struct DaemonState {
     pub lsp: Arc<LspManager>,
     /// Laya 本地决策模型运行时（§9.8；未下载即整体回退）。
     pub laya: Arc<LayaRuntime>,
+    /// Laya 清单验签公钥覆盖（§9.8 v1.71；None = 官方解析链；测试注入）。
+    pub(crate) laya_public_key: Option<String>,
     /// 脏缓冲注册表按项目隔离（§6.4 / §8.6）；key = project_id，value 是该项目相对路径表。
     pub dirty_buffers: Mutex<HashMap<String, Arc<tenon_fs::DirtyBufferRegistry>>>,
     /// 局域网配对（M3 §12.6：显式开启 + 一次性码 + 可吊销令牌；默认关闭）。
@@ -384,7 +401,10 @@ impl DaemonState {
         let snapshots_root = options
             .snapshots_root
             .unwrap_or_else(|| Config::data_dir().join("snapshots"));
-        let laya_dir = Config::data_dir().join("models/laya");
+        let laya_dir = options
+            .laya_models_dir
+            .clone()
+            .unwrap_or_else(|| Config::data_dir().join("models/laya"));
         let execution_permits = Arc::new(Semaphore::new(
             options.config.projects.max_concurrent_agent_tasks.max(1),
         ));
@@ -401,6 +421,7 @@ impl DaemonState {
                 &laya_dir,
                 &options.config.models.laya.features,
             )),
+            laya_public_key: options.laya_public_key.clone(),
             config: options.config,
             token: crate::generate_token(),
             tickets: TicketStore::default(),
@@ -559,6 +580,54 @@ impl DaemonState {
     /// 取出唯一 L4 worker receiver；重复调用返回 None。
     pub fn take_l4_requests(&self) -> Option<tokio::sync::mpsc::Receiver<L4IndexRequest>> {
         self.l4_index_rx.lock().expect("l4 index rx").take()
+    }
+
+    /// Laya 自动下载并启用（§9.8 v1.71）：`enabled` + `auto_download` 时后台拉取
+    /// 官方静态 registry 签名清单，版本新于已装即下载安装热装载；全程无审批卡
+    /// （产品自管签名资产、推理不出网，非代理动作）。失败静默回退：仅日志，
+    /// 下次启动重试；未启用 / 已是最新即跳过。
+    pub fn spawn_laya_auto_download(self: &Arc<Self>, registry_url: Option<String>) {
+        if !self.config.models.laya.enabled || !self.config.models.laya.auto_download {
+            return;
+        }
+        let state = self.clone();
+        tokio::spawn(async move {
+            let manifest = match tenon_laya::registry::fetch_manifest(registry_url.as_deref()).await
+            {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::info!("Laya 自动下载跳过：registry 不可达（{e}）；下次启动重试");
+                    return;
+                }
+            };
+            let plan = match tenon_laya::registry::plan_install_with_key(
+                &manifest,
+                state.laya_public_key.as_deref(),
+            ) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!("Laya 自动下载跳过：清单校验失败（{e}）");
+                    return;
+                }
+            };
+            if state
+                .laya
+                .version()
+                .await
+                .map(|(_, v)| v >= plan.version)
+                .unwrap_or(false)
+            {
+                tracing::info!("Laya 已是最新（v{}），跳过自动下载", plan.version);
+                return;
+            }
+            match tenon_laya::registry::download_model(&plan).await {
+                Ok(bytes) => match state.laya.install(&bytes).await {
+                    Ok(()) => tracing::info!("Laya 自动下载完成：v{} 已启用", plan.version),
+                    Err(e) => tracing::warn!("Laya 自动下载安装失败：{e}"),
+                },
+                Err(e) => tracing::warn!("Laya 自动下载失败：{e}；下次启动重试"),
+            }
+        });
     }
 
     /// 启动 L4 后台 worker：项目激活全量重建；watcher 变更 500ms 去抖增量更新。

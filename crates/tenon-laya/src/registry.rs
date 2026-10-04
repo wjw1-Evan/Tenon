@@ -1,9 +1,10 @@
 //! 静态 registry 分发（附录 C Q1 + §9.8 分发生命周期）：
 //! 签名清单（GitHub Pages 起步的静态 JSON）→ 签名校验（ed25519）→
-//! SHA-256 展示 → **一次 D 级审批** → 安装入 `~/.tenon/models/laya/`。
+//! SHA-256 校验 → 安装入 `~/.tenon/models/laya/` 并热装载。
 //!
-//! 审批由调用方（daemon 审批卡）执行：本模块产出 `InstallPlan` 供审批卡展示，
-//! 拿到批准后才调用 [`install_model`]。
+//! v1.71 起无审批卡：daemon 启动自动执行全链路（产品自管、版本锁定、
+//! 签名钉扎的静态资产，推理不出网，非代理动作）；本模块产出 `InstallPlan`
+//! 供启动自动下载与手动 `POST /models/laya/download` 共用。
 
 use serde::{Deserialize, Serialize};
 
@@ -58,20 +59,29 @@ pub async fn fetch_manifest(registry_url: Option<&str>) -> Result<RegistryManife
     Ok(manifest)
 }
 
-/// 校验清单签名 + 生成安装计划（未过 D 级审批前不下载模型体）。
+/// 校验清单签名 + 生成安装计划。
 ///
 /// 公钥解析（§9.8）：环境变量 `TENON_LAYA_PUBLIC_KEY` → `~/.tenon/keys/signing.pub`
 /// （`--generate-keys` 产物）→ None（开发模式：仅校验清单格式，正式发布强制验签）。
 pub fn plan_install(manifest: &RegistryManifest) -> Result<InstallPlan> {
+    plan_install_with_key(manifest, crate::release_public_key().as_deref())
+}
+
+/// 同 [`plan_install`]，公钥显式注入（daemon per-instance 覆盖）：不读进程环境——
+/// 同进程并行测试下 env 会串扰 §12.5 插件验签链（`TENON_LAYA_PUBLIC_KEY` 是其回退项）。
+pub fn plan_install_with_key(
+    manifest: &RegistryManifest,
+    public_key: Option<&str>,
+) -> Result<InstallPlan> {
     let entry = &manifest.laya;
-    match crate::release_public_key() {
+    match public_key {
         None => {
             if entry.signature.is_empty() || entry.sha256.len() != 64 {
                 return Err(LayaError::Manifest("清单缺签名或 sha256".into()));
             }
         }
         Some(pk) => {
-            if !verify_signature(&entry.sha256, &entry.signature, &pk) {
+            if !verify_signature(&entry.sha256, &entry.signature, pk) {
                 return Err(LayaError::BadSignature);
             }
         }
@@ -84,7 +94,7 @@ pub fn plan_install(manifest: &RegistryManifest) -> Result<InstallPlan> {
     })
 }
 
-/// 下载模型体并校验 SHA-256（**须已过 D 级审批**；返回待安装字节）。
+/// 下载模型体并校验 SHA-256（返回待安装字节，由调用方 [`crate::LayaRuntime::install`] 落盘热装载）。
 pub async fn download_model(plan: &InstallPlan) -> Result<Vec<u8>> {
     let resp = reqwest::Client::new()
         .get(&plan.url)

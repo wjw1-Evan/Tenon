@@ -30,6 +30,7 @@ async fn start_daemon(script: Vec<ScriptedReply>) -> (tempfile::TempDir, u16, St
     options.default_provider = "mock".into();
     options.snapshots_root = Some(dir.path().join("snapshots"));
     options.endpoint_path = Some(dir.path().join("daemon.endpoint"));
+    options.laya_models_dir = Some(dir.path().join("models/laya"));
     let handle = serve(options).await.unwrap();
     (dir, handle.port, handle.token)
 }
@@ -1812,4 +1813,149 @@ async fn settings_panel_roundtrip_validation_and_persistence() {
         s["session_id"].is_string(),
         "未信任项目 auto 应回退交互档建会话"
     );
+}
+
+// ---------- Laya 自动下载并启用（§9.8 v1.71） ----------
+
+const LAYA_STARTER_MODEL: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../tenon-laya/models/laya-starter-v1.json"
+);
+
+/// 固定测试密钥：所有用例同一公钥，避免并行用例的公钥环境竞争。
+fn laya_test_signer() -> ed25519_dalek::SigningKey {
+    ed25519_dalek::SigningKey::from_bytes(&[7u8; 32])
+}
+
+/// 本地静态 registry 夹具：`/registry/laya.json` 签名清单 + `/model.json` 模型体。
+/// 返回（registry URL, 验签公钥 hex）；公钥经 `DaemonOptions.laya_public_key`
+/// 注入 daemon——不写进程 env（`TENON_LAYA_PUBLIC_KEY` 是 §12.5 插件验签链的
+/// 回退项，写 env 会串扰同进程并行测试）。
+async fn spawn_laya_registry() -> (String, String) {
+    use ed25519_dalek::Signer;
+
+    let model = std::fs::read(LAYA_STARTER_MODEL).unwrap();
+    let sha = tenon_laya::sha256_hex(&model);
+    let sk = laya_test_signer();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let manifest = serde_json::json!({
+        "laya": {
+            "version": 1,
+            "sha256": sha,
+            "signature": hex::encode(sk.sign(sha.as_bytes()).to_bytes()),
+            "url": format!("http://{addr}/model.json"),
+        }
+    });
+    let public_key = hex::encode(sk.verifying_key().to_bytes());
+    let app = axum::Router::new()
+        .route(
+            "/registry/laya.json",
+            axum::routing::get(move || {
+                let manifest = manifest.clone();
+                async move { axum::Json(manifest) }
+            }),
+        )
+        .route(
+            "/model.json",
+            axum::routing::get(move || {
+                let model = model.clone();
+                async move { model }
+            }),
+        );
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}/registry/laya.json"), public_key)
+}
+
+/// 轮询 /models 直到 Laya 下载装载完成（自动下载为后台任务）。
+async fn wait_laya_downloaded(port: u16, token: &str) -> serde_json::Value {
+    let client = client_with_token(token);
+    for _ in 0..50 {
+        if let Ok(r) = client.get(format!("{}/models", base(port))).send().await {
+            if let Ok(v) = r.json::<serde_json::Value>().await {
+                if v["laya"]["downloaded"] == serde_json::json!(true) {
+                    return v;
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("Laya 自动下载未在 5s 内完成");
+}
+
+#[tokio::test]
+async fn laya_auto_downloads_and_enables_on_startup() {
+    let (registry, public_key) = spawn_laya_registry().await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut options = DaemonOptions::in_memory();
+    options.endpoint_path = Some(dir.path().join("daemon.endpoint"));
+    options.laya_models_dir = Some(dir.path().join("models/laya"));
+    options.laya_registry_url = Some(registry);
+    options.laya_public_key = Some(public_key);
+    options.config.models.laya.auto_download = true;
+    let handle = serve(options).await.unwrap();
+
+    let models = wait_laya_downloaded(handle.port, &handle.token).await;
+    assert!(
+        models["laya"]["version"].as_array().is_some(),
+        "装载后应有模型版本：{models}"
+    );
+}
+
+#[tokio::test]
+async fn laya_auto_download_disabled_stays_unloaded() {
+    let (registry, _public_key) = spawn_laya_registry().await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut options = DaemonOptions::in_memory();
+    options.endpoint_path = Some(dir.path().join("daemon.endpoint"));
+    options.laya_models_dir = Some(dir.path().join("models/laya"));
+    options.laya_registry_url = Some(registry);
+    // in_memory() 默认 auto_download = false（§9.8：测试基座不出网）
+    let handle = serve(options).await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let client = client_with_token(&handle.token);
+    let models: serde_json::Value = client
+        .get(format!("{}/models", base(handle.port)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        models["laya"]["downloaded"],
+        serde_json::json!(false),
+        "auto_download=false 不得自动下载：{models}"
+    );
+}
+
+#[tokio::test]
+async fn laya_manual_download_installs_without_approval() {
+    // v1.71：/models/laya/download 去审批化——直接下载安装，不再两阶段 D 卡
+    let (registry, _public_key) = spawn_laya_registry().await;
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    let r = client
+        .post(format!("{}/models/laya/download", base(port)))
+        .json(&serde_json::json!({ "registry_url": registry }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body["installed"], serde_json::json!(true));
+
+    let models: serde_json::Value = client
+        .get(format!("{}/models", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(models["laya"]["downloaded"], serde_json::json!(true));
 }

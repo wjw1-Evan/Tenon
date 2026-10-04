@@ -82,6 +82,9 @@ async fn main() -> anyhow::Result<()> {
         default_provider: provider,
         snapshots_root: None,
         endpoint_path: None,
+        laya_registry_url: None,
+        laya_public_key: None,
+        laya_models_dir: None,
     };
     if let Some(proj) = project {
         let mut store = tenon_store::Store::open(

@@ -30,6 +30,7 @@ pub struct DaemonHandle {
 /// 启动 daemon（绑定 127.0.0.1 随机端口）。
 pub async fn serve(options: DaemonOptions) -> std::io::Result<DaemonHandle> {
     let lan_bind = options.lan_bind;
+    let laya_registry_url = options.laya_registry_url.clone();
     let manage_endpoint_file = options.endpoint_path.is_some() || options.db_path.is_some();
     let endpoint_path = options
         .endpoint_path
@@ -49,6 +50,9 @@ pub async fn serve(options: DaemonOptions) -> std::io::Result<DaemonHandle> {
         Err(e) => tracing::error!("崩溃恢复扫描失败: {e}"),
     }
     let mut app: Router = routes::build_router(state.clone());
+
+    // Laya 自动下载并启用（§9.8 v1.71）：启动即后台拉取，失败静默回退
+    state.spawn_laya_auto_download(laya_registry_url);
 
     // L4 增量索引 worker（§10.1）：项目激活 / watcher 变更驱动。
     if let Some(requests) = state.take_l4_requests() {

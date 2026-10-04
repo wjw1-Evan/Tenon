@@ -1840,67 +1840,25 @@ async fn list_models(State(state): State<Arc<DaemonState>>) -> Response {
 
 #[derive(Deserialize)]
 struct LayaDownloadBody {
-    /// 第一次调用：省略 approval_id → 创建 D 级审批卡并返回安装计划；
-    /// 第二次调用：携带已批准的 approval_id → 执行下载与安装。
-    #[serde(default)]
-    approval_id: Option<String>,
+    /// registry 覆盖（测试 / 调试；None = 官方静态 registry）。
     #[serde(default)]
     registry_url: Option<String>,
 }
 
+/// 手动下载 / 升级 Laya（§9.8 v1.71）：与启动自动下载同链路——签名清单校验 →
+/// 下载（SHA-256 校验）→ 安装热装载；无审批卡（产品自管签名资产，非代理动作）。
 async fn laya_download(
     State(state): State<Arc<DaemonState>>,
     Json(body): Json<LayaDownloadBody>,
 ) -> Response {
-    let Some(approval_id) = body.approval_id else {
-        let registry =
-            match tenon_laya::registry::fetch_manifest(body.registry_url.as_deref()).await {
-                Ok(m) => m,
-                Err(e) => return api_err(StatusCode::BAD_GATEWAY, format!("registry 不可达: {e}")),
-            };
-        let plan = match tenon_laya::registry::plan_install(&registry) {
-            Ok(p) => p,
-            Err(e) => return api_err(StatusCode::BAD_GATEWAY, format!("清单校验失败: {e}")),
-        };
-        let approval = {
-            let mut st = state.store.lock().await;
-            st.insert_approval(
-                "system:laya",
-                &format!(
-                    "下载本地决策模型 Laya v{}（SHA-256 {}…）",
-                    plan.version,
-                    &plan.sha256[..plan.sha256.len().min(12)]
-                ),
-                tenon_store::Level::D,
-            )
-            .expect("insert approval")
-        };
-        return Json(json!({
-            "approval_id": approval.id,
-            "level": "d",
-            "plan": plan,
-        }))
-        .into_response();
-    };
-    let approved = {
-        let mut st = state.store.lock().await;
-        st.approval(&approval_id)
-            .ok()
-            .flatten()
-            .map(|a| matches!(a.decision, Some(tenon_store::ApprovalDecision::Once)))
-            .unwrap_or(false)
-    };
-    if !approved {
-        return api_err(
-            StatusCode::FORBIDDEN,
-            "D 级审批未通过（§9.8：下载须一次审批）",
-        );
-    }
     let registry = match tenon_laya::registry::fetch_manifest(body.registry_url.as_deref()).await {
         Ok(m) => m,
         Err(e) => return api_err(StatusCode::BAD_GATEWAY, format!("registry 不可达: {e}")),
     };
-    let plan = match tenon_laya::registry::plan_install(&registry) {
+    let plan = match tenon_laya::registry::plan_install_with_key(
+        &registry,
+        state.laya_public_key.as_deref(),
+    ) {
         Ok(p) => p,
         Err(e) => return api_err(StatusCode::BAD_GATEWAY, format!("清单校验失败: {e}")),
     };
