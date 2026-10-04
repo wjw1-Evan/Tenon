@@ -288,7 +288,7 @@ pub struct Plugin {
     pub installed_at: String,
 }
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 const DDL: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -411,7 +411,31 @@ CREATE TABLE IF NOT EXISTS ui_prefs (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- 项目级 UI 状态（§7.2：布局按项目记忆；§6.4 多项目互不污染）
+CREATE TABLE IF NOT EXISTS project_ui_state (
+    project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    state_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 "#;
+
+/// 入库用 L4 切片记录。
+#[derive(Debug, Clone)]
+pub struct L4ChunkRecord {
+    pub symbol: Option<String>,
+    pub text: String,
+    pub embedding: Vec<f32>,
+}
+
+/// L4 embedding 召回结果。
+#[derive(Debug, Clone, Serialize)]
+pub struct L4SearchHit {
+    pub id: i64,
+    pub path: String,
+    pub symbol: String,
+    pub score: f32,
+}
 
 /// 存储门面。内部连接由调用方保证单线程访问（daemon 侧以互斥锁包裹）。
 pub struct Store {
@@ -753,6 +777,31 @@ impl Store {
         Ok(())
     }
 
+    /// 读项目级 UI 状态 JSON；None = 尚未保存。
+    pub fn project_ui_state(&mut self, project_id: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT state_json FROM project_ui_state WHERE project_id = ?1",
+                [project_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// 写项目级 UI 状态 JSON（upsert）。
+    pub fn set_project_ui_state(&mut self, project_id: &str, state_json: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO project_ui_state(project_id, state_json, updated_at)
+             VALUES(?1, ?2, ?3)
+             ON CONFLICT(project_id) DO UPDATE SET
+               state_json = excluded.state_json,
+               updated_at = excluded.updated_at",
+            params![project_id, state_json, Self::now()],
+        )?;
+        Ok(())
+    }
+
     // ---------- checkpoints ----------
 
     pub fn insert_checkpoint(
@@ -917,6 +966,18 @@ impl Store {
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
+    /// 项目待审批摘要（项目任务中心 §6.4 / §7.1）。
+    pub fn pending_project_approvals(&mut self, project_id: &str) -> Result<Vec<Approval>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, session_id, project_id, action, level, decision, created_at, decided_at
+             FROM approvals
+             WHERE project_id = ?1 AND decision IS NULL
+             ORDER BY created_at ASC",
+        )?;
+        let rows = stmt.query_map([project_id], row_to_approval)?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
     // ---------- model_usage（成本归因 §11） ----------
 
     pub fn record_model_usage(
@@ -974,6 +1035,17 @@ impl Store {
             "SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), COALESCE(SUM(cost_usd),0.0)
              FROM model_usage WHERE session_id = ?1",
             [session_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .map_err(Into::into)
+    }
+
+    /// 项目累计（项目任务中心 / 成本看板 §6.4 / §11）。
+    pub fn project_usage_totals(&mut self, project_id: &str) -> Result<(i64, i64, f64)> {
+        self.conn.query_row(
+            "SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), COALESCE(SUM(cost_usd),0.0)
+             FROM model_usage WHERE project_id = ?1",
+            [project_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .map_err(Into::into)
@@ -1134,13 +1206,67 @@ impl Store {
         Ok(self.conn.last_insert_rowid())
     }
 
+    /// 原子替换某个文件的全部 L4 切片（watcher 增量更新）。
+    pub fn replace_l4_file(
+        &mut self,
+        project_id: &str,
+        path: &str,
+        chunks: &[L4ChunkRecord],
+    ) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "DELETE FROM l4_chunks WHERE project_id = ?1 AND path = ?2",
+            params![project_id, path],
+        )?;
+        let now = Self::now();
+        for chunk in chunks {
+            tx.execute(
+                "INSERT INTO l4_chunks (project_id, path, symbol, text, embedding, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    project_id,
+                    path,
+                    chunk.symbol,
+                    chunk.text,
+                    f32_slice_to_blob(&chunk.embedding),
+                    now
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn delete_l4_file(&mut self, project_id: &str, path: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM l4_chunks WHERE project_id = ?1 AND path = ?2",
+            params![project_id, path],
+        )?;
+        Ok(())
+    }
+
+    pub fn clear_l4_project(&mut self, project_id: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM l4_chunks WHERE project_id = ?1", [project_id])?;
+        Ok(())
+    }
+
+    pub fn l4_chunk_count(&mut self, project_id: &str) -> Result<u64> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM l4_chunks WHERE project_id = ?1",
+            [project_id],
+            |r| r.get(0),
+        )?;
+        Ok(count.max(0) as u64)
+    }
+
     /// 暴力余弦召回（切片级规模够用；sqlite-vec 虚表随 L4/M1 落地替换，§10.1）。
     pub fn l4_search(
         &mut self,
         project_id: &str,
         query: &[f32],
         top_k: usize,
-    ) -> Result<Vec<(i64, String, String, f32)>> {
+    ) -> Result<Vec<L4SearchHit>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, path, COALESCE(symbol,''), embedding FROM l4_chunks
              WHERE project_id = ?1 AND embedding IS NOT NULL",
@@ -1158,9 +1284,18 @@ impl Store {
             let (id, path, symbol, blob) = row?;
             let v = blob_to_f32_slice(&blob);
             let score = cosine(query, &v);
-            scored.push((id, path, symbol, score));
+            scored.push(L4SearchHit {
+                id,
+                path,
+                symbol,
+                score,
+            });
         }
-        scored.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         scored.truncate(top_k);
         Ok(scored)
     }
@@ -1357,10 +1492,21 @@ mod tests {
         s.set_project_trusted(&p.id, true).unwrap();
         let p3 = s.project(&p.id).unwrap().unwrap();
         assert!(p3.trusted);
+
+        // 项目级 UI 状态 upsert（§7.2 / §7.5）
+        assert!(s.project_ui_state(&p.id).unwrap().is_none());
+        s.set_project_ui_state(&p.id, r#"{"leftWidth":320}"#)
+            .unwrap();
+        s.set_project_ui_state(&p.id, r#"{"leftWidth":360,"tabs":["a.rs"]}"#)
+            .unwrap();
+        assert_eq!(
+            s.project_ui_state(&p.id).unwrap().as_deref(),
+            Some(r#"{"leftWidth":360,"tabs":["a.rs"]}"#)
+        );
     }
 
     #[test]
-    fn migrates_v1_rows_to_project_scoped_v2() {
+    fn migrates_v1_rows_to_current_schema() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("db.sqlite");
         let project_id = "project-v1";
@@ -1408,7 +1554,7 @@ mod tests {
                 .query_row("SELECT version FROM schema_version", [], |r| r
                     .get::<_, i64>(0))
                 .unwrap(),
-            2
+            3
         );
         assert_eq!(store.events(session_id).unwrap()[0].project_id, project_id);
         assert_eq!(
@@ -1540,6 +1686,9 @@ mod tests {
         let (inp, out, cost) = s.session_usage_totals(&sess.id).unwrap();
         assert_eq!((inp, out), (300, 130));
         assert!((cost - 0.03).abs() < 1e-9);
+        let (pinp, pout, pcost) = s.project_usage_totals(&p.id).unwrap();
+        assert_eq!((pinp, pout), (300, 130));
+        assert!((pcost - 0.03).abs() < 1e-9);
 
         // 月度聚合为永久表
         let monthly = s.monthly_usage().unwrap();
@@ -1553,6 +1702,43 @@ mod tests {
     }
 
     #[test]
+    fn pending_approvals_are_project_scoped() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let sess = s.create_session(&p.id, "mock").unwrap();
+        let a = s
+            .insert_approval(&sess.id, "http example.com", Level::C)
+            .unwrap();
+        let pending = s.pending_project_approvals(&p.id).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, a.id);
+        s.decide_approval(&a.id, ApprovalDecision::Once).unwrap();
+        assert!(s.pending_project_approvals(&p.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn l4_replace_and_delete_file_scopes_updates() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let embedding = [0.9f32, 0.1, 0.0, 0.0].to_vec();
+        s.replace_l4_file(
+            &p.id,
+            "src/app.rs",
+            &[L4ChunkRecord {
+                symbol: Some("login".into()),
+                text: "pub fn login authenticate".into(),
+                embedding,
+            }],
+        )
+        .unwrap();
+        assert_eq!(s.l4_chunk_count(&p.id).unwrap(), 1);
+        s.delete_l4_file(&p.id, "src/app.rs").unwrap();
+        assert_eq!(s.l4_chunk_count(&p.id).unwrap(), 0);
+    }
+
+    #[test]
     fn l4_vector_search_ranks_by_cosine() {
         let mut s = mem();
         let dir = tempfile::tempdir().unwrap();
@@ -1563,8 +1749,8 @@ mod tests {
             .unwrap();
         let hits = s.l4_search(&p.id, &[0.9, 0.1, 0.0], 2).unwrap();
         assert_eq!(hits.len(), 2);
-        assert_eq!(hits[0].1, "a.rs", "最相近的切片应排第一");
-        assert!(hits[0].3 > hits[1].3);
+        assert_eq!(hits[0].path, "a.rs", "最相近的切片应排第一");
+        assert!(hits[0].score > hits[1].score);
     }
 
     #[test]

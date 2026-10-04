@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v1.18** |
-| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.18） |
+| 版本 | **v1.28** |
+| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.28） |
 | 状态 | 定稿（v1.10 决策闭环），M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 | 历史评审 | v0.1 / v0.3 两轮共 41 项、v1.0 复审 21 项问题的结论已全部并入本方案（过程文档已清理） |
@@ -50,6 +50,17 @@
 | **v1.16** | **§7.5 新增外观档：深色（默认）/ 浅色 / 跟随系统三档；`data-theme` 驱动 CSS 变量整套换色；偏好双写——localStorage 快路径 + daemon `ui_prefs` 权威存储（跨启动 / 跨端；daemon 端口动态，localStorage 按 origin 隔离不可跨启动）** |
 | **v1.17** | **实施期同步（§6.4 / §8.1 / §15）：ProjectRuntime 落地 watcher 懒启动 / 活跃度追踪 / 60s 回收扫描；项目关闭与空闲回收会停止 watcher 并关闭该项目 LSP hosts；WS 支持 `?project_id=` 过滤并推送 project-scoped `created / modified / removed` 文件事件；Agent lsp_query 与验证诊断共享同一 LSP 宿主；项目任务中心补充待审批 / 脏缓冲 / 项目成本摘要** |
 | **v1.18** | **§8.2 新增自动保存：编辑停顿 1s 去抖写盘，Cmd/Ctrl+S 立即保存；保存成功解除脏缓冲（§8.6 语义不变），tab 未保存圆点指示，失败保留待重试** |
+| **v1.19** | **§8.1 / §8.5 实施同步：UI 订阅 active project 的 WS 文件事件；文件树按事件版本刷新；已打开且无未保存编辑的 tab 回读外部 / Agent 改动；removed 事件关闭 tab 并修正 active path；自动保存中的缓冲不回读，避免覆盖用户输入** |
+| **v1.20** | **§8.1 实施同步：文件树从单层根列表升级为懒加载层级树；`GET /project/:id/tree?path=` 按目录返回并 canonicalize + 项目前缀校验；UI 目录节点懒展开、watcher 版本刷新已展开目录，测试覆盖嵌套加载与越界拒绝** |
+| **v1.21** | **§8.1 实施同步：文件树新增新建文件 / 新建目录 / 重命名 / 删除操作，复用 project-scoped `/file/ops` 写守卫；创建与重命名使用可访问 modal，删除显式确认；App 同步 tab path、active path、unsaved 标记与 AI 行标记；测试覆盖创建与删除回调** |
+| **v1.22** | **§7.4 实施同步：Cmd/Ctrl+P 从命令面板分离为 fuzzy file finder；daemon 新增 project-scoped `/files/fuzzy`（gitignore-aware 全树 + 本地打分 + 100 默认上限）；UI 120ms 防抖、键盘上下 / Enter、`:line` 解析与 Monaco `revealLineInCenter`；命令面板继续专注命令** |
+| **v1.23** | **§8.1 实施同步：全局替换从预览闭环为可用操作——`POST /search/replace` 只应用选定文件，写守卫 canonicalize / 项目边界 / 大小限制，dirty buffer 显式跳过；先全量物化再写盘并返回逐文件 diff / 失败；SearchPanel 提供命中行跳转、按文件选择、替换预览与应用；daemon endpoint 文件支持测试隔离 + 20s 心跳，修复 sender wait_for 编译错误** |
+| **v1.24** | **§7.2 / §7.5 实施同步：SQLite schema v3 新增 project_ui_state；`GET/PUT /project/:id/ui-state` 持久化项目布局、打开 tab、active path、bottom tab 与 session；App 激活项目时恢复并在 600ms 防抖后保存；v1→current 迁移测试更新；§14.2 数据模型同步** |
+| **v1.25** | **§7.4 / §8.5 实施同步：fuzzy finder 支持 `@query` workspace symbols；通过 active file 选择语言服务，调用共享 LSP `workspace_symbol`；解析 LSP `file://` location 到项目相对 path + 1-based line，Enter 直接跳转；缺失 active file 时明确报错；中英文案与 UI 测试同步** |
+| **v1.26** | **§7.2 / §15 设置面板落地（本期子集）：外观 / 语言 / 会话默认档 / 代理参数（首改缓冲、审批超时、命令超时）；`PUT /settings` 校验并持久化 `~/.tenon/settings.json`（0600，启动合并），新会话即时生效；`mode=auto` 仅对已信任项目生效（未信任回退交互档）；入口 Cmd/Ctrl+, + 命令面板** |
+| **v1.27** | **§7.2 / §7.5 UI 布局重设计：左侧新增 activity rail（文件 / 搜索 / 语言包三视图单显，active 再点折叠侧栏，`tenon:sideView` localStorage 记忆）；侧栏不再纵向堆叠三组件；顶栏精简（副标题移除、模型路由紧凑化——模型下拉 + ✦ 路由建议气泡）；Monaco 深浅双主题与设计令牌同步（tenon-dark / tenon-light）；状态点运行态呼吸动画（data-state 驱动）** |
+| **v1.28** | **§10.1 / §14.2 实施同步：L4 本地索引落地——`tenon-fs::l4` 本地确定性 embedding + symbol / line chunking；SQLite `replace_l4_file / delete_l4_file / clear_l4_project / l4_search / l4_chunk_count`；ProjectRuntime 激活触发全量 gitignore-aware scan；watcher 变更 500ms 去抖原子增量替换；`GET /project/:id/l4/search|stats`；集成测试覆盖初始索引、命中与增量更新** |
+
 
 ---
 
@@ -320,22 +331,26 @@ GlobalScheduler（全局并发 / 成本 / 审批 / 通知 / 项目任务中心�
 | 审批卡片 | C/D 级动作 | 级别、动作详情、目标域名 / diff 预览、允许一次 / 本会话 / 拒绝 |
 | Checkpoint 时间轴 | 侧栏 | 事件流 + 快照点，任意回滚 / 撤销回滚（unrevert） |
 | 语言包安装向导 | 检测到语言缺包 | 一键安装、运行时检测与官方指引 |
-| 设置 | 全局 | 模型 / 语言包 / 插件 / 权限 / 隐私 / 更新 |
+| 设置 | 全局（Cmd/Ctrl+, 或命令面板） | 外观档（§7.5）/ 语言（§4.2）/ 会话默认档 / 代理参数（首改缓冲、审批超时、命令超时）；本期落地，模型 / 语言包 / 插件 / 权限 / 隐私 / 更新随后续面板分区 |
 | 命令面板 | Cmd+Shift+P | 全部命令可达（无障碍要求） |
 | Evals 报告 | M3 | 五指标 + 对比版本 |
 
 ### 7.2 主工作区布局
 
 ```text
-┌──────────┬──────────────────────────┬────────────────┐
-│ 项目切换器│ 文件树（active project）    │ 编辑器（多标签 / 分栏）│
-│ 任务中心  │ 搜索 / 行内 AI / diff       │ 代理会话 / 审批  │
-├──────────┴──────────────────────────┴────────────────┤
-│        诊断面板 · 测试证据 · checkpoint 时间轴           │
-└───────────────────────────────────────────────────────┘
+┌──┬─────────┬──────────────────────┬──────────────┐
+│R │ 侧栏视图  │ 编辑器（多标签 / 分栏）  │ 代理会话 / 审批 │
+│a │（单视图）  │                      │              │
+│i ├─────────┴──────────────────────┴──────────────┤
+│l │      诊断面板 · 测试证据 · checkpoint 时间轴      │
+└──┴───────────────────────────────────────────────┘
 ```
 
+**Activity rail（v1.27）**：最左侧 46px 图标栏承载侧栏三视图——文件树 / 全局搜索 / 语言包向导，**单视图显示**（不再纵向堆叠）；点击图标切换视图并展开侧栏，再次点击 active 视图折叠侧栏；当前视图记忆于 `localStorage("tenon:sideView")`。侧栏顶部显示当前视图名（小写字距标签）。顶栏保持单行精简：品牌印记、项目切换、打开路径、模型路由（下拉 + ✦ 路由建议气泡，建议输入收进气泡避免常驻占位）、外观档、语言。
+
 三区均可全屏 / 折叠 / 左右互换；布局按项目记忆。项目切换器可以是顶栏下拉，也可以把另一个项目停靠为独立分栏 / 窗口；每个窗格维护独立 active `project_id`。底部任务中心显示所有打开项目的代理状态，卡片必须带项目名 / 根目录短名，避免多项目通知混淆。
+
+**项目状态持久化**：每个项目独立保存左 / 右 / 底部尺寸、侧栏与底部可见性、bottom tab、打开 tab、active path 和可复用 session；激活项目时恢复，状态变更 600ms 防抖写入 daemon；缺失文件自动剔除，多项目状态互不污染（§6.4）。
 
 ### 7.3 关键交互流
 
@@ -368,7 +383,10 @@ GlobalScheduler（全局并发 / 成本 / 审批 / 通知 / 项目任务中心�
 - **核心组件**：会话流卡片、证据卡片、审批卡片、诊断条、AI 修改高亮区、时间轴节点、语言包安装卡；
 - **AI 改动可视**：所有代理写入的行带「AI」角标，直到用户编辑该区域或确认；
 - **外观档**：深色（默认）/ 浅色 / 跟随系统（`prefers-color-scheme`）三档；顶栏切换即时生效，`data-theme` 属性驱动 CSS 变量整套换色，状态色两套均可读；偏好双写——`localStorage` 为快路径，daemon `ui_prefs` 存储（§14.1）为跨启动 / 跨端（桌面 + 浏览器）权威（daemon 端口动态，localStorage 按 origin 隔离不可跨启动）；
+- **Monaco 主题同步（v1.27）**：编辑器注册 `tenon-dark` / `tenon-light` 两套主题（背景 / 行高亮 / 行号 / 光标与 §7.5 令牌一致），`data-theme` 属性变化经 MutationObserver 联动切换；
 - 全键盘可达；中英文案外置。
+- **Fuzzy finder**：Cmd/Ctrl+P 打开 project-scoped 文件查找；120ms 防抖调用 `/files/fuzzy`（gitignore-aware + fuzzy score），方向键 / Enter 全键盘可达；`path:line` 解析行号并由 Monaco `revealLineInCenter` 定位；
+- **Workspace symbols**：`@query` 切换符号模式；以 active file 选择共享 LSP provider，请求 `workspace_symbol`；LSP URI 归一为项目相对路径 + 1-based line 后直接跳转；无 active file 时不猜测 provider，明确提示；
 
 ---
 
@@ -377,9 +395,13 @@ GlobalScheduler（全局并发 / 成本 / 审批 / 通知 / 项目任务中心�
 ### 8.1 文件管理
 
 - 文件树：以 active `project_id` 为唯一根；新建 / 重命名 / 移动 / 删除 / 拖拽 + git 状态装饰；
+- **项目内 CRUD**：文件树提供新建文件 / 新建目录 / 重命名 / 删除；操作走 `/file/ops` 写守卫与 watcher 同步；创建 / 重命名用可访问 modal，删除显式确认；打开的 tab、unsaved 标记与 AI 行标记随路径变化同步；
+- **懒加载层级树**：目录节点展开时按 `path` 请求子层；daemon canonicalize + 项目前缀校验，watcher 事件版本刷新已展开层，避免大仓库首屏全量遍历；
+- **watcher 驱动 UI 同步**：文件树订阅 active project 的 ProjectRuntime 文件事件并即时刷新；已打开且无未保存编辑的 tab 回读修改，removed 事件关闭 tab；自动保存中的缓冲不回读（§8.6）；
 - **LSP 感知重命名 / 移动**：跨文件引用更新（B 级 + checkpoint 可回滚）；
 - fuzzy 查找（Cmd+P 文件 / 符号 / 行号）；
 全局搜索替换：核心服务 ripgrep 驱动，正则 / 过滤 / 多文件替换前 diff 预览；
+- **安全多文件替换**：用户可选文件后应用；daemon 走写守卫与大小限制，先物化全部替换结果；dirty buffer 显式跳出（§8.6），不静默覆盖；响应包含逐文件 replacements、diff、失败 / skipped 原因，成功后触发 watcher 刷新；
 - 多标签、分栏、布局记忆；源代码视图（分支、改动列表、行内 blame）；
 - 同一窗口可停靠多个项目分栏；标签携带项目徽标，跨项目拖拽默认禁止；
 - 大文件（默认 >10MB）自动只读分块加载。
@@ -794,7 +816,7 @@ registry 检索 → 展示**权限 diff**（相对已装版本新增权限高亮
 | 方法 | 路径 | 用途 |
 |---|---|---|
 | GET / POST | `/plugins` | 插件与语言包管理（权限 diff、安装、升级） |
-| GET / PUT | `/settings` | 全局 / 项目设置（模型、权限、隐私、更新） |
+| GET / PUT | `/settings` | 全局设置。GET 返回合并后的生效值；PUT 接受已知键子集（`session.mode` / `session.first_edit_buffer_ms` / `session.approval_timeout_s` / `exec.command_timeout_s`），校验后写入 `~/.tenon/settings.json`（0600）并即时生效——**新会话**按新值构建（既有会话保持各自配置）；`mode=auto` 仅对已 TOFU 信任项目生效，未信任自动回退交互档 |
 | GET | `/models` | 模型清单与 Laya 状态（版本 / 已下载 / 加载 / 设备，§9.8） |
 | GET | `/costs` | 成本归因（任务 / 会话 / 项目 / 日级） |
 | POST | `/ws-ticket` | 一次性 WS 票据 |

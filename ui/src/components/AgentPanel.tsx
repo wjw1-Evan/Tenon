@@ -132,6 +132,7 @@ export function AgentPanel({
         <span
           className="state-dot"
           style={{ background: STATE_COLORS[status] ?? "#888" }}
+          data-state={status}
           data-testid="state-dot"
           aria-label={status}
         />

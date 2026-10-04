@@ -44,6 +44,8 @@ pub struct AgentConfig {
     pub max_tool_rounds: u32,
     /// Laya 本地决策模型（§9.8；None = 未启用，各集成点回退现状）。
     pub laya: Option<Arc<tenon_laya::LayaRuntime>>,
+    /// daemon 共享 LSP 宿主（§8.5 / §9.2：编辑器与代理同实例）。
+    pub lsp: Option<Arc<tenon_lsp::LspManager>>,
     /// 脏缓冲注册表（§8.6 人机共编；None = daemon 未接入）。
     pub dirty: Option<Arc<tenon_fs::DirtyBufferRegistry>>,
     /// 团队策略工具黑名单（M3：跨会话只收窄）。
@@ -70,6 +72,7 @@ impl AgentConfig {
             command_timeout_s: 120,
             max_tool_rounds: 24,
             laya: None,
+            lsp: None,
             dirty: None,
             team_denied_tools: Vec::new(),
             working_dir: None,
@@ -258,6 +261,7 @@ impl AgentSession {
         tool_ctx.dirty = config.dirty.clone();
         tool_ctx.team_denied_tools = config.team_denied_tools.clone();
         tool_ctx.laya = config.laya.clone();
+        tool_ctx.lsp = config.lsp.clone();
         let (control_tx, control_rx) = mpsc::unbounded_channel();
         let (events_tx, _) = broadcast::channel(1024);
         let circuit_limits = config.circuit;
@@ -1103,26 +1107,36 @@ impl AgentSession {
     /// 验证（§9.4）：测试双通道；无测试清单走降级通道（低强度）。
     async fn verify(&self, changed: Vec<String>) -> (bool, String, bool) {
         let root = self.config.project_root.clone();
+        let command_cwd = match &self.config.working_dir {
+            Some(dir) if dir.is_absolute() => dir.clone(),
+            Some(dir) => root.join(dir),
+            None => root.clone(),
+        };
         if let Some(cmd) = crate::executor::detect_test_command(&root) {
             let spec = tenon_sandbox::SandboxSpec::Offline {
                 project_root: root.clone(),
             };
             return match tenon_sandbox::exec_command(
                 &cmd,
-                &root,
+                &command_cwd,
                 Duration::from_secs(self.config.command_timeout_s),
                 &spec,
             ) {
-                Ok(out) => (
-                    out.success(),
-                    format!(
+                Ok(out) => {
+                    let mut ok = out.success();
+                    let mut detail = format!(
                         "$ {cmd}\nexit={}\n{}{}",
                         out.exit_code.unwrap_or(-1),
                         out.stdout.trim(),
                         out.stderr.trim()
-                    ),
-                    false,
-                ),
+                    );
+                    if let Some((lsp_ok, lsp_detail)) = self.lsp_diagnostics(&changed).await {
+                        ok &= lsp_ok;
+                        detail.push_str("\nLSP: ");
+                        detail.push_str(&lsp_detail);
+                    }
+                    (ok, detail, false)
+                }
                 Err(e) => (false, format!("测试执行失败: {e}"), false),
             };
         }
@@ -1144,7 +1158,57 @@ impl AgentSession {
             }
         }
         detail.push_str("\n验证强度：低（建议补测试）");
+        if let Some((lsp_ok, lsp_detail)) = self.lsp_diagnostics(&changed).await {
+            ok &= lsp_ok;
+            detail.push_str("\nLSP: ");
+            detail.push_str(&lsp_detail);
+        }
         (ok, detail, true)
+    }
+
+    /// LSP 诊断通道（§9.4）：只在共享宿主接入时启用；最多检查 10 个改动文件。
+    async fn lsp_diagnostics(&self, changed: &[String]) -> Option<(bool, String)> {
+        let lsp = self.config.lsp.as_ref()?;
+        let mut issues = Vec::new();
+        let mut queried = 0usize;
+        for file in changed.iter().take(10) {
+            let result = lsp
+                .request(&self.config.project_root, file, "diagnostics", 0, 0, None)
+                .await;
+            match result {
+                Ok(value) => {
+                    queried += 1;
+                    for item in value
+                        .get("items")
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default()
+                    {
+                        let severity = item["severity"].as_i64().unwrap_or(1);
+                        if severity <= 2 {
+                            issues.push(format!(
+                                "{}: {}",
+                                file,
+                                item["message"].as_str().unwrap_or("diagnostic")
+                            ));
+                        }
+                    }
+                }
+                Err(tenon_lsp::LspManagerError::BadPath(path)) => {
+                    issues.push(format!("路径越界: {path}"));
+                }
+                Err(tenon_lsp::LspManagerError::PackUnavailable(_)) => {}
+                Err(e) => issues.push(format!("{file}: {e}")),
+            }
+        }
+        if queried == 0 && issues.is_empty() {
+            return None;
+        }
+        if issues.is_empty() {
+            Some((true, format!("诊断通过（{queried} 个文件）")))
+        } else {
+            Some((false, issues.join("\n")))
+        }
     }
 
     /// 回滚到最近 checkpoint（§15 control rollback）：

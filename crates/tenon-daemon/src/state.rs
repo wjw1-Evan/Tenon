@@ -1,9 +1,12 @@
 //! daemon 状态：store / 会话表 / provider 注册表 / 配置。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::sync::{Mutex, Semaphore};
+
+use tenon_store::L4ChunkRecord;
 
 use crate::pairing::PairingStore;
 use tenon_agent::session::{AgentSession, ProjectWriteLock, TaskOutcome};
@@ -14,6 +17,110 @@ use tenon_models::ModelProvider;
 use tenon_store::Store;
 
 use crate::auth::TicketStore;
+
+/// 设置面板运行时覆盖（§7.2 / §15）：known-keys 子集。
+/// 持久化 `~/.tenon/settings.json`，**新会话**生效（既有会话保持各自配置）。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SettingsOverrides {
+    /// interactive | auto
+    pub mode: Option<String>,
+    pub first_edit_buffer_ms: Option<u64>,
+    pub approval_timeout_s: Option<u64>,
+    pub command_timeout_s: Option<u64>,
+}
+
+impl SettingsOverrides {
+    /// 校验并合并 PUT body；非法值返回错误文案。
+    pub fn merge_json(&mut self, body: &serde_json::Value) -> Result<(), String> {
+        if let Some(session) = body.get("session") {
+            if let Some(m) = session.get("mode") {
+                let m = m.as_str().ok_or("session.mode 须为字符串")?;
+                if m != "interactive" && m != "auto" {
+                    return Err("session.mode 仅支持 interactive | auto".into());
+                }
+                self.mode = Some(m.to_string());
+            }
+            if let Some(v) = session.get("first_edit_buffer_ms") {
+                let v = v
+                    .as_u64()
+                    .ok_or("session.first_edit_buffer_ms 须为非负整数")?;
+                if v > 10_000 {
+                    return Err("session.first_edit_buffer_ms 上限 10000ms".into());
+                }
+                self.first_edit_buffer_ms = Some(v);
+            }
+            if let Some(v) = session.get("approval_timeout_s") {
+                let v = v
+                    .as_u64()
+                    .ok_or("session.approval_timeout_s 须为非负整数")?;
+                if !(5..=3600).contains(&v) {
+                    return Err("session.approval_timeout_s 取值 5-3600s".into());
+                }
+                self.approval_timeout_s = Some(v);
+            }
+        }
+        if let Some(exec) = body.get("exec") {
+            if let Some(v) = exec.get("command_timeout_s") {
+                let v = v.as_u64().ok_or("exec.command_timeout_s 须为非负整数")?;
+                if !(1..=3600).contains(&v) {
+                    return Err("exec.command_timeout_s 取值 1-3600s".into());
+                }
+                self.command_timeout_s = Some(v);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        let mut session = serde_json::Map::new();
+        if let Some(m) = &self.mode {
+            session.insert("mode".into(), serde_json::Value::String(m.clone()));
+        }
+        if let Some(v) = self.first_edit_buffer_ms {
+            session.insert("first_edit_buffer_ms".into(), serde_json::json!(v));
+        }
+        if let Some(v) = self.approval_timeout_s {
+            session.insert("approval_timeout_s".into(), serde_json::json!(v));
+        }
+        let mut exec = serde_json::Map::new();
+        if let Some(v) = self.command_timeout_s {
+            exec.insert("command_timeout_s".into(), serde_json::json!(v));
+        }
+        serde_json::json!({"session": session, "exec": exec})
+    }
+
+    /// 从 `~/.tenon/settings.json` 读取（损坏 / 非法条目逐项忽略）。
+    pub fn load_from_disk() -> Self {
+        let mut out = Self::default();
+        let Ok(text) = std::fs::read_to_string(Self::file_path()) else {
+            return out;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+            return out;
+        };
+        let _ = out.merge_json(&v);
+        out
+    }
+
+    pub fn file_path() -> PathBuf {
+        tenon_config::Config::data_dir().join("settings.json")
+    }
+
+    pub fn persist(&self) {
+        let path = Self::file_path();
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let json = self.to_json().to_string();
+        if std::fs::write(&path, json).is_ok() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            }
+        }
+    }
+}
 
 pub struct DaemonOptions {
     /// 数据库路径；None = 内存库（测试）。
@@ -30,6 +137,8 @@ pub struct DaemonOptions {
     pub snapshots_root: Option<std::path::PathBuf>,
     /// 启动时注册的项目根（§6.2 `--project`；/pairing 回传给 UI）。
     pub project: Option<String>,
+    /// 握手 endpoint 文件；None = `~/.tenon/daemon.endpoint`（测试必须覆盖避免并行竞争）。
+    pub endpoint_path: Option<std::path::PathBuf>,
 }
 
 impl DaemonOptions {
@@ -42,6 +151,7 @@ impl DaemonOptions {
             default_provider: String::new(),
             snapshots_root: None,
             project: None,
+            endpoint_path: None,
         }
     }
 }
@@ -75,6 +185,101 @@ pub struct PortfolioTask {
     pub updated_at: String,
 }
 
+/// WS / ProjectRuntime 文件变更事件（§7.2 / §8.1；项目作用域）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProjectFileEvent {
+    pub project_id: String,
+    pub path: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub created_at: String,
+}
+
+struct WatchHandle {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    handle: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+impl WatchHandle {
+    fn stop(&self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(handle) = self.handle.lock().expect("watch handle lock").take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+/// 一个已打开项目的轻量 runtime：watcher 生命周期 + 活跃度追踪。
+pub struct ProjectRuntime {
+    pub root: std::path::PathBuf,
+    events: tokio::sync::broadcast::Sender<ProjectFileEvent>,
+    watcher: std::sync::Mutex<Option<WatchHandle>>,
+    pub last_accessed: std::sync::Mutex<std::time::Instant>,
+}
+
+impl ProjectRuntime {
+    fn open(
+        project_id: &str,
+        root: std::path::PathBuf,
+        global_events: tokio::sync::broadcast::Sender<ProjectFileEvent>,
+    ) -> Arc<Self> {
+        let (events, _) = tokio::sync::broadcast::channel(1024);
+        let watcher = tenon_fs::FileWatcher::watch(&root).ok().map(|watcher| {
+            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let project_id = project_id.to_string();
+            let sender = events.clone();
+            let global_sender = global_events.clone();
+            let stop_for_thread = stop.clone();
+            let handle = std::thread::Builder::new()
+                .name(format!("tenon-watch-{project_id}"))
+                .spawn(move || {
+                    while !stop_for_thread.load(std::sync::atomic::Ordering::SeqCst) {
+                        for change in watcher.next_batch(std::time::Duration::from_millis(250)) {
+                            let kind = match change.kind {
+                                tenon_fs::watcher::ChangeKind::Created => "created",
+                                tenon_fs::watcher::ChangeKind::Modified => "modified",
+                                tenon_fs::watcher::ChangeKind::Removed => "removed",
+                            };
+                            let event = ProjectFileEvent {
+                                project_id: project_id.clone(),
+                                path: change.path,
+                                kind: kind.into(),
+                                created_at: chrono::Utc::now().to_rfc3339(),
+                            };
+                            let _ = sender.send(event.clone());
+                            let _ = global_sender.send(event);
+                        }
+                    }
+                })
+                .expect("spawn project watcher");
+            WatchHandle {
+                stop,
+                handle: std::sync::Mutex::new(Some(handle)),
+            }
+        });
+        Arc::new(Self {
+            root,
+            events,
+            watcher: std::sync::Mutex::new(watcher),
+            last_accessed: std::sync::Mutex::new(std::time::Instant::now()),
+        })
+    }
+
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<ProjectFileEvent> {
+        self.events.subscribe()
+    }
+
+    pub async fn touch(&self) {
+        *self.last_accessed.lock().expect("runtime activity lock") = std::time::Instant::now();
+    }
+
+    async fn stop(&self) {
+        if let Some(handle) = self.watcher.lock().expect("runtime watcher lock").take() {
+            handle.stop();
+        }
+    }
+}
+
 pub struct DaemonState {
     pub store: Arc<Mutex<Store>>,
     /// 共享 LSP 管理器（§8.5：一项目 × 语言一个宿主，编辑器与代理共用）。
@@ -100,12 +305,46 @@ pub struct DaemonState {
     /// 项目级写锁表（§9.7：同一项目同时刻仅一个会话 EXECUTING）。
     pub project_locks: Mutex<HashMap<String, ProjectWriteLock>>,
     /// 已打开 ProjectRuntime 的 project_id → canonical root（§6.4）。
-    pub open_projects: Mutex<HashMap<String, std::path::PathBuf>>,
+    pub open_projects: Mutex<HashMap<String, Arc<ProjectRuntime>>>,
     /// 跨项目并发调度（§6.4 / §9.7）。
     pub execution_permits: Arc<Semaphore>,
     /// v1.15 项目组合任务聚合（父任务内存态；子会话/事件持久于 SQLite）。
     pub portfolio_tasks: Mutex<HashMap<String, PortfolioTask>>,
+    /// 进程内文件变更事件总线；WS 订阅者可全量或按 project_id 过滤。
+    pub file_events: tokio::sync::broadcast::Sender<ProjectFileEvent>,
     pub snapshots_root: std::path::PathBuf,
+    /// 设置面板运行时覆盖（§15 /settings；新会话生效）。
+    pub settings_overrides: std::sync::Mutex<SettingsOverrides>,
+    /// L4 增量索引队列（§10.1）；ProjectRuntime 激活 / watcher 变化入队。
+    pub l4_index_tx: tokio::sync::mpsc::Sender<L4IndexRequest>,
+    pub l4_index_rx: std::sync::Mutex<Option<tokio::sync::mpsc::Receiver<L4IndexRequest>>>,
+}
+
+/// L4 索引请求。
+#[derive(Debug, Clone)]
+pub enum L4IndexRequest {
+    /// 项目激活：全量重建（gitignore-aware）。
+    Project { project_id: String, root: PathBuf },
+}
+
+/// 按项目去抖的 L4 待处理批。
+#[derive(Debug)]
+struct PendingL4Index {
+    root: PathBuf,
+    full: bool,
+    files: HashSet<(String, bool)>,
+}
+
+impl DaemonState {
+    /// 新会话的默认档位（设置覆盖 > 全局配置）。
+    pub fn default_session_mode(&self) -> String {
+        self.settings_overrides
+            .lock()
+            .unwrap()
+            .mode
+            .clone()
+            .unwrap_or_else(|| "interactive".into())
+    }
 }
 
 /// 团队策略加载（M3）：`~/.tenon/policy.toml`（只收窄字段）。
@@ -149,6 +388,8 @@ impl DaemonState {
         let execution_permits = Arc::new(Semaphore::new(
             options.config.projects.max_concurrent_agent_tasks.max(1),
         ));
+        let (file_events, _) = tokio::sync::broadcast::channel(2048);
+        let (l4_index_tx, l4_index_rx) = tokio::sync::mpsc::channel(1024);
         Self {
             store: Arc::new(Mutex::new(store)),
             lsp: Arc::new(LspManager::new()),
@@ -171,7 +412,11 @@ impl DaemonState {
             open_projects: Mutex::new(HashMap::new()),
             execution_permits,
             portfolio_tasks: Mutex::new(HashMap::new()),
+            file_events,
             snapshots_root,
+            settings_overrides: std::sync::Mutex::new(SettingsOverrides::load_from_disk()),
+            l4_index_tx,
+            l4_index_rx: std::sync::Mutex::new(Some(l4_index_rx)),
         }
     }
 
@@ -179,8 +424,9 @@ impl DaemonState {
     pub async fn project_root(&self, project_id: &str) -> Option<std::path::PathBuf> {
         {
             let open = self.open_projects.lock().await;
-            if let Some(root) = open.get(project_id) {
-                return Some(root.clone());
+            if let Some(runtime) = open.get(project_id) {
+                runtime.touch().await;
+                return Some(runtime.root.clone());
             }
         }
         let mut store = self.store.lock().await;
@@ -193,7 +439,92 @@ impl DaemonState {
 
     /// 只返回已打开 ProjectRuntime；关闭后的项目不得继续文件 / LSP 操作。
     pub async fn open_project_root(&self, project_id: &str) -> Option<std::path::PathBuf> {
-        self.open_projects.lock().await.get(project_id).cloned()
+        let runtime = self.project_runtime(project_id).await?;
+        Some(runtime.root.clone())
+    }
+
+    /// 打开 / 激活 runtime；watcher 懒启动并立即记录活跃时间。
+    pub async fn activate_project(
+        &self,
+        project_id: &str,
+        root: std::path::PathBuf,
+    ) -> Arc<ProjectRuntime> {
+        let mut open = self.open_projects.lock().await;
+        if let Some(runtime) = open.get(project_id) {
+            runtime.touch().await;
+            return runtime.clone();
+        }
+        let runtime = ProjectRuntime::open(project_id, root.clone(), self.file_events.clone());
+        open.insert(project_id.to_string(), runtime.clone());
+        drop(open);
+        if let Err(e) = self
+            .l4_index_tx
+            .send(L4IndexRequest::Project {
+                project_id: project_id.to_string(),
+                root,
+            })
+            .await
+        {
+            tracing::warn!("L4 project request dropped: {e}");
+        }
+        runtime
+    }
+
+    pub async fn project_runtime(&self, project_id: &str) -> Option<Arc<ProjectRuntime>> {
+        let runtime = self.open_projects.lock().await.get(project_id).cloned()?;
+        runtime.touch().await;
+        Some(runtime)
+    }
+
+    /// 关闭并回收 watcher；脏缓冲随 runtime 释放。
+    pub async fn close_project_runtime(&self, project_id: &str) -> Option<Arc<ProjectRuntime>> {
+        let runtime = self.open_projects.lock().await.remove(project_id)?;
+        runtime.stop().await;
+        self.dirty_buffers.lock().await.remove(project_id);
+        Some(runtime)
+    }
+
+    /// 空闲回收：无活跃代理会话且超过 TTL 的 runtime；返回已关闭项目。
+    pub async fn reclaim_idle_projects(&self) -> Vec<String> {
+        let ttl = std::time::Duration::from_secs(self.config.projects.idle_runtime_ttl_seconds);
+        let mut active_ids = HashSet::new();
+        {
+            let sessions = self.sessions.lock().await;
+            for entry in sessions.values() {
+                if matches!(
+                    entry.session.current_state().await,
+                    tenon_core::machine::State::Executing
+                        | tenon_core::machine::State::Verifying
+                        | tenon_core::machine::State::Fixing
+                        | tenon_core::machine::State::AwaitingApproval
+                ) {
+                    active_ids.insert(entry.project_id.clone());
+                }
+            }
+        }
+        let candidates: Vec<(String, Arc<ProjectRuntime>)> = {
+            let open = self.open_projects.lock().await;
+            open.iter()
+                .filter(|(id, runtime)| {
+                    let idle = runtime
+                        .last_accessed
+                        .lock()
+                        .expect("runtime activity lock")
+                        .elapsed()
+                        >= ttl;
+                    idle && !active_ids.contains(*id)
+                })
+                .map(|(id, runtime)| (id.clone(), runtime.clone()))
+                .collect()
+        };
+        let mut closed = Vec::new();
+        for (id, runtime) in candidates {
+            self.lsp.close_project(&runtime.root).await;
+            if self.close_project_runtime(&id).await.is_some() {
+                closed.push(id);
+            }
+        }
+        closed
     }
 
     /// 项目私有脏缓冲表；避免不同项目同名相对路径互相污染。
@@ -223,5 +554,148 @@ impl DaemonState {
             .get(key)
             .cloned()
             .ok_or_else(|| format!("provider 不可用：{key}（未配置或缺少 Key）"))
+    }
+
+    /// 取出唯一 L4 worker receiver；重复调用返回 None。
+    pub fn take_l4_requests(&self) -> Option<tokio::sync::mpsc::Receiver<L4IndexRequest>> {
+        self.l4_index_rx.lock().expect("l4 index rx").take()
+    }
+
+    /// 启动 L4 后台 worker：项目激活全量重建；watcher 变更 500ms 去抖增量更新。
+    pub fn spawn_l4_worker(
+        self: &Arc<Self>,
+        mut requests: tokio::sync::mpsc::Receiver<L4IndexRequest>,
+    ) -> tokio::task::JoinHandle<()> {
+        let state = self.clone();
+        tokio::spawn(async move {
+            let mut watcher_events = state.file_events.subscribe();
+            let mut pending: HashMap<String, PendingL4Index> = HashMap::new();
+            let mut ticker = tokio::time::interval(std::time::Duration::from_millis(500));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                let event = tokio::select! {
+                    request = requests.recv() => {
+                        match request {
+                            Some(L4IndexRequest::Project { project_id, root }) => {
+                                                                pending.insert(project_id, PendingL4Index { root, full: true, files: HashSet::new() });
+                            }
+                            None => break,
+                        }
+                        continue;
+                    }
+                    event = watcher_events.recv() => {
+                        match event {
+                            Ok(event) => event,
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                                tracing::warn!("L4 watcher lagged; {count} events skipped");
+                                continue;
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    _ = ticker.tick() => {
+                        let ids: Vec<String> = pending.keys().cloned().collect();
+                                                for project_id in ids {
+                            if let Some(batch) = pending.remove(&project_id) {
+                                state.flush_l4_index(&project_id, batch).await;
+                            }
+                        }
+                        continue;
+                    }
+                };
+                if let Some(root) = state.open_project_root(&event.project_id).await {
+                    let entry = pending
+                        .entry(event.project_id)
+                        .or_insert_with(|| PendingL4Index {
+                            root,
+                            full: false,
+                            files: HashSet::new(),
+                        });
+                    entry.files.insert((event.path, event.kind == "removed"));
+                }
+            }
+        })
+    }
+
+    async fn flush_l4_index(&self, project_id: &str, batch: PendingL4Index) {
+        if batch.full {
+            let root = batch.root.clone();
+            let documents = tokio::task::spawn_blocking(move || {
+                tenon_fs::l4::scan_root(&root)
+                    .into_iter()
+                    .map(|document| {
+                        let chunks = document
+                            .chunks
+                            .into_iter()
+                            .map(|chunk| tenon_store::L4ChunkRecord {
+                                symbol: chunk.symbol,
+                                text: chunk.text.clone(),
+                                embedding: tenon_fs::l4::embed(&document.path, &chunk.text),
+                            })
+                            .collect::<Vec<_>>();
+                        (document.path, chunks)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await;
+            match documents {
+                Ok(documents) => {
+                    let mut store = self.store.lock().await;
+                    if let Err(e) = store.clear_l4_project(project_id) {
+                        tracing::warn!("L4 clear failed: {e}");
+                        return;
+                    }
+                    for (path, chunks) in documents {
+                        if let Err(e) = store.replace_l4_file(project_id, &path, &chunks) {
+                            tracing::warn!("L4 full index failed for {path}: {e}");
+                        }
+                    }
+                    tracing::info!("L4 full index complete for {project_id}");
+                }
+                Err(e) => tracing::warn!("L4 full scan failed: {e}"),
+            }
+            return;
+        }
+
+        for (path, removed) in batch.files {
+            if removed {
+                let mut store = self.store.lock().await;
+                if let Err(e) = store.delete_l4_file(project_id, &path) {
+                    tracing::warn!("L4 delete failed for {path}: {e}");
+                }
+                continue;
+            }
+            let root = batch.root.clone();
+            let indexed_path = path.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                tenon_fs::l4::build_document(&root, &indexed_path).map(|document| {
+                    document
+                        .chunks
+                        .into_iter()
+                        .map(|chunk| tenon_store::L4ChunkRecord {
+                            symbol: chunk.symbol,
+                            text: chunk.text.clone(),
+                            embedding: tenon_fs::l4::embed(&document.path, &chunk.text),
+                        })
+                        .collect::<Vec<L4ChunkRecord>>()
+                })
+            })
+            .await;
+            let chunks = match result {
+                Ok(Some(chunks)) => chunks,
+                Ok(None) => {
+                    tracing::debug!("L4 skip {path}: empty/binary/too large");
+                    continue;
+                }
+                Err(e) => {
+                    tracing::warn!("L4 index join failed: {e}");
+                    continue;
+                }
+            };
+            let mut store = self.store.lock().await;
+            if let Err(e) = store.replace_l4_file(project_id, &path, &chunks) {
+                tracing::warn!("L4 incremental index failed for {path}: {e}");
+            }
+        }
     }
 }

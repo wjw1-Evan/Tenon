@@ -6,6 +6,7 @@ pub mod dirty;
 pub mod fuzzy;
 pub mod git;
 pub mod highlight;
+pub mod l4;
 pub mod ops;
 pub mod search;
 pub mod tree;

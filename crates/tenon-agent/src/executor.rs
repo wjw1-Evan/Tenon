@@ -85,6 +85,8 @@ pub struct ToolContext {
     pub team_denied_tools: Vec<String>,
     /// Laya 本地决策模型（§9.8 集成点 #2 命令风险辅助；None = 回退）。
     pub laya: Option<std::sync::Arc<tenon_laya::LayaRuntime>>,
+    /// 共享 LSP 宿主（§8.5 / §9.2；None = 内核未接入 daemon）。
+    pub lsp: Option<std::sync::Arc<tenon_lsp::LspManager>>,
 }
 
 impl ToolContext {
@@ -104,6 +106,7 @@ impl ToolContext {
             mcp_policy: tenon_mcp::McpLevelPolicy::default(),
             team_denied_tools: Vec::new(),
             laya: None,
+            lsp: None,
         }
     }
 
@@ -203,8 +206,39 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
             }
         }
         "lsp_query" => {
-            // LSP 查询由 daemon 侧的共享宿主承接；M0 内核侧返回占位（§8.5 共享宿主随 M1 全量）。
-            ToolOutput::ok("（lsp_query：共享 LSP 宿主 M1 落地；当前无活动语言服务器）")
+            let Some(lsp) = ctx.lsp.clone() else {
+                return ToolOutput::err("共享 LSP 宿主未接入（daemon 配置缺失）");
+            };
+            let path = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let action = args
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or("diagnostics");
+            let line = args.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let character = args.get("character").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let extra = args.get("extra").and_then(|v| v.as_str());
+            let root = ctx.root.clone();
+            let path = path.to_string();
+            let action = action.to_string();
+            let extra = extra.map(String::from);
+            let result = run_async(async move {
+                lsp.request(&root, &path, &action, line, character, extra.as_deref())
+                    .await
+            });
+            let result = match result {
+                Ok(result) => result,
+                Err(e) => return ToolOutput::err(format!("LSP runtime bridge: {e}")),
+            };
+            match result {
+                Ok(value) => ToolOutput::ok(value.to_string()),
+                Err(tenon_lsp::LspManagerError::BadPath(p)) => {
+                    ToolOutput::err(format!("路径越界: {p}"))
+                }
+                Err(e) => ToolOutput::err(format!("LSP 不可用: {e}")),
+            }
         }
 
         // ---------- B 级写执行 ----------
@@ -632,6 +666,18 @@ mod tests {
         );
         assert!(!out.ok);
         assert!(out.content.contains("路径越界"));
+    }
+
+    #[test]
+    fn lsp_query_without_shared_host_fails_closed() {
+        let (_d, c) = ctx();
+        let out = execute_tool(
+            &c,
+            "lsp_query",
+            &serde_json::json!({"path": "a.ts", "action": "diagnostics"}),
+        );
+        assert!(!out.ok);
+        assert!(out.content.contains("共享 LSP 宿主未接入"));
     }
 
     #[test]

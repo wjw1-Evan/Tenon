@@ -14,6 +14,7 @@ tenon-sandbox = { workspace = true }
 tenon-fs = { workspace = true }
 tenon-models = { workspace = true }
 tenon-mcp = { workspace = true }
+tenon-lsp = { workspace = true }
 tenon-laya = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

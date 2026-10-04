@@ -1,6 +1,6 @@
-// 文件树（设计方案 §8.1）：git 状态装饰；点击在编辑器打开。
+// 文件树（设计方案 §8.1）：懒加载层级、git 状态装饰、watcher 同步与项目内 CRUD。
 import { useEffect, useState } from "react";
-import type { TenonApi } from "../lib/api";
+import type { FileOperation, TenonApi } from "../lib/api";
 import type { Translate } from "../lib/i18n";
 
 interface Entry {
@@ -10,58 +10,417 @@ interface Entry {
   git_status: string;
 }
 
+export type FileTreeChange =
+  | { type: "created"; path: string; kind: Entry["kind"] }
+  | { type: "renamed"; from: string; to: string; kind: Entry["kind"] }
+  | { type: "deleted"; path: string };
+
 interface Props {
   api: TenonApi;
   t: Translate;
   projectId: string | null;
+  /** ProjectRuntime 文件事件版本；变化即刷新（§6.4 / §8.1）。 */
+  refreshToken?: number;
   onOpenFile: (path: string) => void;
+  onOperation?: (change: FileTreeChange) => void;
 }
 
 const STATUS_DOT: Record<string, string> = {
-  modified: "#d9a514",
-  added: "#2da44e",
-  untracked: "#2da44e",
-  deleted: "#d43d3d",
-  renamed: "#7d4fd3",
+  modified: "var(--modified, #d9a514)",
+  added: "var(--ok, #2da44e)",
+  untracked: "var(--ok, #2da44e)",
+  deleted: "var(--error, #d43d3d)",
+  renamed: "var(--verify, #7d4fd3)",
 };
 
-export function FileTree({ api, t, projectId, onOpenFile }: Props) {
+type PromptMode = "new-file" | "new-dir" | "rename";
+
+interface PromptState {
+  mode: PromptMode;
+  parent: string;
+  target?: Entry;
+  value: string;
+}
+
+function parentOf(path: string) {
+  const parts = path.split("/");
+  parts.pop();
+  return parts.join("/");
+}
+
+function joinPath(parent: string, name: string) {
+  return parent ? `${parent}/${name}` : name;
+}
+
+function loadEntries(
+  api: TenonApi,
+  projectId: string,
+  path: string,
+  alive: boolean,
+  setter: (entries: Entry[]) => void
+) {
+  api
+    .tree(projectId, path)
+    .then((r) => {
+      if (alive) setter(r.entries ?? []);
+    })
+    .catch(() => {
+      if (alive) setter([]);
+    });
+}
+
+function ActionButton({
+  label,
+  onClick,
+  disabled,
+  testId,
+}: {
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  testId?: string;
+}) {
+  return (
+    <button
+      type="button"
+      className="tree-action"
+      aria-label={label}
+      title={label}
+      disabled={disabled}
+      data-testid={testId}
+      onClick={(event) => {
+        event.stopPropagation();
+        onClick();
+      }}
+    >
+      {label === "rename" ? "✎" : label === "delete" ? "✕" : "+"}
+    </button>
+  );
+}
+
+function TreeActions({
+  entry,
+  t,
+  busy,
+  onPrompt,
+  onDelete,
+}: {
+  entry?: Entry;
+  t: Translate;
+  busy: boolean;
+  onPrompt: (state: PromptState) => void;
+  onDelete: (entry: Entry) => void;
+}) {
+  const parent = entry ? (entry.kind === "dir" ? entry.path : parentOf(entry.path)) : "";
+  return (
+    <span className="tree-actions">
+      <ActionButton
+        label={t("tree.new_file")}
+        testId={entry ? undefined : "tree-new-file"}
+        disabled={busy}
+        onClick={() => onPrompt({ mode: "new-file", parent, value: "" })}
+      />
+      <ActionButton
+        label={t("tree.new_folder")}
+        testId={entry ? undefined : "tree-new-dir"}
+        disabled={busy}
+        onClick={() => onPrompt({ mode: "new-dir", parent, value: "" })}
+      />
+      {entry && (
+        <ActionButton
+          label={t("tree.rename")}
+          disabled={busy}
+          onClick={() => onPrompt({ mode: "rename", parent, target: entry, value: entry.name })}
+        />
+      )}
+      {entry && (
+        <ActionButton
+          label={t("tree.delete")}
+          disabled={busy}
+          onClick={() => onDelete(entry)}
+        />
+      )}
+    </span>
+  );
+}
+
+function TreeDir({
+  api,
+  entry,
+  projectId,
+  refreshToken,
+  busy,
+  t,
+  onOpenFile,
+  onPrompt,
+  onDelete,
+}: {
+  api: TenonApi;
+  entry: Entry;
+  projectId: string;
+  refreshToken: number;
+  busy: boolean;
+  t: Translate;
+  onOpenFile: (path: string) => void;
+  onPrompt: (state: PromptState) => void;
+  onDelete: (entry: Entry) => void;
+}) {
+  const [open, setOpen] = useState(false);
   const [entries, setEntries] = useState<Entry[]>([]);
+  const [loaded, setLoaded] = useState<{ path: string; token: number } | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    if (loaded?.path === entry.path && loaded.token === refreshToken) return;
+    let alive = true;
+    loadEntries(api, projectId, entry.path, alive, (next) => {
+      if (!alive) return;
+      setEntries(next);
+      setLoaded({ path: entry.path, token: refreshToken });
+    });
+    return () => {
+      alive = false;
+    };
+  }, [api, projectId, entry.path, open, refreshToken, loaded]);
+
+  return (
+    <li className="tree-dir">
+      <div className="tree-row">
+        <button
+          type="button"
+          className="tree-name"
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+        >
+          {open ? "▾" : "▸"} {entry.name}
+        </button>
+        <TreeActions
+          entry={entry}
+          t={t}
+          busy={busy}
+          onPrompt={onPrompt}
+          onDelete={onDelete}
+        />
+      </div>
+      {open && (
+        <ul>
+          {entries.map((child) => (
+            <TreeEntryRow
+              key={child.path}
+              api={api}
+              entry={child}
+              projectId={projectId}
+              refreshToken={refreshToken}
+              busy={busy}
+              t={t}
+              onOpenFile={onOpenFile}
+              onPrompt={onPrompt}
+              onDelete={onDelete}
+            />
+          ))}
+          {open && loaded !== null && entries.length === 0 && (
+            <li className="muted" aria-label="empty directory" />
+          )}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+function TreeEntryRow(props: {
+  api: TenonApi;
+  entry: Entry;
+  projectId: string;
+  refreshToken: number;
+  busy: boolean;
+  t: Translate;
+  onOpenFile: (path: string) => void;
+  onPrompt: (state: PromptState) => void;
+  onDelete: (entry: Entry) => void;
+}) {
+  const { api, entry, projectId, refreshToken, busy, t, onOpenFile, onPrompt, onDelete } = props;
+  if (entry.kind === "dir") {
+    return (
+      <TreeDir
+        api={api}
+        entry={entry}
+        projectId={projectId}
+        refreshToken={refreshToken}
+        busy={busy}
+        t={t}
+        onOpenFile={onOpenFile}
+        onPrompt={onPrompt}
+        onDelete={onDelete}
+      />
+    );
+  }
+  return (
+    <li className="tree-file" data-status={entry.git_status}>
+      <div className="tree-row">
+        <button type="button" className="tree-name" onClick={() => onOpenFile(entry.path)}>
+          {entry.name}
+        </button>
+        {STATUS_DOT[entry.git_status] && (
+          <span
+            className="status-dot"
+            style={{ background: STATUS_DOT[entry.git_status] }}
+            aria-label={entry.git_status}
+          />
+        )}
+        <TreeActions
+          entry={entry}
+          t={t}
+          busy={busy}
+          onPrompt={onPrompt}
+          onDelete={onDelete}
+        />
+      </div>
+    </li>
+  );
+}
+
+export function FileTree({
+  api,
+  t,
+  projectId,
+  refreshToken = 0,
+  onOpenFile,
+  onOperation,
+}: Props) {
+  const [entries, setEntries] = useState<Entry[]>([]);
+  const [prompt, setPrompt] = useState<PromptState | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!projectId) return;
     let alive = true;
-    api.tree(projectId).then((r) => {
-      if (alive) setEntries(r.entries ?? []);
-    }).catch(() => {});
+    loadEntries(api, projectId, "", alive, (next) => setEntries(next));
     return () => {
       alive = false;
     };
-  }, [api, projectId]);
+  }, [api, projectId, refreshToken]);
+
+  const run = async (operation: FileOperation, change: FileTreeChange) => {
+    if (!projectId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await api.fileOps(projectId, [operation]);
+      if (!response.results[0]?.ok) {
+        throw new Error(response.results[0]?.error ?? "operation failed");
+      }
+      onOperation?.(change);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const create = async (state: PromptState, name: string) => {
+    const path = joinPath(state.parent, name);
+    const kind: Entry["kind"] = state.mode === "new-dir" ? "dir" : "file";
+    await run(
+      state.mode === "new-dir"
+        ? { op: "create_dir", path }
+        : { op: "create_file", path, content: "" },
+      { type: "created", path, kind }
+    );
+  };
+
+  const rename = async (state: PromptState, name: string) => {
+    const entry = state.target!;
+    const to = joinPath(state.parent, name);
+    await run(
+      { op: "rename", from: entry.path, to },
+      { type: "renamed", from: entry.path, to, kind: entry.kind }
+    );
+  };
+
+  const submitPrompt = () => {
+    if (!prompt || !prompt.value.trim()) return;
+    const name = prompt.value.trim();
+    void (prompt.mode === "rename"
+      ? rename(prompt, name)
+      : create(prompt, name)
+    ).finally(() => setPrompt(null));
+  };
+
+  const deleteEntry = (entry: Entry) => {
+    if (!window.confirm(`delete ${entry.path}?`)) return;
+    void run({ op: "delete", path: entry.path }, { type: "deleted", path: entry.path });
+  };
 
   if (!projectId) {
-    return <div className="tree muted" data-testid="file-tree">{t("tree.empty")}</div>;
+    return (
+      <div className="tree muted" data-testid="file-tree">
+        {t("tree.empty")}
+      </div>
+    );
   }
 
   return (
-    <ul className="tree" data-testid="file-tree">
-      {entries.map((e) => (
-        <li
-          key={e.path}
-          className={e.kind === "dir" ? "tree-dir" : "tree-file"}
-          onClick={() => e.kind === "file" && onOpenFile(e.path)}
-          data-status={e.git_status}
-        >
-          <span className="tree-name">{e.name}</span>
-          {STATUS_DOT[e.git_status] && (
-            <span
-              className="status-dot"
-              style={{ background: STATUS_DOT[e.git_status] }}
-              aria-label={e.git_status}
+    <div className="file-tree-shell">
+      <div className="tree-toolbar">
+        <TreeActions
+          t={t}
+          busy={busy}
+          onPrompt={setPrompt}
+          onDelete={deleteEntry}
+        />
+        {busy && <span className="tree-busy">{t("tree.working")}</span>}
+      </div>
+      {error && (
+        <div className="tree-error" role="alert" data-testid="tree-error">
+          {error}
+        </div>
+      )}
+      <ul className="tree" data-testid="file-tree">
+        {entries.map((entry) => (
+          <TreeEntryRow
+            key={entry.path}
+            api={api}
+            entry={entry}
+            projectId={projectId}
+            refreshToken={refreshToken}
+            busy={busy}
+            t={t}
+            onOpenFile={onOpenFile}
+            onPrompt={setPrompt}
+            onDelete={deleteEntry}
+          />
+        ))}
+      </ul>
+      {prompt && (
+        <div className="tree-prompt-overlay" role="dialog" aria-modal="true">
+          <form
+            className="tree-prompt"
+            onSubmit={(event) => {
+              event.preventDefault();
+              submitPrompt();
+            }}
+          >
+            <label htmlFor="tree-prompt-input">
+              {prompt.mode === "rename" ? t("tree.rename") : t(`tree.${prompt.mode}`)}
+            </label>
+            <input
+              id="tree-prompt-input"
+              value={prompt.value}
+              autoFocus
+              onChange={(event) => setPrompt({ ...prompt, value: event.target.value })}
             />
-          )}
-        </li>
-      ))}
-    </ul>
+            <div className="tree-prompt-actions">
+              <button type="button" onClick={() => setPrompt(null)}>
+                {t("tree.cancel")}
+              </button>
+              <button type="submit" disabled={!prompt.value.trim()}>
+                {t("tree.save")}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+    </div>
   );
 }

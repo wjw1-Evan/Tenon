@@ -16,6 +16,7 @@ pub use state::{DaemonOptions, DaemonState, SessionEntry};
 use axum::Router;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tenon_config::Config;
 use tower_http::services::ServeDir;
 
 /// daemon 运行句柄：端口与握手 token。
@@ -29,6 +30,11 @@ pub struct DaemonHandle {
 /// 启动 daemon（绑定 127.0.0.1 随机端口）。
 pub async fn serve(options: DaemonOptions) -> std::io::Result<DaemonHandle> {
     let lan_bind = options.lan_bind;
+    let manage_endpoint_file = options.endpoint_path.is_some() || options.db_path.is_some();
+    let endpoint_path = options
+        .endpoint_path
+        .clone()
+        .unwrap_or_else(|| Config::data_dir().join("daemon.endpoint"));
     let state = Arc::new(DaemonState::new(options).await);
     // 崩溃恢复（§10.3）：重启扫描非终态会话 → 回滚最近快照 → ROLLED_BACK 入 Trace
     match tenon_agent::recover_stale_sessions(state.store.clone(), &state.snapshots_root).await {
@@ -43,6 +49,26 @@ pub async fn serve(options: DaemonOptions) -> std::io::Result<DaemonHandle> {
         Err(e) => tracing::error!("崩溃恢复扫描失败: {e}"),
     }
     let mut app: Router = routes::build_router(state.clone());
+
+    // L4 增量索引 worker（§10.1）：项目激活 / watcher 变更驱动。
+    if let Some(requests) = state.take_l4_requests() {
+        state.spawn_l4_worker(requests);
+    }
+
+    // ProjectRuntime 空闲回收（§6.4）：无活跃任务且超过 TTL 时关闭 watcher / LSP。
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticker.tick().await;
+                for project_id in state.reclaim_idle_projects().await {
+                    tracing::info!("ProjectRuntime 空闲回收: {project_id}");
+                }
+            }
+        });
+    }
 
     // 本机浏览器访问（§12.6 / M2）：UI 构建产物存在时由 daemon 同源托管——
     // 浏览器打开 http://127.0.0.1:{port}/ 即加载 UI 并经 /pairing 自发现握手
@@ -70,7 +96,41 @@ pub async fn serve(options: DaemonOptions) -> std::io::Result<DaemonHandle> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let shutdown_handle = shutdown_tx.subscribe();
 
+    // 握手端点文件（§6.2 / §14.1）：随机端口 + token 不入日志；文件 0600。
+    // 内存库（测试 serve）不写，避免测试端口污染共享端点；
+    // 持久 daemon 每 20s 心跳重写，避免旧实例退出清理误删活实例端点。
+    if manage_endpoint_file {
+        let endpoint_json = format!("{{\"port\":{port},\"token\":\"{}\"}}\n", state.token);
+        let write_endpoint = {
+            let path = endpoint_path.clone();
+            let json = endpoint_json.clone();
+            move || {
+                let _ = std::fs::write(&path, &json);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+                }
+            }
+        };
+        write_endpoint();
+        let mut heartbeat_rx = shutdown_handle.clone();
+        let heartbeat_write = write_endpoint.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(20));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => heartbeat_write(),
+                    _ = heartbeat_rx.wait_for(|v| *v) => break,
+                }
+            }
+        });
+    }
+
     tracing::info!("tenon daemon listening on 127.0.0.1:{port}");
+    let endpoint_for_shutdown = endpoint_path.clone();
+    let cleanup_endpoint = manage_endpoint_file;
     tokio::spawn(async move {
         let mut shutdown_rx = shutdown_rx;
         let _ = axum::serve(listener, app)
@@ -78,6 +138,9 @@ pub async fn serve(options: DaemonOptions) -> std::io::Result<DaemonHandle> {
                 let _ = shutdown_rx.wait_for(|v| *v).await;
             })
             .await;
+        if cleanup_endpoint {
+            let _ = std::fs::remove_file(&endpoint_for_shutdown);
+        }
         let _ = shutdown_tx.send(true);
     });
 

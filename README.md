@@ -8,11 +8,12 @@
 - **本地优先隐私**：会话 / Trace / 索引全本地，遥测默认零上报，云模型调用按用户显式配置并明示；
 - **多模型、成本可控**：BYOK + 显式路由 + OpenAI 兼容端点 + 任务级成本归因；
 - **多项目运行模型**：同一 daemon 管理多个已登记项目；会话、文件 / 搜索 / LSP、脏缓冲与事件按 `project_id` 隔离，全局任务中心汇总活跃任务；
+- **多主题外观**：深色默认、浅色与跟随系统三档即时切换，localStorage 记忆，首帧不闪烁；
 - **审批负担最低且安全不缩水**：动作分级 + 沙箱三态 + 熔断器 + 随时回滚——安全动作自动执行，危险动作才打扰。
 
 ## 文档
 
-- **[完整设计方案 v1.15](docs/design.md)** —— 产品定位、需求规格、架构、安全模型、编辑器与语言包、Agent 内核、数据与 API、路线图、测试策略
+- **[完整设计方案 v1.28](docs/design.md)** —— 产品定位、需求规格、架构、安全模型、编辑器与语言包、Agent 内核、数据与 API、路线图、测试策略
 
 > v0.1 / v0.3 两轮评审（共 41 项）与 v1.0 复审（21 项）的结论已全部并入设计方案；Roslyn LS spike 受阻（无 VSIX），按附录 C Q2 回退规则 C# 包后移（v1.13 记录）。**平台优先级：macOS 为主**（2026-10-04 产品决策）——Windows 走 WSL2 路径以脚本 + 预编译 musl 二进制交付，端到端验证待 Windows 环境。
 >
@@ -41,9 +42,11 @@ Rust 内核 / daemon · Tauri 2 桌面壳 · React + TS + Monaco · tree-sitter 
 
 ## 状态
 
-设计方案 v1.15（决策闭环；产品名 **Tenon**，官网 tenonide.dev）。**M0 已验收**：附录 D 基准 10 任务接 GLM 真实模型跑出基线 **8/10 通过（80%）≥ 50% 验收线，安全违规 0**（五指标基线见 `evals/baseline-glm.json`）。**M1 已实现**：语言包（tsserver / Pyright 共享 LSP 宿主 + 语义端点 + 铁律七守卫）；Laya 本地决策模型（三原语 + 五集成点 + registry 分发 + Evals 门「通过率不降、token 下降」）；沙箱三态（macOS Seatbelt + Linux Landlock/seccomp + §18.2 逃逸套件）；shadow git 快照（revert/restore/unrevert）+ 人机共编三方合并 + 崩溃恢复；模型路由（会话级热切换）+ 语言包向导。**v1.15 多项目核心已实现**：ProjectRegistry / open / close、canonical path 去重与嵌套根守卫、project-scoped 文件 / 搜索 / LSP / 脏缓冲 API、跨项目执行 semaphore、项目任务摘要与切换器、SQLite v1→v2 项目归属迁移、portfolio task 父任务只聚合多条 project-scoped 子会话。**M2 已实现**：官方静态 registry（§13.1 manifest + ed25519 签名 + 权限 diff + 保留字拦截）；MCP 外部进程插件（默认 D 级恒审批 / net:* → C）；并行子代理（worktree 隔离 + 不相交调度 + 复合 D 卡）；Open VSX 语言子集实验兼容 + `/lsp` codeaction；AgentTrace UI + 浏览器访问（CORS 白名单 + 配对入口）。**M3 已实现**：AI Evals 可视化 + 定时触发（`[evals].interval_hours`）；团队策略（`~/.tenon/policy.toml` 只收窄）；局域网配对（`--lan` + PairingStore 一次性码 + 可吊销令牌）；Windows WSL2 安装脚本（`scripts/install-windows.ps1`）。
+设计方案 v1.28（决策闭环；产品名 **Tenon**，官网 tenonide.dev）。**M0 已验收**：附录 D 基准 10 任务接 GLM 真实模型跑出基线 **8/10 通过（80%）≥ 50% 验收线，安全违规 0**（五指标基线见 `evals/baseline-glm.json`）。**M1 已实现**：语言包（tsserver / Pyright 共享 LSP 宿主 + 语义端点 + 铁律七守卫 + Agent lsp_query 同实例）；Laya 本地决策模型（三原语 + 五集成点 + registry 分发 + Evals 门「通过率不降、token 下降」）；沙箱三态（macOS Seatbelt + Linux Landlock/seccomp + §18.2 逃逸套件）；shadow git 快照（revert/restore/unrevert）+ 人机共编三方合并 + 崩溃恢复；模型路由（会话级热切换）+ 语言包向导；验证双通道接入共享 LSP 诊断。**v1.15 多项目核心已实现**：ProjectRegistry / open / close、canonical path 去重与嵌套根守卫、project-scoped 文件 / 搜索 / LSP / 脏缓冲 API、watcher 懒启动与空闲回收、项目作用域 WS 文件事件驱动懒加载层级文件树 / 打开缓冲同步 / 树内 CRUD、Cmd/Ctrl+P fuzzy finder / workspace symbols、全局搜索 / 选定替换、L4 本地增量索引、跨项目执行 semaphore、项目任务摘要与切换器、项目级 UI 状态持久化、SQLite v1→v3 迁移、portfolio task 父任务只聚合多条 project-scoped 子会话。**M2 已实现**：官方静态 registry（§13.1 manifest + ed25519 签名 + 权限 diff + 保留字拦截）；MCP 外部进程插件（默认 D 级恒审批 / net:* → C）；并行子代理（worktree 隔离 + 不相交调度 + 复合 D 卡）；Open VSX 语言子集实验兼容 + `/lsp` codeaction；AgentTrace UI + 浏览器访问（CORS 白名单 + 配对入口）。**M3 已实现**：AI Evals 可视化 + 定时触发（`[evals].interval_hours`）；团队策略（`~/.tenon/policy.toml` 只收窄）；局域网配对（`--lan` + PairingStore 一次性码 + 可吊销令牌）；Windows WSL2 安装脚本（`scripts/install-windows.ps1`）。**v1.16 已实现**：深色 / 浅色 / 跟随系统外观档、顶栏切换、localStorage 记忆、`data-theme` CSS 变量换色与系统主题监听；daemon `ui_prefs` 权威存储。**v1.18 已实现**：1s 去抖自动保存、Cmd/Ctrl+S 立即保存、tab 未保存指示、保存后解除脏缓冲、失败保留重试。**v1.19 已实现**：UI 订阅 active project 文件事件；文件树事件刷新；未保存缓冲跳过回读；已打开缓冲同步外部 / Agent 修改；removed 事件关闭 tab 并修正 active path。**v1.20 已实现**：懒加载层级文件树、目录级 tree API、越界路径拒绝、watcher 事件刷新已展开目录；TS 诊断 race 修复——didOpen 后 full 空结果等待 publish 推送。**v1.21 已实现**：文件树新建文件 / 新建目录 / 重命名 / 删除；project-scoped 写守卫；可访问 modal 与删除确认；tab path、active path、unsaved / AI 标记同步。**v1.22 已实现**：project-scoped fuzzy files endpoint、120ms 防抖查找面板、键盘导航、`:line` 解析与 Monaco 行定位；命令面板分离为纯命令。**v1.23 已实现**：全局替换 SearchPanel、逐文件预览与选择应用、dirty buffer 显式跳过、写守卫路径限制、watcher 同步；daemon endpoint 文件测试隔离与心跳。**v1.24 已实现**：project_ui_state schema v3、`/project/:id/ui-state`、项目布局 / tab / active path / session 恢复、600ms 防抖保存与迁移测试。**v1.25 已实现**：`@query` 工作区符号查找、共享 LSP provider、LSP URI → 项目相对路径、1-based line 跳转、缺失 active file 明确提示。**v1.26 已实现**：设置面板、session/exec 参数校验、0600 settings.json、新会话生效。**v1.27 已实现**：activity rail 侧栏视图切换、紧凑顶栏、Monaco 主题令牌同步、运行态呼吸动画。**v1.28 已实现**：L4 本地确定性 embedding、symbol/line chunking、项目激活全量索引、watcher 500ms 去抖原子增量、`/project/:id/l4/search|stats`。
 
-测试：**Rust 299 + vitest 30 全绿**；clippy 0 警告；Linux x86_64 交叉检查通过。签名密钥 `--generate-keys` 生成 ed25519 对并接入 laya/registry 公钥解析链。
+**v1.17 已实现**：ProjectRuntime 活跃度追踪、watcher 懒启动与空闲回收、项目关闭时 LSP host 释放、`/ws?project_id=` 作用域过滤与文件事件推送、Agent `lsp_query` / 验证诊断共享宿主。
+
+测试：**Rust 314 + vitest 54 全绿**；clippy 0 警告；Linux x86_64 交叉检查通过。签名密钥 `--generate-keys` 生成 ed25519 对并接入 laya/registry 公钥解析链。
 
 ## 代码结构（monorepo，ADR-13）
 

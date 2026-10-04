@@ -14,7 +14,9 @@ import {
 } from "./lib/theme";
 import type { AgentStateName } from "./lib/stateColors";
 import { useShortcuts } from "./hooks";
-import { FileTree } from "./components/FileTree";
+import { FileTree, type FileTreeChange } from "./components/FileTree";
+import { SearchPanel } from "./components/SearchPanel";
+import { FileFinder } from "./components/FileFinder";
 import { EditorPane, type EditorTab } from "./components/EditorPane";
 import { AgentPanel } from "./components/AgentPanel";
 import { CheckpointTimeline } from "./components/CheckpointTimeline";
@@ -26,7 +28,60 @@ import { EvalsPanel } from "./components/EvalsPanel";
 import { LanguagePackWizard } from "./components/LanguagePackWizard";
 import { unionLines } from "./lib/aiLines";
 import { createAutoSaver, type AutoSaver } from "./lib/autosave";
+import { SettingsDialog, type SettingsData } from "./components/SettingsDialog";
 import { CommandPalette, type Command } from "./components/CommandPalette";
+
+/** 侧栏视图（布局 §7.2 重设计）：activity rail 单视图切换，localStorage 记忆。 */
+type SideView = "files" | "search" | "packs";
+const SIDE_VIEW_KEY = "tenon:sideView";
+
+function loadSideView(): SideView {
+  try {
+    const raw = localStorage.getItem(SIDE_VIEW_KEY);
+    return raw === "search" || raw === "packs" ? raw : "files";
+  } catch {
+    return "files";
+  }
+}
+
+/** rail 图标：线性风格，17px 网格。 */
+function RailIcon({ view }: { view: SideView }) {
+  const props = {
+    width: 17,
+    height: 17,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.8,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+    "aria-hidden": true as const,
+  };
+  if (view === "files") {
+    return (
+      <svg {...props}>
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+        <path d="M14 2v6h6" />
+      </svg>
+    );
+  }
+  if (view === "search") {
+    return (
+      <svg {...props}>
+        <circle cx="11" cy="11" r="7" />
+        <path d="m21 21-4.3-4.3" />
+      </svg>
+    );
+  }
+  return (
+    <svg {...props}>
+      <rect x="3" y="3" width="7.5" height="7.5" rx="1.5" />
+      <rect x="13.5" y="3" width="7.5" height="7.5" rx="1.5" />
+      <rect x="3" y="13.5" width="7.5" height="7.5" rx="1.5" />
+      <rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.5" />
+    </svg>
+  );
+}
 
 export default function App({
   handshake,
@@ -48,15 +103,36 @@ export default function App({
   const [activePathByProject, setActivePathByProject] = useState<Record<string, string | null>>({});
   const [openPath, setOpenPath] = useState(projectPath);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [finderOpen, setFinderOpen] = useState(false);
   const [timelineOpen, setTimelineOpen] = useState(true);
   const [latestDiff, setLatestDiff] = useState<string | null>(null);
   const [dirtyConflict, setDirtyConflict] = useState<DirtyConflict | null>(null);
   const [aiLines, setAiLines] = useState<Record<string, number[]>>({});
+  /** ProjectRuntime 文件事件版本：驱动文件树增量刷新与打开缓冲同步（§6.4 / §8.1）。 */
+  const [fileTreeVersion, setFileTreeVersion] = useState(0);
+  const [gotoLine, setGotoLine] = useState<{ path: string; line: number; token: number } | null>(
+    null
+  );
   const projectIdRef = useRef<string | null>(null);
+  const projectUiStateLoaded = useRef<Set<string>>(new Set());
   const dirtyTimers = useRef<Map<string, number>>(new Map());
+  const tabsByProjectRef = useRef<Record<string, EditorTab[]>>({});
+  const activePathByProjectRef = useRef<Record<string, string | null>>({});
+  const unsavedRef = useRef<Record<string, true>>({});
   // 自动保存（§8.2）：tab 未保存圆点 + 去抖写盘调度器
   const [unsaved, setUnsaved] = useState<Record<string, true>>({});
   const autosaverRef = useRef<AutoSaver | null>(null);
+  // 全局设置（§7.2）：会话默认档等；设置面板开关
+  const [settings, setSettings] = useState<SettingsData | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  useEffect(() => {
+    void api
+      .getSettings()
+      .then(setSettings)
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     const saver = createAutoSaver(async (path, content) => {
       const pid = projectIdRef.current;
@@ -75,6 +151,20 @@ export default function App({
     return () => saver.dispose();
   }, [api]);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sideView, setSideView] = useState<SideView>(loadSideView);
+  /** rail 点击语义：同视图再点 = 折叠侧栏；否则切换视图并展开。 */
+  const toggleSideView = useCallback(
+    (view: SideView) => {
+      if (sidebarOpen && sideView === view) {
+        setSidebarOpen(false);
+        return;
+      }
+      setSideView(view);
+      localStorage.setItem(SIDE_VIEW_KEY, view);
+      setSidebarOpen(true);
+    },
+    [sideView, sidebarOpen]
+  );
   const [agentState, setAgentState] = useState<AgentStateName>("idle");
   const [routeNote, setRouteNote] = useState<string | null>(null);
   const [bottomTab, setBottomTab] = useState<"timeline" | "trace" | "evals">("timeline");
@@ -86,6 +176,12 @@ export default function App({
   const tabs = projectId ? tabsByProject[projectId] ?? [] : [];
   const activePath = projectId ? activePathByProject[projectId] ?? null : null;
   const sessionId = projectId ? sessionsByProject[projectId] ?? null : null;
+
+  useEffect(() => {
+    tabsByProjectRef.current = tabsByProject;
+    activePathByProjectRef.current = activePathByProject;
+    unsavedRef.current = unsaved;
+  }, [tabsByProject, activePathByProject, unsaved]);
 
   const refreshProjects = useCallback(async () => {
     const r = await api.listProjects();
@@ -107,6 +203,67 @@ export default function App({
     setPortfolioTasks(r.tasks.filter((task) => task.status !== "done"));
   }, [api]);
 
+  /** 项目级状态恢复：布局 + tab 路径 + active path + 可复用 session（§7.2/§7.5）。 */
+  const activateProject = useCallback(
+    async (project: ProjectSummary) => {
+      setProjectId(project.id);
+      projectIdRef.current = project.id;
+      const saved = await api.projectUiState(project.id);
+      if (typeof saved.leftWidth === "number") {
+        setLeftWidth(Math.min(480, Math.max(140, saved.leftWidth)));
+      }
+      if (typeof saved.rightWidth === "number") {
+        setRightWidth(Math.min(720, Math.max(260, saved.rightWidth)));
+      }
+      if (typeof saved.bottomHeight === "number") {
+        setBottomHeight(Math.min(480, Math.max(80, saved.bottomHeight)));
+      }
+      if (typeof saved.sidebarOpen === "boolean") setSidebarOpen(saved.sidebarOpen);
+      if (typeof saved.timelineOpen === "boolean") setTimelineOpen(saved.timelineOpen);
+      if (saved.bottomTab === "timeline" || saved.bottomTab === "trace" || saved.bottomTab === "evals") {
+        setBottomTab(saved.bottomTab);
+      }
+
+      const paths = Array.from(new Set(saved.tabs ?? [])).slice(0, 50);
+      const restored = (
+        await Promise.all(
+          paths.map(async (path) => {
+            try {
+              const file = await api.readFile(project.id, path);
+              return { path, content: file.content };
+            } catch {
+              return null;
+            }
+          })
+        )
+      ).filter((tab): tab is EditorTab => tab !== null);
+      setTabsByProject((prev) => ({ ...prev, [project.id]: restored }));
+      const activePath =
+        saved.activePath && restored.some((tab) => tab.path === saved.activePath)
+          ? saved.activePath
+          : (restored[0]?.path ?? null);
+      setActivePathByProject((prev) => ({ ...prev, [project.id]: activePath }));
+
+      const savedSession =
+        saved.sessionId && project.sessions.some((session) => session.id === saved.sessionId)
+          ? saved.sessionId
+          : undefined;
+      const existing = savedSession ?? project.sessions[0]?.id;
+      if (existing) {
+        setSessionsByProject((prev) => ({ ...prev, [project.id]: existing }));
+      } else {
+        const session = await api.createSession(
+          project.id,
+          (settings?.session?.mode as "interactive" | "auto" | "" | undefined) ??
+          "interactive"
+        );
+        setSessionsByProject((prev) => ({ ...prev, [project.id]: session.session_id }));
+      }
+      projectUiStateLoaded.current.add(project.id);
+    },
+    [api, settings]
+  );
+
   const setActivePath = useCallback((path: string | null) => {
     if (!projectId) return;
     setActivePathByProject((prev) => ({ ...prev, [projectId]: path }));
@@ -123,43 +280,99 @@ export default function App({
     const trusted = window.confirm(`信任项目目录并启用其配置？\n${opened.path}`);
     if (trusted) await api.setTrust(opened.id, true);
     await refreshProjects();
-    setProjectId(opened.id);
-    projectIdRef.current = opened.id;
-    const session = await api.createSession(opened.id, "interactive");
-    setSessionsByProject((prev) => ({ ...prev, [opened.id]: session.session_id }));
-  }, [api, refreshProjects]);
+    const summary =
+      projects.find((project) => project.id === opened.id) ??
+      ({
+        ...opened,
+        sessions: [],
+        active_sessions: 0,
+        dirty_buffers: 0,
+        pending_approvals: [],
+        usage: { input_tokens: 0, output_tokens: 0, cost_usd: 0 },
+      } satisfies ProjectSummary);
+    await activateProject(summary);
+  }, [activateProject, api, projects, refreshProjects]);
 
   const switchProject = useCallback(async (project: ProjectSummary) => {
-    setProjectId(project.id);
-    projectIdRef.current = project.id;
-    const existing = sessionsByProject[project.id] ?? project.sessions[0]?.id;
-    if (!existing) {
-      const session = await api.createSession(project.id, "interactive");
-      setSessionsByProject((prev) => ({ ...prev, [project.id]: session.session_id }));
-    } else if (!sessionsByProject[project.id]) {
-      setSessionsByProject((prev) => ({ ...prev, [project.id]: existing }));
-    }
-  }, [api, sessionsByProject]);
+    await activateProject(project);
+  }, [activateProject]);
 
   const openFile = useCallback(
-    async (path: string) => {
+    async (path: string, line?: number) => {
       if (tabs.some((tab) => tab.path === path)) {
         setActivePath(path);
+        if (line) setGotoLine({ path, line, token: Date.now() });
         return;
       }
       if (!projectId) return;
       const r = await api.readFile(projectId, path);
       setTabsByProject((prev) => ({ ...prev, [projectId]: [...(prev[projectId] ?? []), { path, content: r.content }] }));
       setActivePathByProject((prev) => ({ ...prev, [projectId]: path }));
+      if (line) setGotoLine({ path, line, token: Date.now() });
     },
     [api, projectId, tabs]
+  );
+
+  const handleFileTreeChange = useCallback(
+    (change: FileTreeChange) => {
+      setFileTreeVersion((version) => version + 1);
+      const projectId = projectIdRef.current;
+      if (!projectId) return;
+      if (change.type === "renamed") {
+        setTabsByProject((prev) => ({
+          ...prev,
+          [projectId]: (prev[projectId] ?? []).map((tab) =>
+            tab.path === change.from ? { ...tab, path: change.to } : tab
+          ),
+        }));
+        setActivePathByProject((prev) =>
+          prev[projectId] === change.from
+            ? { ...prev, [projectId]: change.to }
+            : prev
+        );
+        setUnsaved((prev) => {
+          if (!prev[change.from]) return prev;
+          const next = { ...prev };
+          delete next[change.from];
+          next[change.to] = true;
+          return next;
+        });
+        setAiLines((prev) => {
+          if (!prev[change.from]) return prev;
+          const next = { ...prev };
+          next[change.to] = next[change.from];
+          delete next[change.from];
+          return next;
+        });
+        return;
+      }
+      if (change.type !== "deleted") return;
+      const tabs = tabsByProjectRef.current[projectId] ?? [];
+      const nextActive =
+        activePathByProjectRef.current[projectId] === change.path
+          ? (tabs.find((tab) => tab.path !== change.path)?.path ?? null)
+          : activePathByProjectRef.current[projectId];
+      setTabsByProject((prev) => ({
+        ...prev,
+        [projectId]: (prev[projectId] ?? []).filter((tab) => tab.path !== change.path),
+      }));
+      setActivePathByProject((prev) => ({ ...prev, [projectId]: nextActive ?? null }));
+      setUnsaved((prev) => {
+        if (!prev[change.path]) return prev;
+        const next = { ...prev };
+        delete next[change.path];
+        return next;
+      });
+      setAiLines((prev) => ({ ...prev, [change.path]: [] }));
+    },
+    []
   );
 
   const onStateChange = useCallback((s: AgentStateName) => setAgentState(s), []);
   const handlers = useMemo(
     () => ({
       onPalette: () => setPaletteOpen((v) => !v),
-      onGotoFile: () => setPaletteOpen(true),
+      onGotoFile: () => setFinderOpen(true),
       onTimeline: () => setTimelineOpen((v) => !v),
       onSidebar: () => setSidebarOpen((v) => !v),
       onStop: () => sessionId && api.control(sessionId, "stop"),
@@ -167,6 +380,7 @@ export default function App({
         const p = activePath;
         if (p) void autosaverRef.current?.flush(p);
       },
+      onSettings: () => setSettingsOpen(true),
       onPauseOrClose: () => {
         if (paletteOpen) setPaletteOpen(false);
         else if (sessionId) api.control(sessionId, "pause");
@@ -179,6 +393,7 @@ export default function App({
   const commands: Command[] = useMemo(
     () => [
       { id: "open.timeline", label: t("panel.timeline"), run: () => setTimelineOpen(true) },
+      { id: "open.settings", label: t("settings.open"), run: () => setSettingsOpen(true) },
       { id: "toggle.sidebar", label: t("panel.files"), run: () => setSidebarOpen((v) => !v) },
       {
         id: "agent.pause",
@@ -218,12 +433,120 @@ export default function App({
     }, 2000);
     return () => window.clearInterval(id);
   }, [refreshProjects, refreshPortfolio]);
+  // 项目级 UI 状态去抖持久化（§7.2 / §7.5）：加载完成后才允许覆盖远端。
+  useEffect(() => {
+    if (!projectId || !projectUiStateLoaded.current.has(projectId)) return;
+    const timer = window.setTimeout(() => {
+      api.saveProjectUiState(projectId, {
+        sessionId: sessionsByProject[projectId],
+        tabs: (tabsByProject[projectId] ?? []).map((tab) => tab.path),
+        activePath: activePathByProject[projectId] ?? null,
+        leftWidth,
+        rightWidth,
+        bottomHeight,
+        sidebarOpen,
+        timelineOpen,
+        bottomTab,
+      });
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [
+    api,
+    projectId,
+    sessionsByProject,
+    tabsByProject,
+    activePathByProject,
+    leftWidth,
+    rightWidth,
+    bottomHeight,
+    sidebarOpen,
+    timelineOpen,
+    bottomTab,
+  ]);
+  useEffect(() => {
+    if (!projectId) return;
+    let alive = true;
+    let socket: WebSocket | null = null;
+    let retry: number | null = null;
+    let summaryTimer: number | null = null;
+
+    const scheduleSummary = () => {
+      if (summaryTimer !== null) window.clearTimeout(summaryTimer);
+      summaryTimer = window.setTimeout(() => {
+        void refreshProjects().catch(() => {});
+      }, 400);
+    };
+
+    const handleEvent = async (raw: unknown) => {
+      const event = raw as {
+        project_id?: string;
+        path?: string;
+        type?: string;
+      };
+      if (!alive || event.project_id !== projectId || !event.path) return;
+      setFileTreeVersion((version) => version + 1);
+      scheduleSummary();
+      if (event.type === "removed") {
+        setTabsByProject((prev) => ({
+          ...prev,
+          [projectId]: (prev[projectId] ?? []).filter((tab) => tab.path !== event.path),
+        }));
+        setActivePathByProject((prev) => {
+          if (prev[projectId] !== event.path) return prev;
+          const nextPath =
+            (tabsByProjectRef.current[projectId] ?? []).find((tab) => tab.path !== event.path)
+              ?.path ?? null;
+          return { ...prev, [projectId]: nextPath };
+        });
+        setAiLines((prev) => ({ ...prev, [event.path as string]: [] }));
+        return;
+      }
+      if (event.type !== "created" && event.type !== "modified") return;
+      // 自动保存中的缓冲不回读，避免覆盖用户正在输入的内容。
+      if (unsavedRef.current[event.path]) return;
+      if (!(tabsByProjectRef.current[projectId] ?? []).some((tab) => tab.path === event.path)) {
+        return;
+      }
+      try {
+        const file = await api.readFile(projectId, event.path);
+        if (!alive) return;
+        setTabsByProject((prev) => ({
+          ...prev,
+          [projectId]: (prev[projectId] ?? []).map((tab) =>
+            tab.path === event.path ? { ...tab, content: file.content } : tab
+          ),
+        }));
+      } catch {
+        // 文件可能在事件消费前又被移除；下一条 removed 事件会处理。
+      }
+    };
+
+    const connect = async () => {
+      if (!alive) return;
+      try {
+        socket = await api.connectEvents((event) => void handleEvent(event), projectId);
+        socket.onclose = () => {
+          if (!alive) return;
+          retry = window.setTimeout(() => void connect(), 1000);
+        };
+      } catch {
+        if (alive) retry = window.setTimeout(() => void connect(), 1000);
+      }
+    };
+    void connect();
+
+    return () => {
+      alive = false;
+      if (retry !== null) window.clearTimeout(retry);
+      if (summaryTimer !== null) window.clearTimeout(summaryTimer);
+      socket?.close();
+    };
+  }, [api, projectId, refreshProjects]);
 
   return (
     <div className="app" data-testid="app">
       <header className="app-head">
         <strong>{t("app.title")}</strong>
-        <span className="muted">{t("app.subtitle")}</span>
         <select
           aria-label="active project"
           data-testid="project-switcher"
@@ -291,23 +614,99 @@ export default function App({
               title={project.path}
             >
               <strong>{project.display_name}</strong>
-              <span>{project.active_sessions ? `${project.active_sessions} active` : "idle"}</span>
+              <span>
+                {[
+                  project.active_sessions ? `${project.active_sessions} active` : "idle",
+                  project.pending_approvals.length ? `${project.pending_approvals.length} approvals` : null,
+                  project.dirty_buffers ? `${project.dirty_buffers} dirty` : null,
+                  project.usage.cost_usd > 0 ? `$${project.usage.cost_usd.toFixed(4)}` : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </span>
             </button>
           ))}
         </div>
       )}
       <div className="workspace">
+        <nav className="activity-rail" aria-label={t("rail.label")}>
+          <button
+            type="button"
+            className={sidebarOpen && sideView === "files" ? "rail-btn active" : "rail-btn"}
+            data-testid="rail-files"
+            title={t("panel.files")}
+            aria-label={t("panel.files")}
+            aria-pressed={sidebarOpen && sideView === "files"}
+            onClick={() => toggleSideView("files")}
+          >
+            <RailIcon view="files" />
+          </button>
+          <button
+            type="button"
+            className={sidebarOpen && sideView === "search" ? "rail-btn active" : "rail-btn"}
+            data-testid="rail-search"
+            title={t("search.title")}
+            aria-label={t("search.title")}
+            aria-pressed={sidebarOpen && sideView === "search"}
+            onClick={() => toggleSideView("search")}
+          >
+            <RailIcon view="search" />
+          </button>
+          <button
+            type="button"
+            className={sidebarOpen && sideView === "packs" ? "rail-btn active" : "rail-btn"}
+            data-testid="rail-packs"
+            title={t("panel.packs")}
+            aria-label={t("panel.packs")}
+            aria-pressed={sidebarOpen && sideView === "packs"}
+            onClick={() => toggleSideView("packs")}
+          >
+            <RailIcon view="packs" />
+          </button>
+          <span className="rail-spacer" />
+        </nav>
         {sidebarOpen && (
           <>
             <aside className="zone zone-left" style={{ width: leftWidth, minWidth: 140, maxWidth: 480 }}>
-              <LanguagePackWizard
-                api={api}
-                projectId={projectId}
-                onInstalled={() => {
-                  // 重新拉取文件树无必要；向导自身刷新状态
-                }}
-              />
-              <FileTree api={api} t={t} projectId={projectId} onOpenFile={openFile} />
+              <div className="side-head">
+                <span className="side-title">
+                  {sideView === "files"
+                    ? t("panel.files")
+                    : sideView === "search"
+                      ? t("search.title")
+                      : t("panel.packs")}
+                </span>
+              </div>
+              <div className="side-body">
+                {sideView === "files" && (
+                  <FileTree
+                    api={api}
+                    t={t}
+                    projectId={projectId}
+                    refreshToken={fileTreeVersion}
+                    onOpenFile={openFile}
+                    onOperation={handleFileTreeChange}
+                  />
+                )}
+                {sideView === "search" && (
+                  <SearchPanel
+                    api={api}
+                    t={t}
+                    projectId={projectId}
+                    onOpenFile={(path, line) => void openFile(path, line)}
+                    onChanged={() => setFileTreeVersion((version) => version + 1)}
+                  />
+                )}
+                {sideView === "packs" && (
+                  <LanguagePackWizard
+                    api={api}
+                    projectId={projectId}
+                    onInstalled={() => {
+                      // 重新拉取文件树无必要；向导自身刷新状态
+                    }}
+                  />
+                )}
+              </div>
             </aside>
             <ResizeHandle
               dir="horizontal"
@@ -333,6 +732,7 @@ export default function App({
             aiModifiedLines={aiLines}
             unsavedPaths={unsaved}
             unsavedTitle={t("editor.unsaved")}
+            goto={gotoLine}
             onSelect={setActivePath}
             onClose={(p) => {
               void autosaverRef.current?.flush(p);
@@ -470,6 +870,27 @@ export default function App({
         </footer>
       )}
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} commands={commands} />
+      {settingsOpen && (
+        <SettingsDialog
+          api={api}
+          t={t}
+          settings={settings}
+          onClose={() => setSettingsOpen(false)}
+          onSaved={setSettings}
+        />
+      )}
+      <FileFinder
+        open={finderOpen}
+        onClose={() => setFinderOpen(false)}
+        api={api}
+        t={t}
+        projectId={projectId}
+        projectRoot={
+          projects.find((project) => project.id === projectId)?.path ?? projectPath
+        }
+        activePath={activePath}
+        onOpen={(path, line) => void openFile(path, line)}
+      />
       <span className="sr-only" data-testid="agent-state">{agentState}</span>
     </div>
   );

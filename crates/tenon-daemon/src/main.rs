@@ -81,6 +81,7 @@ async fn main() -> anyhow::Result<()> {
         providers: vec![],
         default_provider: provider,
         snapshots_root: None,
+        endpoint_path: None,
     };
     if let Some(proj) = project {
         let mut store = tenon_store::Store::open(

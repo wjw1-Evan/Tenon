@@ -51,6 +51,7 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
         )
         // ---------- 编辑器与文件（§15） ----------
         .route("/project/{id}/tree", get(project_tree))
+        .route("/project/{id}/files/fuzzy", get(fuzzy_files))
         .route(
             "/project/{id}/buffers",
             put(set_dirty_buffer)
@@ -65,6 +66,7 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
         .route("/project/{id}/file", get(read_file).put(write_file))
         .route("/project/{id}/file/ops", post(file_ops))
         .route("/project/{id}/search", get(search))
+        .route("/project/{id}/search/replace", post(apply_search_replace))
         .route("/project/{id}/lsp", post(lsp_proxy))
         // 兼容旧客户端：处理函数仍要求显式 project_id；v1.15 禁止隐式首项目。
         .route("/file", get(legacy_read_file).put(legacy_write_file))
@@ -77,6 +79,10 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
         // ---------- 管理（§15） ----------
         .route("/project", get(list_projects).put(register_project))
         .route("/project/trust", put(set_project_trust))
+        .route(
+            "/project/{id}/ui-state",
+            get(get_project_ui_state).put(put_project_ui_state),
+        )
         .route("/models", get(list_models))
         .route("/pairing", get(pairing_info))
         .route("/evals", get(list_evals))
@@ -84,6 +90,8 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
         .route("/lan/enable", post(lan_enable))
         .route("/lan/pair", post(lan_pair))
         .route("/lan/revoke", post(lan_revoke))
+        .route("/project/{id}/l4/search", get(l4_search))
+        .route("/project/{id}/l4/stats", get(l4_stats))
         .route("/costs", get(costs))
         .route("/settings", get(get_settings).put(put_settings))
         // UI 偏好（§7.5 外观档）：daemon 端口动态导致 localStorage 按 origin
@@ -117,6 +125,18 @@ async fn create_agent_session(
         state.config.checkpoint.max_untracked_mb,
     )
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("快照库: {e}")))?;
+    // 会话默认档：请求未显式指定（空）时取设置面板的全局默认；
+    // §12.7：mode=auto 仅对已 TOFU 信任项目生效，未信任回退交互档
+    let mode = if mode.is_empty() {
+        state.default_session_mode()
+    } else {
+        mode.to_string()
+    };
+    let mode = if mode == "auto" && !project.trusted {
+        "interactive".to_string()
+    } else {
+        mode
+    };
     let mode = if mode == "auto" {
         Mode::Auto
     } else {
@@ -130,12 +150,25 @@ async fn create_agent_session(
     );
     agent_cfg.first_edit_buffer_ms = state.config.session.first_edit_buffer_ms;
     agent_cfg.approval_timeout_s = state.config.session.approval_timeout_s;
+    {
+        let ov = state.settings_overrides.lock().unwrap().clone();
+        if let Some(v) = ov.first_edit_buffer_ms {
+            agent_cfg.first_edit_buffer_ms = v;
+        }
+        if let Some(v) = ov.approval_timeout_s {
+            agent_cfg.approval_timeout_s = v;
+        }
+        if let Some(v) = ov.command_timeout_s {
+            agent_cfg.command_timeout_s = v;
+        }
+    }
     agent_cfg.circuit = (&state.config.agent.circuit).into();
     agent_cfg.fix_rounds = state.config.agent.fix_loop.max_rounds;
     agent_cfg.command_timeout_s = state.config.agent.exec.command_timeout_s;
     agent_cfg.snapshots_root.clone_from(&state.snapshots_root);
     agent_cfg.working_dir = working_dir.map(std::path::PathBuf::from);
     agent_cfg.dirty = Some(state.dirty_buffers_for(&project.id).await);
+    agent_cfg.lsp = Some(state.lsp.clone());
     agent_cfg.team_denied_tools = state.team_policy.denied_tools.clone();
     let write_lock = state.write_lock_for(&project.id).await;
     AgentSession::create(
@@ -188,7 +221,7 @@ async fn ensure_open_project(
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     };
 
-    let mut open = state.open_projects.lock().await;
+    let open = state.open_projects.lock().await;
     if !open.contains_key(&project.id) {
         if open.len() >= state.config.projects.max_open {
             return Err((
@@ -197,7 +230,8 @@ async fn ensure_open_project(
             ));
         }
         if !state.config.projects.allow_linked_workspace {
-            for root in open.values() {
+            for runtime in open.values() {
+                let root = runtime.root.as_path();
                 if root.starts_with(&canonical) || canonical.starts_with(root) {
                     return Err((
                         StatusCode::CONFLICT,
@@ -210,7 +244,8 @@ async fn ensure_open_project(
                 }
             }
         }
-        open.insert(project.id.clone(), canonical);
+        drop(open);
+        state.activate_project(&project.id, canonical).await;
     }
     Ok(project)
 }
@@ -267,8 +302,10 @@ async fn close_project(
             _ => session.control(ControlCommand::Pause),
         }
     }
-    let removed = state.open_projects.lock().await.remove(&id).is_some();
-    state.dirty_buffers.lock().await.remove(&id);
+    if let Some(runtime) = state.project_runtime(&id).await {
+        state.lsp.close_project(&runtime.root).await;
+    }
+    let removed = state.close_project_runtime(&id).await.is_some();
     if removed {
         Json(json!({"closed": true, "controlled_sessions": true})).into_response()
     } else {
@@ -284,8 +321,10 @@ async fn delete_project(State(state): State<Arc<DaemonState>>, Path(id): Path<St
             return api_err(StatusCode::CONFLICT, "项目仍有活跃会话；先关闭项目");
         }
     }
-    state.open_projects.lock().await.remove(&id);
-    state.dirty_buffers.lock().await.remove(&id);
+    if let Some(runtime) = state.project_runtime(&id).await {
+        state.lsp.close_project(&runtime.root).await;
+    }
+    state.close_project_runtime(&id).await;
     let mut store = state.store.lock().await;
     match store.list_sessions(&id) {
         Ok(sessions) if !sessions.is_empty() => {
@@ -832,12 +871,101 @@ async fn switch_session_model(
 
 // ---------- 编辑器与文件 ----------
 
-async fn project_tree(State(state): State<Arc<DaemonState>>, Path(id): Path<String>) -> Response {
+#[derive(Deserialize)]
+struct TreeQuery {
+    /// 懒加载目录；空 = 项目根（§8.1）。
+    #[serde(default)]
+    path: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct FuzzyFilesQuery {
+    #[serde(default)]
+    q: String,
+    #[serde(default = "default_fuzzy_limit")]
+    limit: usize,
+}
+
+fn default_fuzzy_limit() -> usize {
+    100
+}
+
+/// fuzzy 打开（§7.4）：遍历 gitignore-aware 项目树后本地打分排序。
+async fn fuzzy_files(
+    State(state): State<Arc<DaemonState>>,
+    Path(id): Path<String>,
+    Query(query): Query<FuzzyFilesQuery>,
+) -> Response {
     let Some(project_path) = state.open_project_root(&id).await else {
         return api_err(StatusCode::NOT_FOUND, "project not found");
     };
+    let limit = query.limit.clamp(1, 500);
     let statuses = tenon_fs::git::status_map(&project_path);
-    match tenon_fs::tree::list_dir(&project_path, "", &statuses) {
+    let result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        let tree = tenon_fs::tree::full_tree(&project_path).map_err(|e| e.to_string())?;
+        let candidates: Vec<&str> = tree
+            .iter()
+            .filter(|entry| entry.kind == tenon_fs::tree::EntryKind::File)
+            .map(|entry| entry.path.as_str())
+            .collect();
+        let hits = tenon_fs::fuzzy::fuzzy_filter(candidates, &query.q)
+            .into_iter()
+            .take(limit)
+            .map(|hit| {
+                let entry = tree
+                    .iter()
+                    .find(|entry| entry.path == hit.text)
+                    .expect("candidate comes from tree");
+                let status = statuses
+                    .get(&entry.path)
+                    .copied()
+                    .unwrap_or(tenon_fs::tree::GitStatus::Clean);
+                json!({
+                    "path": entry.path,
+                    "name": entry.name,
+                    "kind": entry.kind,
+                    "git_status": status,
+                    "score": hit.score,
+                })
+            })
+            .collect::<Vec<_>>();
+        Ok(json!({"hits": hits, "query": query.q}))
+    })
+    .await;
+    match result {
+        Ok(Ok(value)) => Json(value).into_response(),
+        Ok(Err(e)) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e),
+        Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+async fn project_tree(
+    State(state): State<Arc<DaemonState>>,
+    Path(id): Path<String>,
+    Query(query): Query<TreeQuery>,
+) -> Response {
+    let Some(project_path) = state.open_project_root(&id).await else {
+        return api_err(StatusCode::NOT_FOUND, "project not found");
+    };
+    let rel = match query.path.as_deref() {
+        None | Some("") | Some(".") => String::new(),
+        Some(path) => {
+            let joined = project_path.join(path);
+            let canonical = match std::fs::canonicalize(&joined) {
+                Ok(p) => p,
+                Err(e) => return api_err(StatusCode::BAD_REQUEST, e.to_string()),
+            };
+            if !canonical.starts_with(&project_path) {
+                return api_err(StatusCode::BAD_REQUEST, "PATH_ESCAPE");
+            }
+            match canonical.strip_prefix(&project_path) {
+                Ok(rel) => rel.to_string_lossy().into_owned(),
+                Err(_) => return api_err(StatusCode::BAD_REQUEST, "PATH_ESCAPE"),
+            }
+        }
+    };
+    let statuses = tenon_fs::git::status_map(&project_path);
+    match tenon_fs::tree::list_dir(&project_path, &rel, &statuses) {
         Ok(entries) => Json(json!({"entries": entries})).into_response(),
         Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
@@ -949,6 +1077,56 @@ async fn search(
             Err(e) => api_err(StatusCode::BAD_REQUEST, e.to_string()),
         },
     }
+}
+
+#[derive(Deserialize)]
+struct SearchReplaceBody {
+    q: String,
+    replacement: String,
+    paths: Vec<String>,
+}
+
+async fn apply_search_replace(
+    State(state): State<Arc<DaemonState>>,
+    Path(project_id): Path<String>,
+    Json(body): Json<SearchReplaceBody>,
+) -> Response {
+    let Some(root) = state.open_project_root(&project_id).await else {
+        return api_err(StatusCode::NOT_FOUND, "project not found");
+    };
+    if body.paths.is_empty() {
+        return api_err(StatusCode::BAD_REQUEST, "未选择要替换的文件");
+    }
+    // §8.6：未保存缓冲是用户工作区的一部分；全局替换不得静默覆盖。
+    let buffers = state.dirty_buffers_for(&project_id).await;
+    let mut clean = Vec::new();
+    let mut skipped = Vec::new();
+    for path in body.paths {
+        if buffers.get(&path).is_none() {
+            clean.push(path);
+        } else {
+            skipped.push(json!({"path": path, "reason": "dirty buffer"}));
+        }
+    }
+    let report = tokio::task::spawn_blocking(move || {
+        tenon_fs::search::replace_selected(
+            &root,
+            &body.q,
+            &body.replacement,
+            &clean,
+            &tenon_fs::SearchOptions::default(),
+        )
+    })
+    .await;
+    let report = match report {
+        Ok(Ok(report)) => report,
+        Ok(Err(e)) => return api_err(StatusCode::BAD_REQUEST, e.to_string()),
+        Err(e) => return api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    };
+    for (path, error) in report.failed {
+        skipped.push(json!({"path": path, "reason": error}));
+    }
+    Json(json!({"applied": report.applied, "skipped": skipped})).into_response()
 }
 
 // ---------- Legacy 兼容层：必须显式 project_id，禁止隐式首项目 ----------
@@ -1442,19 +1620,29 @@ async fn list_projects(State(state): State<Arc<DaemonState>>) -> Response {
                 with_sessions.push((
                     project.clone(),
                     store.list_sessions(&project.id).unwrap_or_default(),
+                    store
+                        .pending_project_approvals(&project.id)
+                        .unwrap_or_default(),
+                    store.project_usage_totals(&project.id).unwrap_or_default(),
                 ));
             }
             Some(with_sessions)
         }
     }
     .await;
-    let open = state.open_projects.lock().await.clone();
+    let open = state
+        .open_projects
+        .lock()
+        .await
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
     let Some(projects) = projects_with_sessions else {
         return api_err(StatusCode::INTERNAL_SERVER_ERROR, "项目清单读取失败");
     };
     let summaries: Vec<Value> = projects
         .into_iter()
-        .map(|(project, sessions)| {
+        .map(|(project, sessions, pending_approvals, usage)| {
             let active = sessions
                 .iter()
                 .filter(|s| {
@@ -1476,7 +1664,34 @@ async fn list_projects(State(state): State<Arc<DaemonState>>) -> Response {
                     .unwrap_or_else(|| project.path.clone()),
                 "trusted": project.trusted,
                 "language_packs": project.language_packs,
-                "open": open.contains_key(&project.id),
+                "open": open.contains(&project.id),
+                "dirty_buffers": state
+                    .dirty_buffers
+                    .try_lock()
+                    .map(|buffers| {
+                        buffers
+                            .get(&project.id)
+                            .map(|registry| registry.list().len())
+                            .unwrap_or(0)
+                    })
+                    .unwrap_or(0),
+                "pending_approvals": pending_approvals
+                    .iter()
+                    .map(|approval| {
+                        json!({
+                            "id": approval.id,
+                            "session_id": approval.session_id,
+                            "action": approval.action,
+                            "level": approval.level.as_str(),
+                            "created_at": approval.created_at,
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+                "usage": {
+                    "input_tokens": usage.0,
+                    "output_tokens": usage.1,
+                    "cost_usd": usage.2,
+                },
                 "sessions": sessions.iter().map(|s| json!({
                     "id": s.id,
                     "status": s.status.as_str(),
@@ -1518,6 +1733,49 @@ async fn set_project_trust(
 ) -> Response {
     let mut store = state.store.lock().await;
     match store.set_project_trusted(&body.project_id, body.trusted) {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+// ---------- 项目级 UI 状态（§7.2 / §7.5：布局按项目记忆） ----------
+
+async fn get_project_ui_state(
+    State(state): State<Arc<DaemonState>>,
+    Path(project_id): Path<String>,
+) -> Response {
+    let mut store = state.store.lock().await;
+    match store.project_ui_state(&project_id) {
+        Ok(Some(raw)) => match serde_json::from_str::<Value>(&raw) {
+            Ok(value) => Json(value).into_response(),
+            Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        },
+        Ok(None) => Json(json!({})).into_response(),
+        Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+async fn put_project_ui_state(
+    State(state): State<Arc<DaemonState>>,
+    Path(project_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    if !body.is_object() {
+        return api_err(StatusCode::BAD_REQUEST, "UI state must be an object");
+    }
+    if serde_json::to_string(&body)
+        .map(|raw| raw.len() > 256 * 1024)
+        .unwrap_or(true)
+    {
+        return api_err(StatusCode::PAYLOAD_TOO_LARGE, "UI state too large");
+    }
+    let mut store = state.store.lock().await;
+    match store.project(&project_id) {
+        Ok(Some(_)) => {}
+        _ => return api_err(StatusCode::NOT_FOUND, "project not found"),
+    }
+    let raw = serde_json::to_string(&body).unwrap_or_default();
+    match store.set_project_ui_state(&project_id, &raw) {
         Ok(()) => Json(json!({"ok": true})).into_response(),
         Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
@@ -1702,6 +1960,46 @@ async fn lan_revoke(
     Json(json!({ "revoked": revoked })).into_response()
 }
 
+#[derive(Deserialize)]
+struct L4SearchQuery {
+    q: String,
+    #[serde(default = "default_l4_k")]
+    k: usize,
+}
+
+fn default_l4_k() -> usize {
+    10
+}
+
+/// L4 本地召回（§10.1）：deterministic embedding + 余弦排序。
+async fn l4_search(
+    State(state): State<Arc<DaemonState>>,
+    Path(project_id): Path<String>,
+    Query(query): Query<L4SearchQuery>,
+) -> Response {
+    if query.q.trim().is_empty() {
+        return api_err(StatusCode::BAD_REQUEST, "q must not be empty");
+    }
+    let embedding = tenon_fs::l4::embed(&query.q, &query.q);
+    let mut store = state.store.lock().await;
+    match store.l4_search(&project_id, &embedding, query.k.clamp(1, 100)) {
+        Ok(hits) => Json(json!({ "hits": hits })).into_response(),
+        Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+/// L4 索引统计（§10.1）：UI / 诊断用。
+async fn l4_stats(
+    State(state): State<Arc<DaemonState>>,
+    Path(project_id): Path<String>,
+) -> Response {
+    let mut store = state.store.lock().await;
+    match store.l4_chunk_count(&project_id) {
+        Ok(chunks) => Json(json!({ "project_id": project_id, "chunks": chunks })).into_response(),
+        Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
 async fn costs(
     State(state): State<Arc<DaemonState>>,
     Query(q): Query<std::collections::HashMap<String, String>>,
@@ -1719,8 +2017,29 @@ async fn costs(
 }
 
 async fn get_settings(State(state): State<Arc<DaemonState>>) -> Response {
+    // 设置面板覆盖叠加在配置默认值上（§15 /settings 合并视图）
+    let ov = state.settings_overrides.lock().unwrap().clone();
+    let mut session = serde_json::to_value(&state.config.session).unwrap_or_default();
+    if let Some(obj) = session.as_object_mut() {
+        if let Some(m) = &ov.mode {
+            obj.insert("mode".into(), serde_json::Value::String(m.clone()));
+        }
+        if let Some(v) = ov.first_edit_buffer_ms {
+            obj.insert("first_edit_buffer_ms".into(), serde_json::json!(v));
+        }
+        if let Some(v) = ov.approval_timeout_s {
+            obj.insert("approval_timeout_s".into(), serde_json::json!(v));
+        }
+    }
+    let mut exec = serde_json::to_value(&state.config.agent.exec).unwrap_or_default();
+    if let Some(obj) = exec.as_object_mut() {
+        if let Some(v) = ov.command_timeout_s {
+            obj.insert("command_timeout_s".into(), serde_json::json!(v));
+        }
+    }
     Json(json!({
-        "session": state.config.session,
+        "session": session,
+        "exec": exec,
         "agent": state.config.agent,
         "checkpoint": state.config.checkpoint,
         "privacy": state.config.privacy,
@@ -1731,18 +2050,14 @@ async fn get_settings(State(state): State<Arc<DaemonState>>) -> Response {
 }
 
 async fn put_settings(State(state): State<Arc<DaemonState>>, Json(body): Json<Value>) -> Response {
-    // M0/M1：接受覆盖 session.mode（附录 E 子集）；完整 settings 随设置面板
-    if let Some(mode) = body
-        .get("session")
-        .and_then(|s| s.get("mode"))
-        .and_then(|m| m.as_str())
+    // 设置面板（§7.2 / §15）：校验 → 更新运行时覆盖 → 持久化 settings.json
+    //（0600）→ 新会话即时生效（既有会话保持各自配置）
     {
-        let mut cfg = state.config.clone();
-        cfg.session.mode = match mode {
-            "auto" => tenon_config::SessionMode::Auto,
-            _ => tenon_config::SessionMode::Interactive,
-        };
-        let _ = cfg;
+        let mut ov = state.settings_overrides.lock().unwrap();
+        if let Err(e) = ov.merge_json(&body) {
+            return api_err(StatusCode::BAD_REQUEST, e);
+        }
+        ov.persist();
     }
     get_settings(State(state)).await
 }
@@ -1786,12 +2101,21 @@ async fn ws_ticket(State(state): State<Arc<DaemonState>>) -> Response {
     Json(json!({"ticket": ticket, "expires_in_s": 60})).into_response()
 }
 
-async fn ws_upgrade(State(state): State<Arc<DaemonState>>, upgrade: WebSocketUpgrade) -> Response {
-    upgrade.on_upgrade(move |socket| ws_first_frame_auth(state, socket))
+async fn ws_upgrade(
+    State(state): State<Arc<DaemonState>>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    let project_id = query.get("project_id").cloned();
+    upgrade.on_upgrade(move |socket| ws_first_frame_auth(state, project_id, socket))
 }
 
 /// WS 鉴权：连接首帧必须携带一次性 ticket；重放即拒。
-async fn ws_first_frame_auth(state: Arc<DaemonState>, mut socket: WebSocket) {
+async fn ws_first_frame_auth(
+    state: Arc<DaemonState>,
+    project_filter: Option<String>,
+    mut socket: WebSocket,
+) {
     let first = tokio::time::timeout(std::time::Duration::from_secs(5), socket.recv()).await;
     let ticket = match first {
         Ok(Some(Ok(Message::Text(t)))) => t,
@@ -1806,6 +2130,7 @@ async fn ws_first_frame_auth(state: Arc<DaemonState>, mut socket: WebSocket) {
         return;
     }
     let _ = socket.send(Message::text("auth ok".to_string())).await;
+    let mut file_events = state.file_events.subscribe();
     // 事件流：轮询 store 推送（M1 换进程内广播）；断线续传按 seq 由 /trace 拉取
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(300));
     let mut last_seen: i64 = 0;
@@ -1833,6 +2158,21 @@ async fn ws_first_frame_auth(state: Arc<DaemonState>, mut socket: WebSocket) {
                 match msg {
                     Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return,
                     _ => {}
+                }
+            }
+            event = file_events.recv() => {
+                let Ok(event) = event else { continue };
+                if project_filter.as_ref().is_some_and(|filter| *filter != event.project_id) {
+                    continue;
+                }
+                if socket
+                    .send(Message::text(
+                        serde_json::to_string(&event).unwrap_or_default(),
+                    ))
+                    .await
+                    .is_err()
+                {
+                    return;
                 }
             }
         }

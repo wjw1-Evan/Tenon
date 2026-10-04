@@ -173,6 +173,77 @@ pub fn replace_preview(
     Ok(previews)
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ReplaceOutcome {
+    pub path: String,
+    pub replacements: usize,
+    pub diff: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ReplaceApplyReport {
+    pub applied: Vec<ReplaceOutcome>,
+    pub failed: Vec<(String, String)>,
+}
+
+/// 选定文件替换：先全量物化结果，再落盘；任一物化失败都不会写入。
+/// 返回逐文件成功 / 失败，调用方可将失败展示给用户（部分写入会明确报告）。
+pub fn replace_selected(
+    root: &Path,
+    pattern: &str,
+    replacement: &str,
+    paths: &[String],
+    opts: &SearchOptions,
+) -> Result<ReplaceApplyReport> {
+    let re = Regex::new(pattern).map_err(|e| FsError::Io(std::io::Error::other(e.to_string())))?;
+    let guard = tenon_sandbox::WriteGuard::new(root);
+    let mut staged = Vec::new();
+    let mut failed = Vec::new();
+    for rel in paths {
+        let normalized = match guard.check_write_rel(rel) {
+            Ok(path) => path,
+            Err(e) => {
+                failed.push((rel.clone(), e.to_string()));
+                continue;
+            }
+        };
+        let abs = root.join(normalized);
+        let Ok(content) = std::fs::read_to_string(&abs) else {
+            failed.push((rel.clone(), "binary, missing, or non-UTF-8".into()));
+            continue;
+        };
+        if content.len() > opts.max_file_bytes as usize {
+            failed.push((rel.clone(), "file exceeds replace size limit".into()));
+            continue;
+        }
+        if !re.is_match(&content) {
+            failed.push((rel.clone(), "no matches".into()));
+            continue;
+        }
+        let replacements = re.find_iter(&content).count();
+        let replaced = re.replace_all(&content, replacement).into_owned();
+        let diff = TextDiff::from_lines(&content, &replaced)
+            .unified_diff()
+            .context_radius(2)
+            .header("a", "b")
+            .to_string();
+        staged.push((rel.clone(), abs, replaced, replacements, diff));
+    }
+
+    let mut applied = Vec::new();
+    for (rel, abs, replaced, replacements, diff) in staged {
+        match std::fs::write(&abs, &replaced) {
+            Ok(()) => applied.push(ReplaceOutcome {
+                path: rel,
+                replacements,
+                diff,
+            }),
+            Err(e) => failed.push((rel, e.to_string())),
+        }
+    }
+    Ok(ReplaceApplyReport { applied, failed })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,5 +309,50 @@ mod tests {
         };
         let hits = search(d.path(), "beta", &opts).unwrap();
         assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn replace_selected_applies_only_selected_files() {
+        let d = setup();
+        let report = replace_selected(
+            d.path(),
+            "beta",
+            "BETA",
+            &["a.txt".into(), "sub/b.txt".into()],
+            &SearchOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(report.applied.len(), 2);
+        assert!(report.failed.is_empty());
+        assert_eq!(report.applied[0].replacements, 1);
+        assert_eq!(report.applied[1].replacements, 1);
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("a.txt")).unwrap(),
+            "alpha BETA\ngamma\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("sub/b.txt")).unwrap(),
+            "BETA again\n"
+        );
+    }
+
+    #[test]
+    fn replace_selected_confines_paths_and_reports_misses() {
+        let d = setup();
+        let report = replace_selected(
+            d.path(),
+            "beta",
+            "BETA",
+            &[
+                "../outside.txt".into(),
+                "missing.txt".into(),
+                "a.txt".into(),
+            ],
+            &SearchOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(report.applied.len(), 1);
+        assert_eq!(report.applied[0].path, "a.txt");
+        assert_eq!(report.failed.len(), 2);
     }
 }

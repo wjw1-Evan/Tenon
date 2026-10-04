@@ -44,6 +44,12 @@ pub struct LspManager {
     hosts: Mutex<HashMap<(PathBuf, String), HostEntryCell>>,
 }
 
+impl std::fmt::Debug for LspManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LspManager").finish_non_exhaustive()
+    }
+}
+
 impl LspManager {
     pub fn new() -> Self {
         Self::default()
@@ -59,6 +65,27 @@ impl LspManager {
                 diagnostics: Arc::new(std::sync::Mutex::new(HashMap::new())),
             })),
         );
+    }
+
+    /// 关闭某个项目的全部语言服务器（ProjectRuntime 关闭 / 空闲回收，§6.4）。
+    pub async fn close_project(&self, project_root: &Path) -> usize {
+        let mut hosts = self.hosts.lock().await;
+        let keys: Vec<(PathBuf, String)> = hosts
+            .keys()
+            .filter(|(root, _)| root == project_root)
+            .cloned()
+            .collect();
+        let removed: Vec<HostEntryCell> = keys
+            .into_iter()
+            .filter_map(|key| hosts.remove(&key))
+            .collect();
+        let count = removed.len();
+        // 阻塞 shutdown 放到独立线程，避免持有 tokio 锁或卡住 async worker。
+        for entry in removed {
+            let host = entry.lock().expect("host entry lock").host.clone();
+            tokio::task::spawn_blocking(move || host.shutdown());
+        }
+        count
     }
 
     async fn entry(
@@ -237,6 +264,13 @@ impl LspManager {
                 let kind = report.get("kind").and_then(|k| k.as_str()).unwrap_or("");
                 if kind == "full" {
                     let items = report.get("items").cloned().unwrap_or_default();
+                    // 刚 didOpen 时，部分服务器先回 full 空，再推真实诊断；
+                    // 给推送一个窗口，若得到非空则优先采用。
+                    let pushed = wait_diagnostics(&diag_cache, &uri, DIAGNOSTICS_WAIT)?;
+                    let pushed_items = pushed.as_array().cloned().unwrap_or_default();
+                    if !pushed_items.is_empty() {
+                        return Ok(serde_json::json!({ "items": pushed_items }));
+                    }
                     return Ok(serde_json::json!({ "items": items }));
                 }
                 if kind == "unchanged" {

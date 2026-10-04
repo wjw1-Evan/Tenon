@@ -1,7 +1,7 @@
 // 编辑器（设计方案 §8.2 / §7.5）：Monaco 内核；多标签；
 // 代理写入行带「AI」角标（AI 修改高亮区，§8.6），用户编辑后解除。
-import Editor from "@monaco-editor/react";
-import { useEffect, useRef } from "react";
+import Editor, { type Monaco } from "@monaco-editor/react";
+import { useEffect, useRef, useState } from "react";
 
 type DecorationsCollection = { clear: () => void };
 type StandaloneEditor = {
@@ -11,7 +11,78 @@ type StandaloneEditor = {
       options: Record<string, unknown>;
     }>
   ) => DecorationsCollection;
+  revealLineInCenter: (lineNumber: number) => void;
+  focus: () => void;
 };
+
+/* Tenon 主题（§7.5 设计令牌同步）：与 styles.css 的 --surface /
+   --fg 等变量保持一致；data-theme 切换时联动换主题。 */
+const TENON_DARK = {
+  base: "vs-dark",
+  inherit: true,
+  rules: [],
+  colors: {
+    "editor.background": "#14171F",
+    "editor.foreground": "#DFE4EE",
+    "editorGutter.background": "#14171F",
+    "editorLineNumber.foreground": "#39415A",
+    "editorLineNumber.activeForeground": "#8B93A7",
+    "editor.lineHighlightBackground": "#1A1E28",
+    "editorCursor.foreground": "#5C8AF5",
+    "editor.selectionBackground": "#2C4A86",
+    "editorIndentGuide.background1": "#232938",
+    "editorWhitespace.foreground": "#2A3145",
+    "editorWidget.background": "#1D2230",
+    "editorWidget.border": "#2B3140",
+    "scrollbarSlider.background": "#8B93A71F",
+    "scrollbarSlider.hoverBackground": "#8B93A733",
+    "scrollbarSlider.activeBackground": "#8B93A747",
+  },
+} as const;
+
+const TENON_LIGHT = {
+  base: "vs",
+  inherit: true,
+  rules: [],
+  colors: {
+    "editor.background": "#FFFFFF",
+    "editor.foreground": "#1C2434",
+    "editorGutter.background": "#FFFFFF",
+    "editorLineNumber.foreground": "#C2C9D6",
+    "editorLineNumber.activeForeground": "#5F6B81",
+    "editor.lineHighlightBackground": "#F2F4F8",
+    "editorCursor.foreground": "#2F6BEC",
+    "editor.selectionBackground": "#B9D2FB",
+    "editorIndentGuide.background1": "#E8EBF1",
+    "editorWhitespace.foreground": "#D8DEE9",
+    "editorWidget.background": "#FFFFFF",
+    "editorWidget.border": "#D4D9E3",
+    "scrollbarSlider.background": "#5F6B811F",
+    "scrollbarSlider.hoverBackground": "#5F6B8133",
+    "scrollbarSlider.activeBackground": "#5F6B8147",
+  },
+} as const;
+
+function defineTenonThemes(monaco: Monaco) {
+  monaco.editor.defineTheme("tenon-dark", TENON_DARK);
+  monaco.editor.defineTheme("tenon-light", TENON_LIGHT);
+}
+
+/** 当前解析主题（data-theme 驱动；跟随系统档由 ThemePicker 改属性后联动）。 */
+function useResolvedTheme(): "dark" | "light" {
+  const [theme, setTheme] = useState<"dark" | "light">(
+    () => (document.documentElement.dataset.theme === "light" ? "light" : "dark")
+  );
+  useEffect(() => {
+    const root = document.documentElement;
+    const observer = new MutationObserver(() => {
+      setTheme(root.dataset.theme === "light" ? "light" : "dark");
+    });
+    observer.observe(root, { attributes: true, attributeFilter: ["data-theme"] });
+    return () => observer.disconnect();
+  }, []);
+  return theme;
+}
 
 export interface EditorTab {
   path: string;
@@ -30,6 +101,8 @@ interface Props {
   unsavedPaths?: Record<string, true>;
   /** 未保存圆点的无障碍文案（中英文案外置）。 */
   unsavedTitle?: string;
+  /** fuzzy finder / 诊断跳转（§7.4）：path + 1-based line。 */
+  goto?: { path: string; line: number; token: number } | null;
 }
 
 export function EditorPane({
@@ -41,9 +114,11 @@ export function EditorPane({
   aiModifiedLines,
   unsavedPaths,
   unsavedTitle,
+  goto,
 }: Props) {
   const editorRef = useRef<StandaloneEditor | null>(null);
   const decorationsRef = useRef<DecorationsCollection | null>(null);
+  const resolvedTheme = useResolvedTheme();
 
   // AI 角标装饰：行号变化时重建
   useEffect(() => {
@@ -71,6 +146,12 @@ export function EditorPane({
     decorationsRef.current?.clear();
     decorationsRef.current = editor.createDecorationsCollection(ranges);
   }, [aiModifiedLines, activePath]);
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor || !goto || activePath !== goto.path) return;
+    editor.revealLineInCenter(goto.line);
+    editor.focus();
+  }, [goto, activePath]);
   const active = tabs.find((t) => t.path === activePath);
   return (
     <div className="editor-pane" data-testid="editor-pane">
@@ -111,7 +192,9 @@ export function EditorPane({
         {active ? (
           <Editor
             height="100%"
-            theme="vs-dark"
+            theme={resolvedTheme === "light" ? "tenon-light" : "tenon-dark"}
+            beforeMount={defineTenonThemes}
+            loading={<div className="editor-loading">加载中…</div>}
             path={active.path}
             value={active.content}
             onMount={(editor) => {

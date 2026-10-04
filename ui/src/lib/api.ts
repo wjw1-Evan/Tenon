@@ -14,6 +14,28 @@ export interface ProjectSummary {
   open: boolean;
   sessions: Array<{ id: string; status: string; model: string; updated_at: string }>;
   active_sessions: number;
+  dirty_buffers: number;
+  pending_approvals: Array<{
+    id: string;
+    session_id: string;
+    action: string;
+    level: string;
+    created_at: string;
+  }>;
+  usage: { input_tokens: number; output_tokens: number; cost_usd: number };
+}
+
+/** 项目级 UI 状态（§7.2 / §7.5：布局按项目记忆）。 */
+export interface ProjectUiState {
+  sessionId?: string;
+  tabs?: string[];
+  activePath?: string | null;
+  leftWidth?: number;
+  rightWidth?: number;
+  bottomHeight?: number;
+  sidebarOpen?: boolean;
+  timelineOpen?: boolean;
+  bottomTab?: "timeline" | "trace" | "evals";
 }
 
 export interface OpenedProject {
@@ -39,8 +61,58 @@ export interface PortfolioTask {
   }>;
 }
 
+export interface SearchHit {
+  path: string;
+  line: number;
+  column: number;
+  text: string;
+}
+
+export interface ReplacePreview {
+  path: string;
+  diff: string;
+}
+
+export interface SearchReplaceResult {
+  path: string;
+  replacements: number;
+  diff: string;
+}
+
+export interface SearchReplaceSkipped {
+  path: string;
+  reason: string;
+}
+
+export interface LspSymbol {
+  name: string;
+  path: string;
+  line: number;
+  column: number;
+  detail?: string;
+}
+
+export type FileOperation =
+  | { op: "create_file"; path: string; content?: string }
+  | { op: "create_dir"; path: string }
+  | { op: "rename"; from: string; to: string }
+  | { op: "move"; from: string; to: string }
+  | { op: "delete"; path: string };
+
 /** UI 偏好（§7.5 外观档等）：daemon 权威存储（跨启动 / 跨端）。 */
 export type UiPrefs = Record<string, string>;
+
+/** 全局设置（§15 /settings 合并视图）。 */
+export interface SettingsData {
+  session: {
+    mode?: string;
+    first_edit_buffer_ms?: number;
+    approval_timeout_s?: number;
+    [k: string]: unknown;
+  };
+  exec?: { command_timeout_s?: number; [k: string]: unknown };
+  [k: string]: unknown;
+}
 
 export class TenonApi {
   private base: string;
@@ -89,6 +161,16 @@ export class TenonApi {
     void this.request("/ui-prefs", { method: "PUT", json: prefs }).catch(() => {});
   }
 
+  /** 读全局设置（§15 /settings 合并视图）。 */
+  getSettings(): Promise<SettingsData> {
+    return this.request<SettingsData>("/settings");
+  }
+
+  /** 写全局设置（§15）：校验 + 持久化 + 新会话生效；非法值 400。 */
+  putSettings(body: Record<string, unknown>): Promise<SettingsData> {
+    return this.request<SettingsData>("/settings", { method: "PUT", json: body });
+  }
+
   registerProject(path: string) {
     return this.request<{ id: string; trusted: boolean }>("/project", {
       method: "PUT",
@@ -123,7 +205,23 @@ export class TenonApi {
     });
   }
 
-  createSession(projectId: string, mode: "interactive" | "auto", provider = "") {
+  async projectUiState(projectId: string): Promise<ProjectUiState> {
+    try {
+      return await this.request<ProjectUiState>(`/project/${projectId}/ui-state`);
+    } catch {
+      return {};
+    }
+  }
+
+  saveProjectUiState(projectId: string, state: ProjectUiState): void {
+    void this.request(`/project/${projectId}/ui-state`, {
+      method: "PUT",
+      json: state,
+    }).catch(() => {});
+  }
+
+  /** mode 空串 = 由 daemon 按全局设置默认档决定（§7.2 / §15）。 */
+  createSession(projectId: string, mode: "interactive" | "auto" | "", provider = "") {
     return this.request<{ session_id: string; project_id: string }>("/session", {
       method: "POST",
       json: { project_id: projectId, mode, provider },
@@ -190,7 +288,7 @@ export class TenonApi {
     );
   }
 
-  tree(projectId: string) {
+  tree(projectId: string, path = "") {
     return this.request<{
       entries: Array<{
         path: string;
@@ -198,7 +296,24 @@ export class TenonApi {
         kind: "dir" | "file";
         git_status: string;
       }>;
-    }>(`/project/${projectId}/tree`);
+    }>(
+      `/project/${projectId}/tree?path=${encodeURIComponent(path)}`
+    );
+  }
+
+  fuzzyFiles(projectId: string, q: string, limit = 100) {
+    return this.request<{
+      hits: Array<{
+        path: string;
+        name: string;
+        kind: "dir" | "file";
+        git_status: string;
+        score: number;
+      }>;
+      query: string;
+    }>(
+      `/project/${projectId}/files/fuzzy?q=${encodeURIComponent(q)}&limit=${limit}`
+    );
   }
 
   readFile(projectId: string, path: string) {
@@ -214,10 +329,69 @@ export class TenonApi {
     });
   }
 
-  search(projectId: string, q: string) {
+  fileOps(projectId: string, ops: FileOperation[]) {
     return this.request<{
-      hits: Array<{ path: string; line: number; column: number; text: string }>;
-    }>(`/project/${projectId}/search?q=${encodeURIComponent(q)}`);
+      results: Array<{ ok: boolean; outcome?: string; error?: string }>;
+    }>(`/project/${projectId}/file/ops`, {
+      method: "POST",
+      json: { ops },
+    });
+  }
+
+  search(projectId: string, q: string) {
+    return this.request<{ hits: SearchHit[] }>(
+      `/project/${projectId}/search?q=${encodeURIComponent(q)}`
+    );
+  }
+
+  searchPreview(projectId: string, q: string, replace: string) {
+    return this.request<{ previews: ReplacePreview[] }>(
+      `/project/${projectId}/search?q=${encodeURIComponent(q)}&replace=${encodeURIComponent(replace)}`
+    );
+  }
+
+  applySearchReplace(
+    projectId: string,
+    q: string,
+    replacement: string,
+    paths: string[]
+  ) {
+    return this.request<{
+      applied: SearchReplaceResult[];
+      skipped: SearchReplaceSkipped[];
+    }>(`/project/${projectId}/search/replace`, {
+      method: "POST",
+      json: { q, replacement, paths },
+    });
+  }
+
+  lsp(body: {
+    project_id: string;
+    path: string;
+    action:
+      | "completion"
+      | "hover"
+      | "definition"
+      | "references"
+      | "diagnostics"
+      | "workspace_symbol"
+      | "codeaction"
+      | "format";
+    line?: number;
+    character?: number;
+    extra?: string;
+  }) {
+    return this.request<{ result: unknown }>("/lsp", {
+      method: "POST",
+      json: {
+        project_id: body.project_id,
+        path: body.path,
+        action: body.action,
+        line: body.line ?? 0,
+        character: body.character ?? 0,
+        extra: body.extra,
+      },
+    });
   }
 
   portfolioTasks() {
@@ -345,9 +519,15 @@ export class TenonApi {
   }
 
   /** 连接事件流：先换票，首帧携带（ADR-10）。 */
-  async connectEvents(onEvent: (ev: unknown) => void): Promise<WebSocket> {
+  async connectEvents(
+    onEvent: (ev: unknown) => void,
+    projectId?: string
+  ): Promise<WebSocket> {
     const ticket = await this.wsTicket();
-    const ws = new WebSocket(`ws://127.0.0.1:${new URL(this.base).port}/ws`);
+    const filter = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+    const ws = new WebSocket(
+      `ws://127.0.0.1:${new URL(this.base).port}/ws${filter}`
+    );
     await new Promise<void>((resolve, reject) => {
       ws.onopen = () => resolve();
       ws.onerror = () => reject(new Error("ws connect failed"));
