@@ -4,7 +4,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ResizeHandle } from "./components/ResizeHandle";
 import { TenonApi } from "./lib/api";
 import type { PortfolioTask, ProjectSummary } from "./lib/api";
-import { createTranslator, LOCALE_CHANGE, type Locale } from "./lib/i18n";
+import { createTranslator, LOCALE_CHANGE, type Locale, type Translate } from "./lib/i18n";
+import {
+  applyTheme,
+  loadThemePreference,
+  saveThemePreference,
+  watchSystemTheme,
+  type ThemePreference,
+} from "./lib/theme";
 import type { AgentStateName } from "./lib/stateColors";
 import { useShortcuts } from "./hooks";
 import { FileTree } from "./components/FileTree";
@@ -240,6 +247,7 @@ export default function App({
             window.setTimeout(() => setRouteNote(null), 4000);
           }}
         />
+        <ThemePicker api={api} t={t} />
         <LanguagePicker />
       </header>
       {routeNote && (
@@ -446,6 +454,33 @@ function LanguagePicker() {
       <option value="auto">Auto</option>
       <option value="en">English</option>
       <option value="zh-CN">中文</option>
+    </select>
+  );
+}
+
+/** 外观档（§7.5）：深色 / 浅色 / 跟随系统；即时生效 + 双写
+ *  localStorage（快路径）与 daemon /ui-prefs（跨启动权威，端口动态
+ *  导致 localStorage 按 origin 隔离不可依赖）。 */
+function ThemePicker({ api, t }: { api: TenonApi; t: Translate }) {
+  const [pref, setPref] = useState<ThemePreference>(() => loadThemePreference());
+  // 跟随系统档：系统深浅切换时重应用
+  useEffect(() => watchSystemTheme(() => applyTheme(pref)), [pref]);
+  return (
+    <select
+      aria-label="theme"
+      data-testid="theme-picker"
+      value={pref}
+      onChange={(e) => {
+        const v = e.target.value as ThemePreference;
+        setPref(v);
+        saveThemePreference(v);
+        applyTheme(v);
+        api.setUiPrefs({ theme: v });
+      }}
+    >
+      <option value="system">{t("theme.system")}</option>
+      <option value="dark">{t("theme.dark")}</option>
+      <option value="light">{t("theme.light")}</option>
     </select>
   );
 }

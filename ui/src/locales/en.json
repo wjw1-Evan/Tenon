@@ -36,5 +36,9 @@
   "settings.language": "Language",
   "diff.ai_badge": "AI",
   "tree.empty": "Open a project to browse files",
-  "error.generic": "Something went wrong"
+  "error.generic": "Something went wrong",
+  "settings.theme": "theme",
+  "theme.system": "System",
+  "theme.dark": "Dark",
+  "theme.light": "Light"
 }

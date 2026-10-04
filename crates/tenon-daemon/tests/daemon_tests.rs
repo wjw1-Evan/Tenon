@@ -722,6 +722,63 @@ async fn settings_and_projects_endpoints() {
 }
 
 #[tokio::test]
+async fn ui_prefs_roundtrip_and_validation() {
+    // §7.5 外观档权威存储：PUT upsert → GET 回读；非字符串值 400
+    let (_tmp, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    let empty: serde_json::Value = client
+        .get(format!("{}/ui-prefs", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(empty.as_object().unwrap().is_empty(), "初始为空");
+
+    for body in [
+        serde_json::json!({"theme": "light"}),
+        serde_json::json!({"theme": "dark"}),
+        serde_json::json!({"locale": "zh-CN"}),
+    ] {
+        let r = client
+            .put(format!("{}/ui-prefs", base(port)))
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+    }
+    let prefs: serde_json::Value = client
+        .get(format!("{}/ui-prefs", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(prefs["theme"], "dark", "upsert 覆盖旧值");
+    assert_eq!(prefs["locale"], "zh-CN");
+
+    let bad = client
+        .put(format!("{}/ui-prefs", base(port)))
+        .json(&serde_json::json!({"theme": 3}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), 400, "非字符串值须拒收");
+
+    // 未带 token 不可读写（鉴权中间件覆盖）
+    let anon = reqwest::Client::new()
+        .get(format!("{}/ui-prefs", base(port)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anon.status(), 401);
+}
+
+#[tokio::test]
 async fn model_routing_switch_and_suggest() {
     let dir = tempfile::tempdir().unwrap();
     let project = dir.path().join("proj");

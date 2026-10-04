@@ -1,6 +1,8 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
+import { TenonApi } from "./lib/api";
+import { applyTheme, isThemePreference, loadThemePreference, saveThemePreference } from "./lib/theme";
 import "./styles.css";
 
 // 握手来源优先级：
@@ -120,7 +122,15 @@ async function boot() {
     return;
   }
   try {
+    // 外观（§7.5）：先按本地缓存应用避免闪烁；daemon 端口动态导致
+    // localStorage 按 origin 隔离，跨启动以 /ui-prefs 为权威再对齐
+    applyTheme(loadThemePreference());
     const handshake = await discoverHandshake();
+    const prefs = await new TenonApi(handshake).getUiPrefs();
+    if (isThemePreference(prefs.theme) && prefs.theme !== loadThemePreference()) {
+      saveThemePreference(prefs.theme);
+    }
+    applyTheme(loadThemePreference());
     const root = createRoot(rootEl);
     root.render(
       <StrictMode>

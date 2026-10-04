@@ -86,6 +86,9 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
         .route("/lan/revoke", post(lan_revoke))
         .route("/costs", get(costs))
         .route("/settings", get(get_settings).put(put_settings))
+        // UI 偏好（§7.5 外观档）：daemon 端口动态导致 localStorage 按 origin
+        // 隔离不可跨启动——此处为跨启动 / 跨端权威存储
+        .route("/ui-prefs", get(get_ui_prefs).put(put_ui_prefs))
         .layer(axum::middleware::from_fn_with_state(
             auth_state,
             auth_middleware,
@@ -1742,6 +1745,38 @@ async fn put_settings(State(state): State<Arc<DaemonState>>, Json(body): Json<Va
         let _ = cfg;
     }
     get_settings(State(state)).await
+}
+
+/// UI 偏好读取（§7.5）：全部键值对。
+async fn get_ui_prefs(State(state): State<Arc<DaemonState>>) -> Response {
+    let mut store = state.store.lock().await;
+    match store.ui_prefs() {
+        Ok(pairs) => {
+            let map: serde_json::Map<String, Value> = pairs
+                .into_iter()
+                .map(|(k, v)| (k, Value::String(v)))
+                .collect();
+            Json(Value::Object(map)).into_response()
+        }
+        Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+/// UI 偏好写入（§7.5）：逐键 upsert；值须为字符串。
+async fn put_ui_prefs(State(state): State<Arc<DaemonState>>, Json(body): Json<Value>) -> Response {
+    let Some(obj) = body.as_object() else {
+        return api_err(StatusCode::BAD_REQUEST, "须为 JSON 对象");
+    };
+    let mut store = state.store.lock().await;
+    for (k, v) in obj {
+        let Some(s) = v.as_str() else {
+            return api_err(StatusCode::BAD_REQUEST, format!("偏好 {k} 值须为字符串"));
+        };
+        if let Err(e) = store.set_ui_pref(k, s) {
+            return api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
+        }
+    }
+    Json(json!({"ok": true})).into_response()
 }
 
 // ---------- WS（ADR-10） ----------

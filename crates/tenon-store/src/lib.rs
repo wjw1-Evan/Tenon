@@ -404,6 +404,13 @@ CREATE TABLE IF NOT EXISTS l4_chunks (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_l4_chunks_project ON l4_chunks(project_id, path);
+
+-- UI 偏好（§7.5 外观档等）：daemon 端口动态，localStorage 按 origin 隔离
+-- 不可跨启动——此处为跨启动 / 跨端（桌面 + 浏览器）权威存储
+CREATE TABLE IF NOT EXISTS ui_prefs (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 "#;
 
 /// 存储门面。内部连接由调用方保证单线程访问（daemon 侧以互斥锁包裹）。
@@ -721,6 +728,29 @@ impl Store {
             |r| r.get(0),
         )?;
         Ok(seq)
+    }
+
+    // ---------- ui_prefs（§7.5 外观档等跨启动 UI 偏好） ----------
+
+    /// 读全部 UI 偏好（键值对）。
+    pub fn ui_prefs(&mut self) -> Result<Vec<(String, String)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT key, value FROM ui_prefs ORDER BY key")?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// 写 UI 偏好（upsert）。
+    pub fn set_ui_pref(&mut self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO ui_prefs(key, value) VALUES(?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [key, value],
+        )?;
+        Ok(())
     }
 
     // ---------- checkpoints ----------
@@ -1535,6 +1565,22 @@ mod tests {
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].1, "a.rs", "最相近的切片应排第一");
         assert!(hits[0].3 > hits[1].3);
+    }
+
+    #[test]
+    fn ui_prefs_upsert_roundtrip() {
+        let mut s = mem();
+        assert!(s.ui_prefs().unwrap().is_empty(), "初始为空");
+        s.set_ui_pref("theme", "light").unwrap();
+        s.set_ui_pref("theme", "dark").unwrap();
+        s.set_ui_pref("locale", "zh-CN").unwrap();
+        let prefs = s.ui_prefs().unwrap();
+        assert_eq!(prefs.len(), 2);
+        assert!(
+            prefs.contains(&("theme".into(), "dark".into())),
+            "upsert 覆盖旧值"
+        );
+        assert!(prefs.contains(&("locale".into(), "zh-CN".into())));
     }
 
     #[test]

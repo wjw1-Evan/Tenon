@@ -39,6 +39,9 @@ export interface PortfolioTask {
   }>;
 }
 
+/** UI 偏好（§7.5 外观档等）：daemon 权威存储（跨启动 / 跨端）。 */
+export type UiPrefs = Record<string, string>;
+
 export class TenonApi {
   private base: string;
   private token: string;
@@ -70,6 +73,20 @@ export class TenonApi {
 
   health(): Promise<string> {
     return fetch(`${this.base}/health`).then((r) => r.text());
+  }
+
+  /** 读 UI 偏好（§7.5）：失败回退空对象（外观走本地缓存 / 系统档）。 */
+  async getUiPrefs(): Promise<UiPrefs> {
+    try {
+      return await this.request<UiPrefs>("/ui-prefs");
+    } catch {
+      return {};
+    }
+  }
+
+  /** 写 UI 偏好（§7.5）：fire-and-forget，失败不影响本地即时生效。 */
+  setUiPrefs(prefs: UiPrefs): void {
+    void this.request("/ui-prefs", { method: "PUT", json: prefs }).catch(() => {});
   }
 
   registerProject(path: string) {
