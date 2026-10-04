@@ -1213,13 +1213,62 @@ button:disabled { opacity: 0.45; cursor: default; }
 }
 @media (max-width: 860px) {
   .project-open input { width: 140px; }
-  .bottom-grid { grid-template-columns: 1fr; }
+  /* 双类名提高优先级：文件尾部的四列基础声明（同特异性、靠后）会盖掉单类 media 规则；
+     footer 是 .workspace 的兄弟节点，故挂 .zone-bottom 而非 .workspace */
+  .zone-bottom .bottom-grid { grid-template-columns: 1fr; }
   .diff-panel {
     border-left: none;
     padding-left: 0;
     border-top: 1px solid var(--border);
     padding-top: 10px;
   }
+}
+
+/* ─────────────────────── 响应式 · 视口自适应（v1.74 §7.2） ─────────────────────── */
+/* narrow（<800px）浮层模式：侧栏 / 代理面板互斥覆盖主区；浮层开合不写持久化状态。 */
+.workspace.compact { position: relative; }
+.workspace.compact .activity-rail { position: relative; z-index: 50; }
+.float-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  background: rgba(6, 8, 12, 0.42);
+  animation: pop-in 0.14s ease-out;
+}
+.zone-float {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 40;
+  max-width: 82vw;
+  box-shadow: var(--shadow-pop);
+  animation: pop-in 0.14s ease-out;
+}
+.zone-left.zone-float { left: 46px; border-right: 1px solid var(--border-strong); }
+.zone-right.zone-float { right: 0; border-left: 1px solid var(--border-strong); }
+
+/* 顶栏代理浮层切换按钮：仅 narrow 由 App 渲染，样式对齐 rail-btn。 */
+.agent-float-toggle {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  border-radius: 8px;
+  color: var(--muted);
+  box-shadow: none;
+}
+.agent-float-toggle:hover { background: var(--raised); color: var(--fg); border: none; }
+.agent-float-toggle[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent-text); }
+
+@media (max-width: 799px) {
+  .app-head select { max-width: 34vw; }
+  .bottom-tabs { overflow-x: auto; flex-wrap: nowrap; }
+}
+@media (max-width: 639px) {
+  .settings-grid { grid-template-columns: 1fr; }
 }
 
 /* 设置面板（§7.2 / §15） */

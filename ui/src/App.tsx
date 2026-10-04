@@ -29,6 +29,14 @@ import { EvalsPanel } from "./components/EvalsPanel";
 import { LanguagePackWizard } from "./components/LanguagePackWizard";
 import { unionLines } from "./lib/aiLines";
 import { createAutoSaver, type AutoSaver } from "./lib/autosave";
+import {
+  bandOf,
+  effectiveBottom,
+  effectiveFloatWidth,
+  effectiveLeft,
+  effectiveRight,
+  useViewport,
+} from "./lib/viewport";
 import { SettingsDialog, type SettingsData } from "./components/SettingsDialog";
 import { CommandPalette, type Command } from "./components/CommandPalette";
 
@@ -179,9 +187,36 @@ export default function App({
   }, [api]);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sideView, setSideView] = useState<SideView>(loadSideView);
+  // 视口自适应（§7.2 v1.74）：三档布局；narrow 下侧栏 / 代理面板转互斥浮层。
+  const viewport = useViewport();
+  const band = viewport.band;
+  const narrow = band === "narrow";
+  /** narrow 浮层开合：仅窄屏有意义，不写持久化状态（sidebarOpen / ui-state 不被窄屏污染）。 */
+  const [floatPane, setFloatPane] = useState<"agent" | "side" | null>(() =>
+    typeof window !== "undefined" && bandOf(window.innerWidth) === "narrow"
+      ? "agent"
+      : null
+  );
+  // 跨档位沿：进入 narrow 默认展开代理浮层（会话 / 审批是核心动线），离开清空。
+  const bandRef = useRef(band);
+  useEffect(() => {
+    if (bandRef.current === band) return;
+    bandRef.current = band;
+    setFloatPane(band === "narrow" ? "agent" : null);
+  }, [band]);
   /** rail 点击语义：同视图再点 = 折叠侧栏；否则切换视图并展开。 */
   const toggleSideView = useCallback(
     (view: SideView) => {
+      if (narrow) {
+        if (floatPane === "side" && sideView === view) {
+          setFloatPane(null);
+          return;
+        }
+        setSideView(view);
+        localStorage.setItem(SIDE_VIEW_KEY, view);
+        setFloatPane("side");
+        return;
+      }
       if (sidebarOpen && sideView === view) {
         setSidebarOpen(false);
         return;
@@ -190,7 +225,7 @@ export default function App({
       localStorage.setItem(SIDE_VIEW_KEY, view);
       setSidebarOpen(true);
     },
-    [sideView, sidebarOpen]
+    [narrow, floatPane, sideView, sidebarOpen]
   );
   const [agentState, setAgentState] = useState<AgentStateName>("idle");
   const [routeNote, setRouteNote] = useState<string | null>(null);
@@ -203,6 +238,14 @@ export default function App({
   const tabs = projectId ? tabsByProject[projectId] ?? [] : [];
   const activePath = projectId ? activePathByProject[projectId] ?? null : null;
   const sessionId = projectId ? sessionsByProject[projectId] ?? null : null;
+
+  // 渲染期尺寸 clamp（§7.2 v1.74）：只作用渲染，记忆值与项目 ui-state 不改写。
+  const effLeft = effectiveLeft(leftWidth, viewport.width);
+  const effRight = effectiveRight(rightWidth, viewport.width);
+  const effBottom = effectiveBottom(bottomHeight, viewport.height);
+  // narrow 浮层互斥可见性：侧栏 / 代理面板同一时刻至多一个。
+  const sideVisible = narrow ? floatPane === "side" : sidebarOpen;
+  const agentVisible = narrow ? floatPane === "agent" : true;
 
   useEffect(() => {
     tabsByProjectRef.current = tabsByProject;
@@ -638,6 +681,33 @@ export default function App({
         />
         <ThemePicker api={api} t={t} />
         <LanguagePicker />
+        {narrow && (
+          <button
+            type="button"
+            className="agent-float-toggle"
+            data-testid="agent-float-toggle"
+            title={t("panel.agent")}
+            aria-label={t("panel.agent")}
+            aria-pressed={floatPane === "agent"}
+            onClick={() =>
+              setFloatPane((p) => (p === "agent" ? null : "agent"))
+            }
+          >
+            <svg
+              width={17}
+              height={17}
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={1.8}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z" />
+            </svg>
+          </button>
+        )}
       </header>
       {routeNote && (
         <div className="route-note" data-testid="route-note">
@@ -669,7 +739,11 @@ export default function App({
           ))}
         </div>
       )}
-      <div className="workspace">
+      <div
+        className={`workspace${narrow ? " compact" : ""}`}
+        data-band={band}
+        data-testid="workspace"
+      >
         <nav className="activity-rail" aria-label={t("rail.label")}>
           <button
             type="button"
@@ -706,9 +780,16 @@ export default function App({
           </button>
           <span className="rail-spacer" />
         </nav>
-        {sidebarOpen && (
+        {sideVisible && (
           <>
-            <aside className="zone zone-left" style={{ width: leftWidth, minWidth: 140, maxWidth: 480 }}>
+            <aside
+              className={`zone zone-left${narrow ? " zone-float" : ""}`}
+              style={
+                narrow
+                  ? { width: effectiveFloatWidth(leftWidth, viewport.width) }
+                  : { width: effLeft, minWidth: 140, maxWidth: 480 }
+              }
+            >
               <div className="side-head">
                 <span className="side-title">
                   {sideView === "files"
@@ -749,19 +830,28 @@ export default function App({
                 )}
               </div>
             </aside>
-            <ResizeHandle
-              dir="horizontal"
-              testId="resize-left"
-              onResize={(d) =>
-                setLeftWidth((w) => {
-                  const v = Math.min(480, Math.max(140, w + d));
-                  localStorage.setItem("tenon:leftWidth", String(v));
-                  return v;
-                })
-              }
-              onDoubleClick={() => setLeftWidth(220)}
-            />
+            {!narrow && (
+              <ResizeHandle
+                dir="horizontal"
+                testId="resize-left"
+                onResize={(d) =>
+                  setLeftWidth((w) => {
+                    const v = Math.min(480, Math.max(140, w + d));
+                    localStorage.setItem("tenon:leftWidth", String(v));
+                    return v;
+                  })
+                }
+                onDoubleClick={() => setLeftWidth(220)}
+              />
+            )}
           </>
+        )}
+        {narrow && floatPane && (
+          <div
+            className="float-backdrop"
+            data-testid="float-backdrop"
+            onClick={() => setFloatPane(null)}
+          />
         )}
         {/* v1.64：无打开文件 tab 时中区编辑器整体隐藏（§7.2） */}
         {tabs.length > 0 && (<>
@@ -812,23 +902,32 @@ export default function App({
             }}
           />
         </section>
-        <ResizeHandle
-          dir="horizontal"
-          testId="resize-right"
-          onResize={(d) =>
-            setRightWidth((w) => {
-              const v = Math.min(720, Math.max(260, w - d));
-              localStorage.setItem("tenon:rightWidth", String(v));
-              return v;
-            })
-          }
-          onDoubleClick={() => setRightWidth(420)}
-        />
+        {!narrow && (
+          <ResizeHandle
+            dir="horizontal"
+            testId="resize-right"
+            onResize={(d) =>
+              setRightWidth((w) => {
+                const v = Math.min(720, Math.max(260, w - d));
+                localStorage.setItem("tenon:rightWidth", String(v));
+                return v;
+              })
+            }
+            onDoubleClick={() => setRightWidth(420)}
+          />
+        )}
         </>)}
-        <section
-          className="zone zone-right"
-          style={tabs.length > 0 ? { width: rightWidth, minWidth: 260, maxWidth: 720 } : { flex: 1, minWidth: 260 }}
-        >
+        {agentVisible && (
+          <section
+            className={`zone zone-right${narrow ? " zone-float" : ""}`}
+            style={
+              narrow
+                ? { width: effectiveFloatWidth(rightWidth, viewport.width) }
+                : tabs.length > 0
+                  ? { width: effRight, minWidth: 260, maxWidth: 720 }
+                  : { flex: 1, minWidth: 260 }
+            }
+          >
           <AgentPanel
             api={api}
             t={t}
@@ -849,7 +948,8 @@ export default function App({
             followMode={followMode}
             onToggleFollow={toggleFollow}
           />
-        </section>
+          </section>
+        )}
       </div>
       {dirtyConflict && (
         <div className="merge-overlay">
@@ -881,7 +981,7 @@ export default function App({
         </div>
       )}
       {timelineOpen && (
-        <footer className="zone-bottom" style={{ height: bottomHeight }}>
+        <footer className="zone-bottom" style={{ height: effBottom }}>
           <ResizeHandle dir="vertical" onResize={(d) =>
             setBottomHeight((h) => {
               const v = Math.min(480, Math.max(80, h - d));
