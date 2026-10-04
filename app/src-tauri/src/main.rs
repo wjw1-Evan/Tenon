@@ -129,9 +129,31 @@ fn get_handshake(state: tauri::State<AppState>) -> Result<Handshake, String> {
         .ok_or_else(|| "daemon 未就绪".to_string())
 }
 
+/// 开发热重载（v1.65）：debug 构建探测 Vite dev server（127.0.0.1:5173），
+/// 在线则导航 dev server——UI 编辑即时 HMR，握手仍经 URL 参数直传；
+/// 未运行（或 release 构建）返回 None，回落 daemon 托管 UI（生产行为不变）。
+fn dev_server_url(port: u16, token: &str, project: &str) -> Option<Url> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    let addr: std::net::SocketAddr = "127.0.0.1:5173".parse().ok()?;
+    let timeout = std::time::Duration::from_millis(200);
+    std::net::TcpStream::connect_timeout(&addr, timeout).ok()?;
+    Url::parse_with_params(
+        "http://localhost:5173/",
+        &[
+            ("port", port.to_string()),
+            ("token", token.to_string()),
+            ("project", project.to_string()),
+        ],
+    )
+    .ok()
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             handshake: Mutex::new(None),
             _child: Mutex::new(None),
@@ -152,23 +174,29 @@ fn main() {
                         &hs.token[..8.min(hs.token.len())]
                     );
                     let _ = handle.emit("tenon://handshake", &hs);
-                    // 将 WebView 导航至 daemon 同源托管的 UI（浏览器同款链路：
-                    // 握手经 URL 参数直传，UI 经 http://127.0.0.1 调 API，无跨域）
+                    // 将 WebView 导航至 UI：debug 且 Vite dev server 在跑时导航
+                    // dev server（HMR 热重载），否则 daemon 同源托管的 UI（浏览器
+                    // 同款链路：握手经 URL 参数直传，UI 经 http://127.0.0.1 调 API，
+                    // 无跨域）
                     if let Some(win) = handle.get_webview_window("main") {
-                        match Url::parse_with_params(
-                            &format!("http://127.0.0.1:{}/", hs.port),
-                            &[
-                                ("port", hs.port.to_string()),
-                                ("token", hs.token.clone()),
-                                ("project", hs.project.clone()),
-                            ],
-                        ) {
-                            Ok(url) => {
+                        let url = dev_server_url(hs.port, &hs.token, &hs.project).or_else(|| {
+                            Url::parse_with_params(
+                                &format!("http://127.0.0.1:{}/", hs.port),
+                                &[
+                                    ("port", hs.port.to_string()),
+                                    ("token", hs.token.clone()),
+                                    ("project", hs.project.clone()),
+                                ],
+                            )
+                            .ok()
+                        });
+                        match url {
+                            Some(url) => {
                                 if let Err(e) = win.navigate(url) {
                                     eprintln!("WebView 导航失败: {e}");
                                 }
                             }
-                            Err(e) => eprintln!("URL 构造失败: {e}"),
+                            None => eprintln!("导航 URL 构造失败"),
                         }
                     }
                 }

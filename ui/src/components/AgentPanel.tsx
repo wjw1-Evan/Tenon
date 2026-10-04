@@ -1,12 +1,15 @@
 // 代理会话面板（设计方案 §7.2 右区）：会话流 / 状态色 / 审批卡 / 证据卡。
 // §8.6 人机共编：dirty_conflict 事件 → 三栏合并预览；补丁 → 行级 AI 角标。
+// v1.51：模型选择入口内嵌任务输入框底行（参考 ZCode 客户端输入区）。
 import { useEffect, useRef, useState } from "react";
 import type { TenonApi } from "../lib/api";
 import type { Translate } from "../lib/i18n";
-import { STATE_COLORS, type AgentStateName } from "../lib/stateColors";
+import { RUNNING_STATES, STATE_COLORS, type AgentStateName } from "../lib/stateColors";
 import { ApprovalCard, pendingApprovalFromEvents } from "./ApprovalCard";
 import { diffFromPatchEvent } from "./DiffPanel";
 import { aiLinesFromDiff } from "../lib/aiLines";
+import { ModelRoutingPanel } from "./ModelRoutingPanel";
+import { markWorkspaceInputReady } from "../lib/performance";
 
 export interface DirtyConflictView {
   path: string;
@@ -26,6 +29,10 @@ interface Props {
   /** 跟随模式（§8.5）：代理写入时编辑器自动滚动到改动处；App 持有状态，此处仅展示开关。 */
   followMode?: boolean;
   onToggleFollow?: () => void;
+  /** 外部一键入口（诊断修复）注入任务；token 变化即发送。 */
+  injectedTask?: { token: number; text: string };
+  /** 会话级模型热切换回调（§11：上下文随迁提示由 App 呈现）。 */
+  onModelSwitched?: (model: string) => void;
 }
 
 interface EventItem {
@@ -45,11 +52,15 @@ export function AgentPanel({
   onPatchLines,
   followMode,
   onToggleFollow,
+  injectedTask,
+  onModelSwitched,
 }: Props) {
   const [events, setEvents] = useState<EventItem[]>([]);
+  const [streamText, setStreamText] = useState("");
   const [status, setStatus] = useState<AgentStateName>("idle");
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [stopRequested, setStopRequested] = useState(false);
   const [latestDiff, setLatestDiff] = useState<string | null>(null);
   const feedRef = useRef<HTMLDivElement>(null);
   const patchLinesCb = useRef<Props["onPatchLines"]>(undefined);
@@ -57,6 +68,35 @@ export function AgentPanel({
   useEffect(() => {
     patchLinesCb.current = onPatchLines;
   }, [onPatchLines]);
+
+  // §8.7 冷启动终点：任务输入框已挂载并完成两帧渲染，用户可开始键入。
+  useEffect(() => {
+    markWorkspaceInputReady();
+  }, []);
+
+  // 流式输出保持最新增量可见；用户向上回看时不强制拉底。
+  useEffect(() => {
+    const feed = feedRef.current;
+    if (feed && feed.scrollHeight - feed.scrollTop - feed.clientHeight < 160) {
+      feed.scrollTop = feed.scrollHeight;
+    }
+  }, [events.length, streamText]);
+
+  // §8.1 / §8.5 诊断「AI 修复」：直接发起当前项目会话任务（T4 入口）。
+  useEffect(() => {
+    const text = injectedTask?.text.trim();
+    if (!text || !sessionId) return;
+    let alive = true;
+    void api
+      .sendMessage(sessionId, text)
+      .catch(() => {})
+      .finally(() => {
+        if (alive) setInput("");
+      });
+    return () => {
+      alive = false;
+    };
+  }, [api, sessionId, injectedTask]);
 
   // 事件流轮询（M0：/trace 增量拉取；M1 切 WS 推流）
   useEffect(() => {
@@ -71,6 +111,11 @@ export function AgentPanel({
           after = r.events[r.events.length - 1].seq;
           setEvents((prev) => [...prev, ...r.events]);
           for (const ev of r.events) {
+            if (ev.type === "user_input") setStreamText("");
+            if (ev.type === "model_delta") {
+              setStreamText((prev) => prev + String(ev.payload.text ?? ""));
+            }
+            if (ev.type === "decision") setStreamText("");
             if (ev.type === "patch_applied") {
               const d = diffFromPatchEvent(ev.payload);
               if (d) {
@@ -124,12 +169,20 @@ export function AgentPanel({
     }
   }
 
+  // v1.59：运行态下发送按钮变「停止」——协作暂停在下一工具调用检查点生效。
+  // stop 受理即禁用，防状态轮询间隙连点向控制队列残留多条 Stop（回到空闲态解锁）。
+  useEffect(() => {
+    if (!RUNNING_STATES.has(status)) setStopRequested(false);
+  }, [status]);
+
   async function stop() {
     if (!sessionId) return;
+    setStopRequested(true);
     await api.control(sessionId, "stop");
   }
 
   const approval = pendingApprovalFromEvents(events);
+  const running = RUNNING_STATES.has(status);
 
   return (
     <div className="agent-panel" data-testid="agent-panel">
@@ -153,15 +206,17 @@ export function AgentPanel({
         >
           {t("follow.toggle")}
         </button>
-        <button className="agent-stop" onClick={stop} disabled={!sessionId}>
-          {t("message.stop")}
-        </button>
       </div>
 
       <div className="agent-feed" ref={feedRef} data-testid="agent-feed">
         {events.map((e) => (
           <EventCard key={e.id} ev={e} t={t} />
         ))}
+        {streamText && (
+          <div className="ev ev-decision" data-testid="model-stream">
+            {streamText}
+          </div>
+        )}
         {approval && (
           <ApprovalCard
             api={api}
@@ -182,7 +237,7 @@ export function AgentPanel({
         )}
       </div>
 
-      <div className="agent-input">
+      <div className="agent-input" data-testid="task-input-box">
         <textarea
           value={input}
           placeholder={t("message.placeholder")}
@@ -198,9 +253,22 @@ export function AgentPanel({
           }}
           data-testid="task-input"
         />
-        <button onClick={send} disabled={busy || !sessionId} data-testid="send">
-          {t("message.send")}
-        </button>
+        <div className="agent-input-foot">
+          <ModelRoutingPanel
+            api={api}
+            sessionId={sessionId}
+            t={t}
+            onSwitched={onModelSwitched}
+          />
+          <button
+            className={running ? "agent-send agent-send-stop" : "agent-send"}
+            onClick={running ? stop : send}
+            disabled={!sessionId || stopRequested || (!running && busy)}
+            data-testid={running ? "stop" : "send"}
+          >
+            {running ? t("message.stop_short") : t("message.send")}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -210,6 +278,9 @@ function EventCard({ ev, t }: { ev: EventItem; t: Translate }) {
   switch (ev.type) {
     case "user_input":
       return <div className="ev ev-user">{String(ev.payload.text ?? "")}</div>;
+    case "model_delta":
+      // 连续增量由上方单个 stream 卡承接，避免 token / 批次渲染成事件瀑布。
+      return null;
     case "decision": {
       const intent = String(ev.payload.intent ?? "");
       if (ev.payload.first_edit === true) {

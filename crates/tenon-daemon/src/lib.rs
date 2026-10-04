@@ -6,6 +6,7 @@
 //! - 会话 / 审批 / 回滚 / 文件 / 搜索 / 成本端点一一对应 §15 表。
 
 mod auth;
+mod lsp_edit;
 mod pairing;
 mod routes;
 mod state;
@@ -30,6 +31,8 @@ pub struct DaemonHandle {
 /// 启动 daemon（绑定 127.0.0.1 随机端口）。
 pub async fn serve(options: DaemonOptions) -> std::io::Result<DaemonHandle> {
     let lan_bind = options.lan_bind;
+    // 开发热重载 `--port`：须在 options 移入 DaemonState 前取出
+    let port_fixed = options.bind_port.unwrap_or(0);
     let laya_registry_url = options.laya_registry_url.clone();
     let manage_endpoint_file = options.endpoint_path.is_some() || options.db_path.is_some();
     let endpoint_path = options
@@ -74,12 +77,9 @@ pub async fn serve(options: DaemonOptions) -> std::io::Result<DaemonHandle> {
         });
     }
 
-    // 本机浏览器访问（§12.6 / M2）：UI 构建产物存在时由 daemon 同源托管——
+    // 本机浏览器访问（§12.6 / M2 / v1.76 Web 一键启动）：UI 产物解析链命中时同源托管——
     // 浏览器打开 http://127.0.0.1:{port}/ 即加载 UI 并经 /pairing 自发现握手
-    let ui_dist = std::env::var("TENON_UI_DIST")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("ui/dist"));
-    if ui_dist.join("index.html").exists() {
+    if let Some(ui_dist) = resolve_ui_dist() {
         // SPA 回退：非 API 路径返回 index.html（UI 自经 /pairing 自发现握手）
         let spa = ServeDir::new(&ui_dist)
             .not_found_service(ServeDir::new(&ui_dist).append_index_html_on_directories(false));
@@ -90,9 +90,9 @@ pub async fn serve(options: DaemonOptions) -> std::io::Result<DaemonHandle> {
     // 绑定地址：默认仅本机回环（§12.6）；`--lan` 显式开启后绑全部接口
     //（局域网请求须持已配对设备令牌，见 auth_middleware）
     let bind_addr = if lan_bind {
-        ("0.0.0.0", 0)
+        ("0.0.0.0", port_fixed)
     } else {
-        ("127.0.0.1", 0)
+        ("127.0.0.1", port_fixed)
     };
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     let port = listener.local_addr()?.port();
@@ -154,7 +154,7 @@ pub async fn serve(options: DaemonOptions) -> std::io::Result<DaemonHandle> {
         let interval =
             std::time::Duration::from_secs(state.config.evals.interval_hours as u64 * 3600);
         let provider = if state.config.evals.provider.is_empty() {
-            state.default_provider.clone()
+            state.default_provider.read().unwrap().clone()
         } else {
             state.config.evals.provider.clone()
         };
@@ -215,6 +215,92 @@ pub fn generate_token_hash() -> u64 {
     let mut bytes = [0u8; 8];
     rand::rng().fill_bytes(&mut bytes);
     u64::from_le_bytes(bytes)
+}
+
+/// UI 构建产物解析链（v1.76 Web 一键启动）：`TENON_UI_DIST` → cwd 及其祖先目录的
+/// `ui/dist` → 可执行文件同级的 `ui/dist`；命中以 `index.html` 存在为准。
+pub fn resolve_ui_dist() -> Option<PathBuf> {
+    let env_dir = std::env::var("TENON_UI_DIST").ok().map(PathBuf::from);
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    resolve_ui_dist_from(&cwd, exe_dir.as_deref(), env_dir)
+}
+
+/// 解析链核心（base / exe_dir / env 可注入，供测试）。
+fn resolve_ui_dist_from(
+    base: &std::path::Path,
+    exe_dir: Option<&std::path::Path>,
+    env_override: Option<PathBuf>,
+) -> Option<PathBuf> {
+    if let Some(env) = env_override {
+        if env.join("index.html").exists() {
+            return Some(env);
+        }
+    }
+    let mut cur = Some(base);
+    while let Some(dir) = cur {
+        let candidate = dir.join("ui").join("dist");
+        if candidate.join("index.html").exists() {
+            return Some(candidate);
+        }
+        cur = dir.parent();
+    }
+    if let Some(exe) = exe_dir {
+        let candidate = exe.join("ui").join("dist");
+        if candidate.join("index.html").exists() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// 读取存活 daemon 实例的 endpoint（§6.2）：返回 (port, token)。
+/// 心跳每 20s 重写 endpoint 文件，mtime 超过 45s 视为陈旧残留（实例已死）。
+pub fn read_live_endpoint(path: &std::path::Path) -> Option<(u16, String)> {
+    let age = std::fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .elapsed()
+        .ok()?;
+    if age > std::time::Duration::from_secs(45) {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    Some((
+        v.get("port")?.as_u64()? as u16,
+        v.get("token")?.as_str()?.to_string(),
+    ))
+}
+
+/// 用系统默认浏览器打开 URL（尽力而为：失败仅记日志，调用方不依赖结果）。
+pub fn open_browser(url: &str) {
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("open");
+        c.arg(url);
+        c
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut cmd = {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(url);
+        c
+    };
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = std::process::Command::new("cmd");
+        // start 后第一个引号参数是窗口标题占位，防 URL 被当标题吞掉
+        c.args(["/c", "start", "", url]);
+        c
+    };
+    match cmd.output() {
+        Ok(o) if o.status.success() => {}
+        Ok(o) => tracing::warn!("浏览器打开退出码异常: {}", o.status),
+        Err(e) => tracing::warn!("浏览器打开失败: {e}"),
+    }
 }
 
 /// 单实例锁（§6.2）：锁文件独占创建（O_EXCL），写入 pid；释放时删除。
@@ -327,5 +413,61 @@ mod tests {
     fn pid_alive_self_true_dead_false() {
         assert!(pid_alive(std::process::id() as i32));
         assert!(!pid_alive(9_999_999));
+    }
+
+    #[test]
+    fn ui_dist_resolution_walks_ancestors_env_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        let sub = repo.join("crates").join("tenon-daemon");
+        std::fs::create_dir_all(repo.join("ui").join("dist")).unwrap();
+        std::fs::write(repo.join("ui").join("dist").join("index.html"), "<html/>").unwrap();
+        std::fs::create_dir_all(&sub).unwrap();
+        // cwd 子目录 → 祖先目录回溯命中
+        let found = resolve_ui_dist_from(&sub, None, None).unwrap();
+        assert_eq!(found, repo.join("ui").join("dist"));
+        // env 显式覆盖优先于解析链
+        let other = tempfile::tempdir().unwrap();
+        std::fs::write(other.path().join("index.html"), "<html/>").unwrap();
+        let found = resolve_ui_dist_from(&sub, None, Some(other.path().to_path_buf())).unwrap();
+        assert_eq!(found, other.path());
+        // 可执行文件同级兜底
+        let bin = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(bin.path().join("ui").join("dist")).unwrap();
+        std::fs::write(
+            bin.path().join("ui").join("dist").join("index.html"),
+            "<html/>",
+        )
+        .unwrap();
+        let empty = tempfile::tempdir().unwrap();
+        let found = resolve_ui_dist_from(empty.path(), Some(bin.path()), None).unwrap();
+        assert_eq!(found, bin.path().join("ui").join("dist"));
+        // 全链未命中 → None（--web 据此报错）
+        assert!(resolve_ui_dist_from(empty.path(), None, None).is_none());
+        // env 指向无效目录 → 回落解析链而非直接采纳
+        assert!(
+            resolve_ui_dist_from(empty.path(), None, Some(empty.path().join("nope"))).is_none()
+        );
+    }
+
+    #[test]
+    fn live_endpoint_rejects_stale_and_malformed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("daemon.endpoint");
+        assert_eq!(read_live_endpoint(&path), None, "文件缺失");
+        std::fs::write(&path, r#"{"port":1234,"token":"abc"}"#).unwrap();
+        assert_eq!(
+            read_live_endpoint(&path),
+            Some((1234, "abc".to_string())),
+            "新鲜 endpoint 可读"
+        );
+        // mtime 拨回纪元 → 心跳停更 → 陈旧拒绝（File::set_modified，Rust 1.75+）
+        {
+            let f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+            f.set_modified(std::time::SystemTime::UNIX_EPOCH).unwrap();
+        }
+        assert_eq!(read_live_endpoint(&path), None, "陈旧 endpoint 拒绝");
+        std::fs::write(&path, "not json").unwrap();
+        assert_eq!(read_live_endpoint(&path), None, "畸形内容拒绝");
     }
 }

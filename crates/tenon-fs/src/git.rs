@@ -1,9 +1,11 @@
 //! git 状态装饰（设计方案 §8.1：文件树 git 状态装饰；只读 git 查询）。
 
 use crate::tree::GitStatus;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
+use std::process::Stdio;
 
 /// `git status --porcelain=v1 -z` → 相对路径状态映射。
 /// 非 git 项目返回空映射。
@@ -80,6 +82,258 @@ pub fn git_read(root: &Path, kind: GitReadKind, extra: &[&str]) -> std::io::Resu
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+fn git_output(root: &Path, args: &[&str]) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GitBranch {
+    pub name: String,
+    pub current: bool,
+    pub commit: String,
+    pub upstream: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GitChangedFile {
+    pub path: String,
+    pub old_path: Option<String>,
+    pub index_status: String,
+    pub worktree_status: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GitCommit {
+    pub id: String,
+    pub short_id: String,
+    pub summary: String,
+    pub author: String,
+    pub email: String,
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GitBlameLine {
+    pub line: u32,
+    pub commit: String,
+    pub author: String,
+    pub email: String,
+    pub timestamp: i64,
+    pub summary: String,
+    pub content: String,
+}
+
+pub fn is_repository(root: &Path) -> bool {
+    git_output(root, &["rev-parse", "--is-inside-work-tree"])
+        .map(|value| value.trim() == "true")
+        .unwrap_or(false)
+}
+
+pub fn current_branch(root: &Path) -> String {
+    git_output(root, &["symbolic-ref", "--short", "HEAD"])
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "HEAD".to_string())
+}
+
+pub fn list_branches(root: &Path) -> Vec<GitBranch> {
+    let Some(text) = git_output(
+        root,
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)%09%(objectname:short)%09%(upstream:short)%09%(HEAD)",
+            "refs/heads",
+        ],
+    ) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            Some(GitBranch {
+                name: fields.next()?.trim().to_string(),
+                commit: fields.next().unwrap_or_default().trim().to_string(),
+                upstream: fields
+                    .next()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string),
+                current: fields.next().map(str::trim) == Some("*"),
+            })
+        })
+        .collect()
+}
+
+pub fn changed_files(root: &Path) -> Vec<GitChangedFile> {
+    let Some(text) = git_output(
+        root,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=normal"],
+    ) else {
+        return Vec::new();
+    };
+    let mut files = Vec::new();
+    let mut parts = text.split('\0').filter(|entry| !entry.is_empty());
+    while let Some(entry) = parts.next() {
+        if entry.len() < 4 {
+            continue;
+        }
+        let (statuses, remainder) = entry.split_at(2);
+        let mut index_status = statuses.chars().next().unwrap_or(' ').to_string();
+        let mut worktree_status = statuses.chars().nth(1).unwrap_or(' ').to_string();
+        if index_status == "?" {
+            index_status = "A".to_string();
+            worktree_status = "A".to_string();
+        }
+        if statuses.contains('R') {
+            let old_path = parts.next().map(str::to_string);
+            let path = parts
+                .next()
+                .map(str::trim)
+                .unwrap_or(remainder.trim_start())
+                .to_string();
+            files.push(GitChangedFile {
+                path: path.replace('\\', "/"),
+                old_path: old_path.map(|path| path.replace('\\', "/")),
+                index_status,
+                worktree_status,
+            });
+        } else {
+            files.push(GitChangedFile {
+                path: remainder.trim_start().replace('\\', "/"),
+                old_path: None,
+                index_status,
+                worktree_status,
+            });
+        }
+    }
+    files
+}
+
+pub fn recent_commits(root: &Path, limit: u32) -> Vec<GitCommit> {
+    let Some(text) = git_output(
+        root,
+        &[
+            "log",
+            &format!("--max-count={limit}"),
+            "--date-order",
+            "--pretty=format:%H%x09%h%x09%s%x09%an%x09%ae%x09%ct",
+        ],
+    ) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split('\t').collect();
+            Some(GitCommit {
+                id: fields.first()?.to_string(),
+                short_id: fields.get(1)?.to_string(),
+                summary: fields.get(2)?.to_string(),
+                author: fields.get(3)?.to_string(),
+                email: fields.get(4)?.to_string(),
+                timestamp: fields.get(5)?.parse().ok()?,
+            })
+        })
+        .collect()
+}
+
+pub fn blame_file(root: &Path, path: &str) -> Option<Vec<GitBlameLine>> {
+    if path.split('/').any(|part| part == "..") || path.starts_with('/') {
+        return None;
+    }
+    let text = git_output(root, &["blame", "--line-porcelain", "--", path])?;
+    let mut lines = Vec::new();
+    let mut current: Option<GitBlameLine> = None;
+    let mut seen_commit = std::collections::HashMap::new();
+    for line in text.lines() {
+        if let Some(content) = line.strip_prefix('\t') {
+            if let Some(mut item) = current.take() {
+                item.content = content.to_string();
+                lines.push(item);
+            }
+            continue;
+        }
+        let mut fields = line.split_whitespace();
+        let Some(commit) = fields.next() else {
+            continue;
+        };
+        let looks_like_header = commit.len() == 40
+            && commit.chars().all(|c| c.is_ascii_hexdigit())
+            && fields
+                .clone()
+                .next()
+                .and_then(|value| value.parse::<u32>().ok())
+                .is_some();
+        if !looks_like_header {
+            if let Some(author) = line.strip_prefix("author ") {
+                if let Some(item) = current.as_mut() {
+                    item.author = author.to_string();
+                }
+            } else if let Some(email) = line.strip_prefix("author-mail ") {
+                if let Some(item) = current.as_mut() {
+                    item.email = email
+                        .trim_start_matches('<')
+                        .trim_end_matches('>')
+                        .to_string();
+                }
+            } else if let Some(timestamp) = line.strip_prefix("author-time ") {
+                if let Some(item) = current.as_mut() {
+                    item.timestamp = timestamp.parse().unwrap_or(0);
+                }
+            } else if let Some(summary) = line.strip_prefix("summary ") {
+                if let Some(item) = current.as_mut() {
+                    item.summary = summary.to_string();
+                }
+            }
+            continue;
+        }
+        let mut item = GitBlameLine {
+            line: 0,
+            commit: commit.to_string(),
+            author: seen_commit
+                .get(commit)
+                .map(|meta: &(String, String, i64, String)| meta.0.clone())
+                .unwrap_or_default(),
+            email: seen_commit
+                .get(commit)
+                .map(|meta: &(String, String, i64, String)| meta.1.clone())
+                .unwrap_or_default(),
+            timestamp: seen_commit
+                .get(commit)
+                .map(|meta: &(String, String, i64, String)| meta.2)
+                .unwrap_or_default(),
+            summary: seen_commit
+                .get(commit)
+                .map(|meta: &(String, String, i64, String)| meta.3.clone())
+                .unwrap_or_default(),
+            content: String::new(),
+        };
+        if let Some(final_line) = fields.next().and_then(|value| value.parse().ok()) {
+            item.line = final_line;
+        }
+        seen_commit.insert(
+            commit.to_string(),
+            (
+                item.author.clone(),
+                item.email.clone(),
+                item.timestamp,
+                item.summary.clone(),
+            ),
+        );
+        current = Some(item);
+    }
+    Some(lines)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,5 +391,45 @@ mod tests {
         assert!(log.contains("init"));
         let diff = git_read(&root, GitReadKind::Diff, &[]).unwrap();
         assert!(diff.contains("changed"));
+    }
+
+    #[test]
+    fn source_view_branches_changes_commits_and_blame() {
+        let (_d, root) = git_repo();
+        run(&root, &["checkout", "-qb", "feature/source"]);
+        std::fs::write(root.join("source.txt"), "first\nsecond\n").unwrap();
+        run(&root, &["add", "."]);
+        run(&root, &["commit", "-qm", "add source view fixture"]);
+
+        assert!(is_repository(&root));
+        let branches = list_branches(&root);
+        assert!(branches
+            .iter()
+            .any(|branch| branch.name == "feature/source" && branch.current));
+
+        std::fs::write(root.join("changed.txt"), "working\n").unwrap();
+        let changes = changed_files(&root);
+        assert!(changes
+            .iter()
+            .any(|file| file.path == "changed.txt" && file.worktree_status == "A"));
+
+        let commits = recent_commits(&root, 10);
+        assert!(commits
+            .iter()
+            .any(|commit| commit.summary == "add source view fixture"));
+
+        let blame = blame_file(&root, "source.txt").expect("blame");
+        assert_eq!(blame.len(), 2);
+        assert!(
+            blame.iter().all(|line| !line.author.is_empty()),
+            "{blame:?}"
+        );
+        assert!(blame.iter().all(|line| line.author == "t"));
+        assert!(blame
+            .iter()
+            .all(|line| line.summary == "add source view fixture"));
+        assert_eq!(blame[1].content, "second");
+
+        assert!(blame_file(&root, "../outside.txt").is_none());
     }
 }

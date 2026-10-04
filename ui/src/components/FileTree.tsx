@@ -136,6 +136,7 @@ function TreeDir({
   onOpenFile,
   onPrompt,
   onDelete,
+  onMove,
 }: {
   api: TenonApi;
   entry: Entry;
@@ -146,8 +147,10 @@ function TreeDir({
   onOpenFile: (path: string) => void;
   onPrompt: (state: PromptState) => void;
   onDelete: (entry: Entry) => void;
+  onMove: (from: string, to: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [dropActive, setDropActive] = useState(false);
   const [entries, setEntries] = useState<Entry[]>([]);
   const [loaded, setLoaded] = useState<{ path: string; token: number } | null>(null);
 
@@ -166,8 +169,23 @@ function TreeDir({
   }, [api, projectId, entry.path, open, refreshToken, loaded]);
 
   return (
-    <li className="tree-dir">
-      <div className="tree-row">
+    <li className={dropActive ? "tree-dir drop-target" : "tree-dir"}>
+      <div
+        className="tree-row"
+        onDragOver={(event) => {
+          event.preventDefault();
+          setDropActive(true);
+        }}
+        onDragLeave={() => setDropActive(false)}
+        onDrop={(event) => {
+          event.preventDefault();
+          setDropActive(false);
+          const from = event.dataTransfer.getData("application/x-tenon-path");
+          if (!from || from === entry.path || from.startsWith(`${entry.path}/`)) return;
+          const targetName = from.split("/").pop() ?? "";
+          onMove(from, joinPath(entry.path, targetName));
+        }}
+      >
         <button
           type="button"
           className="tree-name"
@@ -198,6 +216,7 @@ function TreeDir({
               onOpenFile={onOpenFile}
               onPrompt={onPrompt}
               onDelete={onDelete}
+              onMove={onMove}
             />
           ))}
           {open && loaded !== null && entries.length === 0 && (
@@ -219,8 +238,9 @@ function TreeEntryRow(props: {
   onOpenFile: (path: string) => void;
   onPrompt: (state: PromptState) => void;
   onDelete: (entry: Entry) => void;
+  onMove: (from: string, to: string) => void;
 }) {
-  const { api, entry, projectId, refreshToken, busy, t, onOpenFile, onPrompt, onDelete } = props;
+  const { api, entry, projectId, refreshToken, busy, t, onOpenFile, onPrompt, onDelete, onMove } = props;
   if (entry.kind === "dir") {
     return (
       <TreeDir
@@ -233,11 +253,20 @@ function TreeEntryRow(props: {
         onOpenFile={onOpenFile}
         onPrompt={onPrompt}
         onDelete={onDelete}
+        onMove={onMove}
       />
     );
   }
   return (
-    <li className="tree-file" data-status={entry.git_status}>
+    <li
+      className="tree-file"
+      data-status={entry.git_status}
+      draggable={!busy}
+      onDragStart={(event) => {
+        event.dataTransfer.setData?.("application/x-tenon-path", entry.path);
+        event.dataTransfer.effectAllowed = "move";
+      }}
+    >
       <div className="tree-row">
         <button type="button" className="tree-name" onClick={() => onOpenFile(entry.path)}>
           {entry.name}
@@ -270,6 +299,7 @@ export function FileTree({
   onOperation,
 }: Props) {
   const [entries, setEntries] = useState<Entry[]>([]);
+  const [rootDropActive, setRootDropActive] = useState(false);
   const [prompt, setPrompt] = useState<PromptState | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -315,6 +345,11 @@ export function FileTree({
     void rename(prompt, name).finally(() => setPrompt(null));
   };
 
+  const moveEntry = (from: string, to: string) => {
+    if (from === to || from.startsWith(`${to}/`)) return;
+    void run({ op: "move", from, to }, { type: "renamed", from, to, kind: from.includes(".") ? "file" : "dir" });
+  };
+
   const deleteEntry = (entry: Entry) => {
     if (!window.confirm(`delete ${entry.path}?`)) return;
     void run({ op: "delete", path: entry.path }, { type: "deleted", path: entry.path });
@@ -338,7 +373,25 @@ export function FileTree({
           {error}
         </div>
       )}
-      <ul className="tree" data-testid="file-tree">
+      <ul
+        className={rootDropActive ? "tree drop-target" : "tree"}
+        data-testid="file-tree"
+        onDragOver={(event) => {
+          event.preventDefault();
+          setRootDropActive(true);
+        }}
+        onDragLeave={(event) => {
+          if (event.currentTarget === event.target) setRootDropActive(false);
+        }}
+        onDrop={(event) => {
+          event.preventDefault();
+          setRootDropActive(false);
+          const from = event.dataTransfer.getData("application/x-tenon-path");
+          if (!from || !from.includes("/")) return;
+          const name = from.split("/").pop() ?? "";
+          moveEntry(from, name);
+        }}
+      >
         {entries.map((entry) => (
           <TreeEntryRow
             key={entry.path}
@@ -351,6 +404,7 @@ export function FileTree({
             onOpenFile={onOpenFile}
             onPrompt={setPrompt}
             onDelete={deleteEntry}
+            onMove={moveEntry}
           />
         ))}
       </ul>

@@ -1,0 +1,210 @@
+// 多项目控制面 UI（v1.63 项目文件夹树 + v1.60 登记即用）：切换 / 移除 / 添加均在显式 project_id 上执行。
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ProjectExplorer } from "../components/ProjectExplorer";
+import type { ProjectSummary, TenonApi } from "../lib/api";
+
+const treeMock = vi.fn();
+
+function project(id: string): ProjectSummary {
+  return {
+    id,
+    path: `/tmp/${id}`,
+    display_name: id,
+    trusted: true,
+    sessions: [],
+    active_sessions: 0,
+    dirty_buffers: 0,
+    pending_approvals: [],
+    usage: { input_tokens: 0, output_tokens: 0, cost_usd: 0 },
+  };
+}
+
+function api() {
+  return { tree: treeMock } as unknown as TenonApi;
+}
+
+function renderExplorer(projects: ProjectSummary[]) {
+  const onSwitchProject = vi.fn();
+  const onOpenProject = vi.fn().mockResolvedValue(undefined);
+  const onRemoveProject = vi.fn().mockResolvedValue(undefined);
+  render(
+    <ProjectExplorer
+      api={api()}
+      t={(key) => key}
+      projects={projects}
+      projectId={projects[0]?.id ?? null}
+      sessionsByProject={projects[0] ? { [projects[0].id]: "session-1" } : {}}
+      portfolioTasks={[]}
+      openError={null}
+      refreshToken={1}
+      onSwitchProject={onSwitchProject}
+      onOpenProject={onOpenProject}
+      onRemoveProject={onRemoveProject}
+      onSelectSession={() => {}}
+      onOpenFile={() => {}}
+      onFileTreeChange={() => {}}
+    />
+  );
+  return { onSwitchProject, onOpenProject, onRemoveProject };
+}
+
+describe("ProjectExplorer multi-project control surface", () => {
+  beforeEach(() => {
+    // jsdom 环境不提供 localStorage，按仓库约定 stub（tenon:peFiles / tenon:peExpanded 记忆）
+    const backing = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => (backing.has(k) ? backing.get(k)! : null),
+      setItem: (k: string, v: string) => void backing.set(k, v),
+      removeItem: (k: string) => void backing.delete(k),
+      clear: () => backing.clear(),
+    });
+    treeMock.mockReset();
+    treeMock.mockResolvedValue({ entries: [] });
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  // v1.63：登记项目以文件夹树常驻，无需打开下拉即可见全貌
+  it("lists every registered project as persistent folder rows", () => {
+    renderExplorer([project("open-a"), project("open-b")]);
+    expect(screen.getByTestId("project-list")).toBeInTheDocument();
+    expect(screen.getByTestId("project-item-open-a")).toBeInTheDocument();
+    expect(screen.getByTestId("project-item-open-b")).toBeInTheDocument();
+    // 无下拉面板
+    expect(screen.queryByTestId("project-dropdown")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("project-switcher")).not.toBeInTheDocument();
+  });
+
+  // v1.63：active 项目默认展开，点击其他项目文件夹行即切换并展开
+  it("expands the active project and switches by clicking another folder row", () => {
+    const { onSwitchProject } = renderExplorer([project("open-a"), project("open-b")]);
+    // active 项目默认展开：会话列表可见
+    expect(screen.getByTestId("chat-list-open-a")).toBeInTheDocument();
+    expect(screen.queryByTestId("chat-list-open-b")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("project-item-open-b"));
+    expect(onSwitchProject).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "open-b" })
+    );
+    // 目标文件夹展开且原文件夹保持展开（多项目可同时展开）
+    expect(screen.getByTestId("chat-list-open-b")).toBeInTheDocument();
+    expect(screen.getByTestId("chat-list-open-a")).toBeInTheDocument();
+  });
+
+  // v1.63：已展开的 active 项目再点仅收起，不改激活
+  it("collapses an expanded active folder without deactivating it", () => {
+    const { onSwitchProject } = renderExplorer([project("open-a")]);
+    expect(screen.getByTestId("chat-list-open-a")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("project-item-open-a"));
+    expect(screen.queryByTestId("chat-list-open-a")).not.toBeInTheDocument();
+    expect(onSwitchProject).not.toHaveBeenCalled();
+    // 展开状态记忆到 localStorage
+    expect(JSON.parse(localStorage.getItem("tenon:peExpanded") ?? "[]")).toEqual([]);
+  });
+
+  it("cannot remove a project that still owns persisted sessions", () => {
+    const historical = {
+      ...project("historical"),
+      sessions: [{ id: "s1", status: "done", model: "mock", updated_at: "now" }],
+    };
+    renderExplorer([historical]);
+    expect(screen.getByTestId(`project-remove-${historical.id}`)).toBeDisabled();
+  });
+
+  it("adds another concurrently open project by absolute path", async () => {
+    const { onOpenProject } = renderExplorer([project("active")]);
+    fireEvent.click(screen.getByTestId("project-add"));
+    // 模态对话框出现（§6.4：路径 + 项目名）
+    expect(screen.getByRole("dialog", { name: "projects.add_title" })).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId("project-add-path"), {
+      target: { value: "/tmp/second" },
+    });
+    // 未手动改名 → 名称自动取路径末段
+    await waitFor(() =>
+      expect(screen.getByTestId("project-add-name")).toHaveValue("second")
+    );
+    fireEvent.click(screen.getByRole("button", { name: "projects.open" }));
+    await waitFor(() =>
+      expect(onOpenProject).toHaveBeenCalledWith("/tmp/second", "second")
+    );
+    // 成功后模态关闭
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+    );
+  });
+
+  it("opens the add-project modal and submits a custom display name", async () => {
+    const { onOpenProject } = renderExplorer([project("active")]);
+    fireEvent.click(screen.getByTestId("project-add"));
+    fireEvent.change(screen.getByTestId("project-add-path"), {
+      target: { value: "/tmp/second" },
+    });
+    // 手动命名后不被路径变更覆盖，提交携带显式名称
+    fireEvent.change(screen.getByTestId("project-add-name"), {
+      target: { value: "自定义名" },
+    });
+    fireEvent.change(screen.getByTestId("project-add-path"), {
+      target: { value: "/tmp/third" },
+    });
+    expect(screen.getByTestId("project-add-name")).toHaveValue("自定义名");
+    fireEvent.click(screen.getByRole("button", { name: "projects.open" }));
+    await waitFor(() =>
+      expect(onOpenProject).toHaveBeenCalledWith("/tmp/third", "自定义名")
+    );
+  });
+
+  it("closes the add-project modal on cancel without opening", async () => {
+    const { onOpenProject } = renderExplorer([project("active")]);
+    fireEvent.click(screen.getByTestId("project-add"));
+    expect(screen.getByTestId("project-add-form")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("project-add-cancel"));
+    expect(screen.queryByTestId("project-add-form")).not.toBeInTheDocument();
+    expect(onOpenProject).not.toHaveBeenCalled();
+  });
+
+  it("esc closes the add-project modal", () => {
+    renderExplorer([project("active")]);
+    fireEvent.click(screen.getByTestId("project-add"));
+    expect(screen.getByTestId("project-add-form")).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByTestId("project-add-form")).not.toBeInTheDocument();
+  });
+
+  // v1.70：「源码」按钮切换该行下内嵌的该项目文件树，各项目独立展开并记忆
+  it("toggles a per-project inline file tree from the source button", async () => {
+    renderExplorer([project("open-a"), project("open-b")]);
+    expect(screen.queryByTestId("file-tree")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("project-files-open-a"));
+    await waitFor(() => expect(screen.getByTestId("file-tree")).toBeInTheDocument());
+    expect(JSON.parse(localStorage.getItem("tenon:peFiles") ?? "[]")).toContain("open-a");
+    // 各项目独立展开，互不影响
+    fireEvent.click(screen.getByTestId("project-files-open-b"));
+    await waitFor(() => expect(screen.getAllByTestId("file-tree")).toHaveLength(2));
+    fireEvent.click(screen.getByTestId("project-files-open-a"));
+    await waitFor(() => expect(screen.getAllByTestId("file-tree")).toHaveLength(1));
+    expect(JSON.parse(localStorage.getItem("tenon:peFiles") ?? "[]")).not.toContain(
+      "open-a"
+    );
+  });
+
+  // v1.58 对话标题：对话行标题优先，无标题回退模型名。
+  it("chat rows prefer generated titles and fall back to model names", () => {
+    const titled = {
+      ...project("open-a"),
+      sessions: [
+        {
+          id: "session-1",
+          status: "idle",
+          model: "mock",
+          title: "修复登录超时",
+          updated_at: "now",
+        },
+        { id: "session-2", status: "done", model: "mock", updated_at: "now" },
+      ],
+    };
+    renderExplorer([titled]);
+    expect(screen.getByTestId("chat-list-open-a")).toBeInTheDocument();
+    expect(screen.getByText("修复登录超时")).toBeInTheDocument();
+    expect(screen.getByText("mock")).toBeInTheDocument();
+  });
+});

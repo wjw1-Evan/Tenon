@@ -59,7 +59,8 @@ impl Tool {
             }
             Tool::ApplyPatch | Tool::RunTests | Tool::RunBuild | Tool::InstallDeps => Level::B,
             Tool::HttpFetch => Level::C,
-            Tool::GitCommit | Tool::GitPush | Tool::CreatePr => Level::D,
+            Tool::GitCommit | Tool::GitPush => Level::D,
+            Tool::CreatePr => Level::Composite,
             Tool::Plugin => return None,
         })
     }
@@ -141,7 +142,7 @@ mod tests {
         assert_eq!(Tool::HttpFetch.level(), Some(Level::C));
         assert_eq!(Tool::GitCommit.level(), Some(Level::D));
         assert_eq!(Tool::GitPush.level(), Some(Level::D));
-        assert_eq!(Tool::CreatePr.level(), Some(Level::D));
+        assert_eq!(Tool::CreatePr.level(), Some(Level::Composite));
         assert_eq!(Tool::Plugin.level(), None, "plugin 按声明映射");
     }
 

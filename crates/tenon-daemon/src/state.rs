@@ -18,6 +18,113 @@ use tenon_store::Store;
 
 use crate::auth::TicketStore;
 
+/// provider 名约束（v1.40 §15）：小写标识符，用于 /session/:id/model 切换与展示。
+fn is_valid_provider_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_lowercase())
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+}
+
+fn parse_provider_kind(s: &str) -> Option<tenon_config::ProviderKind> {
+    match s {
+        "openai" => Some(tenon_config::ProviderKind::Openai),
+        "anthropic" => Some(tenon_config::ProviderKind::Anthropic),
+        "openai_responses" => Some(tenon_config::ProviderKind::OpenaiResponses),
+        _ => None,
+    }
+}
+
+/// provider 覆盖条目（v1.40 §15）：密钥仅存环境变量引用名，永不落盘明文。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ProviderOverride {
+    /// openai | anthropic | openai_responses
+    pub kind: Option<String>,
+    pub base_url: Option<String>,
+    pub wire_api: Option<String>,
+    pub model: Option<String>,
+    pub api_key_env: Option<String>,
+}
+
+impl ProviderOverride {
+    fn merge_json(&mut self, v: &serde_json::Value) -> Result<(), String> {
+        if v.get("api_key").is_some() {
+            return Err(
+                "models.providers.api_key 明文禁止经设置链路写入——密钥仅存 api_key_env 引用（§11）"
+                    .into(),
+            );
+        }
+        if let Some(k) = v.get("kind") {
+            let k = k.as_str().ok_or("models.providers.kind 须为字符串")?;
+            if !matches!(k, "openai" | "anthropic" | "openai_responses") {
+                return Err(
+                    "models.providers.kind 仅支持 openai | anthropic | openai_responses".into(),
+                );
+            }
+            self.kind = Some(k.to_string());
+        }
+        if let Some(u) = v.get("base_url") {
+            let u = u.as_str().ok_or("models.providers.base_url 须为字符串")?;
+            if !(u.starts_with("http://") || u.starts_with("https://")) {
+                return Err("models.providers.base_url 须以 http(s):// 开头".into());
+            }
+            self.base_url = Some(u.to_string());
+        }
+        if let Some(w) = v.get("wire_api") {
+            let w = w.as_str().ok_or("models.providers.wire_api 须为字符串")?;
+            if w != "chat" && w != "responses" {
+                return Err("models.providers.wire_api 仅支持 chat | responses".into());
+            }
+            self.wire_api = Some(w.to_string());
+        }
+        if let Some(m) = v.get("model") {
+            let m = m.as_str().ok_or("models.providers.model 须为字符串")?;
+            if m.is_empty() {
+                return Err("models.providers.model 不可为空".into());
+            }
+            self.model = Some(m.to_string());
+        }
+        if let Some(e) = v.get("api_key_env") {
+            let e = e
+                .as_str()
+                .ok_or("models.providers.api_key_env 须为字符串")?;
+            let valid = !e.is_empty()
+                && e.chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_uppercase() || c == '_')
+                && e.chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+            if !valid {
+                return Err("models.providers.api_key_env 须为合法环境变量名".into());
+            }
+            self.api_key_env = Some(e.to_string());
+        }
+        Ok(())
+    }
+
+    fn to_json(&self) -> serde_json::Value {
+        let mut o = serde_json::Map::new();
+        if let Some(k) = &self.kind {
+            o.insert("kind".into(), serde_json::Value::String(k.clone()));
+        }
+        if let Some(u) = &self.base_url {
+            o.insert("base_url".into(), serde_json::Value::String(u.clone()));
+        }
+        if let Some(w) = &self.wire_api {
+            o.insert("wire_api".into(), serde_json::Value::String(w.clone()));
+        }
+        if let Some(m) = &self.model {
+            o.insert("model".into(), serde_json::Value::String(m.clone()));
+        }
+        if let Some(e) = &self.api_key_env {
+            o.insert("api_key_env".into(), serde_json::Value::String(e.clone()));
+        }
+        serde_json::Value::Object(o)
+    }
+}
+
 /// 设置面板运行时覆盖（§7.2 / §15）：known-keys 子集。
 /// 持久化 `~/.tenon/settings.json`，**新会话**生效（既有会话保持各自配置）。
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -27,6 +134,14 @@ pub struct SettingsOverrides {
     pub first_edit_buffer_ms: Option<u64>,
     pub approval_timeout_s: Option<u64>,
     pub command_timeout_s: Option<u64>,
+    /// v1.83 隐私分区：遥测默认关；崩溃报告 off | opt_in。
+    pub privacy_telemetry: Option<bool>,
+    pub privacy_crash_reports: Option<String>,
+    /// v1.83 更新分区：manual | auto（auto 仍受更新器实现限制，仅记录偏好）。
+    pub update_channel: Option<String>,
+    /// v1.40 模型分区：默认 provider 名与 provider 覆盖表（整体替换语义）。
+    pub models_default: Option<String>,
+    pub models_providers: std::collections::BTreeMap<String, ProviderOverride>,
 }
 
 impl SettingsOverrides {
@@ -68,6 +183,62 @@ impl SettingsOverrides {
                 self.command_timeout_s = Some(v);
             }
         }
+        if let Some(privacy) = body.get("privacy") {
+            if let Some(v) = privacy.get("telemetry") {
+                let v = v.as_bool().ok_or("privacy.telemetry 须为布尔")?;
+                self.privacy_telemetry = Some(v);
+            }
+            if let Some(v) = privacy.get("crash_reports") {
+                let v = v.as_str().ok_or("privacy.crash_reports 须为字符串")?;
+                if v != "off" && v != "opt_in" {
+                    return Err("privacy.crash_reports 仅支持 off | opt_in".into());
+                }
+                self.privacy_crash_reports = Some(v.to_string());
+            }
+        }
+        if let Some(update) = body.get("update") {
+            if let Some(v) = update.get("channel") {
+                let v = v.as_str().ok_or("update.channel 须为字符串")?;
+                if v != "manual" && v != "auto" {
+                    return Err("update.channel 仅支持 manual | auto".into());
+                }
+                self.update_channel = Some(v.to_string());
+            }
+        }
+        if let Some(models) = body.get("models") {
+            // models 块原子提交：校验全部通过才落（避免 400 时部分覆盖生效）
+            let mut next_default = self.models_default.clone();
+            let mut next_providers = self.models_providers.clone();
+            if let Some(d) = models.get("default") {
+                let d = d.as_str().ok_or("models.default 须为字符串")?;
+                if d.is_empty() {
+                    // 空串 = 清除默认 provider 覆盖（回退配置文件值）
+                    next_default = None;
+                } else if !is_valid_provider_name(d) {
+                    return Err("models.default 须为合法 provider 名".into());
+                } else {
+                    next_default = Some(d.to_string());
+                }
+            }
+            if let Some(p) = models.get("providers") {
+                let p = p.as_object().ok_or("models.providers 须为对象")?;
+                let mut built = std::collections::BTreeMap::new();
+                for (name, entry) in p {
+                    if !is_valid_provider_name(name) {
+                        return Err(format!(
+                            "models.providers.{name} 名须匹配 ^[a-z][a-z0-9_-]{{0,63}}$"
+                        ));
+                    }
+                    let mut ov = ProviderOverride::default();
+                    ov.merge_json(entry).map_err(|e| format!("{name}: {e}"))?;
+                    built.insert(name.clone(), ov);
+                }
+                // 整体替换覆盖表（UI 每次保存发全量，支持删除）；基础 config 条目不受影响
+                next_providers = built;
+            }
+            self.models_default = next_default;
+            self.models_providers = next_providers;
+        }
         Ok(())
     }
 
@@ -86,13 +257,64 @@ impl SettingsOverrides {
         if let Some(v) = self.command_timeout_s {
             exec.insert("command_timeout_s".into(), serde_json::json!(v));
         }
-        serde_json::json!({"session": session, "exec": exec})
+        let privacy = serde_json::json!({
+            "telemetry": self.privacy_telemetry.unwrap_or(false),
+            "crash_reports": self.privacy_crash_reports.clone().unwrap_or_else(|| "off".into()),
+        });
+        let update = serde_json::json!({
+            "channel": self.update_channel.clone().unwrap_or_else(|| "manual".into()),
+        });
+        let mut models = serde_json::Map::new();
+        if let Some(d) = &self.models_default {
+            models.insert("default".into(), serde_json::Value::String(d.clone()));
+        }
+        if !self.models_providers.is_empty() {
+            let providers: serde_json::Map<String, serde_json::Value> = self
+                .models_providers
+                .iter()
+                .map(|(k, v)| (k.clone(), v.to_json()))
+                .collect();
+            models.insert("providers".into(), serde_json::Value::Object(providers));
+        }
+        serde_json::json!({
+            "session": session,
+            "exec": exec,
+            "privacy": privacy,
+            "update": update,
+            "models": models,
+        })
     }
 
-    /// 从 `~/.tenon/settings.json` 读取（损坏 / 非法条目逐项忽略）。
-    pub fn load_from_disk() -> Self {
+    /// 叠加模型覆盖到基础配置（v1.40）：同名单条目按字段合并（保留基础条目的
+    /// api_key 等未覆盖字段），`models.default` 覆盖默认 provider。
+    pub fn apply_models_to(&self, models: &mut tenon_config::ModelsConfig) {
+        if let Some(d) = &self.models_default {
+            models.default = d.clone();
+        }
+        for (name, ov) in &self.models_providers {
+            let entry = models.providers.entry(name.clone()).or_default();
+            if let Some(k) = &ov.kind {
+                entry.kind = parse_provider_kind(k);
+            }
+            if let Some(u) = &ov.base_url {
+                entry.base_url = u.clone();
+            }
+            if let Some(w) = &ov.wire_api {
+                entry.wire_api = Some(w.clone());
+            }
+            if let Some(m) = &ov.model {
+                entry.model = Some(m.clone());
+            }
+            if let Some(e) = &ov.api_key_env {
+                entry.api_key_env = Some(e.clone());
+            }
+        }
+    }
+
+    /// 从指定 settings 文件读取（损坏 / 非法条目逐项忽略）。
+    pub fn load_from_path(path: &std::path::Path) -> Self {
         let mut out = Self::default();
-        let Ok(text) = std::fs::read_to_string(Self::file_path()) else {
+        let Ok(text) = std::fs::read_to_string(path) else {
             return out;
         };
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
@@ -102,21 +324,16 @@ impl SettingsOverrides {
         out
     }
 
-    pub fn file_path() -> PathBuf {
-        tenon_config::Config::data_dir().join("settings.json")
-    }
-
-    pub fn persist(&self) {
-        let path = Self::file_path();
+    pub fn persist_to(&self, path: &std::path::Path) {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
         let json = self.to_json().to_string();
-        if std::fs::write(&path, json).is_ok() {
+        if std::fs::write(path, json).is_ok() {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+                let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
             }
         }
     }
@@ -139,6 +356,14 @@ pub struct DaemonOptions {
     pub project: Option<String>,
     /// 握手 endpoint 文件；None = `~/.tenon/daemon.endpoint`（测试必须覆盖避免并行竞争）。
     pub endpoint_path: Option<std::path::PathBuf>,
+    /// 设置覆盖文件；None = `~/.tenon/settings.json`（测试必须覆盖避免并行竞争）。
+    pub settings_path: Option<std::path::PathBuf>,
+    /// 权限策略文件；None = `~/.tenon/policy.toml`（测试必须覆盖避免并行竞争）。
+    pub policy_path: Option<std::path::PathBuf>,
+    /// 固定端口（开发热重载 `--port`）；None = 随机端口（默认，§12.6）。
+    pub bind_port: Option<u16>,
+    /// 固定握手 token（开发热重载 `--token`）；None = 随机 token（默认）。
+    pub fixed_token: Option<String>,
     /// Laya 自动下载 registry 覆盖（§9.8 v1.71；None = 官方静态 registry；测试注入本地地址）。
     pub laya_registry_url: Option<String>,
     /// Laya 清单验签公钥覆盖（§9.8；None = 官方解析链；测试注入，不读进程 env）。
@@ -164,6 +389,10 @@ impl DaemonOptions {
             snapshots_root: None,
             project: None,
             endpoint_path: None,
+            settings_path: None,
+            policy_path: None,
+            bind_port: None,
+            fixed_token: None,
             laya_registry_url: None,
             laya_public_key: None,
             laya_models_dir: None,
@@ -295,6 +524,25 @@ impl ProjectRuntime {
     }
 }
 
+/// L4 worker 状态（诊断面板 / §10.1）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct L4IndexStatus {
+    pub state: String,
+    pub updated_at: String,
+    pub error: Option<String>,
+}
+
+/// WS 推送的 L4 状态变化；统计值仍以 `/l4/stats` 为权威快照。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct L4StatusEvent {
+    pub project_id: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub state: String,
+    pub updated_at: String,
+    pub error: Option<String>,
+}
+
 pub struct DaemonState {
     pub store: Arc<Mutex<Store>>,
     /// 共享 LSP 管理器（§8.5：一项目 × 语言一个宿主，编辑器与代理共用）。
@@ -309,14 +557,19 @@ pub struct DaemonState {
     pub lan_pairing: Arc<PairingStore>,
     /// daemon 监听端口（/pairing 自发现回传给 UI）。
     pub port: std::sync::atomic::AtomicU16,
-    /// 团队策略（M3：只收窄；`~/.tenon/policy.toml` 不存在 = 无约束）。
-    pub team_policy: tenon_core::policy::TeamPolicy,
+    /// 权限高级策略（v1.85：只收窄；运行时热更新，仅新会话生效）。
+    pub team_policy: std::sync::RwLock<tenon_core::policy::TeamPolicy>,
     pub config: Config,
     pub token: String,
     pub tickets: TicketStore,
     pub sessions: Mutex<HashMap<String, SessionEntry>>,
-    pub providers: HashMap<String, Arc<dyn ModelProvider>>,
-    pub default_provider: String,
+    /// provider 表（v1.40 起读写锁：PUT /settings 模型键即时重建，见 `rebuild_providers`）。
+    pub providers: std::sync::RwLock<HashMap<String, Arc<dyn ModelProvider>>>,
+    pub default_provider: std::sync::RwLock<String>,
+    /// 注入的 provider（测试 / 自定义接入）；重建 provider 表时始终保留。
+    injected_providers: Vec<Arc<dyn ModelProvider>>,
+    /// CLI `--provider` 指定；优先级高于设置覆盖（v1.40）。
+    cli_default: Option<String>,
     /// 启动时注册的项目根（/pairing 自发现回传）。
     pub default_project: Option<String>,
     /// 项目级写锁表（§9.7：同一项目同时刻仅一个会话 EXECUTING）。
@@ -329,12 +582,20 @@ pub struct DaemonState {
     pub portfolio_tasks: Mutex<HashMap<String, PortfolioTask>>,
     /// 进程内文件变更事件总线；WS 订阅者可全量或按 project_id 过滤。
     pub file_events: tokio::sync::broadcast::Sender<ProjectFileEvent>,
+    /// L4 状态变化进程内广播；WS 订阅者可全量或按 project_id 过滤。
+    pub l4_status_events: tokio::sync::broadcast::Sender<L4StatusEvent>,
     pub snapshots_root: std::path::PathBuf,
     /// 设置面板运行时覆盖（§15 /settings；新会话生效）。
     pub settings_overrides: std::sync::Mutex<SettingsOverrides>,
+    /// 设置覆盖权威文件；测试显式隔离。
+    pub settings_path: std::path::PathBuf,
+    /// 权限高级策略权威文件（v1.85）；测试显式隔离。
+    pub policy_path: std::path::PathBuf,
     /// L4 增量索引队列（§10.1）；ProjectRuntime 激活 / watcher 变化入队。
     pub l4_index_tx: tokio::sync::mpsc::Sender<L4IndexRequest>,
     pub l4_index_rx: std::sync::Mutex<Option<tokio::sync::mpsc::Receiver<L4IndexRequest>>>,
+    /// 最近 L4 worker 状态（内存态；重启后从 queued 重新建立）。
+    pub l4_status: std::sync::Mutex<HashMap<String, L4IndexStatus>>,
 }
 
 /// L4 索引请求。
@@ -365,12 +626,78 @@ impl DaemonState {
 }
 
 /// 团队策略加载（M3）：`~/.tenon/policy.toml`（只收窄字段）。
-fn load_team_policy() -> tenon_core::policy::TeamPolicy {
-    let path = Config::data_dir().join("policy.toml");
+pub fn load_team_policy(path: &std::path::Path) -> tenon_core::policy::TeamPolicy {
     std::fs::read_to_string(path)
         .ok()
         .and_then(|text| toml::from_str(&text).ok())
         .unwrap_or_default()
+}
+
+/// 校验权限高级策略（v1.85）。PUT 是全量原子替换：缺失字段回落默认值，
+/// 禁止未知字段避免 UI 与后端演进时静默丢约束。
+pub fn validate_team_policy(
+    body: &serde_json::Value,
+) -> Result<tenon_core::policy::TeamPolicy, String> {
+    let obj = body.as_object().ok_or("team policy 须为对象")?;
+    for key in obj.keys() {
+        if !matches!(
+            key.as_str(),
+            "force_interactive" | "denied_tools" | "max_cost_usd"
+        ) {
+            return Err(format!("team policy 不支持字段: {key}"));
+        }
+    }
+    let mut policy = tenon_core::policy::TeamPolicy::default();
+    if let Some(v) = obj.get("force_interactive") {
+        policy.force_interactive = v.as_bool().ok_or("force_interactive 须为布尔")?;
+    }
+    if let Some(v) = obj.get("denied_tools") {
+        let values = v.as_array().ok_or("denied_tools 须为字符串数组")?;
+        let mut names = std::collections::BTreeSet::new();
+        for value in values {
+            let name = value.as_str().ok_or("denied_tools 须为字符串数组")?;
+            let name = name.trim();
+            if name.is_empty() || name.len() > 128 {
+                return Err("denied_tools 名称须为 1-128 字符".into());
+            }
+            names.insert(name.to_string());
+        }
+        policy.denied_tools = names.into_iter().collect();
+    }
+    if let Some(v) = obj.get("max_cost_usd") {
+        if v.is_null() {
+            policy.max_cost_usd = None;
+        } else {
+            let limit = v.as_f64().ok_or("max_cost_usd 须为非负数字或 null")?;
+            if !limit.is_finite() || !(0.0..=1_000_000.0).contains(&limit) {
+                return Err("max_cost_usd 取值须为 0-1000000".into());
+            }
+            policy.max_cost_usd = Some(limit);
+        }
+    }
+    Ok(policy)
+}
+
+/// 策略文件原子持久化；权限错误不使 daemon 崩溃，但请求返回失败。
+pub fn persist_team_policy(
+    policy: &tenon_core::policy::TeamPolicy,
+    path: &std::path::Path,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建策略目录失败: {e}"))?;
+    }
+    let text = toml::to_string_pretty(policy).map_err(|e| format!("序列化策略失败: {e}"))?;
+    let temp = path.with_extension("toml.tmp");
+    std::fs::write(&temp, text).map_err(|e| format!("写入策略失败: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600)) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(format!("设置策略文件权限失败: {e}"));
+        }
+    }
+    std::fs::rename(&temp, path).map_err(|e| format!("替换策略文件失败: {e}"))
 }
 
 impl DaemonState {
@@ -379,24 +706,14 @@ impl DaemonState {
             Some(path) => Store::open(&path).expect("open store"),
             None => Store::open_in_memory().expect("in-memory store"),
         };
-        let mut providers: HashMap<String, Arc<dyn ModelProvider>> = HashMap::new();
+        let mut injected_providers: Vec<Arc<dyn ModelProvider>> = Vec::new();
         for p in options.providers {
-            providers.insert(p.name().to_string(), p);
+            injected_providers.push(p);
         }
-        // 配置文件 provider（无 Key 时延迟构建：缺失 Key 的 provider 不注册）
-        let keys = tenon_models::EnvKeyStore;
-        for (name, pcfg) in &options.config.models.providers {
-            if providers.contains_key(name) {
-                continue;
-            }
-            if let Ok(built) = tenon_models::build_provider(name, pcfg, &keys) {
-                providers.insert(name.clone(), built);
-            }
-        }
-        let default_provider = if options.default_provider.is_empty() {
-            options.config.models.default.clone()
+        let cli_default = if options.default_provider.is_empty() {
+            None
         } else {
-            options.default_provider
+            Some(options.default_provider.clone())
         };
         let snapshots_root = options
             .snapshots_root
@@ -409,13 +726,24 @@ impl DaemonState {
             options.config.projects.max_concurrent_agent_tasks.max(1),
         ));
         let (file_events, _) = tokio::sync::broadcast::channel(2048);
+        let (l4_status_events, _) = tokio::sync::broadcast::channel(512);
         let (l4_index_tx, l4_index_rx) = tokio::sync::mpsc::channel(1024);
-        Self {
+        let settings_path = options
+            .settings_path
+            .clone()
+            .unwrap_or_else(|| Config::data_dir().join("settings.json"));
+        let settings_overrides = SettingsOverrides::load_from_path(&settings_path);
+        let policy_path = options
+            .policy_path
+            .clone()
+            .unwrap_or_else(|| Config::data_dir().join("policy.toml"));
+        let team_policy = load_team_policy(&policy_path);
+        let state = Self {
             store: Arc::new(Mutex::new(store)),
             lsp: Arc::new(LspManager::new()),
             lan_pairing: Arc::new(PairingStore::new()),
             port: std::sync::atomic::AtomicU16::new(0),
-            team_policy: load_team_policy(),
+            team_policy: std::sync::RwLock::new(team_policy),
             dirty_buffers: Mutex::new(HashMap::new()),
             laya: Arc::new(LayaRuntime::open(
                 &laya_dir,
@@ -423,22 +751,61 @@ impl DaemonState {
             )),
             laya_public_key: options.laya_public_key.clone(),
             config: options.config,
-            token: crate::generate_token(),
+            token: options
+                .fixed_token
+                .clone()
+                .unwrap_or_else(crate::generate_token),
             tickets: TicketStore::default(),
             sessions: Mutex::new(HashMap::new()),
-            providers,
-            default_provider,
+            providers: std::sync::RwLock::new(HashMap::new()),
+            default_provider: std::sync::RwLock::new(String::new()),
+            injected_providers,
+            cli_default,
             default_project: options.project,
             project_locks: Mutex::new(HashMap::new()),
             open_projects: Mutex::new(HashMap::new()),
             execution_permits,
             portfolio_tasks: Mutex::new(HashMap::new()),
             file_events,
+            l4_status_events,
             snapshots_root,
-            settings_overrides: std::sync::Mutex::new(SettingsOverrides::load_from_disk()),
+            settings_path,
+            policy_path,
+            settings_overrides: std::sync::Mutex::new(settings_overrides),
             l4_index_tx,
             l4_index_rx: std::sync::Mutex::new(Some(l4_index_rx)),
+            l4_status: std::sync::Mutex::new(HashMap::new()),
+        };
+        // provider 表统一入口：基础 config + 设置覆盖（settings.json）合并构建（v1.40）
+        state.rebuild_providers();
+        state
+    }
+
+    /// 按「基础 config.models + 设置覆盖」重建 provider 表与默认 provider（v1.40）。
+    /// 优先级：CLI `--provider` > 设置覆盖 > 配置文件。注入 provider 始终保留。
+    pub fn rebuild_providers(&self) {
+        let ov = self.settings_overrides.lock().unwrap().clone();
+        let mut models = self.config.models.clone();
+        ov.apply_models_to(&mut models);
+        let keys = tenon_models::ChainKeyStore::new();
+        let mut map: HashMap<String, Arc<dyn ModelProvider>> = HashMap::new();
+        for p in &self.injected_providers {
+            map.insert(p.name().to_string(), p.clone());
         }
+        for (name, pcfg) in &models.providers {
+            if map.contains_key(name) {
+                continue;
+            }
+            if let Ok(built) = tenon_models::build_provider(name, pcfg, &keys) {
+                map.insert(name.clone(), built);
+            }
+        }
+        let default = self
+            .cli_default
+            .clone()
+            .unwrap_or_else(|| models.default.clone());
+        *self.providers.write().unwrap() = map;
+        *self.default_provider.write().unwrap() = default;
     }
 
     /// 查询项目 canonical root：打开表优先，随后持久登记。
@@ -458,10 +825,20 @@ impl DaemonState {
             .map(|p| std::path::PathBuf::from(p.path))
     }
 
-    /// 只返回已打开 ProjectRuntime；关闭后的项目不得继续文件 / LSP 操作。
-    pub async fn open_project_root(&self, project_id: &str) -> Option<std::path::PathBuf> {
-        let runtime = self.project_runtime(project_id).await?;
-        Some(runtime.root.clone())
+    /// 登记即用：已注册项目首次访问时隐式激活 runtime（v1.60）。
+    /// ProjectRuntime 只是内部 LRU 缓存，被逐出不等于项目不可用。
+    pub async fn ensure_project_runtime(&self, project_id: &str) -> Option<std::path::PathBuf> {
+        if let Some(runtime) = self.project_runtime(project_id).await {
+            return Some(runtime.root.clone());
+        }
+        let stored_path = {
+            let mut store = self.store.lock().await;
+            store.project(project_id).ok().flatten()?.path
+        };
+        let path = std::path::PathBuf::from(stored_path);
+        self.evict_runtime_capacity(project_id).await;
+        self.activate_project(project_id, path.clone()).await;
+        Some(path)
     }
 
     /// 打开 / 激活 runtime；watcher 懒启动并立即记录活跃时间。
@@ -478,6 +855,7 @@ impl DaemonState {
         let runtime = ProjectRuntime::open(project_id, root.clone(), self.file_events.clone());
         open.insert(project_id.to_string(), runtime.clone());
         drop(open);
+        self.set_l4_status(project_id, "queued", None);
         if let Err(e) = self
             .l4_index_tx
             .send(L4IndexRequest::Project {
@@ -486,6 +864,7 @@ impl DaemonState {
             })
             .await
         {
+            self.set_l4_status(project_id, "failed", Some(e.to_string()));
             tracing::warn!("L4 project request dropped: {e}");
         }
         runtime
@@ -508,21 +887,7 @@ impl DaemonState {
     /// 空闲回收：无活跃代理会话且超过 TTL 的 runtime；返回已关闭项目。
     pub async fn reclaim_idle_projects(&self) -> Vec<String> {
         let ttl = std::time::Duration::from_secs(self.config.projects.idle_runtime_ttl_seconds);
-        let mut active_ids = HashSet::new();
-        {
-            let sessions = self.sessions.lock().await;
-            for entry in sessions.values() {
-                if matches!(
-                    entry.session.current_state().await,
-                    tenon_core::machine::State::Executing
-                        | tenon_core::machine::State::Verifying
-                        | tenon_core::machine::State::Fixing
-                        | tenon_core::machine::State::AwaitingApproval
-                ) {
-                    active_ids.insert(entry.project_id.clone());
-                }
-            }
-        }
+        let active_ids = self.active_session_project_ids().await;
         let candidates: Vec<(String, Arc<ProjectRuntime>)> = {
             let open = self.open_projects.lock().await;
             open.iter()
@@ -548,6 +913,64 @@ impl DaemonState {
         closed
     }
 
+    /// 活跃代理会话所属的项目集合（Executing / Verifying / Fixing / AwaitingApproval）。
+    async fn active_session_project_ids(&self) -> HashSet<String> {
+        let mut active_ids = HashSet::new();
+        let sessions = self.sessions.lock().await;
+        for entry in sessions.values() {
+            if matches!(
+                entry.session.current_state().await,
+                tenon_core::machine::State::Executing
+                    | tenon_core::machine::State::Verifying
+                    | tenon_core::machine::State::Fixing
+                    | tenon_core::machine::State::AwaitingApproval
+            ) {
+                active_ids.insert(entry.project_id.clone());
+            }
+        }
+        active_ids
+    }
+
+    /// 容量逐出（v1.60 登记即用）：`max_open` 只约束内部运行时缓存——
+    /// 激活新项目超限时按最久未用逐出无活跃代理会话的 runtime（排除 keep_id）；
+    /// 无候选可逐出时允许暂超限，由空闲回收兜底。返回已逐出项目。
+    pub async fn evict_runtime_capacity(&self, keep_id: &str) -> Vec<String> {
+        let max = self.config.projects.max_open.max(1);
+        let need = {
+            let open = self.open_projects.lock().await;
+            if open.contains_key(keep_id) {
+                0
+            } else {
+                (open.len() + 1).saturating_sub(max)
+            }
+        };
+        if need == 0 {
+            return Vec::new();
+        }
+        let active_ids = self.active_session_project_ids().await;
+        let mut candidates: Vec<(String, Arc<ProjectRuntime>)> = {
+            let open = self.open_projects.lock().await;
+            open.iter()
+                .filter(|(id, _)| id.as_str() != keep_id && !active_ids.contains(*id))
+                .map(|(id, runtime)| (id.clone(), runtime.clone()))
+                .collect()
+        };
+        candidates.sort_by_key(|(_, runtime)| {
+            *runtime.last_accessed.lock().expect("runtime activity lock")
+        });
+        let mut evicted = Vec::new();
+        for (id, runtime) in candidates {
+            if evicted.len() >= need {
+                break;
+            }
+            self.lsp.close_project(&runtime.root).await;
+            if self.close_project_runtime(&id).await.is_some() {
+                evicted.push(id);
+            }
+        }
+        evicted
+    }
+
     /// 项目私有脏缓冲表；避免不同项目同名相对路径互相污染。
     pub async fn dirty_buffers_for(&self, project_id: &str) -> Arc<tenon_fs::DirtyBufferRegistry> {
         let mut tables = self.dirty_buffers.lock().await;
@@ -567,12 +990,14 @@ impl DaemonState {
 
     pub async fn provider_or_default(&self, name: &str) -> Result<Arc<dyn ModelProvider>, String> {
         let key = if name.is_empty() {
-            &self.default_provider
+            self.default_provider.read().unwrap().clone()
         } else {
-            name
+            name.to_string()
         };
         self.providers
-            .get(key)
+            .read()
+            .unwrap()
+            .get(&key)
             .cloned()
             .ok_or_else(|| format!("provider 不可用：{key}（未配置或缺少 Key）"))
     }
@@ -630,6 +1055,26 @@ impl DaemonState {
         });
     }
 
+    /// 更新 L4 worker 状态；失败不阻塞索引任务。
+    pub fn set_l4_status(&self, project_id: &str, state: &str, error: Option<String>) {
+        let status = L4IndexStatus {
+            state: state.to_string(),
+            updated_at: chrono::Utc::now().to_rfc3339(),
+            error,
+        };
+        self.l4_status
+            .lock()
+            .expect("l4 status lock")
+            .insert(project_id.to_string(), status.clone());
+        let _ = self.l4_status_events.send(L4StatusEvent {
+            project_id: project_id.to_string(),
+            kind: "l4_status".to_string(),
+            state: status.state,
+            updated_at: status.updated_at,
+            error: status.error,
+        });
+    }
+
     /// 启动 L4 后台 worker：项目激活全量重建；watcher 变更 500ms 去抖增量更新。
     pub fn spawn_l4_worker(
         self: &Arc<Self>,
@@ -672,7 +1117,9 @@ impl DaemonState {
                         continue;
                     }
                 };
-                if let Some(root) = state.open_project_root(&event.project_id).await {
+                // 只索引仍持有 runtime 的项目事件；不为后台事件隐式唤醒已逐出的 runtime。
+                if let Some(runtime) = state.project_runtime(&event.project_id).await {
+                    let root = runtime.root.clone();
                     let entry = pending
                         .entry(event.project_id)
                         .or_insert_with(|| PendingL4Index {
@@ -687,6 +1134,7 @@ impl DaemonState {
     }
 
     async fn flush_l4_index(&self, project_id: &str, batch: PendingL4Index) {
+        self.set_l4_status(project_id, "indexing", None);
         if batch.full {
             let root = batch.root.clone();
             let documents = tokio::task::spawn_blocking(move || {
@@ -698,6 +1146,8 @@ impl DaemonState {
                             .into_iter()
                             .map(|chunk| tenon_store::L4ChunkRecord {
                                 symbol: chunk.symbol,
+                                start_line: chunk.start_line,
+                                end_line: chunk.end_line,
                                 text: chunk.text.clone(),
                                 embedding: tenon_fs::l4::embed(&document.path, &chunk.text),
                             })
@@ -719,9 +1169,13 @@ impl DaemonState {
                             tracing::warn!("L4 full index failed for {path}: {e}");
                         }
                     }
+                    self.set_l4_status(project_id, "ready", None);
                     tracing::info!("L4 full index complete for {project_id}");
                 }
-                Err(e) => tracing::warn!("L4 full scan failed: {e}"),
+                Err(e) => {
+                    self.set_l4_status(project_id, "failed", Some(e.to_string()));
+                    tracing::warn!("L4 full scan failed: {e}");
+                }
             }
             return;
         }
@@ -743,6 +1197,8 @@ impl DaemonState {
                         .into_iter()
                         .map(|chunk| tenon_store::L4ChunkRecord {
                             symbol: chunk.symbol,
+                            start_line: chunk.start_line,
+                            end_line: chunk.end_line,
                             text: chunk.text.clone(),
                             embedding: tenon_fs::l4::embed(&document.path, &chunk.text),
                         })
@@ -763,8 +1219,11 @@ impl DaemonState {
             };
             let mut store = self.store.lock().await;
             if let Err(e) = store.replace_l4_file(project_id, &path, &chunks) {
+                self.set_l4_status(project_id, "failed", Some(e.to_string()));
                 tracing::warn!("L4 incremental index failed for {path}: {e}");
+                continue;
             }
+            self.set_l4_status(project_id, "ready", None);
         }
     }
 }

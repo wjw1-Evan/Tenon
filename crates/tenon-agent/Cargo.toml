@@ -16,6 +16,7 @@ tenon-models = { workspace = true }
 tenon-mcp = { workspace = true }
 tenon-lsp = { workspace = true }
 tenon-laya = { workspace = true }
+futures = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

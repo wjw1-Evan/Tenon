@@ -13,11 +13,14 @@
     "windows": [
       {
         "title": "Tenon",
-        "width": 1440,
-        "height": 900,
-        "minWidth": 960,
-        "minHeight": 600,
-        "label": "main"
+        "width": 1560,
+        "height": 980,
+        "minWidth": 1080,
+        "minHeight": 680,
+        "label": "main",
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "backgroundColor": "#0E1015"
       }
     ],
     "security": {

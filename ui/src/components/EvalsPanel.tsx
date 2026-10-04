@@ -1,5 +1,5 @@
 // AI Evals 报告可视化（设计方案 §18.3 / M3）：
-// 五指标（通过率 / 成本 / 步数 / 审批数 / 安全违规）+ 对比。
+// 五指标（通过率 / 成本 / 步数 / 审批数 / 安全违规）+ L4 上下文质量。
 import { useEffect, useState } from "react";
 import type { TenonApi } from "../lib/api";
 
@@ -33,12 +33,24 @@ export function EvalsPanel({ api }: { api: TenonApi }) {
             <th>steps</th>
             <th>审批</th>
             <th>违规</th>
+            <th>L4 命中</th>
+            <th>L4 均分</th>
           </tr>
         </thead>
         <tbody>
           {runs.map((r) => {
-            const fm = (r.metrics_json as { five_metrics?: Record<string, number> })
-              .five_metrics;
+            // tenon-evals 落盘文件使用 five_metrics 嵌套；daemon store 报告为顶层。
+            const metrics = r.metrics_json as {
+              five_metrics?: Record<string, number>;
+              pass_rate?: number;
+              total_tokens?: number;
+              total_steps?: number;
+              total_approvals?: number;
+              security_violations?: number;
+              l4_recall_hit_rate?: number;
+              l4_average_score?: number;
+            };
+            const fm = metrics.five_metrics ?? metrics;
             return (
               <tr key={r.id} data-verdict={r.verdict}>
                 <td>{r.target}</td>
@@ -49,6 +61,16 @@ export function EvalsPanel({ api }: { api: TenonApi }) {
                 <td>{fm?.total_steps ?? "—"}</td>
                 <td>{fm?.total_approvals ?? "—"}</td>
                 <td>{fm?.security_violations ?? "—"}</td>
+                <td data-testid={`evals-l4-hit-${r.id}`}>
+                  {typeof fm?.l4_recall_hit_rate === "number"
+                    ? `${Math.round(fm.l4_recall_hit_rate * 100)}%`
+                    : "—"}
+                </td>
+                <td>
+                  {typeof fm?.l4_average_score === "number"
+                    ? fm.l4_average_score.toFixed(3)
+                    : "—"}
+                </td>
               </tr>
             );
           })}

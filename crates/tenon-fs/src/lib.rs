@@ -24,8 +24,6 @@ use tenon_sandbox::SandboxError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FsError {
-    #[error("文件过大（>{max_mb}MB，大文件只读分块随 M1 落地，§8.1）")]
-    TooLarge { max_mb: u64 },
     #[error("二进制文件不支持文本读取: {0}")]
     Binary(String),
     #[error("路径越界或非法: {0}")]
@@ -38,12 +36,17 @@ pub enum FsError {
 
 pub type Result<T> = std::result::Result<T, FsError>;
 
+/// 文件读取视图（§8.1）：任意大小文件全量读取（v1.69 移除只读分块）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct FileView {
+    pub content: String,
+    pub total_bytes: u64,
+}
+
 /// 文件服务：所有路径参数为项目相对路径（POSIX 风格），绝对路径仅当位于项目内才接受。
 pub struct FileService {
     root: PathBuf,
     guard: tenon_sandbox::WriteGuard,
-    /// 大文件阈值（§4.2：10MB）。
-    pub max_read_bytes: u64,
 }
 
 impl FileService {
@@ -52,7 +55,6 @@ impl FileService {
         Self {
             guard: tenon_sandbox::WriteGuard::new(&root),
             root,
-            max_read_bytes: 10 * 1024 * 1024,
         }
     }
 
@@ -71,20 +73,36 @@ impl FileService {
         Ok(self.root.join(normalized))
     }
 
-    /// 读取文本文件（UTF-8；二进制 / 超限报错）。
-    pub fn read_file(&self, rel: &str) -> Result<String> {
-        let path = self.resolve(rel)?;
-        let meta = std::fs::metadata(&path)?;
-        if meta.len() > self.max_read_bytes {
-            return Err(FsError::TooLarge {
-                max_mb: self.max_read_bytes / 1024 / 1024,
-            });
-        }
-        let bytes = std::fs::read(&path)?;
+    fn decode_text(rel: &str, bytes: Vec<u8>) -> Result<String> {
         if bytes.iter().take(8192).any(|b| *b == 0) {
             return Err(FsError::Binary(rel.to_string()));
         }
         String::from_utf8(bytes).map_err(|_| FsError::Binary(rel.to_string()))
+    }
+
+    /// 读取文本文件（UTF-8；二进制报错；无大小上限，§8.1）。
+    pub fn read_file(&self, rel: &str) -> Result<String> {
+        let path = self.resolve(rel)?;
+        let bytes = std::fs::read(&path)?;
+        Self::decode_text(rel, bytes)
+    }
+
+    /// 文件字节大小（路径经写守卫校验）。
+    pub fn file_size(&self, rel: &str) -> Result<u64> {
+        let path = self.resolve(rel)?;
+        Ok(std::fs::metadata(&path)?.len())
+    }
+
+    /// 全量读取文本文件并返回字节总数（§8.1：任意大小可打开可编辑）。
+    pub fn read_file_view(&self, rel: &str) -> Result<FileView> {
+        let path = self.resolve(rel)?;
+        let total_bytes = std::fs::metadata(&path)?.len();
+        let bytes = std::fs::read(&path)?;
+        let content = Self::decode_text(rel, bytes)?;
+        Ok(FileView {
+            content,
+            total_bytes,
+        })
     }
 
     /// 写文件（经写守卫；自动建父目录）。返回是否为新建。
@@ -121,18 +139,34 @@ mod tests {
     }
 
     #[test]
-    fn binary_and_oversize_rejected() {
-        let (d, mut s) = svc();
+    fn binary_rejected() {
+        let (d, s) = svc();
         // 二进制（含 NUL）
         std::fs::write(d.path().join("bin.dat"), [0u8, 1, 2, 3]).unwrap();
         assert!(matches!(s.read_file("bin.dat"), Err(FsError::Binary(_))));
-        // 超限
-        s.max_read_bytes = 8;
-        std::fs::write(d.path().join("big.txt"), "123456789").unwrap();
-        assert!(matches!(
-            s.read_file("big.txt"),
-            Err(FsError::TooLarge { .. })
-        ));
+    }
+
+    #[test]
+    fn large_file_full_read_and_editable() {
+        let (d, s) = svc();
+        // 10 MiB + 5：越过旧只读阈值，v1.69 起必须全量可读且可写。
+        let large = format!("{}next\n", "A".repeat(10 * 1024 * 1024));
+        std::fs::write(d.path().join("big.txt"), &large).unwrap();
+        let view = s.read_file_view("big.txt").unwrap();
+        assert_eq!(view.total_bytes, 10 * 1024 * 1024 + 5);
+        assert_eq!(view.content.len(), 10 * 1024 * 1024 + 5);
+        // 旧文件超过 10MB 也允许写盘（v1.69 移除拒写）。
+        assert!(!s.write_file("big.txt", "replaced\n").unwrap());
+        assert_eq!(s.read_file("big.txt").unwrap(), "replaced\n");
+    }
+
+    #[test]
+    fn multibyte_content_full_read() {
+        let (d, s) = svc();
+        let source = "abc漢xyz\n".to_string();
+        std::fs::write(d.path().join("utf8.txt"), &source).unwrap();
+        let view = s.read_file_view("utf8.txt").unwrap();
+        assert_eq!(view.content, source);
     }
 
     #[test]

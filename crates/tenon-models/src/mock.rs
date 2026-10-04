@@ -1,6 +1,9 @@
 //! 测试 / Evals 用脚本化 mock provider（附录 D 基准任务无云端依赖运行）。
 
-use crate::{ChatRequest, ChatResponse, ModelProvider, ProviderResult, ToolCallReq, Usage};
+use crate::{
+    ChatRequest, ChatResponse, ChatStream, ChatStreamEvent, ModelProvider, ProviderResult,
+    ToolCallReq, Usage,
+};
 
 /// 一条脚本化回复。
 #[derive(Debug, Clone)]
@@ -17,6 +20,8 @@ pub enum ScriptedReply {
         text: String,
         tool: (String, serde_json::Value),
     },
+    /// 输出被 max_tokens 截断（finish_reason=length，无工具调用）——v1.53 截断续跑。
+    Truncated(String),
     /// 模拟供应商故障（触发 ERROR / model_fallback 路径测试）。
     Failure(String),
 }
@@ -28,6 +33,8 @@ pub struct MockProvider {
     /// 脚本耗尽后循环最后一个回复（默认 true，避免长会话中断）。
     loop_last: bool,
     calls: std::sync::Mutex<Vec<ChatRequest>>,
+    /// 标题生成请求（TITLE_MARKER，v1.58）单独记录，不进 calls / 脚本队列。
+    title_calls: std::sync::Mutex<Vec<ChatRequest>>,
 }
 
 impl MockProvider {
@@ -38,11 +45,16 @@ impl MockProvider {
             script: std::sync::Mutex::new(script),
             loop_last: true,
             calls: std::sync::Mutex::new(Vec::new()),
+            title_calls: std::sync::Mutex::new(Vec::new()),
         }
     }
 
     pub fn calls(&self) -> Vec<ChatRequest> {
         self.calls.lock().expect("calls lock").clone()
+    }
+
+    pub fn title_calls(&self) -> Vec<ChatRequest> {
+        self.title_calls.lock().expect("title calls lock").clone()
     }
 }
 
@@ -57,8 +69,28 @@ impl ModelProvider for MockProvider {
     }
 
     async fn chat(&self, req: &ChatRequest) -> ProviderResult<ChatResponse> {
-        // 输入 token 与真实 prompt 规模成正比（≈3 字符/token）：
-        // 让 Evals 门（§18.3「token 下降」）可离线度量
+        // 标题生成请求（v1.58）：固定短标题回复，不消耗脚本队列、不进 calls，
+        // 既有脚本化测试对调用次数与序列的断言不受自动标题影响。
+        if req
+            .messages
+            .iter()
+            .any(|m| m.content.contains(crate::TITLE_MARKER))
+        {
+            self.title_calls
+                .lock()
+                .expect("title calls lock")
+                .push(req.clone());
+            return Ok(ChatResponse {
+                content: "Mock 会话标题".into(),
+                tool_calls: vec![],
+                usage: Usage {
+                    input_tokens: 1,
+                    output_tokens: 1,
+                },
+                model: self.model.clone(),
+                finish_reason: Some("stop".into()),
+            });
+        }
         let prompt_chars: usize = req
             .messages
             .iter()
@@ -127,17 +159,40 @@ impl ModelProvider for MockProvider {
                 model: self.model.clone(),
                 finish_reason: Some("tool_use".into()),
             },
+            ScriptedReply::Truncated(t) => ChatResponse {
+                content: t,
+                tool_calls: vec![],
+                usage: Usage {
+                    input_tokens,
+                    output_tokens: 5,
+                },
+                model: self.model.clone(),
+                finish_reason: Some("length".into()),
+            },
             ScriptedReply::Failure(msg) => {
                 return Err(crate::ProviderError::Network(msg));
             }
         };
         Ok(resp)
     }
+
+    async fn chat_stream(&self, req: &ChatRequest) -> ProviderResult<ChatStream> {
+        let final_response = self.chat(req).await?;
+        let text = final_response.content.clone();
+        let chars: Vec<char> = text.chars().collect();
+        let mut events = Vec::new();
+        for chunk in chars.chunks(8) {
+            events.push(Ok(ChatStreamEvent::Delta(chunk.iter().collect())));
+        }
+        events.push(Ok(ChatStreamEvent::Final(final_response)));
+        Ok(Box::pin(futures::stream::iter(events)))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::StreamExt;
 
     #[tokio::test]
     async fn scripted_tool_then_text() {
@@ -174,5 +229,30 @@ mod tests {
         let mock = MockProvider::new("mock", "m", vec![ScriptedReply::Failure("boom".into())]);
         let err = mock.chat(&ChatRequest::new("m", vec![])).await.unwrap_err();
         assert!(err.to_string().contains("boom"));
+    }
+
+    #[tokio::test]
+    async fn text_stream_yields_unicode_safe_chunks_then_authoritative_final() {
+        let mock = MockProvider::new(
+            "mock",
+            "mock-1",
+            vec![ScriptedReply::Text("中文流式输出✅".into())],
+        );
+        let mut stream = mock
+            .chat_stream(&ChatRequest::new("mock-1", vec![]))
+            .await
+            .unwrap();
+        let mut deltas = String::new();
+        let mut final_response = None;
+        loop {
+            match stream.next().await {
+                Some(Ok(ChatStreamEvent::Delta(text))) => deltas.push_str(&text),
+                Some(Ok(ChatStreamEvent::Final(resp))) => final_response = Some(resp),
+                Some(Err(error)) => panic!("stream failed: {error}"),
+                None => break,
+            }
+        }
+        assert_eq!(deltas, "中文流式输出✅");
+        assert_eq!(final_response.expect("final").content, deltas);
     }
 }

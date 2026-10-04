@@ -2,7 +2,7 @@
 
 use crate::PairingStore;
 use axum::body::Body;
-use axum::http::{header, HeaderMap, Request, StatusCode};
+use axum::http::{header, HeaderMap, Method, Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use std::collections::HashSet;
@@ -95,6 +95,33 @@ pub async fn auth_middleware(
         }
         cors_origin = Some(origin.to_string());
     }
+    // CORS 预检（跨源 dev server 必经）：浏览器发起的 OPTIONS 不携带自定义
+    // 头（无 token），须在中间件直接答复 2xx + CORS 头；否则 axum 405 会让
+    // 预检失败、后续所有跨源请求报 TypeError: Failed to fetch（§12.6 白名单
+    // 已在上一步收口，非白名单源到不了这里）。
+    if request.method() == Method::OPTIONS {
+        if let Some(origin) = cors_origin {
+            let mut preflight = StatusCode::OK.into_response();
+            preflight.headers_mut().insert(
+                header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                header::HeaderValue::from_str(&origin).expect("origin header"),
+            );
+            preflight.headers_mut().insert(
+                header::ACCESS_CONTROL_ALLOW_HEADERS,
+                header::HeaderValue::from_static("Content-Type, X-Tenon-Token"),
+            );
+            preflight.headers_mut().insert(
+                header::ACCESS_CONTROL_ALLOW_METHODS,
+                header::HeaderValue::from_static("GET, POST, PUT, DELETE, OPTIONS"),
+            );
+            preflight.headers_mut().insert(
+                header::ACCESS_CONTROL_MAX_AGE,
+                header::HeaderValue::from_static("600"),
+            );
+            return preflight;
+        }
+        return StatusCode::OK.into_response();
+    }
     // Token 校验（/health、/pairing、/lan/pair 免鉴权；/ws 用一次性票据首帧鉴权 ADR-10）。
     // 主 token（X-Tenon-Token）或已配对设备令牌（X-Tenon-Paired，PairingStore 校验）均可。
     let auth_exempt =
@@ -132,6 +159,7 @@ pub async fn auth_middleware(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tower::ServiceExt as _;
 
     #[test]
     fn ticket_single_use_and_expiry() {
@@ -152,5 +180,54 @@ mod tests {
             !origin_allowed("http://192.168.1.5:5173"),
             "局域网源未配对不放行"
         );
+    }
+
+    /// 回归（v1.30）：跨源 dev server 的 OPTIONS 预检须 200 + CORS 头，
+    /// 且不要求 token（浏览器预检不携带自定义头）；非白名单源仍 403。
+    #[tokio::test]
+    async fn preflight_options_allowed_without_token_and_rejects_foreign_origin() {
+        let state = (
+            String::from("tok"),
+            std::sync::Arc::new(PairingStore::default()),
+        );
+        let app = axum::Router::new()
+            .route("/projects/open", axum::routing::post(|| async { "ok" }))
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                auth_middleware,
+            ));
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri("http://127.0.0.1/projects/open")
+                    .header(header::ORIGIN, "http://localhost:5199")
+                    .header(header::HOST, "127.0.0.1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            Some(&header::HeaderValue::from_static("http://localhost:5199"))
+        );
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri("http://127.0.0.1/projects/open")
+                    .header(header::ORIGIN, "https://evil.example.com")
+                    .header(header::HOST, "127.0.0.1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
     }
 }

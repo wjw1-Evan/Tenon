@@ -42,6 +42,7 @@ async fn t1_style_fix_task_passes_with_budget() {
             max_steps: 12,
             max_tokens: 200_000,
         },
+        expected_l4_path: None,
     };
     let result = runner
         .run_task(&task, provider, &[("src/lib.rs", "fn main() {}\n")])
@@ -75,6 +76,7 @@ async fn t5_style_readonly_task_enforces_invariant() {
             max_steps: 10,
             max_tokens: 200_000,
         },
+        expected_l4_path: None,
     };
     let result = runner.run_task(&task, provider, &[]).await;
     assert_eq!(result.verdict(), "pass", "{result:?}");
@@ -103,6 +105,7 @@ async fn t9_style_c_level_approval_recorded_and_domain_shown() {
             max_steps: 10,
             max_tokens: 200_000,
         },
+        expected_l4_path: None,
     };
     // C 级恒审批（§12.2）：无决策 → 2s 超时 → Paused；审批请求已入事件
     let result = runner
@@ -113,6 +116,91 @@ async fn t9_style_c_level_approval_recorded_and_domain_shown() {
         result.approvals >= 1 || result.failures.iter().any(|f| f.contains("c 级")),
         "{result:?}"
     );
+}
+
+#[tokio::test]
+async fn l4_recall_hits_expected_path_and_records_quality_metrics() {
+    let runner = EvalRunner::new(store());
+    let provider = Arc::new(MockProvider::new(
+        "mock",
+        "mock-1",
+        vec![ScriptedReply::Text("已基于召回的认证实现回答".into())],
+    ));
+    let task = EvalTask {
+        id: "L4-HIT".into(),
+        instruction: "解释 authenticate user login password session".into(),
+        assertions: vec![
+            Assertion::L4RecallPath {
+                path: "src/auth.rs".into(),
+            },
+            Assertion::AnswerContains {
+                text: "召回".into(),
+            },
+        ],
+        budget: EvalBudget {
+            max_steps: 5,
+            max_tokens: 20_000,
+        },
+        expected_l4_path: Some("src/auth.rs".into()),
+    };
+    let result = runner
+        .run_task(
+            &task,
+            provider,
+            &[
+                (
+                    "src/auth.rs",
+                    "fn authenticate() {\n    let user = login(password);\n    verify_session(user);\n}\n",
+                ),
+                ("src/render.rs", "fn render_canvas() {\n    paint_pixels();\n}\n"),
+            ],
+        )
+        .await;
+
+    assert_eq!(result.verdict(), "pass", "{result:?}");
+    assert!(result.l4_recall_slices > 0);
+    assert_eq!(result.l4_expected_path_hit, Some(true));
+    assert_eq!(result.l4_expected_path.as_deref(), Some("src/auth.rs"));
+    assert!(result
+        .l4_recall_avg_score
+        .is_some_and(|score| score > 0.0 && score <= 1.0));
+}
+
+#[tokio::test]
+async fn l4_recall_path_miss_fails_case_and_suite_gate() {
+    let store = store();
+    let runner = EvalRunner::new(store.clone());
+    let provider = Arc::new(MockProvider::new(
+        "mock",
+        "mock-1",
+        vec![ScriptedReply::Text("回答完成".into())],
+    ));
+    let task = EvalTask {
+        id: "L4-MISS".into(),
+        instruction: "解释 unrelated task".into(),
+        assertions: vec![Assertion::AnswerNotEmpty],
+        budget: EvalBudget {
+            max_steps: 5,
+            max_tokens: 20_000,
+        },
+        expected_l4_path: Some("src/missing.rs".into()),
+    };
+    let result = runner
+        .run_task(&task, provider, &[("src/other.rs", "fn other() {}\n")])
+        .await;
+
+    assert_eq!(result.verdict(), "fail", "{result:?}");
+    assert_eq!(result.l4_expected_path_hit, Some(false));
+    assert!(result
+        .failures
+        .iter()
+        .any(|failure| failure.contains("L4 召回未命中")));
+
+    let report = runner.summarize(vec![result], "L4-quality-gate").await;
+    assert_eq!(report.l4_recall_hit_rate, Some(0.0));
+    let mut st = store.lock().await;
+    let run = st.eval_runs().unwrap().pop().unwrap();
+    assert_eq!(run.verdict, "fail");
 }
 
 #[tokio::test]
@@ -132,6 +220,7 @@ async fn suite_summary_records_eval_run() {
             max_steps: 5,
             max_tokens: 10_000,
         },
+        expected_l4_path: None,
     };
     let case = runner.run_task(&task, provider, &[]).await;
     let report = runner.summarize(vec![case], "M0-mock-suite").await;

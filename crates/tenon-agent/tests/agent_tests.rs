@@ -7,7 +7,8 @@ use tenon_agent::session::{AgentConfig, ControlCommand, ProjectWriteLock, TaskOu
 use tenon_agent::AgentSession;
 use tenon_core::context::ProjectRules;
 use tenon_core::policy::Mode;
-use tenon_models::{MockProvider, ScriptedReply};
+use tenon_fs::l4;
+use tenon_models::{MockProvider, Role, ScriptedReply};
 use tenon_snapshot::SnapshotStore;
 use tenon_store::{ApprovalDecision, EventKind, Store};
 use tokio::sync::Mutex;
@@ -76,6 +77,35 @@ async fn answer_only_task_completes_without_changes() {
 }
 
 #[tokio::test]
+async fn model_stream_is_persisted_and_joined_without_loss() {
+    let (_d, session, store, _p) = setup(
+        vec![ScriptedReply::Text("流式回答ABC".into())],
+        false,
+        Mode::Interactive,
+    )
+    .await;
+    let outcome = session.run_task("解释").await;
+    assert!(matches!(outcome, TaskOutcome::Done(_)));
+    let mut st = store.lock().await;
+    let deltas = st
+        .events(&session.session_id)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == EventKind::ModelDelta)
+        .map(|event| {
+            event
+                .payload
+                .get("text")
+                .and_then(|text| text.as_str())
+                .unwrap_or_default()
+                .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    assert_eq!(deltas, "流式回答ABC");
+}
+
+#[tokio::test]
 async fn patch_task_auto_mode_writes_verifies_and_checkpoints() {
     let (dir, session, store, _p) = setup(
         vec![
@@ -111,6 +141,61 @@ async fn patch_task_auto_mode_writes_verifies_and_checkpoints() {
     // 首改缓冲事件
     assert!(events.iter().any(|e| e.kind == EventKind::Decision
         && e.payload.get("first_edit") == Some(&serde_json::json!(true))));
+}
+
+#[tokio::test]
+async fn truncated_reply_continues_instead_of_done() {
+    // v1.53：finish_reason=length 的纯文本回复不是回答——注入续写指令继续循环，
+    // 后续回合完成改动；不修此路径时长规划被截断即静默 Done（changed_files 空）。
+    let (dir, session, _store, _p) = setup(
+        vec![
+            ScriptedReply::Truncated("任务规划：先写游戏主体…（输出被截断）".into()),
+            ScriptedReply::Tool {
+                name: "apply_patch".into(),
+                args: serde_json::json!({"file": "src/lib.rs", "range": null, "content": "fn game() {}\n"}),
+            },
+            ScriptedReply::Text("开发完成".into()),
+        ],
+        true,
+        Mode::Auto,
+    )
+    .await;
+    let outcome = session.run_task("开发游戏").await;
+    match outcome {
+        TaskOutcome::Done(card) => {
+            assert_eq!(card.changed_files, vec!["src/lib.rs".to_string()]);
+            assert_eq!(card.answer, "开发完成");
+        }
+        other => panic!("期望截断后续跑完成，实际 {other:?}"),
+    }
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap(),
+        "fn game() {}\n"
+    );
+    // 续写指令进入对话历史（第二次模型调用含 nudge 用户消息）
+}
+
+#[tokio::test]
+async fn consecutive_truncations_error_out() {
+    // v1.53：连续 3 次截断按模型失败语义转 ERROR，不再无限续跑
+    let (_d, session, store, _p) = setup(
+        vec![
+            ScriptedReply::Truncated("t1".into()),
+            ScriptedReply::Truncated("t2".into()),
+            ScriptedReply::Truncated("t3".into()),
+        ],
+        true,
+        Mode::Auto,
+    )
+    .await;
+    let outcome = session.run_task("任务").await;
+    match outcome {
+        TaskOutcome::Error(msg) => assert!(msg.contains("截断"), "错误信息应说明截断: {msg}"),
+        other => panic!("期望 Error，实际 {other:?}"),
+    }
+    let mut st = store.lock().await;
+    let events = st.events(&session.session_id).unwrap();
+    assert!(events.iter().any(|e| e.kind == EventKind::Error));
 }
 
 #[tokio::test]
@@ -495,4 +580,189 @@ async fn concurrent_tasks_serialized_by_project_write_lock() {
     assert!(matches!(r1.unwrap(), TaskOutcome::Done(_)));
     assert!(matches!(r2.unwrap(), TaskOutcome::Done(_)));
     let _ = p.calls();
+}
+
+#[tokio::test]
+async fn l4_recall_builds_l1_working_set_for_provider() {
+    let (_d, session, store, provider) = setup(
+        vec![ScriptedReply::Text("已基于 L4 上下文回答".into())],
+        false,
+        Mode::Interactive,
+    )
+    .await;
+    {
+        let mut st = store.lock().await;
+        let project_id = session.config().project_id.clone();
+        st.replace_l4_file(
+            &project_id,
+            "src/auth.rs",
+            &[tenon_store::L4ChunkRecord {
+                symbol: Some("authenticate".into()),
+                start_line: 12,
+                end_line: 18,
+                text: "pub fn authenticate(user: &str, password: &str) {}".into(),
+                embedding: l4::embed(
+                    "authenticate user login",
+                    "pub fn authenticate user password session",
+                ),
+            }],
+        )
+        .unwrap();
+    }
+
+    let outcome = session.run_task("authenticate user login").await;
+    assert!(matches!(outcome, TaskOutcome::Done(_)));
+
+    // L4 召回必须进入 Trace（不含 chunk 原文，只有 path / range / score）。
+    let events = {
+        let mut st = store.lock().await;
+        st.events(&session.session_id).unwrap()
+    };
+    let recall = events
+        .iter()
+        .find(|event| {
+            event.kind == EventKind::Sensing
+                && event.payload.get("l4_recall") == Some(&serde_json::json!(true))
+        })
+        .expect("L4 recall should be traced");
+    assert_eq!(
+        recall.payload["slices"][0]["path"],
+        serde_json::json!("src/auth.rs")
+    );
+
+    // L1 工作集注入首条 user 消息，模型能看到 path / 行号 / 不可信标记。
+    let request = &provider.calls()[0];
+    let user_message = request
+        .messages
+        .iter()
+        .find(|message| message.role == Role::User)
+        .expect("user message");
+    assert!(user_message.content.contains("authenticate user login"));
+    assert!(user_message.content.contains("src/auth.rs:12-18"));
+    assert!(user_message.content.contains("不可信仓库内容"));
+}
+
+#[tokio::test]
+async fn inline_completion_uses_single_turn_model_and_records_usage() {
+    let (_d, session, store, provider) = setup(
+        vec![ScriptedReply::Text(
+            "```rust\nreturn cached_value;\n```".into(),
+        )],
+        true,
+        Mode::Interactive,
+    )
+    .await;
+
+    let completion = session
+        .inline_complete("rust", "fn main() {\n    let cached_value = 1;\n", "\n}")
+        .await
+        .expect("inline completion");
+    assert_eq!(completion, "return cached_value;");
+
+    let request = &provider.calls()[0];
+    assert!(
+        request.tools.is_empty(),
+        "ghost text must not enter tool loop"
+    );
+    assert_eq!(request.max_tokens, 256);
+    assert!(request
+        .messages
+        .iter()
+        .any(|m| m.content.contains("before_cursor")));
+
+    let usage = {
+        let mut st = store.lock().await;
+        st.project_usage_totals(session.config().project_id.as_str())
+            .unwrap()
+    };
+    assert!(
+        usage.0 > 0 && usage.1 > 0,
+        "inline completion usage should be attributed"
+    );
+}
+
+#[test]
+fn sanitize_title_takes_first_line_and_strips_wrappers() {
+    assert_eq!(
+        tenon_agent::sanitize_title("修复登录超时", 24),
+        "修复登录超时"
+    );
+    assert_eq!(
+        tenon_agent::sanitize_title("「修复登录超时」", 24),
+        "修复登录超时"
+    );
+    assert_eq!(
+        tenon_agent::sanitize_title("\"修复登录超时\"", 24),
+        "修复登录超时"
+    );
+    assert_eq!(
+        tenon_agent::sanitize_title("修复登录超时。", 24),
+        "修复登录超时"
+    );
+    assert_eq!(tenon_agent::sanitize_title("第一行\n第二行", 24), "第一行");
+    assert_eq!(
+        tenon_agent::sanitize_title("很长的标题很长的标题很长的标题很长的标题超出", 10),
+        "很长的标题很长的标题"
+    );
+    assert_eq!(tenon_agent::sanitize_title("  \n ", 24), "");
+}
+
+/// v1.58 对话标题：单轮、无工具、带 TITLE_MARKER；不消耗任务脚本队列。
+#[tokio::test]
+async fn generate_title_is_single_turn_marked_and_keeps_script_intact() {
+    let (_d, session, _store, provider) = setup(
+        vec![ScriptedReply::Text("任务回答".into())],
+        false,
+        Mode::Interactive,
+    )
+    .await;
+    let title = session
+        .generate_title("帮我修复登录超时的 bug，越快越好")
+        .await
+        .expect("generated title");
+    assert_eq!(title, "Mock 会话标题");
+
+    let requests = provider.title_calls();
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert!(
+        request
+            .messages
+            .iter()
+            .any(|m| m.content.contains("TENON_TASK_TITLE")),
+        "title request must carry the marker"
+    );
+    assert!(
+        request.tools.is_empty(),
+        "title generation stays out of tool loop"
+    );
+    assert_eq!(request.max_tokens, 48);
+    // 标题请求不进任务调用记录，脚本化断言零扰动。
+    assert!(provider.calls().is_empty());
+}
+
+#[tokio::test]
+async fn set_title_persists_and_broadcasts_session_title_event() {
+    let (_d, session, store, _p) = setup(vec![], false, Mode::Interactive).await;
+    let mut rx = session.subscribe();
+    session.set_title("修复登录超时").await.unwrap();
+
+    let mut st = store.lock().await;
+    assert_eq!(
+        st.session(&session.session_id).unwrap().unwrap().title,
+        "修复登录超时"
+    );
+    let events = st.events(&session.session_id).unwrap();
+    drop(st);
+    let event = events
+        .iter()
+        .find(|e| e.kind == EventKind::SessionTitle)
+        .expect("session_title event appended");
+    assert_eq!(event.payload["title"], "修复登录超时");
+
+    let broadcast = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("broadcast within timeout")
+        .expect("subscriber receives event");
+    assert_eq!(broadcast.kind, EventKind::SessionTitle);
 }

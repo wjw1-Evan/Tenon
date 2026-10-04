@@ -19,8 +19,8 @@ pub use evals::{
 pub use executor::{execute_tool, ToolContext, ToolOutput};
 pub use recovery::{recover_stale_sessions, RecoveryReport};
 pub use session::{
-    AgentConfig, AgentError, AgentSession, ControlCommand, EvidenceCard, ProjectWriteLock,
-    TaskOutcome,
+    sanitize_title, AgentConfig, AgentError, AgentSession, ControlCommand, EvidenceCard,
+    ProjectWriteLock, TaskOutcome,
 };
 pub use subagents::{
     composite_commit_summary, plan_parallel, SubAgentError, SubTask, WorktreePool,

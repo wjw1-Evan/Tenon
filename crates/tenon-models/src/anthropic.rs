@@ -1,9 +1,13 @@
 //! Anthropic Messages 协议适配器（含 GLM Anthropic 协议端点）。
 
 use crate::{
-    ChatMessage, ChatRequest, ChatResponse, ModelProvider, ProviderError, ProviderResult, Role,
-    ToolCallReq, Usage,
+    ChatMessage, ChatRequest, ChatResponse, ChatStream, ChatStreamEvent, ModelProvider,
+    ProviderError, ProviderResult, Role, ToolCallReq, Usage,
 };
+use futures::StreamExt;
+use std::collections::BTreeMap;
+use std::collections::VecDeque;
+use std::pin::Pin;
 
 pub struct AnthropicProvider {
     name: String,
@@ -14,6 +18,140 @@ pub struct AnthropicProvider {
 }
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
+
+#[derive(Debug, Default, Clone)]
+struct StreamedToolBlock {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+struct AnthropicSseState {
+    body: Option<Pin<Box<dyn futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Send>>>,
+    line_buffer: Vec<u8>,
+    queue: VecDeque<ChatStreamEvent>,
+    content: String,
+    tool_blocks: BTreeMap<u64, StreamedToolBlock>,
+    usage: Usage,
+    model: String,
+    finish_reason: Option<String>,
+    done: bool,
+}
+
+impl AnthropicSseState {
+    fn new(response: reqwest::Response, model: String) -> Self {
+        Self {
+            body: Some(Box::pin(response.bytes_stream())),
+            line_buffer: Vec::new(),
+            queue: VecDeque::new(),
+            content: String::new(),
+            tool_blocks: BTreeMap::new(),
+            usage: Usage::default(),
+            model,
+            finish_reason: None,
+            done: false,
+        }
+    }
+
+    fn consume_sse_line(&mut self, line: &str) -> ProviderResult<()> {
+        let Some(data) = line.strip_prefix("data:").map(str::trim) else {
+            return Ok(());
+        };
+        let v: serde_json::Value = serde_json::from_str(data)
+            .map_err(|e| ProviderError::Parse(format!("invalid stream chunk: {e}")))?;
+        match v.get("type").and_then(|t| t.as_str()) {
+            Some("message_start") => {
+                let message = v.get("message").cloned().unwrap_or_default();
+                if let Some(model) = message.get("model").and_then(|m| m.as_str()) {
+                    self.model = model.to_string();
+                }
+                self.usage.input_tokens = message
+                    .pointer("/usage/input_tokens")
+                    .and_then(|u| u.as_u64())
+                    .unwrap_or(self.usage.input_tokens);
+            }
+            Some("content_block_start") => {
+                let index = v.get("index").and_then(|i| i.as_u64()).unwrap_or_default();
+                let block = v.get("content_block").cloned().unwrap_or_default();
+                if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                    let item = self.tool_blocks.entry(index).or_default();
+                    item.id = block
+                        .get("id")
+                        .and_then(|i| i.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    item.name = block
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                }
+            }
+            Some("content_block_delta") => {
+                let index = v.get("index").and_then(|i| i.as_u64()).unwrap_or_default();
+                let delta = v.get("delta").cloned().unwrap_or_default();
+                match delta.get("type").and_then(|t| t.as_str()) {
+                    Some("text_delta") => {
+                        if let Some(text) = delta.get("text").and_then(|t| t.as_str()) {
+                            self.content.push_str(text);
+                            self.queue
+                                .push_back(ChatStreamEvent::Delta(text.to_string()));
+                        }
+                    }
+                    Some("input_json_delta") => {
+                        if let Some(text) = delta.get("partial_json").and_then(|t| t.as_str()) {
+                            self.tool_blocks
+                                .entry(index)
+                                .or_default()
+                                .arguments
+                                .push_str(text);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Some("message_delta") => {
+                self.finish_reason = v
+                    .get("delta")
+                    .and_then(|d| d.get("stop_reason"))
+                    .and_then(|s| s.as_str())
+                    .map(String::from);
+                self.usage.output_tokens = v
+                    .pointer("/usage/output_tokens")
+                    .and_then(|u| u.as_u64())
+                    .unwrap_or(self.usage.output_tokens);
+            }
+            Some("message_stop") => self.done = true,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn final_response(&self) -> ProviderResult<ChatResponse> {
+        let mut tool_calls = Vec::with_capacity(self.tool_blocks.len());
+        for (index, block) in &self.tool_blocks {
+            let arguments = if block.arguments.trim().is_empty() {
+                serde_json::Value::Object(Default::default())
+            } else {
+                serde_json::from_str(&block.arguments).map_err(|e| {
+                    ProviderError::Parse(format!("tool block [{index}] arguments: {e}"))
+                })?
+            };
+            tool_calls.push(ToolCallReq {
+                id: block.id.clone(),
+                name: block.name.clone(),
+                arguments,
+            });
+        }
+        Ok(ChatResponse {
+            content: self.content.clone(),
+            tool_calls,
+            usage: self.usage,
+            model: self.model.clone(),
+            finish_reason: self.finish_reason.clone(),
+        })
+    }
+}
 
 impl AnthropicProvider {
     pub fn new(name: &str, base_url: &str, api_key: &str, default_model: Option<String>) -> Self {
@@ -186,5 +324,116 @@ impl ModelProvider for AnthropicProvider {
                 .and_then(|s| s.as_str())
                 .map(String::from),
         })
+    }
+
+    async fn chat_stream(&self, req: &ChatRequest) -> ProviderResult<ChatStream> {
+        let (system, messages) = Self::to_api_messages(&req.messages);
+        let mut body = serde_json::json!({
+            "model": req.model,
+            "max_tokens": req.max_tokens,
+            "temperature": req.temperature,
+            "messages": messages,
+            "stream": true,
+        });
+        if !system.is_empty() {
+            body["system"] = serde_json::json!(system);
+        }
+        if !req.tools.is_empty() {
+            body["tools"] = serde_json::json!(req
+                .tools
+                .iter()
+                .map(|t| serde_json::json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "input_schema": t.parameters,
+                }))
+                .collect::<Vec<_>>());
+        }
+
+        let url = format!("{}/v1/messages", self.base_url);
+        let mut request = self
+            .client
+            .post(&url)
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .json(&body);
+        if !self.api_key.is_empty() {
+            request = request.header("x-api-key", &self.api_key);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|e| ProviderError::Network(e.to_string()))?;
+        let status = response.status();
+        if status.is_client_error() || status.is_server_error() {
+            let body = response
+                .text()
+                .await
+                .map_err(|e| ProviderError::Network(e.to_string()))?;
+            return Err(ProviderError::Http {
+                status: status.as_u16(),
+                body,
+            });
+        }
+
+        let mut state = AnthropicSseState::new(response, req.model.clone());
+        let stream = async_stream::stream! {
+            while let Some(event) = state.queue.pop_front() {
+                yield Ok(event);
+            }
+            let Some(mut bytes) = state.body.take() else {
+                yield Err(ProviderError::Network("response stream already consumed".into()));
+                return;
+            };
+            while let Some(chunk_result) = bytes.next().await {
+                let chunk = match chunk_result {
+                    Ok(chunk) => chunk,
+                    Err(error) => {
+                        yield Err(ProviderError::Network(error.to_string()));
+                        return;
+                    }
+                };
+                state.line_buffer.extend_from_slice(&chunk);
+                while let Some(pos) = state.line_buffer.iter().position(|byte| *byte == b'\n') {
+                    let line_bytes: Vec<u8> = state.line_buffer.drain(..=pos).collect();
+                    let line = String::from_utf8_lossy(&line_bytes[..line_bytes.len() - 1]);
+                    if let Err(error) = state.consume_sse_line(line.trim_end_matches('\r')) {
+                        yield Err(error);
+                        return;
+                    }
+                }
+                while let Some(event) = state.queue.pop_front() {
+                    yield Ok(event);
+                }
+                if state.done {
+                    break;
+                }
+            }
+            state.body = Some(bytes);
+            if !state.line_buffer.is_empty() {
+                let line = String::from_utf8_lossy(&state.line_buffer).to_string();
+                state.line_buffer.clear();
+                if let Err(error) = state.consume_sse_line(line.trim()) {
+                    yield Err(error);
+                    return;
+                }
+            }
+            if !state.done {
+                yield Err(ProviderError::Network("stream ended before message_stop".into()));
+                return;
+            }
+            if state.queue.is_empty() {
+                match state.final_response() {
+                    Ok(resp) => state.queue.push_back(ChatStreamEvent::Final(resp)),
+                    Err(error) => {
+                        yield Err(error);
+                        return;
+                    }
+                }
+            }
+            while let Some(event) = state.queue.pop_front() {
+                yield Ok(event);
+            }
+        };
+        Ok(Box::pin(stream))
     }
 }

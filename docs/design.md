@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v1.74** |
-| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.74） |
+| 版本 | **v1.85** |
+| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.84） |
 | 状态 | 定稿（v1.10 决策闭环），M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 | 历史评审 | v0.1 / v0.3 两轮共 41 项、v1.0 复审 21 项问题的结论已全部并入本方案（过程文档已清理） |
@@ -60,11 +60,70 @@
 | **v1.26** | **§7.2 / §15 设置面板落地（本期子集）：外观 / 语言 / 会话默认档 / 代理参数（首改缓冲、审批超时、命令超时）；`PUT /settings` 校验并持久化 `~/.tenon/settings.json`（0600，启动合并），新会话即时生效；`mode=auto` 仅对已信任项目生效（未信任回退交互档）；入口 Cmd/Ctrl+, + 命令面板** |
 | **v1.27** | **§7.2 / §7.5 UI 布局重设计：左侧新增 activity rail（文件 / 搜索 / 语言包三视图单显，active 再点折叠侧栏，`tenon:sideView` localStorage 记忆）；侧栏不再纵向堆叠三组件；顶栏精简（副标题移除、模型路由紧凑化——模型下拉 + ✦ 路由建议气泡）；Monaco 深浅双主题与设计令牌同步（tenon-dark / tenon-light）；状态点运行态呼吸动画（data-state 驱动）** |
 | **v1.28** | **§10.1 / §14.2 实施同步：L4 本地索引落地——`tenon-fs::l4` 本地确定性 embedding + symbol / line chunking；SQLite `replace_l4_file / delete_l4_file / clear_l4_project / l4_search / l4_chunk_count`；ProjectRuntime 激活触发全量 gitignore-aware scan；watcher 变更 500ms 去抖原子增量替换；`GET /project/:id/l4/search|stats`；集成测试覆盖初始索引、命中与增量更新** |
+| **v1.29** | **§10.1 / §10.2 实施同步：L4 检索接入 Agent 上下文——SQLite schema v4 为 `l4_chunks` 补齐 `start_line / end_line` 并迁移旧数据；`AgentSession::l4_working_set` 按任务查询 top slices，12k token 预算裁剪为 `ContextSlice`；L1 工作集以“不可信仓库内容”边界注入 user message，Sensing Trace 仅记录 path / range / score，不含切片原文；core / agent 测试同步** |
+
+| **v1.30** | **§6.2 桌面壳重设计：macOS Overlay 隐藏标题栏 + 集成式拖拽顶栏（红绿灯内边距 / 双击缩放，capabilities 授权 start-dragging / toggle-maximize）；窗口 1560×980（最小 1080×680）、底色 #0E1015 防白闪；品牌启动屏（握手轮询期渲染，失败态同卡片呈现错误与重启示）** |
+| **v1.31** | **§8.1 / §12.6 实施同步：文件树支持 HTML5 拖拽移动——文件拖入目录 / 根目录，调用 `/file/ops move`，经写守卫 + watcher 同步，并联动 open tab / active path / unsaved / AI 标记；同时落地本机 CORS 预检（OPTIONS 白名单源直接 2xx，显式 Allow-Headers / Methods / Max-Age），修复 dev server 跨源 `Failed to fetch`** |
+| **v1.32** | **§10.1 / §15 实施同步：L4 索引可观测与运维——daemon 保存 worker 状态 `queued / indexing / ready / failed`；`GET /project/:id/l4/stats` 返回状态、时间与错误；`POST /project/:id/l4/rebuild` 异步入队全量重建；诊断面板轮询切片数 / 状态 / 错误并提供手动 rebuild；测试覆盖 queued → ready 与 stats** |
+| **v1.33** | **§6.4 / §7.3 多项目管理面实施同步：项目中心支持路径添加、按项目关闭 / 重开、移除登记（不删盘）与同时打开容量回显；`max_open` 只计已打开 runtime；打开前容量 / 嵌套校验失败不写入 ProjectRegistry；关闭保留登记 / 会话 / UI 状态，继续参考 Codex 的同一服务端多项目 / 多线程管理模型** |
+| **v1.34** | **§18.3 质量门禁同步：Evals 固定夹具自动走生产同源 `scan_root → chunk → embed` L4 入库；任务可声明 `expected_l4_path`，新增 `L4RecallPath` 断言；用例结果记录召回数 / 均分 / 命中，套件聚合命中率与均分并写入 verdict；期望路径未命中使用例与套件失败；报告面板展示 L4 命中 / 均分；Trace 仍只消费 path / range / score，不扩散切片原文** |
+| **v1.35** | **§10.1 / §15 实施同步：`set_l4_status` 进入进程内 broadcast，WS 沿用一次性 ticket 与 `project_id` 过滤推送 `l4_status`；诊断面板仅做初始 + 订阅后权威 `/l4/stats` 快照，状态变化事件触发增量刷新，移除 1.5s 固定轮询；WS 集成与面板事件测试覆盖** |
+| **v1.36** | **客户端 E2E 修复（真实 daemon + 浏览器全功能回归）：§8.5 LSP 诊断空推送宽限（tsserver 先空后真双推竞态不再吞掉真实类型错误）；§7.3 TOFU 仅未信任项目询问 + 挂载自动打开守卫（消除信任确认循环与会话堆积）；§7.2 项目摘要改用刷新后列表（重载复用 ui-state sessionId，不再每次新建会话）；§4.2 LOCALE_CHANGE 订阅落地（顶栏 / 设置语言切换即时生效 + localStorage 记忆）；§10.3 时间轴补「撤销最近回滚」入口；§8.2 Monaco 本地打包（esm + workers，去 CDN 依赖，离线可用）并禁用 WebView 下渲染错位的 minimap** |
+| **v1.37** | **§7.2 / §7.3 多项目任务中心实施同步：底部新增“项目任务”页，聚合所有已打开项目的活跃会话 / 待审批 / 脏缓冲 / 成本摘要；审批卡片按项目分组并可就地 once / session / deny；portfolio 子任务可跳回对应 `project_id + session_id`；关闭登记不进入任务中心，测试覆盖隔离与操作路由** |
+| **v1.38** | **§8.1 / §8.5 / 附录 D T4 诊断闭环实施同步：新增活动文件 LSP 诊断面板，按 project + path 去抖调用共享 LSP `diagnostics`，文件 watcher / 项目切换 / 手动刷新驱动更新；面板归一化 severity / range / source / message，支持行号跳转和「AI 修复」；修复指令经当前 `project_id` 会话注入并要求目标诊断清零；组件测试覆盖 LSP 归一化、失败重试与任务注入** |
 | **v1.39** | **§7.4 / §8.5 共生集成点补全（S2 / T8）：① 行内 AI 指令 Cmd/Ctrl+I——编辑器选区（无选区退化为整文件）自然语言改写，弹出卡展示文件 / 行区间 / 选区摘要，指令带「选中区外零改动、无新诊断」约束经当前 `project_id` 会话注入，就地 diff 由既有 AI 行角标呈现；② 跟随模式——代理写入已打开文件时自动 reveal 首个改动行（默认开、可一键关闭，偏好存 localStorage）；③ §7.4 快捷键补 Cmd/Ctrl+J 底部面板开合（终端区仍 M3 评估）** |
-| **v1.64** | **§7.2 编辑器窗格默认隐藏（用户反馈：空态中区仅显示「Tenon」占位，常驻挤压对话 / 代理区）：中区编辑器（多标签）仅当当前项目存在打开文件 tab 时渲染——默认空态与关闭最后一个 tab 后中区整体不渲染，右区分隔把手随之隐藏，代理面板转为弹性主区（flex:1、解除 720px 上限）直接与侧栏相邻；经文件树 / 模糊打开（Cmd+P）/ 搜索命中 / 符号与诊断跳转等任一入口打开文件即出现编辑器；ui-state 恢复的打开 tab 照常视为已打开文件（布局按项目记忆不变），关闭全部 tab 即再次隐藏；无新增端点与持久化键** |
+| **v1.40** | **§7.1 / §11 / §15 设置面板「模型」分区落地：默认 provider 选择 + provider 清单增改（协议族 kind / base_url / 默认模型 / 密钥环境变量引用 api_key_env），内置常用提供商预设（OpenAI / Anthropic / DeepSeek / Ollama / 智谱 GLM / 自定义 OpenAI 兼容）；Laya 状态卡（版本 / 已下载 / 设备，只读，消费 §15 `GET /models`）；`PUT /settings` 新增已知键 `models.default` / `models.providers`，校验后持久化 settings.json 并即时重建 provider 表——**新会话**按新默认 provider 构建（既有会话保持各自 provider）；密钥不变式不破例：设置链路永不接受 / 回显 `api_key` 明文，仅存 `api_key_env` 引用（§11 密钥存储）** |
+| **v1.41** | **§18.1 端到端基建落地：引入 Playwright + 真 daemon harness——本地 OpenAI-compatible mock server、隔离 SQLite/config/快照、daemon 托管构建产物、临时 A/B 仓库；UI E2E 覆盖项目登记、全局任务中心、interactive B 级审批、apply_patch 落盘、checkpoint rollback / unrevert 与 B 项目磁盘零污染；`pnpm ui:test:e2e` 一键构建运行（CI 先安装 Chromium）** |
+| **v1.42** | **§8.1 多标签分栏实施同步：编辑器工具栏新增 Split；右栏独立选择同项目已打开文件并独立编辑 / 自动保存，左栏保留 AI 行标、选区上下文与跳转；主编辑器切到原右栏路径时自动换右栏，关闭 / 重命名 / 删除同步清理；`splitPath` 进入 project_ui_state 跨启动恢复；组件测试覆盖打开 / 切换 / 关闭**；daemon 新增 `--settings` 覆盖文件路径，daemon 集成测试与 Playwright harness 的 settings.json 不再竞争全局状态** |
+| **v1.43** | **§6.4 / §7.1 / §15 项目中心「添加项目」模态对话框落地：点击添加弹出模态（遮罩 + Esc / 取消关闭），桌面壳经 Tauri 原生目录对话框选择路径（浏览器模式手输绝对路径），项目名手输、缺省自动取路径末段；`display_name` 落库（SQLite schema v4→v5 补 §14.2 projects 表既定字段），`PUT /project` 与 `POST /projects/open` 接受可选 `display_name`（空串清除自定义名回退派生，重开可改名）；store / daemon / UI 测试覆盖** |
+| **v1.44** | **§7.2 顶栏收敛：移除「打开路径」输入框 + Open 按钮（与侧边项目中心的登记 / 添加入口重复）；打开项目统一走项目中心——已登记项目点开、或经 v1.43 添加模态登记新项目；顶栏仅余品牌印记、spacer 拖拽区、模型路由、外观档、语言** |
+| **v1.45** | **§8.1 / §8.2 大文件只读分块实施同步：`FileService::read_file_view` 按字节 offset / limit 读取、丢弃截断的 UTF-8 尾部并返回 total / next_offset / truncated / read_only；`GET /project/:id/file` 默认大文件首块 512KB（上限 2MB），UI 以只读 Monaco 打开并可加载下一块；写盘拒绝 >10MB 旧文件以防截断；fs / daemon / API 测试覆盖分块边界、拒绝写入与客户端参数** |
+| **v1.46** | **§7.2 / §11 顶栏模型路由交互重做（参考主流 coding agent 的 model picker）：原生下拉替换为「当前模型按钮 → 模型选择对话框」——按钮显示当前 provider · 模型（无会话时显示默认 provider 并禁用切换），对话框列出 `GET /models` 全部 provider（名称 / 默认模型 / 本地 0 成本标记，当前项高亮 + ✓），点击即经 `POST /session/:id/model` 切换并关对话框（上下文随迁提示不变），Esc / 点击遮罩 / 关闭按钮退出；✦ 路由建议气泡保留并入对话框头部；切换语义不变：会话级热切换，全局默认仍在设置面板模型分区** |
+| **v1.47** | **§8.3 / §8.5 编辑器共享 LSP 集成推进：Monaco 注册 completion / hover / definition / references / signature help provider，全部显式绑定 `project_id` 与活动 model 相对路径并复用 `/lsp` 共享宿主；新增 LSP 响应归一化（range、file URI → model path、completion、hover、location、signature）；UI 纯函数测试覆盖协议转换，为大文件 / 多栏 / 项目隔离下的智能提示建立基础** |
+| **v1.48** | **§8.3 / §8.5 / §10.3 LSP 写操作闭环落地：daemon 归一化 WorkspaceEdit `changes / documentChanges`，UTF-16 列映射到 Unicode scalar byte offset，项目根外 / 越行 / 重叠拒绝；新增 `POST /project/:id/lsp/apply`——dirty buffer 显式 409，shadow git before / after snapshot，失败整体 restore，checkpoint 关联当前会话；Monaco 接入 format / rename / code action，写盘前 flush 未保存缓冲，应用后刷新 tabs / 大文件状态 / watcher；pure tests + 真 daemon 测试覆盖 UTF-16、原子应用、checkpoint 回滚与 dirty guard** |
+| **v1.49** | **§8.2 / §16 tree-sitter 基础高亮管线接入 UI：新增 project-scoped `GET /project/:id/highlight`，daemon 限制 2MB、spawn_blocking 解析 Rust 语法并把 byte column 转换为 UTF-16 column；不支持语言显式 fallback；UI 以 250ms 防抖请求活动文件 token 流，watcher / 项目切换刷新，Monaco decorations 增加 function / type / keyword / comment / string / number 层级；daemon 集成测试覆盖 Rust tokens 与 txt fallback** |
+| **v1.50** | **§8.1 源代码视图落地：新增只读 project-scoped `GET /project/:id/git/view`，聚合当前分支 / branches / porcelain changes / recent commits / active-file line-porcelain blame；路径经写守卫校验且 git 参数固定无用户拼接；底部新增 Source 页，changes 点击打开文件、blame 行可跳转，活动文件 / watcher 刷新；fs 纯测试覆盖 branches / changes / commits / blame / 逃逸路径，daemon 集成测试覆盖 repository / branch / changes / commits / blame** |
+| **v1.51** | **§7.2 / §11 模型选择入口移入任务输入框（参考 ZCode 客户端输入区）：右区代理面板输入区改造为组合容器——textarea 在上，底行左下为当前模型 pill（→ 模型选择对话框）、右下发送按钮；顶栏不再放模型路由，仅余品牌印记、spacer 拖拽区、外观档、语言；v1.46 对话框交互原样保留（provider 清单 / 当前项高亮 / 会话级热切换 / Esc · 遮罩 · 关闭按钮 / ✦ 路由建议入对话框），切换提示 toast 不变；无活动会话时选项禁用、提示走设置面板；全局默认模型仍在设置面板模型分区（v1.40）** |
+| **v1.52** | **§8.3 AI 行内补全（ghost text）落地：默认关闭，命令面板可开关（localStorage 记忆）；Monaco InlineCompletions Provider 输入停顿 350ms 后才请求；daemon 新增 project-scoped `/project/:id/inline-complete`，只绑定当前项目 active session、仅发送 24k char before/after 光标窗口、单轮 max_tokens=256、无工具目录；失败静默回退；用量写入 model_usage。Agent / daemon 测试覆盖单轮无工具、用量归因、项目隔离与跨项目拒绝** |
+| **v1.53** | **§9.1 代理循环「截断续跑」：模型回合 `finish_reason=length`（输出被 max_tokens 截断）且无工具调用时，不再误判为「纯回答 → Done」——推送截断的 assistant 消息并注入续写指令（从中断处继续、勿重复已输出内容）进入下一回合；连续截断 ≥3 次按模型失败语义转 ERROR；决策回合 max_tokens 4096 → 16384（长推理 + 工具 JSON 不再截断）。动机：GLM 真实任务中长规划文本被 4096 截断，工具调用未生成即被判 Done，任务静默未做（changed_files 空）。agent 测试覆盖「首轮截断 → 续跑完成改动」与「连续截断 → ERROR」** |
+| **v1.54** | **§9.6 / §11 / §14.2 / §7.3 模型流式输出落地：`ModelProvider::chat_stream` 成为任务回合首选；OpenAI Chat SSE 覆盖文本 / reasoning / tool-call 索引拼装 / usage，Anthropic Messages SSE 覆盖 text_delta / input_json_delta / message usage；流末尾必须携带权威 Final（tool calls + usage）；Agent 侧按 64 字符 / 120ms 合并为 `model_delta` 事件，Trace / WS / UI 单卡续写渲染，避免 token 级 SQLite 洪泛；非流式后端自动降级整响应模拟流。本地 fake-server SSE 测试覆盖 OpenAI / Anthropic 协议与 Unicode 分块，Agent / Vitest 覆盖无损聚合与 UI 呈现** |
+| **v1.55** | **§7.1 / §7.2 左栏「项目」视图重排（参考 ZCode 客户端侧栏）：常驻项目平铺列表改为顶部「当前项目切换器」——行内显示当前项目名 + 运行中会话 / 待审批 / 脏缓冲徽标；点开下拉列出全部已登记项目（状态徽标、行内打开 / 关闭 / 移除操作 hover 显现、已打开容量回显），底部「添加项目」入口（v1.43 模态不变）；切换器下方主体只呈现当前项目，新增「对话 | 文件」视图 tab（localStorage `tenon:peTab` 记忆，默认对话）：对话页整栏滚动（会话 + 组合任务子项），文件页整栏文件树；移除对话列表 168px 高度上限与「项目 / 对话 / 文件」三段固定堆叠挤压。全局多项目监控仍由底部「项目任务」页承担（v1.37）** |
+| **v1.56** | **§8.7 / §18.4 性能门禁与内核基准挂 CI：服务层 release 门禁覆盖「10MB+1B 文件只读首块 <2s」与「10 万文件搜索 max_hits=1 首结果 <500ms」，超阈值直接失败；新增沙箱 offline noop / file-read 基准并与 merge / snapshot 基准一起进入 performance job。普通测试保持 ignored，避免开发者本机噪声；WebView 帧率与三平台手工矩阵仍按 §18.4 执行** |
+| **v1.57** | **§8.7 万行 diff 虚拟化落地：底部 DiffPanel 不再把完整统一 diff 渲染成单个巨型 `<pre>`——按固定 18px 行高建立总高度，只物化可视行 + 16 行 overscan，ResizeObserver 跟随底部面板高度，滚动经 rAF 合帧；新增渲染区间指示与 add/remove/hunk 行色。Vitest 断言 20k 行初始 DOM ≤80 行、滚动能无丢失到达尾部、解析耗时 <16ms；真实 WebView 帧率仍按 §18.4 手工矩阵复核** |
+| **v1.58** | **§7.2 右区代理面板头部收敛：移除常驻「停止任务」按钮——按钮无论会话状态始终可点（误导性常驻），且 stop 为协作式暂停、仅在下一工具调用检查点（§9.1）生效，空闲误点的命令会残留控制队列、使后续任务首个工具调用即被暂停；停止能力保留经 Cmd/Ctrl+.（§7.4）与命令面板，交互语义不变** |
+| **v1.59** | **§7.2 / §14.2 / §15 对话标题自动生成：会话首条用户消息提交后 daemon 后台经单轮无工具模型调用（max_tokens=48、temperature 0.2，系统提示带 `TENON_TASK_TITLE` 标记）生成 ≤16 字符短标题，落库 `sessions.title`（schema v5→v6）并经新事件 `session_title` 即时推送（既有 2s 项目轮询兜底）；对话列表（v1.55 对话页）标题优先显示，无标题回退模型名 / 短 id；生成失败或历史遗留无标题会话回退首条消息本地截断（不调模型），全链路不阻塞任务循环、不新增端点；MockProvider 与 E2E fake server 识别标记请求返回固定标题、不消耗脚本队列（脚本化测试的调用次数 / 序列断言零扰动）；标题调用用量照常入 model_usage** |
+| **v1.60** | **§7.2 发送按钮状态化：代理推进态（sensing / deciding / executing / verifying / fixing）时右下发送按钮变为「停止」——点击即发 stop 控制命令（§9.1 下一工具调用检查点协作暂停），按钮转错误红填充区分；其余状态（idle / done / paused / error / awaiting_approval / rolled_back）显示「发送」。作为 v1.58 移除常驻停止按钮的收尾：停止入口仅在运行态出现、空闲不可点，封死陈旧 stop 命令残留队列的误触路径；stop 受理后按钮即禁用，防状态轮询间隙连点重复入队（状态离开推进态解锁）；Cmd/Ctrl+. 与命令面板入口语义不变** |
+| **v1.61** | **§6.4 / §7.1 / §7.2 / §15 移除项目打开 / 关闭生命周期与底部「项目任务」页（对齐 Codex / ZCode 的极简多项目模型，登记即用）：ProjectRegistry 只管登记（添加 / 改名 / 移除），`POST /projects/:id/close` 路由删除，ProjectRuntime 降为 daemon 内部缓存——首次使用隐式激活，`max_open` 从「超限 409 拒绝」改为逐出无活跃会话的最久未用 runtime（无候选暂超限，空闲回收兜底）；UI 切换器下拉不再有打开 / 关闭按钮、已关闭徽标与容量回显，点击任意登记项目即切换（隐式激活）；底部「项目任务」页整体删除（撤销 v1.37 的页面，审批就地决策回到各项目代理面板，组合任务仍在所属项目对话列表呈现）；`GET /projects` 与 `POST /projects/open` 响应去 `open` 字段。daemon / UI 测试同步** |
+| **v1.62** | **§7.2 / §7.4 底部面板可见开合：补齐 Cmd/Ctrl+J（v1.39）之外的鼠标入口——展开态 bottom-tabs 行右端新增收起按钮，点击收起整个底部 footer；收起态底部保留细条（当前 bottom tab 名 + 展开箭头），点击即按记忆高度恢复展开；可见性沿用项目 ui-state `timelineOpen` 持久化（§7.2 项目状态持久化），不新增端点；命令面板 `open.timeline` 改 `toggle.bottom` 切换语义（对齐 toggle.sidebar）；快捷键不变** |
+| **v1.62** | **§7.1 / §7.2 活动栏底部新增「设置」齿轮按钮（用户反馈：设置仅有 Cmd/Ctrl+, 与命令面板入口、无可见入口，新用户无从发现）：置于 rail-spacer 之下常驻活动栏底部，点击即开设置面板，title / aria-label 沿用既有 `settings.open` 文案（中「打开设置」/英「Open settings」）；顶栏维持 v1.44 收敛后的极简不回潮；Cmd/Ctrl+, 与命令面板入口语义不变** |
+| **v1.63** | **§7.1 / §7.2 左栏「项目」视图改文件夹形态（用户反馈：下拉切换器藏住项目全貌，参考 ZCode 客户端侧栏项目文件夹）：移除 v1.55 顶部切换器与下拉面板——「对话」页主体改为全部登记项目的文件夹树，每项目一行：折叠箭头 + 文件夹图标 + 项目名 + 运行中会话 / 待审批 / 脏缓冲徽标，行尾 hover 显现「移除」（存在持久会话仍禁用）；点击文件夹行即激活该项目（v1.60 隐式激活）并展开，已展开再点仅收起（激活不变）；展开后行下缩进内嵌该项目会话列表（v1.58 标题优先、同名附短 id 后缀）与组合任务子项，点击会话行切换会话；多项目可同时展开，active 项目默认展开，展开集合记忆于 localStorage `tenon:peExpanded`；「添加项目」自下拉底部移至列表底部常驻行（v1.43 模态不变）；「对话 | 文件」tab 与 `tenon:peTab` 记忆不变，文件页仍为 active 项目文件树；Esc 仅保留关闭添加模态。UI 测试同步（下拉相关用例改文件夹树语义）** |
+| **v1.64** | **§7.2 编辑器窗格默认隐藏（用户反馈：空态中区仅显示「Tenon」占位，常驻挤压对话 / 代理区）：中区编辑器（多标签 / 分栏）仅当当前项目存在打开文件 tab 时渲染——默认空态与关闭最后一个 tab 后中区整体不渲染，右区分隔把手随之隐藏，代理面板转为弹性主区（flex:1、解除 720px 上限）直接与侧栏相邻；经文件树 / 模糊打开（Cmd+P）/ 搜索命中 / 符号与诊断跳转等任一入口打开文件即出现编辑器；ui-state 恢复的打开 tab 照常视为已打开文件（布局按项目记忆不变），关闭全部 tab 即再次隐藏；无新增端点与持久化键** |
+| **v1.65** | **§18.1 开发模式定为「以 Web 版为主」（用户决策：vite 热重载反馈快、便于测试）：日常开发与调试一律走浏览器——`pnpm ui`（vite :5173 热重载）+ 本地 daemon，以 `http://localhost:5173/?port=&token=` 握手直连（与桌面壳同一 API/WS 链路）；`pnpm ui:build` 后 daemon 同源托管 `ui/dist` 仅作产物验证（无热重载）；桌面壳 `tenon-app` 仅用于壳链路验证（sidecar 握手、Tauri 原生目录对话框、WebView 导航）与发版前回归；README 开发指南与快速开始同步** |
+| **v1.66** | **§8.7 / §18.4 项目切换性能门禁落地：release CI 对「runtime 已打开且有可复用会话」的核心切换链路（/projects → /ui-state → /tree）采样 9 次并断言 P50 <150ms；预热连接 / watcher / 目录读取，排除冷启动噪声；本地样例 P50=12ms。该门禁与大文件、搜索首结果、内核基准同入 performance job，WebView 实际交互帧率仍按手工矩阵复核** |
+| **v1.67** | **§7.3 / §12.7 打开项目不再弹 TOFU 信任确认（用户反馈：每次询问打扰，要求直接信任）：UI 打开项目时对未信任项目静默 `PUT /project/trust` 置信任后再激活（建会话前生效，`mode=auto` 不被回退），`window.confirm` 信任卡移除；后端语义不变——信任只放宽 B 级档位、C/D 恒审批，未信任项目仍回退交互档（纵深防御：经 API 登记或本地吊销的场景不受影响）；`GET /projects/open` 响应 `trusted` 字段保留** |
+| **v1.68** | **§6.2 / §18.1 开发热重载落地（承接 v1.65 Web 优先决策的握手痛点：daemon 随机端口 + 随机 token 使每次重启都令 `?port=&token=` 链接失效）：daemon 新增 `--port` / `--token` 开发专用固定绑定（默认随机路径与 §12.6 安全姿态不变）；`scripts/dev-daemon.sh`——固定 `127.0.0.1:9876` + token `dev`（对齐 UI `import.meta.env.DEV` 回落握手，浏览器裸开 `localhost:5173` 免参直连）、HOME 隔离 `.tenon-dev/`（不污染真实 daemon 数据 / endpoint 文件 / 单实例锁）、监听 `crates/**.rs` 自动 cargo build + 重启（握手不变，UI 免刷新重连，会话状态全在 daemon + 磁盘）；`scripts/dev.sh` 一键 = dev daemon 后台 + Vite HMR 前台；桌面壳 debug 构建启动时探测 dev server——5173 在线则 WebView 导航 dev server（HMR 直达桌面窗口，握手仍经 URL 参数直传），离线回落 daemon 同源托管 UI，release 构建行为不变；`pnpm dev` / `pnpm dev:daemon` 入口与 daemon 固定绑定守护测试** |
+| **v1.69** | **§8.1 / §8.2 / §8.7 移除大文件只读分块（用户决策：任意大小文件都要可打开可编辑，性能由实现兜底）：`FileService` 取消 10MB 读帽与 >10MB 拒写，`read_file_view` 全量读取并删除 read_only / truncated / next_offset；`GET /project/:id/file` 去掉 offset / limit 参数并改 spawn_blocking（大文件 IO 不阻塞异步运行时）；LSP apply 的 10MB 守卫删除——全量读写闭环后不存在半文件覆盖；UI 移除只读横幅 / 加载下一块 / 只读 Monaco，Agent 侧 `read_file` 工具新增 10MB 上下文预算（LLM token 保护，与编辑器无关），`apply_patch` 改无上限读防截断；tree-sitter 高亮维持 2MB 帽（改按 total_bytes 判定）且 UI 对超帽文件跳过请求；性能预算改为「10MB 文件全量打开 < 2s」** |
+| **v1.70** | **§7.1 移除「项目」视图「对话 \| 文件」tab（用户反馈：源码浏览不必独占整栏视图，看文件要来回拨 tab）：侧栏项目视图收敛为单一项目文件夹树整栏滚动；每项目文件夹行尾 hover 操作区（与「移除」并列）新增「源码」按钮，点击切换该行下内嵌的该项目文件树——project_id 作用域（§8.1），任意登记项目可看可操作、不限 active；再点收起；内嵌树限高内部滚动，文件树展开集合独立记忆于 localStorage `tenon:peFiles`（与 `tenon:peExpanded` 互不影响），watcher 刷新沿用 `refreshToken` 透传；`tenon:peTab` 记忆随 tab 移除废弃。UI 测试同步（tab 切换用例改源码切换语义）** |
 | **v1.71** | **§9.8 Laya 真·自动下载并启用（用户决策：去掉引导与 D 级卡，装好即用）：daemon 启动即后台拉取官方静态 registry 签名清单，版本锁定 + ed25519 签名 + SHA-256 校验通过即下载安装热装载，清单版本新于已装自动升级、相同跳过，全程无审批卡——决策模型是产品自管、签名钉扎的静态资产（推理不出网），不是代理动作，§5 审批铁律不涉；失败静默回退（日志留痕、下次启动重试）；`auto_download = false` 或 `enabled = false` 不下载。`POST /models/laya/download` 去审批化：两阶段 D 卡流改直接下载安装，作手动重下 / 升级入口（同链路无卡）；`DaemonOptions` 新增 `laya_registry_url`（测试注入本地 registry）、`laya_public_key`（清单验签公钥 per-daemon 注入，不读进程 env——`TENON_LAYA_PUBLIC_KEY` 是 §12.5 插件验签链回退项，同进程并行测试下写 env 会串扰）与 `laya_models_dir`（测试注入临时模型目录，不触真实 `~/.tenon`），`in_memory()` 测试基座默认关自动下载（测试不出网）；§16 分发风险缓解、附录 E `[models.laya]` 注释、registry 模块文档同步** |
 | **v1.72** | **§8.1 / §15 移除文件树「新建文件 / 新建目录」（用户决策：项目内创建文件 / 目录一律由会话大模型决策执行，人不手工建）：文件树收敛为重命名 / 删除 / 拖拽移动 + git 状态装饰；`/project/:id/file/ops` 与 `FileOp` 去掉 `create_file` / `create_dir`（API 收敛为重命名 / 移动 / 删除），`OpOutcome::Created` 随之移除；UI 工具栏只剩重命名 / 删除，prompt modal 仅剩 rename 模式，locales 删 `tree.new_file` / `tree.new_folder`；AI 经自身工具创建文件不受影响** |
+| **v1.73** | **§8.7 / §18.1 WebView 冷启动门禁落地：AgentPanel 任务输入首帧后等待两帧才标记 ready，`performance.now()` 以导航时钟记录，样本仅存 localStorage 与 `window.__TENON_COLD_START__`（本机不外报）；Playwright 真 daemon E2E 用 5 个全新 BrowserContext 采样并断言 P50 <1.5s，进程回收移入 global teardown。Vitest 覆盖样本上限 / P50 / 两帧时序与 storage 禁用兜底** |
 | **v1.74** | **§7.2 视口自适应三档布局（用户需求：小屏幕显示效果与多尺寸自适应）：`useViewport` hook（resize 监听）按视口宽分三档——wide ≥1180px 维持现状；middle 800–1179px 渲染期收敛，左栏 ≤24vw（下限 160px）、右栏 ≤34vw（下限 280px）、底栏 ≤40vh（下限 100px），clamp 只作用于渲染不改写用户记忆尺寸与项目 ui-state，回宽屏即复原；narrow <800px 浮层模式，工作区转 compact——侧栏与代理面板改互斥浮层（绝对定位覆盖主区 + 遮罩，宽 ≤82vw、下限 220px），进入 narrow 默认展开代理浮层（会话 / 审批是核心动线）；rail 点视图切侧栏浮层（同视图再点收起），顶栏新增代理浮层切换按钮（仅 narrow 渲染），遮罩点击收起；浮层开合不写持久化状态（`sidebarOpen` / ui-state 不被窄屏污染，回宽屏原样恢复）；narrow 下编辑器分屏渲染期禁用（单栏），bottom-tabs 横向滚动，设置面板 <640px 单列表单，顶栏下拉 ≤34vw；档位判定与 clamp 为纯函数（`lib/viewport.ts`），UI 测试覆盖档位判定 / clamp 边界 / 浮层互斥与遮罩收起** |
+| **v1.75** | **§7.5 / §8.2 保存模式设置 + 编辑器撤销/重做（用户需求：保存方式可设、编辑可撤销重做）：设置面板新增「编辑器」分区——保存方式选自动保存（默认，停顿 1s 去抖写盘）或手动保存（仅显式保存写盘），偏好存 daemon ui_prefs（§7.5，键 `editor.saveMode`）即时生效；统一 saveNow 保存路径——Cmd/Ctrl+S 与 LSP 写盘前 flush 共用（有待写盘条目走 AutoSaver flush，否则未保存缓冲直接写盘 + clearBuffer），§8.6 脏缓冲推送、watcher 脏缓冲不回读与未保存圆点两模式语义不变；撤销/重做以 Monaco 原生栈为权威（Cmd/Ctrl+Z / Cmd/Ctrl+Shift+Z 聚焦生效），每 tab 独立栈、path 模型缓存跨 tab 切换保留，外部内容刷新（Agent 写盘 / watcher 回读 / LSP 应用回读）经 @monaco-editor/react 的 executeEdits + pushUndoStop 入栈——外部改动本身可撤销，关闭 tab 释放模型即丢弃历史；命令面板新增「编辑器：撤销 / 重做」全局入口（EditorPane 绑定 editor api 触发 active editor，不依赖焦点）；UI 测试覆盖绑定、门控与面板入口** |
+| **v1.76** | **§6.2 / §18.1 Web 一键启动（参考 opencode `web`：单命令起服务 + URL 直出 + 自动开浏览器）：daemon 新增 `--web` 模式——UI 产物解析链升级为 `TENON_UI_DIST` → cwd 及其祖先目录的 `ui/dist` → 可执行文件同级的 `ui/dist`（普通模式语义不变：命中即同源托管、未命中静默跳过，桌面壳 sidecar 不受影响），`--web` 下解析失败即报错退出并给出修复指引（`pnpm ui:build` / `TENON_UI_DIST`）；启动后 stderr 直出 `Tenon Web → http://127.0.0.1:{port}/`（stdout 仍仅一行握手 JSON，sidecar 契约不变）并自动打开系统默认浏览器（macOS `open` / Linux `xdg-open` / Windows `cmd /c start`，失败仅告警不阻断 daemon）；`--web` 遇单实例锁被活实例持有时不走报错退出，改读 endpoint 文件复用（§6.2 20s 心跳，mtime 超过 45s 视为陈旧残留拒绝），直接打印该实例 URL 并打开浏览器后退出 0——重复执行等价于「打开」；endpoint 缺失或陈旧则报错。`pnpm web` = `pnpm ui:build` + daemon `--web` 一键入口；安全姿态不变（127.0.0.1 + 随机端口 + 随机 token + /pairing 同源握手；`--lan` 配对语义不变）；README 快速开始与解析链 / endpoint 复用测试同步** |
+| **v1.77** | **§9.2 / §9.3 `git_push` 执行通道落地：D 级恒审批后可推送当前 / 指定分支到已配置远端，默认 origin，支持可选 upstream；remote 短名与分支短名走白名单（拒绝 option、refspec、force 语义、shell 元字符与控制字符），输出经密钥脱敏并设置 `GIT` 非交互执行面；本地 bare remote 集成测试覆盖成功推送，非法 refspec / option / 空白分支全部拒绝。`create_pr` 仍显式要求平台凭据 / CLI，不静默执行** |
+| **v1.78** | **§7.2 复刻 Codex 客户端形态（用户决策：复刻 Codex；参照 Codex app 官方三区结构 projects sidebar / active thread / review pane）：① 代理对话（线程）恒为弹性主区（flex:1）——不再因打开文件被挤成 420px 右栏；② 编辑器窗格角色反转为右侧「审查窗格」：存在打开文件 tab 时停靠在线程右侧、有界宽度（沿用 rightWidth 记忆与 middle 档 clamp，260–720px），关闭全部 tab 即隐藏（v1.64 显隐语义保留、主次互换）；分隔把手移至线程与编辑器之间，拖拽改控编辑器宽度；diff 审查即编辑器窗格（AI 行角标 + 跟随模式不变）；③ 窄屏（<800px）编辑器窗格转互斥浮层（`floatPane` 增 `editor`，与侧栏浮层互斥、遮罩收起；线程在窄屏恒为在流主区，进入窄屏不再默认开代理浮层），顶栏浮层切换钮由「代理」改「编辑器」，窄屏打开文件（文件树 / 搜索 / 诊断跳转）自动唤出编辑器浮层；④ 底部面板默认收起（`timelineOpen` 初始 false，Codex 形态无常驻底栏），v1.61 细条 / Cmd+J / 命令面板入口与项目 ui-state 记忆语义不变。侧栏项目文件夹树（v1.63）、活动栏三视图、审批 / 会话动线、checkpoint 时间轴能力全部保留；UI 测试同步（responsive 窄屏语义、bottomPanel 默认收起）** |
+| **v1.79** | **§9.2 / §12.2 `create_pr` C+D 复合审批与执行闭环落地：新增 `Composite` 审批级（Trace / 审批卡显示 `cd` / C+D，恒审批且只读拒绝），工具模型不再误标 D；`create_pr` 经本机 `gh` CLI argv 直执创建 PR——支持 title / body / base / head / draft / repository，无 shell 注入面、非交互与超时执行、输出统一脱敏；凭据仍由用户本机 `gh` 配置提供。Rust 测试覆盖 C+D 权限判定、PR 参数非法先检、argv 无 shell 执行** |
+| **v1.80** | **§8.6 / §16 文件监听切换原生事件后端（目检实测缺陷修复：大仓库激活挂死）：`FileWatcher` 默认改用 notify `recommended_watcher`（macOS FSEvents 延迟 0 / Linux inotify / Windows ReadDirectoryChangesW），注册即返回；M0 的 PollWatcher + `compare_contents` 会在 `watch()` 同步全树扫描并对每个文件做内容哈希——`should_ignore` 只过滤事件、不过滤扫描，含 build 产物（target/ 等）的仓库激活即分钟级阻塞，`activate_project` 持锁期间 `/tree` 等状态请求全部挂起（本仓库真 daemon 复现：注册即卡死、sample 栈锁定 PollWatcher `scan_all_path_data`→`get_content_hash`）；原生注册在 setup 线程执行并设 10s ready 上限，超时显式降级无 watcher；PollWatcher 保留为原生后端构建失败 / 注册超时的回退（保守 2s 间隔 + 内容比对）与测试确定性通道（`watch_with_poll_interval` 维持 100ms 语义）；事件过滤（.git / target / node_modules / dist / .tenon）、去抖与 `next_batch` 接口不变；§16「搜索 / 监听」行同步** |
+| **v1.81** | **§11 模型密钥操作系统凭据库接入落地：daemon provider 表从仅环境变量升级为 `ChainKeyStore`——`api_key_env` 指向的环境变量优先（开发 / CI 兼容），缺失时按平台读取 macOS Keychain / Linux libsecret / Windows PasswordVault；密钥不进入 daemon 进程环境，持久写入只到链尾 OS 凭据库；跨平台适配与链路优先级 / 持久写层测试覆盖** |
+| **v1.82** | **§8.3 / §8.7 补全呈现性能门禁落地：Monaco completion provider 将 LSP 归一化 + Monaco suggestion 映射抽为纯函数，5,000 项 × 5 轮 P50 <80ms 进入 Vitest 门禁；请求返回后继续完成归一化与映射，处理耗时保留最近 20 个本地样本并暴露 `window.__TENON_COMPLETION_PERF__`（P50 / latest / samples，不上报）。该门禁覆盖 WebView 呈现前的数据准备热路径；真实语言服务器首补全仍按环境实测** |
+| **v1.83** | **§7.1 / §4.2 隐私与更新设置面板落地：`/settings` 支持 `privacy.telemetry` / `privacy.crash_reports`（off | opt_in）与 `update.channel`（manual | auto），校验、0600 持久化并合并回显；设置面板新增隐私 / 更新分区，默认保持遥测关、崩溃报告关、更新手动。当前 v1.83 持久化用户偏好与合并视图，自动更新执行器仍按 M3「可选通道」另行评审** |
+| **v1.84** | **§7.1 / §13.2 插件管理面板落地：设置面板新增插件分区，展示已装插件 / 权限；接入静态 registry 检索与两阶段 D 级安装——首次返回权限 diff，用户显式批准后携 approval_id 安装并刷新清单；新增前端 API 封装与组件测试覆盖已装清单、权限 diff、两阶段安装。后端签名 / SHA-256 / 保留字 / D 级审批语义不变** |
+| **v1.85** | **§7.1 / §12.2 / §15 权限高级策略面板落地：设置面板新增「权限策略」分区，管理 TeamPolicy 的强制交互档、全局工具黑名单与单任务成本上限；`GET/PUT /team-policy` 原子校验并持久化 `~/.tenon/policy.toml`（0600），新建会话注入黑名单、force_interactive 收窄 B 级档位、成本上限取全局配置更严值。A/B/C/D 固定分级与 C/D 恒审批不提供放宽开关** |
+
+
+
+
+
 
 
 ---
@@ -204,14 +263,14 @@ Codex CLI 已开源且核心为 Rust 实现（codex-rs 工作区，另有遗留 
 | 项目与文件 | 多项目登记/打开/关闭、项目状态与任务汇总、拖拽仓库、文件树 CRUD、git 状态装饰 | P0 |
 | 项目与文件 | 会话与所有文件 API 强绑定 `project_id`；同 daemon 并发打开多项目；项目运行时引用计数与空闲回收 | P0 |
 | 项目与文件 | fuzzy 查找、ripgrep 全局搜索替换（预览 diff）、多标签分栏 | P0 |
-| 项目与文件 | LSP 感知重命名/移动；大文件只读分块 | P1 |
+| 项目与文件 | LSP 感知重命名/移动；任意大小文件全量打开编辑 | P1 |
 | 编辑器 | Monaco 内核、tree-sitter 高亮、主题、虚拟化 | P0 |
 | 编辑器 | LSP 补全/hover/定义/引用/重命名/诊断/code action/格式化/语义高亮 | P1 |
 | 编辑器 | AI 行内补全（ghost text，默认关） | P2 |
 | 语言包 | TS/JS、Python 内置；C#、Rust、Go 一键安装；运行时检测引导 | P1 |
 | 语言包 | Open VSX 语言类扩展子集实验兼容 | P1 |
 | 代理 | 自主决策循环（感知→判断→执行→验证→证据） | P0 |
-| 代理 | 项目级写锁与跨项目并发调度；全局项目任务中心 / 成本 / 审批汇总 | P0/P1 |
+| 代理 | 项目级写锁与跨项目并发调度；全局成本 / 审批汇总 | P0/P1 |
 | 代理 | 行内指令、诊断发起任务、只读开关、跟随模式 | P1 |
 | 代理 | 并行子代理（不相交调度、预算上限） | P1 |
 | 安全 | 动作四级分级、沙箱三态、审批卡片、密钥拦截 | P0(P1 完整沙箱) |
@@ -226,7 +285,7 @@ Codex CLI 已开源且核心为 Rust 实现（codex-rs 工作区，另有遗留 
 
 | 类别 | 要求 |
 |---|---|
-| 性能 | 冷启动可输入 < 1.5s；LSP 索引就绪后首补全 < 400ms（冷启动到首个可用补全 < 3s）；10MB 文件 < 2s；搜索首结果 < 500ms；万行 diff 60fps（详见 §8.7） |
+| 性能 | 冷启动可输入 < 1.5s；LSP 索引就绪后首补全 < 400ms（冷启动到首个可用补全 < 3s）；10MB 文件打开 < 2s；搜索首结果 < 500ms；万行 diff 60fps（详见 §8.7） |
 | 安全 | 安全违规 = 0 一票否决；沙箱逃逸测试套件全通过；本地服务防 CSRF/DNS rebinding |
 | 隐私 | 本地数据（会话/Trace/索引/设置）默认不出本机；使用云端模型时代码上下文按用户显式配置发送并在 UI 明示；更新默认手动检查；崩溃/行为报告 opt-in 且明示内容；模型 Key 存系统钥匙串 |
 | 可靠 | daemon 崩溃自动拉起；会话状态/事件/上下文 100% 可恢复（EXECUTING 中崩溃自动回滚到最近 checkpoint，不承诺原地续跑，见 §10.3）；「自动档 = 必可回滚」不变式 |
@@ -285,6 +344,12 @@ Codex CLI 已开源且核心为 Rust 实现（codex-rs 工作区，另有遗留 
 
 **生命周期规则**：动态端口 + 握手；单实例锁（多窗口 / 多项目共享，daemon 不是“单项目进程”）；`--project` 仅作为首屏种子，运行中可通过项目 API 追加打开；退出时清理全部子进程；UI 崩溃不丢会话（状态全在 daemon + 磁盘）。
 
+**桌面窗体（v1.30）**：macOS `titleBarStyle=Overlay + hiddenTitle` 隐藏原生标题栏，红绿灯悬于 UI 顶栏之上（顶栏左内边距 78px，`is-tauri` 根类驱动，浏览器态自动豁免）；顶栏 / 品牌区 / 弹性区为 `data-tauri-drag-region` 拖拽区（capabilities 授予 `start-dragging` / `toggle-maximize`，双击顶栏 = 系统缩放）；窗口默认 1560×980、最小 1080×680、底色 `#0E1015` 与 §7.5 令牌一致（配置层 + HTML 双保险防首帧白闪）。启动体验：握手轮询期间即渲染品牌启动屏（渐变印记 + 脉冲连接指示），失败态同一卡片呈现错误与重启示；Windows/Linux 回退原生标题栏（macOS 优先决策不变）。
+
+**开发热重载（v1.68，承接 §18.1 Web 优先）**：`pnpm dev` 一键拉起 dev daemon 与 Vite dev server。dev daemon 经 `--port 9876 --token dev` 固定握手（对齐 UI `import.meta.env.DEV` 回落约定，浏览器裸开 `http://localhost:5173` 免参直连；跨源请求走 §12.6 CORS 白名单 + 预检），HOME 隔离至 `.tenon-dev/`，`crates/**.rs` 变更自动重建重启——握手不变，UI 免刷新重连。桌面壳 debug 构建启动时探测 dev server：在线则 WebView 导航 dev server（HMR 直达桌面窗口，握手仍经 URL 参数直传），离线回落 daemon 同源托管 UI。`--port` / `--token` 仅为开发便利：默认随机端口 + 随机 token 的安全姿态不变。
+
+**Web 一键启动（v1.76，参考 opencode web）**：`tenon-daemon --web` 单命令起 Web 版——UI 产物解析链（`TENON_UI_DIST` → cwd 及祖先目录 `ui/dist` → 可执行文件同级）命中即同源托管；`--web` 下解析失败报错退出并给出修复指引（普通模式维持「未命中静默跳过」，sidecar 无 UI 需求）。启动后 stderr 直出 `Tenon Web → http://127.0.0.1:{port}/` 并自动打开系统默认浏览器（失败仅告警，URL 已直出；stdout 握手 JSON 行不变，sidecar 契约不受影响）。单实例锁被活实例持有时不报错退出，改读 endpoint 文件（20s 心跳重写、mtime 超过 45s 视为陈旧残留）直接打开该实例的 Web 地址后退出——重复执行等价于「打开」。`pnpm web` = `pnpm ui:build` + `--web` 一键入口。安全姿态与普通模式完全一致（127.0.0.1 + 随机端口 + 随机 token + /pairing 同源握手）。
+
 ### 6.3 插件三档运行时
 
 | 档 | 运行时 | 边界 | 用途 |
@@ -300,27 +365,27 @@ Codex CLI 已开源且核心为 Rust 实现（codex-rs 工作区，另有遗留 
 **核心不变式**：一个 daemon 服务多个项目；一条会话在创建时绑定唯一 `project_id` 与规范化项目根；一个请求只操作其显式声明的项目。不存在“最近打开的第一个项目”这类隐式默认根。
 
 ```text
-ProjectRegistry（登记 / 打开 / 关闭 / 最近项）
+ProjectRegistry（登记 / 显示名 / 最近项；无打开状态）
   └─ ProjectRuntime: project_id → 规范化 root + 状态 + 引用计数
         ├─ FileService / Watcher / Git 状态
         ├─ LSP runtime（每项目 × 语言）
         ├─ SnapshotStore / ProjectWriteLock
         ├─ SandboxProfile（root × trust × worktree）
         └─ ContextIndex（L4，按 project_id 隔离）
-GlobalScheduler（全局并发 / 成本 / 审批 / 通知 / 项目任务中心）
+GlobalScheduler（全局并发 / 成本 / 审批 / 通知；审批在所属项目面板呈现）
 ```
 
 | 概念 | 规则 |
 |---|---|
-| Project | 稳定 `project_id`、显示名、canonical path、TOFU 信任、语言包与项目设置；登记不等于打开 |
-| ProjectRuntime | 打开时懒加载；文件 / LSP / watcher / 快照等资源挂在其下，引用计数归零后空闲回收（默认 10 分钟，可配置） |
+| Project | 稳定 `project_id`、显示名、canonical path、TOFU 信任、语言包与项目设置；登记即可用（v1.60：无打开 / 关闭状态） |
+| ProjectRuntime | daemon 内部缓存，首次使用隐式懒加载；文件 / LSP / watcher / 快照等资源挂在其下，空闲回收（默认 10 分钟，可配置）；`max_open` 为内部 LRU 上限，超限逐出无活跃会话的最久未用 runtime，无用户可见开关（v1.60） |
 | Session / Thread | 永远归属一个项目；可携带项目内 worktree 或子目录 cwd，但任何 B 级写边界仍由项目根与显式 worktree 白名单决定 |
 | Active surface | UI 的每个编辑窗格都有明确 active `project_id`；项目切换、命令面板与发送任务都会携带该 ID |
 | 跨项目任务 | v1 不允许一条代理会话直接读写多个项目。多项目编排只能由“项目组合任务”创建多条项目内子会话，父任务仅聚合状态 / 成本 / 审批，不透传代码上下文 |
 
-**打开与去重**：打开前 canonicalize + macOS/Linux 大小写校验 + Windows 前缀归一；同一 canonical path 复用既有 `project_id` 与 runtime。嵌套根默认拒绝（例如同时打开 monorepo 与其子包），除非用户确认并创建显式 linked workspace；linked workspace 也只是注册关系，不放宽任何沙箱路径。
+**打开与去重**：打开前 canonicalize + macOS/Linux 大小写校验 + Windows 前缀归一；同一 canonical path 复用既有 `project_id` 与 runtime。嵌套根默认拒绝（例如同时打开 monorepo 与其子包），除非用户确认并创建显式 linked workspace；linked workspace 也只是注册关系，不放宽任何沙箱路径。 嵌套校验必须发生在写入 registry 之前：被拒绝的路径不得留下登记记录；登记不受容量限制（`max_open` 只约束内部运行时缓存，v1.60）。
 
-**资源与调度**：默认最多 12 个打开项目、跨项目最多 2 个代理同时 EXECUTING、每个项目仍遵守 §9.7 项目级写锁。watcher / LSP / L4 索引按活跃度懒启动；低内存或用户“暂停项目”时关闭非活跃语言服务器与 watcher，但保留会话与 checkpoint 可恢复。
+**资源与调度**：ProjectRuntime 为内部缓存——激活时若达 `max_open`（默认 12）则逐出无活跃代理会话的最久未用 runtime（无候选可逐出时允许暂超限，由空闲回收兜底）；跨项目最多 2 个代理同时 EXECUTING、每个项目仍遵守 §9.7 项目级写锁。watcher / LSP / L4 索引按活跃度懒启动；低内存时自动关闭非活跃语言服务器与 watcher，保留会话与 checkpoint 可恢复（v1.60：无显式「暂停项目」，回收全自动）。
 
 ---
 
@@ -330,40 +395,40 @@ GlobalScheduler（全局并发 / 成本 / 审批 / 通知 / 项目任务中心�
 
 | 界面 | 时机 | 要点 |
 |---|---|---|
-| 启动 / 项目选择 | 冷启动 | 最近项目、拖拽打开、新建；可打开多个；首次打开弹 TOFU 信任卡 |
-| **项目中心 / 项目切换器** | 常驻 | 已登记项目、打开状态、活跃任务 / 审批 / 成本 / 未保存缓冲；打开 / 关闭 / 暂停 / 移除登记（不删盘） |
+| 启动 / 项目选择 | 冷启动 | 最近项目、拖拽打开、新建；可打开多个；首次打开即自动信任（v1.67：不再弹 TOFU 信任卡） |
+| **项目中心 / 项目文件夹树** | 常驻 | 已登记项目按文件夹树平铺（v1.63：无下拉切换器），行内活跃任务 / 审批 / 脏缓冲徽标，展开内嵌项目会话；移除登记（不删盘）；添加项目走模态对话框（目录选择 + 项目名，v1.43）；无打开 / 关闭状态——登记即可用，点击行即切换并隐式激活（v1.60） |
 | **主工作区** | 常驻 | 四区布局（见 7.2） |
 | 审批卡片 | C/D 级动作 | 级别、动作详情、目标域名 / diff 预览、允许一次 / 本会话 / 拒绝 |
 | Checkpoint 时间轴 | 侧栏 | 事件流 + 快照点，任意回滚 / 撤销回滚（unrevert） |
 | 语言包安装向导 | 检测到语言缺包 | 一键安装、运行时检测与官方指引 |
-| 设置 | 全局（Cmd/Ctrl+, 或命令面板） | 外观档（§7.5）/ 语言（§4.2）/ 会话默认档 / 代理参数（首改缓冲、审批超时、命令超时）；本期落地，模型 / 语言包 / 插件 / 权限 / 隐私 / 更新随后续面板分区 |
+| 设置 | 全局（Cmd/Ctrl+, 或命令面板） | 外观档（§7.5）/ 语言（§4.2）/ 编辑器（保存方式 v1.75）/ 会话默认档 / 代理参数 / 模型（v1.40）/ **隐私与更新（v1.83）：遥测开关、崩溃报告 off | opt_in、更新通道 manual | auto**；**权限策略（v1.85）：强制交互、工具黑名单、单任务成本上限**；插件管理面已接入（v1.84） |
 | 命令面板 | Cmd+Shift+P | 全部命令可达（无障碍要求） |
 | Evals 报告 | M3 | 五指标 + 对比版本 |
 
 ### 7.2 主工作区布局
 
 ```text
-┌──┬─────────┬──────────────────────┬──────────────┐
-│R │ 侧栏视图  │ 编辑器（多标签 / 分栏）  │ 代理会话 / 审批 │
-│a │（单视图）  │                      │              │
-│i ├─────────┴──────────────────────┴──────────────┤
-│l │      诊断面板 · 测试证据 · checkpoint 时间轴      │
-└──┴───────────────────────────────────────────────┘
+┌──┬─────────┬───────────────────────────┬────────────────┐
+│R │ 侧栏视图  │ 代理会话 / 审批（线程主视图）   │ 编辑器（审查窗格，  │
+│a │（单视图）  │ 恒为弹性主区（v1.78）        │ 默认隐藏，v1.78）  │
+│i ├─────────┴───────────────────────────┴────────────────┤
+│l │   诊断面板 · 测试证据 · checkpoint 时间轴（默认收起）      │
+└──┴────────────────────────────────────────────────────────┘
 ```
 
-**Activity rail（v1.27）**：最左侧 46px 图标栏承载侧栏三视图——文件树 / 全局搜索 / 语言包向导，**单视图显示**（不再纵向堆叠）；点击图标切换视图并展开侧栏，再次点击 active 视图折叠侧栏；当前视图记忆于 `localStorage("tenon:sideView")`。侧栏顶部显示当前视图名（小写字距标签）。顶栏保持单行精简：品牌印记、项目切换、打开路径、模型路由（下拉 + ✦ 路由建议气泡，建议输入收进气泡避免常驻占位）、外观档、语言。
+**Activity rail（v1.27）**：最左侧 46px 图标栏承载侧栏三视图——文件树 / 全局搜索 / 语言包向导，**单视图显示**（不再纵向堆叠）；点击图标切换视图并展开侧栏，再次点击 active 视图折叠侧栏；当前视图记忆于 `localStorage("tenon:sideView")`。侧栏顶部显示当前视图名（小写字距标签）。顶栏保持单行精简：品牌印记、spacer 拖拽区、外观档、语言；模型路由已移入右区代理面板的任务输入框（v1.51：输入区为组合容器，底行左下当前模型 pill → 模型选择对话框，右下发送按钮；参考 ZCode 客户端输入区）；「打开路径」输入与 Open 按钮已移除（v1.44）——打开项目统一经项目中心（登记列表点开，或 v1.43 添加模态）。「项目」视图（v1.55 重排、v1.60 收敛、v1.63 文件夹化、v1.70 移除视图 tab，参考 ZCode 客户端侧栏）：主体为全部登记项目的文件夹树，单一树整栏滚动（v1.63 移除 v1.55 顶部切换器与下拉，v1.70 移除「对话 | 文件」tab，项目全貌常驻可见）：每项目一行——折叠箭头 + 文件夹图标 + 项目名 + 运行中会话 / 待审批 / 脏缓冲徽标，行尾 hover 显现「源码」与「移除」（v1.70：「源码」点击切换该行下内嵌的该项目文件树，缩进对齐会话列表、限高内部滚动，project_id 作用域任意登记项目可看、不限 active，展开集合记忆于 `localStorage("tenon:peFiles")`；「移除」存在持久会话禁用）；点击行即激活该项目（隐式激活，v1.60）并展开，已展开再点仅收起；展开后行下缩进内嵌该项目会话列表与组合任务子项，对话行优先显示自动生成的会话标题（v1.58，无标题回退模型名 / 短 id，同名多会话仍附短 id 后缀），点击会话行切换会话；多项目可同时展开，active 项目默认展开，展开集合记忆于 `localStorage("tenon:peExpanded")`；列表底部常驻「添加项目」行（v1.43 模态不变）。
 
-三区均可全屏 / 折叠 / 左右互换；布局按项目记忆。**编辑器窗格默认隐藏（v1.64）**：中区编辑器（多标签）仅在当前项目存在打开文件 tab 时渲染，默认空态与关闭最后一个 tab 后中区整体隐藏（右区分隔把手随隐），代理面板转为弹性主区直接与侧栏相邻；文件树 / 模糊打开（Cmd+P）/ 搜索命中 / 符号与诊断跳转任一入口打开文件即出现编辑器，关闭全部 tab 即再次隐藏；ui-state 恢复的打开 tab 视为已打开文件，布局按项目记忆不变。项目切换器可以是顶栏下拉，也可以把另一个项目停靠为独立分栏 / 窗口；每个窗格维护独立 active `project_id`。底部任务中心显示所有打开项目的代理状态，卡片必须带项目名 / 根目录短名，避免多项目通知混淆。
+三区均可全屏 / 折叠 / 左右互换；布局按项目记忆。**线程主视图 + 编辑器审查窗格（v1.78，复刻 Codex app 三区形态：projects sidebar / active thread / review pane）**：代理对话（线程）恒为弹性主区（flex:1），不再因打开文件被挤成固定右栏；编辑器窗格（多标签 / 分栏）仅在当前项目存在打开文件 tab 时停靠在线程**右侧**——有界宽度（沿用 rightWidth 记忆与 middle 档 clamp，260–720px），关闭全部 tab 即整体隐藏（v1.64 显隐语义保留、主次互换：此前编辑器占中、代理被挤右）；文件树 / 模糊打开（Cmd+P）/ 搜索命中 / 符号与诊断跳转任一入口打开文件即出现编辑器；ui-state 恢复的打开 tab 视为已打开文件，布局按项目记忆不变；diff 审查即编辑器窗格（AI 行角标 + 跟随模式，§8.5）。分隔把手位于线程与编辑器之间，拖拽控制编辑器宽度。项目切换器可以是顶栏下拉，也可以把另一个项目停靠为独立分栏 / 窗口；每个窗格维护独立 active `project_id`。底部不含「项目任务」页（v1.60 移除 v1.37 页面）：跨项目审批与会话状态在各项目代理面板就地呈现，跨项目并发 / 成本仍由 GlobalScheduler 统一调度。**底部面板默认收起（v1.78，Codex 形态无常驻底栏）**：`timelineOpen` 初始 false；开合有可见入口（v1.61）——展开态 tabs 行右端为收起按钮，收起后底部保留细条（显示当前 bottom tab 名），点击细条或 Cmd/Ctrl+J、命令面板恢复展开；项目 ui-state 记忆优先于新默认（§7.2 项目状态持久化）。
 
-**视口自适应（v1.74）**：布局随视口宽度分三档自适应（`useViewport` resize 监听，档位判定与 clamp 为 `lib/viewport.ts` 纯函数）。四区结构在**宽屏（≥1180px）**不变；**中屏（800–1179px）**守护收敛——左 / 右 / 底栏尺寸在渲染期按视口比例 clamp（左栏 ≤24vw、下限 160px；右栏 ≤34vw、下限 280px；底栏 ≤40vh、下限 100px），clamp 只作用于渲染、不改写用户记忆尺寸与项目 ui-state，回宽屏即复原；**窄屏（<800px，半屏窗口 / 小屏设备）**浮层模式——工作区转 compact，侧栏与代理面板改为互斥浮层（绝对定位覆盖主区 + 遮罩，宽 ≤82vw、下限 220px），进入窄屏默认展开代理浮层（会话与审批是核心动线），侧栏经 rail 唤出（点视图切浮层、同视图再点收起），顶栏浮层切换按钮（仅窄屏渲染）唤代理面板，遮罩点击收起；浮层开合不写持久化状态——`sidebarOpen` 与项目 ui-state 不被窄屏污染，跨档位往返原样恢复；窄屏下编辑器分屏渲染期禁用（单栏），bottom-tabs 横向滚动，设置面板 <640px 单列表单，顶栏下拉 ≤34vw；命令面板 / 文件查找 / 模型选择等浮层按 min(内容宽, 94vw) 自适应。
+**视口自适应（v1.74）**：布局随视口宽度分三档自适应（`useViewport` resize 监听，档位判定与 clamp 为 `lib/viewport.ts` 纯函数）。四区结构在**宽屏（≥1180px）**不变；**中屏（800–1179px）**守护收敛——左 / 右 / 底栏尺寸在渲染期按视口比例 clamp（左栏 ≤24vw、下限 160px；右栏 ≤34vw、下限 280px；底栏 ≤40vh、下限 100px），clamp 只作用于渲染、不改写用户记忆尺寸与项目 ui-state，回宽屏即复原；**窄屏（<800px，半屏窗口 / 小屏设备）**浮层模式（v1.78 同步：线程恒为在流主区）——工作区转 compact，侧栏与编辑器审查窗格改为互斥浮层（绝对定位覆盖主区 + 遮罩，宽 ≤82vw、下限 220px），代理线程留在文档流占据主区（会话与审批是核心动线，v1.74「进入窄屏默认展开代理浮层」随之取消），侧栏经 rail 唤出（点视图切浮层、同视图再点收起），编辑器浮层经顶栏切换按钮（仅窄屏渲染）或任意打开文件入口（文件树 / 模糊打开 / 搜索 / 诊断跳转）唤出，遮罩点击收起；浮层开合不写持久化状态——`sidebarOpen` 与项目 ui-state 不被窄屏污染，跨档位往返原样恢复；窄屏下编辑器分屏渲染期禁用（单栏），bottom-tabs 横向滚动，设置面板 <640px 单列表单，顶栏下拉 ≤34vw；命令面板 / 文件查找 / 模型选择等浮层按 min(内容宽, 94vw) 自适应。
 
 **项目状态持久化**：每个项目独立保存左 / 右 / 底部尺寸、侧栏与底部可见性、bottom tab、打开 tab、active path 和可复用 session；激活项目时恢复，状态变更 600ms 防抖写入 daemon；缺失文件自动剔除，多项目状态互不污染（§6.4）。
 
 ### 7.3 关键交互流
 
-**打开项目**：拖入仓库 → 识别语言 → 建议 language pack（缺则装）→ TOFU 卡（默认交互档 / 信任后自动档）→ 建 L4 索引（后台）→ 就绪。已有项目打开时复用原 `project_id`；再次打开 canonical path 只激活 runtime，不新建登记。
+**打开项目**：拖入仓库 → 识别语言 → 建议 language pack（缺则装）→ 自动信任（v1.67：打开即静默置信任，不再询问；建会话前生效，不阻断 `mode=auto`）→ 建 L4 索引（后台）→ 就绪。已有项目打开时复用原 `project_id`；再次打开 canonical path 只激活 runtime，不新建登记。
 
-**切换 / 并行操作项目**：项目中心选择目标项目或把项目停靠为新窗格；所有文件 / 搜索 / LSP / 会话请求携带目标 `project_id`。用户可同时保留 A 的执行中任务并在 B 继续；审批队列全局可见且按项目分组。关闭项目前检查活跃任务和脏缓冲，可选择「等任务完成 / 暂停任务 / 强制关闭并保留会话恢复」。
+**切换 / 并行操作项目**：项目中心选择目标项目或把项目停靠为新窗格；所有文件 / 搜索 / LSP / 会话请求携带目标 `project_id`。用户可同时保留 A 的执行中任务并在 B 继续；审批在所属项目的代理面板就地决策（v1.60：无全局任务中心页）。任意登记项目点击即切换并隐式激活，无打开 / 关闭步骤（v1.60）。 项目中心（v1.33）暴露路径添加与移除登记（不删盘）。 添加项目（v1.43）为模态对话框：桌面壳弹出系统目录选择器取得绝对路径（浏览器模式手输），项目名可手输、缺省自动取路径末段；登记 / 重开均携带可选 `display_name` 落库（空串回退派生），项目列表按自定义名展示。
 
 **下达任务**：会话输入 / 行内指令 / 诊断「AI 修复」→ 进入自主循环（§9.1）→ 首改 2s 缓冲（Esc 可断）→ 改动实时高亮 → 证据卡片 → D 级审批提交。
 
@@ -392,6 +457,7 @@ GlobalScheduler（全局并发 / 成本 / 审批 / 通知 / 项目任务中心�
 - **外观档**：深色（默认）/ 浅色 / 跟随系统（`prefers-color-scheme`）三档；顶栏切换即时生效，`data-theme` 属性驱动 CSS 变量整套换色，状态色两套均可读；偏好双写——`localStorage` 为快路径，daemon `ui_prefs` 存储（§14.1）为跨启动 / 跨端（桌面 + 浏览器）权威（daemon 端口动态，localStorage 按 origin 隔离不可跨启动）；
 - **Monaco 主题同步（v1.27）**：编辑器注册 `tenon-dark` / `tenon-light` 两套主题（背景 / 行高亮 / 行号 / 光标与 §7.5 令牌一致），`data-theme` 属性变化经 MutationObserver 联动切换；
 - 全键盘可达；中英文案外置。
+- **L4 索引诊断（v1.35）**：诊断区显示当前 project 的切片数、worker 状态、最近更新与错误；支持手动 rebuild；daemon 状态变化经 project-scoped WS 推送，面板以 `/l4/stats` 为权威快照并事件触发刷新（初始 / 订阅后 / 状态变化），重建 / 索引中禁用重复触发；
 - **Fuzzy finder**：Cmd/Ctrl+P 打开 project-scoped 文件查找；120ms 防抖调用 `/files/fuzzy`（gitignore-aware + fuzzy score），方向键 / Enter 全键盘可达；`path:line` 解析行号并由 Monaco `revealLineInCenter` 定位；
 - **Workspace symbols**：`@query` 切换符号模式；以 active file 选择共享 LSP provider，请求 `workspace_symbol`；LSP URI 归一为项目相对路径 + 1-based line 后直接跳转；无 active file 时不猜测 provider，明确提示；
 
@@ -403,15 +469,19 @@ GlobalScheduler（全局并发 / 成本 / 审批 / 通知 / 项目任务中心�
 
 - 文件树：以 active `project_id` 为唯一根；重命名 / 移动 / 删除 / 拖拽 + git 状态装饰；
 - **项目内 CRUD**：文件树提供重命名 / 删除（v1.72 移除新建文件 / 新建目录——项目内创建一律由会话大模型决策执行，AI 经自身工具建文件不涉 `/file/ops`）；操作走 `/file/ops` 写守卫与 watcher 同步；重命名用可访问 modal，删除显式确认；打开的 tab、unsaved 标记与 AI 行标记随路径变化同步；
+- **拖拽移动**：文件可拖入目录或根目录；禁止拖入自身 / 子树；HTML5 drag data 使用私有 MIME，drop 后仍走 `/file/ops move` 写守卫；成功后同步 open tab / active path / unsaved / AI 标记；
 - **懒加载层级树**：目录节点展开时按 `path` 请求子层；daemon canonicalize + 项目前缀校验，watcher 事件版本刷新已展开层，避免大仓库首屏全量遍历；
 - **watcher 驱动 UI 同步**：文件树订阅 active project 的 ProjectRuntime 文件事件并即时刷新；已打开且无未保存编辑的 tab 回读修改，removed 事件关闭 tab；自动保存中的缓冲不回读（§8.6）；
 - **LSP 感知重命名 / 移动**：跨文件引用更新（B 级 + checkpoint 可回滚）；
 - fuzzy 查找（Cmd+P 文件 / 符号 / 行号）；
 全局搜索替换：核心服务 ripgrep 驱动，正则 / 过滤 / 多文件替换前 diff 预览；
 - **安全多文件替换**：用户可选文件后应用；daemon 走写守卫与大小限制，先物化全部替换结果；dirty buffer 显式跳出（§8.6），不静默覆盖；响应包含逐文件 replacements、diff、失败 / skipped 原因，成功后触发 watcher 刷新；
-- 多标签、分栏、布局记忆；源代码视图（分支、改动列表、行内 blame）；
+- **诊断面板（v1.38）**：活动文件通过共享 LSP 实例查询 `diagnostics`，显示 severity / 位置 / source / message；watcher 保存事件、项目切换、活动 tab 与手动刷新都会重新拉取；支持按行跳转和「AI 修复」——指令注入当前项目会话并要求目标诊断清零、无新回归；
+- **多标签分栏（v1.42）**：同一项目打开的多文件可拆为主 / 右两栏；右栏从打开 tab 中独立选择文件并支持编辑 / 自动保存；主栏继续承载 AI 行标、选区指令与行号跳转；`splitPath` 按项目持久化，关闭 / 重命名 / 删除会同步清理；
+- **源代码视图（v1.50）**：底部 Source 页聚合当前分支、本地 branches、working changes 与 recent commits；活动文件显示 line-porcelain inline blame，可按行跳转；Git 查询只读、路径过写守卫、参数固定；
+- 布局记忆；
 - 同一窗口可停靠多个项目分栏；标签携带项目徽标，跨项目拖拽默认禁止；
-- 大文件（默认 >10MB）自动只读分块加载。
+- 任意大小文件全量打开并编辑（v1.69 取代 v1.45 只读分块）：读取无大小上限、全量返回，编辑 / 自动保存不再有大小区限；daemon 文件 IO 走 spawn_blocking，大文件不阻塞其它请求；tree-sitter 基础高亮维持 2MB 帽、超帽回退 Monaco 原生高亮（§8.7）。
 
 ### 8.2 编辑器内核
 
@@ -419,14 +489,15 @@ GlobalScheduler（全局并发 / 成本 / 审批 / 通知 / 项目任务中心�
 |---|---|---|
 | 内核 | Monaco Editor | 与 VS Code 同源交互（补全 / hover / 多光标），不自建编辑器 |
 | 高亮 | tree-sitter + LSP semantic tokens | 解析在 daemon 侧（Rust 增量解析，token 流推送 UI，WebView 不跑解析器）；未装语言包有基础高亮，装包后语义高亮 |
-| 大文件 | 虚拟滚动 + 分块 + 超限只读 | 性能预算见 §8.7 |
-| 自动保存 | 编辑停顿 1s 去抖写盘；Cmd/Ctrl+S 立即保存 | 保存成功即解除该文件脏缓冲（§8.6「未保存缓冲」语义不变：保存前的编辑窗口内代理写盘仍走三方合并）；tab 显示未保存圆点，保存后消失；写盘失败保留圆点待下次编辑或手动保存重试 |
+| 大文件 | Monaco 原生虚拟滚动全量加载，任意大小可编辑（v1.69 移除只读分块） | 性能预算见 §8.7 |
+| 保存 | 模式可设（v1.75，ui_prefs `editor.saveMode`，设置面板「编辑器」分区即时生效）：自动保存（默认，编辑停顿 1s 去抖写盘）或手动保存（仅显式保存写盘：Cmd/Ctrl+S、LSP 应用前 flush） | 统一 saveNow：有待写盘条目走 AutoSaver flush，否则未保存缓冲直接写盘；保存成功即解除该文件脏缓冲（§8.6「未保存缓冲」语义不变：保存前的编辑窗口内代理写盘仍走三方合并）；tab 显示未保存圆点，保存后消失；写盘失败保留圆点待下次编辑或手动保存重试；两模式下 watcher 均不回读脏缓冲（§8.1） |
+| 撤销 / 重做 | Monaco 原生撤销栈为权威（v1.75） | Cmd/Ctrl+Z / Cmd/Ctrl+Shift+Z（编辑器聚焦）；每 tab 独立栈，path 模型缓存跨 tab 切换保留；外部内容刷新（Agent 写盘 / watcher 回读 / LSP 应用回读）经 executeEdits + pushUndoStop 入栈——外部改动本身可撤销；关闭 tab 释放模型即丢弃历史；命令面板提供不依赖焦点的全局入口 |
 
 **取舍**：Monaco ≠ VS Code，不引入 extension host——「够用且可控」优先于完整生态。
 
 ### 8.3 语言智能（智能提示全家桶）
 
-补全（符号/成员/路径/片段/签名帮助）、hover 文档、定义跳转、引用/实现查找、工作区符号、安全重命名、语义高亮、实时诊断、code action 快速修复、**「AI 修复」**（与 code action 并列，直接发起代理任务）、格式化、折叠与代码镜头；AI 行内补全为实验特性默认关。
+补全（符号/成员/路径/片段/签名帮助）、hover 文档、定义跳转、引用/实现查找、工作区符号、安全重命名、语义高亮、实时诊断、code action 快速修复、**「AI 修复」**（与 code action 并列，直接发起代理任务）、格式化、折叠与代码镜头；AI 行内补全为实验特性默认关。 **v1.52 已接入**：默认关闭，命令面板开关；Monaco ghost text 经 project-scoped active-session provider，单轮无工具、前后窗口受限、用量归因。 **v1.46 已接入**：Monaco completion / hover / definition / references / signature help 均经共享 LSP 实例与显式 `project_id`；workspace symbols、诊断与「AI 修复」此前已接入。 **v1.48 已接入**：format / rename / code action 通过 daemon 原子 WorkspaceEdit 应用，未保存缓冲显式冲突，shadow checkpoint 支持回滚。 **v1.49 已接入**：Rust daemon tree-sitter 基础高亮 token 流与 Monaco decorations；多字节列已转换为 UTF-16。
 
 ### 8.4 语言包体系
 
@@ -451,7 +522,7 @@ GlobalScheduler（全局并发 / 成本 / 审批 / 通知 / 项目任务中心�
 | 代理改动流入编辑器 | 代理→编辑器 | 实时写入缓冲并高亮「AI 修改」区；未打开文件在文件树标记 |
 | 行内指令 | 用户→代理 | 选中代码自然语言改写，diff 就地呈现 |
 | 跟随模式 | 代理→编辑器 | 自动滚动到代理正在修改处（可关） |
-| 工作区重构原子应用 | 双向 | LSP workspace edits 一次应用 + 单 checkpoint，失败整体回滚 |
+| 工作区重构原子应用 | 双向 | **v1.48 已落地**：LSP workspace edits 一次应用 + 单 checkpoint，失败整体 restore；dirty buffer 409 不覆盖 |
 
 ### 8.6 人机共编冲突处理
 
@@ -462,13 +533,15 @@ GlobalScheduler（全局并发 / 成本 / 审批 / 通知 / 项目任务中心�
 | 指标 | 预算 |
 |---|---|
 | 冷启动到可输入 | < 1.5s（P50） |
-| 10MB 文件只读打开 | < 2s |
+| 10MB 文件打开并编辑（全量读取到可输入） | < 2s |
 | 全局搜索（10 万文件）首结果 | < 500ms |
 | LSP 索引就绪后首个补全（中型 TS 项目） | < 400ms（冷启动到首个可用补全 < 3s） |
 | 补全列表呈现 | < 80ms（P50） |
 | 万行 diff 渲染 | 60fps |
 | 项目切换到可交互 | < 150ms（P50；runtime 已打开；冷项目按打开流程另计） |
 | 多项目稳态 | 12 个打开项目下 UI 主线程不因任一项目 watcher / LSP 输出阻塞；非活跃项目 LSP 可被资源控制器回收 |
+
+**v1.56 CI 分层**：服务层 release 门禁显式断言大文件全量打开与 10 万文件首结果预算；`merge / snapshot / sandbox-exec` 基准输出趋势基线。**v1.57 起**万行 diff 使用固定行高虚拟窗口，20k 行 DOM 物化量有 UI 门禁；**v1.66 起**已打开项目切换核心链路有 daemon P50 门禁。**v1.82 起**补全归一化 / Monaco 映射热路径有 5k 项 P50 <80ms UI 门禁；冷启动、真实 LSP 首补全与实际帧率继续由手工矩阵 / 后续 UI 基准验收。
 
 ---
 
@@ -526,14 +599,15 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 
 | 工具 | 级 | 说明 |
 |---|---|---|
-| `read_file` / `list_dir` / `grep` | A | 只读；核心服务 rg |
+| `read_file` / `list_dir` / `grep` | A | 只读；核心服务 rg；`read_file` 超 10MB 拒读（LLM 上下文预算，agent 侧承担，与编辑器无大小限制无关，v1.69） |
 | `git_read`（status/log/diff） | A | 只读 git |
 | `lsp_query`（定义/引用/符号/hover） | A | 共享 LSP 多路复用 |
 | `apply_patch` | B | 结构化编辑（file + range + content），产生事件与 checkpoint |
 | `run_tests` / `run_build` | B | 沙箱内，断网态；单命令超时默认 120s（附录 E） |
 | `install_deps` | B | 沙箱内，镜像代理态 |
 | `http_fetch` | C | 审批后域名代理态 |
-| `git_commit` / `git_push` / `create_pr` | D | 永远审批；PR 为 C+D 复合卡；批量任务的多个 commit 可合并为一张复合 D 卡（逐条列明、一次批准，§12.2） |
+| `git_commit` / `git_push` | D | 永远审批；批量任务的多个 commit 可合并为一张复合 D 卡（逐条列明、一次批准，§12.2） |
+| `create_pr` | C+D | 永远审批；一次复合卡覆盖目标平台出网与不可逆 PR 创建；经本机 `gh` CLI 凭据执行（v1.79） |
 | `plugin_*` | 按声明 | 外部进程插件提供，映射分级 |
 
 ### 9.3 事中防护
@@ -574,7 +648,7 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 - 共享 LSP 实例跨会话多路复用，请求按会话路由与限流（§8.5）。
 - **跨项目并发**：全局调度器允许不同项目各自运行一个 EXECUTING 会话，但跨项目并发上限默认 2（可配置）；全局 token / 成本 / CPU / 磁盘预算先到即排队。每个事件、审批、diff 和成本都带 `project_id`，项目中心据此聚合；
 - **跨项目隔离**：A 项目会话的 L1/L2/L4 上下文、审批记忆、沙箱 profile、脏缓冲与 LSP 请求不得进入 B 项目。若用户下达跨项目诉求，系统转「项目组合任务」创建多条项目内子会话；父任务只能携带用户目标与子任务摘要，不能把 A 的文件内容注入 B；
-- **项目生命周期协调**：关闭项目时先拒绝新任务，再暂停 / 排空 EXECUTING 会话并 flush 事件与 checkpoint；崩溃恢复按 `project_id` 分组，恢复一个项目不锁住其他项目。
+- **项目生命周期协调**：运行时回收（空闲 TTL / `max_open` LRU 逐出，v1.60）前先拒绝新任务，再暂停 / 排空 EXECUTING 会话并 flush 事件与 checkpoint；崩溃恢复按 `project_id` 分组，恢复一个项目不锁住其他项目。
 
 ### 9.8 本地决策模型（Laya）加速层
 
@@ -643,11 +717,11 @@ L4 按包隔离、语言服务器按需启动；子代理限定单包；检索�
 
 ## 11. 模型层
 
-- **接入**：OpenAI / Anthropic / DeepSeek / Ollama 原生 + **OpenAI 兼容端点通用 provider**（base URL + Key）；
+- **接入**：OpenAI / Anthropic / DeepSeek / Ollama 原生 + **OpenAI 兼容端点通用 provider**（base URL + Key）；设置面板模型分区（v1.40）提供常用提供商预设（OpenAI / Anthropic / DeepSeek / Ollama / 智谱 GLM——后两者经 OpenAI 兼容接入），新增 provider 只填名称 / 协议族 / base_url / 默认模型 / 密钥环境变量引用；
 - **本地决策模型（Laya）**：产品自管小型分类模型，承接代理循环结构化判定（用途 / 分发 / 边界见 §9.8）；启动自动下载并启用（静态 registry + 签名 + 版本锁定，无审批卡，v1.71）、本地 CPU 推理零 token 成本；不可用即整体回退，不阻塞任何功能；
 - **路由**：v1 显式（`/model` 与设置面板）+ 轻量启发式（纯读任务提示轻模型）；auto 路由实验特性默认关（置信度展示、一键改派、可反馈）；
 - **成本**：云端按价格表；本地模型（含 Laya）显示「本地 · 0 成本」，token 单独统计；任务级 / 会话级 / 日级归因；
-- **密钥存储**：模型 Key 存操作系统钥匙串（Keychain / Credential Manager / libsecret），不落盘明文；
+- **密钥存储**：`api_key_env` 名先查 daemon 环境变量，缺失时读取操作系统凭据库（macOS Keychain / Linux libsecret / Windows PasswordVault）；持久写入只进入 OS 凭据库，不落盘明文；
 - **降级**：供应商不可用时可切换会话模型，任务上下文随迁。
 
 ---
@@ -674,6 +748,8 @@ L4 按包隔离、语言服务器按需启动；子代理限定单包；检索�
 
 档位（自动 / 交互）只影响 B 级；去 Plan 安全兜底 = 沙箱 + 快照 + 熔断（§9.3）。
 
+**权限策略（TeamPolicy，v1.85）**：全局约束只允许收窄——`force_interactive=true` 禁用自动档；`denied_tools` 在所有会话的工具入口前拒绝；`max_cost_usd` 与全局配置取更小值。字段经 `/team-policy` 校验后原子持久化到 `~/.tenon/policy.toml`（0600），仅对新会话生效；既有会话不回写放宽或收窄策略，避免运行中边界漂移。固定分级不变：策略没有 A/B 升级、C/D 免审批或快照关闭开关。
+
 ### 12.3 沙箱与网络三态
 
 | 平台 | 机制 | v1 |
@@ -694,11 +770,11 @@ L4 按包隔离、语言服务器按需启动；子代理限定单包；检索�
 
 ### 12.6 本地服务与浏览器访问
 
-默认仅绑 127.0.0.1 + 随机端口；HTTP 用 `X-Tenon-Token` 头；**WS 用一次性 ticket**（浏览器 WebSocket 无法自定义请求头：`POST /ws-ticket` 换 60 秒一次性票据，连接首帧携带，重放即拒）；校验 Origin/Host；**CORS 仅白名单放行应用自身 origin（Tauri WebView 源）与已配对设备，其余拒绝**；局域网显式开启 + 一次性配对 + 可吊销；浏览器只能切换已登记项目，只能提交项目 ID（无法传本地路径，也无法新增本地项目登记）；TOFU 卡仍在桌面优先完成，未信任项目强制交互档；公网访问非目标。
+默认仅绑 127.0.0.1 + 随机端口；HTTP 用 `X-Tenon-Token` 头；**WS 用一次性 ticket**（浏览器 WebSocket 无法自定义请求头：`POST /ws-ticket` 换 60 秒一次性票据，连接首帧携带，重放即拒）；校验 Origin/Host；**CORS 仅白名单放行应用自身 origin（Tauri WebView 源）与已配对设备，其余拒绝**；白名单源跨源 dev server 的 `OPTIONS` 预检由本地服务直接 2xx，并显式 `Allow-Headers` / `Allow-Methods` / `Max-Age`；局域网显式开启 + 一次性配对 + 可吊销；浏览器只能切换已登记项目，只能提交项目 ID（无法传本地路径，也无法新增本地项目登记）；UI 打开项目即静默信任（v1.67），后端对未信任项目强制交互档的规则保留作纵深防御；公网访问非目标。
 
 ### 12.7 仓库信任（TOFU）
 
-每个项目独立 TOFU；首次打开默认交互档 → 用户「信任此仓库」后按全局默认档 → 本地可吊销；信任只放宽 B 级档位，永不放宽 C/D。项目 A 的信任、会话审批记忆与项目设置不适用于项目 B；项目组合任务的每条子会话仍按各自项目 TOFU 判定。
+每个项目独立 TOFU；首次打开默认交互档 → 用户「信任此仓库」后按全局默认档 → 本地可吊销；信任只放宽 B 级档位，永不放宽 C/D。项目 A 的信任、会话审批记忆与项目设置不适用于项目 B；项目组合任务的每条子会话仍按各自项目 TOFU 判定。**UI 侧（v1.67）**：打开项目即对未信任项目静默置信任，不再弹卡询问——日常路径下项目始终处于已信任态；本节的交互档回退、吊销与按项目隔离规则在后端原样保留，覆盖绕过 UI 的登记与吊销场景。
 
 ---
 
@@ -764,17 +840,17 @@ registry 检索 → 展示**权限 diff**（相对已装版本新增权限高亮
 | 表 | 关键字段 | 说明 |
 |---|---|---|
 | projects | id, canonical_path, display_name, trusted, status, language_packs, settings_json, last_opened_at | 项目登记 / TOFU / 打开状态与项目覆盖配置；canonical path 唯一 |
-| sessions | id, project_id, cwd, worktree_id, model, status | 会话；project_id 不可空，cwd 必须位于项目根或登记 worktree |
-| events | id, session_id, project_id, seq, type, payload | 事件溯源（只追加；project_id 供跨项目任务中心聚合） |
+| sessions | id, project_id, cwd, worktree_id, model, status, title | 会话；project_id 不可空，cwd 必须位于项目根或登记 worktree；title 为首条消息自动生成的对话标题（v1.58，可空，UI 回退模型名 / 短 id） |
+| events | id, session_id, project_id, seq, type, payload | 事件溯源（只追加；project_id 供跨项目聚合） |
 | checkpoints | id, session_id, tree, files, created_at | 快照点（tree oid + 该步改动文件集，§10.3） |
 | tool_calls | id, event_id, tool, level, cost_tokens | AgentTrace 明细 |
 | approvals | id, session_id, project_id, action, level, decision | 审计；通知 UI 按项目分组 |
 | plugins | id, version, permissions, signature | 安装记录 |
 | model_usage | id, session_id, project_id, provider, tokens, cost | 成本归因；支持会话 / 项目 / 日级 |
 | eval_runs | id, target, metrics_json, verdict | Evals 报告 |
-| l4_chunks | id, project_id, path, symbol, embedding | L4 检索切片与向量（sqlite-vec 虚表，Q3） |
+| l4_chunks | id, project_id, path, symbol, start_line, end_line, text, embedding | L4 检索切片、行区间、文本与本地向量（sqlite-vec 演进路径，§10.1） |
 
-事件类型枚举：`user_input / sensing / decision / patch_applied / command_run / diagnostics / approval_request / approval_decision / approval_timeout / checkpoint / compaction / rollback / unrollback / model_fallback / decider_call / error`（approval_timeout、model_fallback 对应 §9.1 审批超时与切模型降级；rollback / unrollback 对应 §10.3 回滚与撤销回滚；decider_call 为 §9.8 Laya 本地判定：类型 / 结果 / 耗时，不含输入原文；均入 Trace 可审计）。
+事件类型枚举：`user_input / sensing / decision / model_delta / patch_applied / command_run / diagnostics / approval_request / approval_decision / approval_timeout / checkpoint / compaction / rollback / unrollback / model_fallback / decider_call / error / session_title`（approval_timeout、model_fallback 对应 §9.1 审批超时与切模型降级；rollback / unrollback 对应 §10.3 回滚与撤销回滚；model_delta 为 §9.6 合并后的模型增量（Final 的 usage / tool calls 仍只按权威 Final 入账）；decider_call 为 §9.8 Laya 本地判定：类型 / 结果 / 耗时，不含输入原文；session_title 为 v1.59 对话标题生成完成（payload `{title}`，UI 据此即时刷新对话列表）；均入 Trace 可审计）。
 
 **增长治理**：events / tool_calls 冷热分层——热数据留 SQLite，关闭超 90 天（可配置）的会话压缩归档至 `~/.tenon/archive/`（仍全本地、可检索回载）；approvals 审计记录永久保留；model_usage 明细随会话归档，另维护按月聚合表（永久，支撑 §11 成本归因）。
 
@@ -788,9 +864,8 @@ registry 检索 → 展示**权限 diff**（相对已装版本新增权限高亮
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
-| GET | `/projects` | 已登记项目 + 打开状态、活跃会话、审批 / 任务 / 成本 / 脏缓冲摘要 |
-| POST | `/projects/open` | 按 path 打开或复用登记项目（canonicalize、去重、TOFU、懒启动 runtime） |
-| POST | `/projects/:id/close` | 关闭 / 暂停项目；body 指定 drain / pause / force |
+| GET | `/projects` | 已登记项目 + 活跃会话、审批 / 任务 / 成本 / 脏缓冲摘要 |
+| POST | `/projects/open` | 按 path 打开或复用登记项目（canonicalize、去重、TOFU、懒启动 runtime）；可选 `display_name` 设置显示名（空串清除自定义名回退路径末段） |
 | DELETE | `/projects/:id` | 移除登记（不删除磁盘内容） |
 | PUT | `/project/:id/trust` | 设置该项目 TOFU 信任 |
 
@@ -799,13 +874,14 @@ registry 检索 → 展示**权限 diff**（相对已装版本新增权限高亮
 | 方法 | 路径 | 用途 |
 |---|---|---|
 | POST | `/session` | 创建会话；body 必须带 `project_id`，可附项目内 `cwd` / `worktree_id`（模型、档位） |
-| POST | `/session/:id/message` | 发送任务 |
+| POST | `/session/:id/message` | 发送任务；会话首条消息触发对话标题后台生成（v1.59：单轮带标记调用，失败 / 历史遗留会话回退首条消息本地截断，不阻塞任务） |
 | POST | `/session/:id/control` | pause / resume / stop / rollback（快捷回滚至最近 checkpoint，等价于 `/checkpoint/:id/rollback` 最近点，勿单独实现第二条路径）/ unrollback（撤销最近回滚，§10.3）/ set_readonly |
 | POST | `/approval/:id` | 审批决策（once / session / deny） |
 | GET | `/session/:id/trace` | Trace 查询 |
 | GET | `/session/:id/checkpoints` | checkpoint 时间轴（事件列表 + 快照点） |
 | GET | `/portfolio-tasks` | 跨项目组合任务聚合视图（父任务状态、子会话、审批、成本） |
 | POST | `/portfolio-tasks` | 创建项目组合任务；body 是 project-scoped child task 数组，父任务不共享代码上下文 |
+| GET / PUT | `/team-policy` | 权限高级策略读取 / 校验持久化（v1.85）；PUT 后新会话生效 |
 | POST | `/checkpoint/:id/rollback` | 回滚（body 指定粒度：checkpoint 级 restore / 按事件 revert，§7.3） |
 
 **编辑器与文件**（UI 为纯 React，文件与语言智能全在此 API 之上）：
@@ -823,8 +899,8 @@ registry 检索 → 展示**权限 diff**（相对已装版本新增权限高亮
 | 方法 | 路径 | 用途 |
 |---|---|---|
 | GET / POST | `/plugins` | 插件与语言包管理（权限 diff、安装、升级） |
-| GET / PUT | `/settings` | 全局设置。GET 返回合并后的生效值；PUT 接受已知键子集（`session.mode` / `session.first_edit_buffer_ms` / `session.approval_timeout_s` / `exec.command_timeout_s`），校验后写入 `~/.tenon/settings.json`（0600）并即时生效——**新会话**按新值构建（既有会话保持各自配置）；`mode=auto` 仅对已 TOFU 信任项目生效，未信任自动回退交互档 |
-| GET | `/models` | 模型清单与 Laya 状态（版本 / 已下载 / 加载 / 设备，§9.8） |
+| GET / PUT | `/settings` | 全局设置。GET 返回合并后的生效值；PUT 接受已知键子集（`session.mode` / `session.first_edit_buffer_ms` / `session.approval_timeout_s` / `exec.command_timeout_s`；v1.40 增 `models.default` / `models.providers.<name>.{kind,base_url,wire_api,model,api_key_env}`），校验后写入 `~/.tenon/settings.json`（0600）并即时生效——**新会话**按新值构建（既有会话保持各自配置）；`mode=auto` 仅对已 TOFU 信任项目生效，未信任自动回退交互档。models 校验（v1.40）：provider 名 `^[a-z][a-z0-9_-]{0,63}$`、kind ∈ openai / anthropic / openai_responses、base_url 须 http(s)、`models.default` 须指向已配置 provider；`models.providers` 整体替换覆盖表（UI 每次保存发全量，支持删除；同名单条目按字段合并，未覆盖字段保留配置文件值）；GET 合并视图 provider 条目带 `overridden` 标记（纯配置文件条目不可经设置删除，只能编辑生成覆盖），`models.default=""` 清除覆盖回退配置值；**含 `api_key` 明文的请求 400 拒绝**——密钥仅以 `api_key_env` 引用（§11：daemon 环境变量优先，缺失读取 OS 凭据库），PUT 成功即重建 provider 表 |
+| GET | `/models` | 模型清单与 Laya 状态（版本 / 已下载 / 加载 / 设备，§9.8）；设置面板模型分区（v1.40）消费它渲染默认模型下拉与 Laya 状态卡 |
 | GET | `/costs` | 成本归因（任务 / 会话 / 项目 / 日级） |
 | POST | `/ws-ticket` | 一次性 WS 票据 |
 | WS | `/ws` | 事件流（状态机、诊断、diff 流、审批；ticket 鉴权） |
@@ -845,9 +921,9 @@ WS 事件与会话 events 表一一对应，均含 `project_id`；断线重连�
 | 桌面壳 | Tauri 2 | 包小、与内核同语言；否 Electron（内存/包体） |
 | UI | React + TS | 单代码库桌面/浏览器；生态 |
 | 编辑器 | Monaco | VS Code 同源体验；否 CodeMirror（交互需大量自建）、否 fork VS Code（= 重造） |
-| 高亮 | tree-sitter + LSP tokens | 双层高亮；tree-sitter 在 daemon 侧 Rust 增量解析、token 流送 UI，不进 WebView（大文件性能与内存） |
+| 高亮 | tree-sitter + LSP tokens | **v1.49 基础管线已落地**：daemon Rust tree-sitter token 流经 `/highlight` 送 UI，Rust 文件由 Monaco decorations 增强；其它语言回退 Monaco 基础高亮，后续扩展 grammar / LSP semantic tokens |
 | LSP 宿主 | Rust 内置 | 多路复用 + 沙箱化 + 项目隔离 |
-| 搜索 / 监听 | ripgrep + notify | 内核内置，不进 JS |
+| 搜索 / 监听 | ripgrep + notify | 内核内置，不进 JS；notify 走平台原生事件后端（v1.80：FSEvents / inotify / RDCW，PollWatcher 仅回退与测试通道） |
 | 沙箱 | Seatbelt / ns+seccomp / WSL2 | 见 §12.3 |
 | 存储 | SQLite + sqlite-vec | 本地、可靠、易审计；向量检索同库（Q3） |
 | 本地决策模型 | Laya（分类 / 打分 / 布尔三原语，CPU ~30ms 级） | 承接代理循环结构化判定，降延迟降 token（§9.8）；否 纯规则引擎（语义盲区大）、否 大模型全量判定（延迟与成本高） |
@@ -864,7 +940,7 @@ WS 事件与会话 events 表一一对应，均含 `project_id`；断线重连�
 | 阶段 | 周期 | 交付 | 验收 |
 |---|---|---|---|
 | **M0 原型** | 6 周 | Tauri 壳 + daemon（sidecar/端口/单实例）、文件树 + Monaco 基础编辑器（tree-sitter / 标签 / fuzzy / rg 搜索）、单模型会话、A/B 写守卫、diff 面板、签名与 updater 密钥、UI i18n 骨架（英文源 / 中文资源，Q5）、monorepo 脚手架 + CI 骨架（ADR-13）；决策 spike：Roslyn LS 沙箱化、sqlite-vec 冒烟（附录 C） | 10 内部任务一次通过 ≥50%；冷启动 <1.5s |
-| **M1 可用 IDE** | +16 周（分两段：前段 LSP 宿主 + 语言包 + 智能全家桶；后段共生 / 共编 / 完整沙箱 / 恢复） | LSP 宿主 + TS/Py/C#/Rust/Go 语言包 + 智能全家桶、Agent↔编辑器共生、共编冲突合并、完整沙箱三态、shadow git 快照库（回滚 / 撤销回滚，§10.3）、TOFU、崩溃恢复、模型路由（4 家 + 兼容端点）、本地决策模型 Laya（自动下载 + §9.8 集成点 1-4）；**v1.15 补齐项：ProjectRegistry/Runtime、project_id-scoped API、项目切换器 / 任务中心、跨项目并发与关闭协调** | 基准通过 ≥60%；索引就绪后首补全 <400ms（冷启动首补全 <3s）；崩溃 100% 恢复（回滚语义，§10.3）；安全违规 0；Laya 集成后基准 token 不升、通过率不降（§18.3）；3 项目同时打开且 2 项目并发执行，切换可交互 <150ms、无路径越界 |
+| **M1 可用 IDE** | +16 周（分两段：前段 LSP 宿主 + 语言包 + 智能全家桶；后段共生 / 共编 / 完整沙箱 / 恢复） | LSP 宿主 + TS/Py/C#/Rust/Go 语言包 + 智能全家桶、Agent↔编辑器共生、共编冲突合并、完整沙箱三态、shadow git 快照库（回滚 / 撤销回滚，§10.3）、TOFU、崩溃恢复、模型路由（4 家 + 兼容端点）、本地决策模型 Laya（自动下载 + §9.8 集成点 1-4）；**v1.15 补齐项：ProjectRegistry/Runtime、project_id-scoped API、项目切换器、project_id 隔离、跨项目并发与运行时回收** | 基准通过 ≥60%；索引就绪后首补全 <400ms（冷启动首补全 <3s）；崩溃 100% 恢复（回滚语义，§10.3）；安全违规 0；Laya 集成后基准 token 不升、通过率不降（§18.3）；3 个登记项目且 2 项目并发执行，切换可交互 <150ms、无路径越界 |
 | **M2 生态** | +12 周 | 官方 registry、MCP、Open VSX 语言子集实验、并行子代理、AgentTrace UI、本机浏览器访问（127.0.0.1，含来源校验；局域网后移 M3，Q4）、Laya 批量 triage 与 token 节省归因（§9.8 集成点 5）、项目组合任务 v1 | 3 并行子代理成功 ≥70%；App 内编辑动作占比 ≥70%；组合任务子会话均项目隔离且聚合成本一致 |
 | **M3 团队与打磨** | +12 周 | AI Evals 流水线、团队策略、局域网配对浏览器访问（Q4）、Windows WSL2 安装包、**可选**自动更新通道（默认仍为手动检查）、性能打磨 | Evals 报告自动产出；万行 diff 60fps |
 | 后续 | 数据决策 | Windows 原生沙箱（优先研读 codex `windows-sandbox-rs`，§3.1）、auto 路由转正、终端区 / IDE 开放协议（对齐 Zed ACP，不自造，§3.2） | 不预先承诺 |
@@ -875,11 +951,13 @@ WS 事件与会话 events 表一一对应，均含 `project_id`；断线重连�
 
 ### 18.1 分层测试
 
+**开发模式（v1.65）：以 Web 版为主。** 日常开发与调试一律走浏览器——`pnpm ui` 起 vite（:5173，热重载）+ 本地 daemon（`cargo run -p tenon-daemon -- --project <路径> --no-lock`），浏览器以 `http://localhost:5173/?port=<daemon端口>&token=<token>` 直连（握手参数直传，与桌面壳同一 API/WS 链路）；`pnpm ui:build` 后由 daemon 同源托管 `ui/dist` 仅作产物验证（无热重载）。桌面壳 `tenon-app` 仅用于壳链路验证（sidecar 握手、Tauri 原生目录对话框、WebView 导航）与发版前回归。
+
 | 层 | 工具 | 覆盖 |
 |---|---|---|
 | Rust 单元 / 集成 | cargo test | 权限判定、sandbox profile、checkpoint、LSP 宿主、ProjectRegistry/Runtime、跨项目路径隔离 |
-| 前端 | vitest + Playwright | 组件、四区布局、项目切换器 / 任务中心、审批流、键盘全可达 |
-| 端到端 | Playwright（真 daemon） | 打开项目 → 任务 → 审批 → 回滚全链路；A 执行中打开 B 并完成任务；关闭 A 不中断 B |
+| 前端 | vitest + Playwright | 组件、四区布局、项目切换器、审批流、键盘全可达 |
+| 端到端 | Playwright（真 daemon） | 打开项目 → 任务 → 审批 → 回滚全链路；A 执行中登记 / 切换 B 并完成任务；runtime 逐出 / 回收不影响登记与会话 | **v1.41 harness 已落地**：`ui/e2e/multiproject.spec.ts` 覆盖 A 写入审批/回滚/撤销回滚 + B 隔离；mock 模型服务按会话上下文返回 apply_patch / answer，E2E 全部本地无外网；浏览器二进制由 CI `playwright install chromium` 提供。
 
 ### 18.2 安全测试
 
@@ -892,11 +970,11 @@ WS 事件与会话 events 表一一对应，均含 `project_id`；断线重连�
 
 ### 18.3 Agent Evals（升级门禁）
 
-任务集 = 仓库快照 + 自然语言任务 + 验收测试 / 参考补丁（M0 基准任务集已定稿于**附录 D**——10 个内部任务；基线五指标随 M0 结束记录）；触发：内核 / 模型 / 提示词 / 语言包 / Laya 集成点与判定阈值变更（§9.8）；五指标：通过率、成本、步数、审批数、安全违规（=0 一票否决）；报告本地生成，M3 起可视化。
+任务集 = 仓库快照 + 自然语言任务 + 验收测试 / 参考补丁（M0 基准任务集已定稿于**附录 D**——10 个内部任务；基线五指标随 M0 结束记录）；触发：内核 / 模型 / 提示词 / 语言包 / Laya 集成点与判定阈值变更（§9.8）；五指标：通过率、成本、步数、审批数、安全违规（=0 一票否决）；报告本地生成，M3 起可视化。 L4 上下文质量（v1.34）同入门禁：Evals 夹具自动按生产同源 `scan_root → chunk → embed` 入库；任务可声明 `expected_l4_path` 或使用 `L4RecallPath` 断言；SENSING Trace 聚合为召回数 / 均分 / 期望命中，期望路径未命中即用例失败并使套件 verdict 失败；报告面板同步展示命中率与均分。
 
 ### 18.4 性能与兼容
 
-性能预算（§8.7）进 CI 基准（大仓库样本）；三平台（macOS / Win+WSL2 / Ubuntu）手工回归矩阵随每里程碑执行。
+性能预算（§8.7）进 CI：**v1.56 起** release performance job 显式断言服务层大文件打开与搜索首结果预算，并运行 merge / snapshot / sandbox-exec 基准；**v1.66 起**增加已打开项目切换核心链路 P50 <150ms 门禁；三平台（macOS / Win+WSL2 / Ubuntu）手工回归矩阵随每里程碑执行。
 
 ---
 
@@ -922,7 +1000,7 @@ WS 事件与会话 events 表一一对应，均含 `project_id`；断线重连�
 | 风险 | 对策 |
 |---|---|
 | 编辑器工程失控（滑向重造 VS Code） | Monaco 内核 + 语言包子集 + 非目标硬约束 |
-| Monaco / WebView 性能 / 跨端差异 | 虚拟化 + 性能预算 CI + 三平台矩阵 + 大文件只读兜底 |
+| Monaco / WebView 性能 / 跨端差异 | 虚拟化 + 性能预算 CI + 三平台矩阵 + Monaco 大文件虚拟滚动兜底 |
 | LSP 服务器执行仓库代码 | 语言包沙箱化 + 项目隔离 + 网络三态 |
 | 语言包运行时缺失体验 | 检测 + 官方指引引导，不代装（D 级之外） |
 | 去 Plan 误改 / 大改失控 | 首改缓冲 + Esc + 熔断 + checkpoint 四层兜底 |
@@ -962,7 +1040,7 @@ WS 事件与会话 events 表一一对应，均含 `project_id`；断线重连�
 | 降级档 | Windows 无 WSL2 时的受限运行档：仅 A 级 + 写守卫、强制交互档 |
 | 按事件撤销 | 基于事件日志只撤销选定 AI 补丁、保留用户手改的回滚粒度 |
 | 复合 D 卡 | 批量任务的多个 commit 合并为一张 D 级审批卡（逐条列明、一次批准） |
-| ProjectRuntime | daemon 内某个已打开项目的资源组：文件服务、watcher、LSP、快照锁、沙箱边界与 L4 索引（§6.4） |
+| ProjectRuntime | daemon 内某个已登记项目的内部缓存资源组：文件服务、watcher、LSP、快照锁、沙箱边界与 L4 索引（§6.4） |
 | 项目组合任务 | 跨项目的编排容器：只聚合多条 project-scoped 子会话的状态 / 审批 / 成本，不共享代码上下文（§6.4 / §9.7） |
 | Laya | 产品自管本地决策模型：分类 / 打分 / 布尔三原语，CPU ~30ms 级、零 token，承接代理循环结构化判定（§9.8） |
 
@@ -1035,9 +1113,9 @@ approval_timeout  = 300            # 秒（§9.1）
 readonly          = false
 
 [projects]                         # 多项目运行模型（§6.4 / ADR-15）
-max_open                      = 12 # 同时打开项目上限
+max_open                      = 12 # 运行时内部 LRU 上限：超限逐出无活跃会话的最久未用 runtime（v1.61，不拒绝登记 / 切换）
 max_concurrent_agent_tasks    = 2  # 跨项目同时 EXECUTING 上限；项目内仍受 §9.7 写锁约束
-idle_runtime_ttl_seconds      = 600 # ProjectRuntime 引用归零后的回收延迟
+idle_runtime_ttl_seconds      = 600 # ProjectRuntime 空闲回收延迟
 recent_limit                  = 20 # 最近项目列表保留数
 allow_linked_workspace        = false # 显式允许打开 monorepo + 子包等嵌套根；仍按 project_id 隔离
 

@@ -6,7 +6,7 @@ import type { Translate } from "../lib/i18n";
 export interface ApprovalInfo {
   approvalId: string;
   tool: string;
-  level: "a" | "b" | "c" | "d";
+  level: "a" | "b" | "c" | "d" | "cd";
   summary: string;
 }
 
@@ -22,6 +22,7 @@ const LEVEL_LABEL: Record<string, string> = {
   b: "B · sandbox write",
   c: "C · network",
   d: "D · irreversible",
+  cd: "C+D · network + irreversible",
 };
 
 export function ApprovalCard({ api, t, approval, onDecided }: Props) {
@@ -73,13 +74,20 @@ export function ApprovalCard({ api, t, approval, onDecided }: Props) {
 export function pendingApprovalFromEvents(
   events: Array<{ type: string; payload: Record<string, unknown> }>
 ): ApprovalInfo | null {
-  const last = [...events].reverse().find((e) => e.type === "approval_request");
-  if (!last) return null;
-  const p = last.payload;
-  return {
-    approvalId: String(p.approval_id ?? ""),
-    tool: String(p.tool ?? ""),
-    level: (p.level as ApprovalInfo["level"]) ?? "c",
-    summary: String(p.summary ?? ""),
-  };
+  // 逆序扫描：决策事件（§7.3 决策落 trace）先于请求出现 → 无待审批。
+  // 修复重载回放后已决策审批卡复活的问题（E2E 实测缺陷）。
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    if (event.type === "approval_decision") return null;
+    if (event.type === "approval_request") {
+      const p = event.payload;
+      return {
+        approvalId: String(p.approval_id ?? ""),
+        tool: String(p.tool ?? ""),
+        level: (p.level as ApprovalInfo["level"]) ?? "c",
+        summary: String(p.summary ?? ""),
+      };
+    }
+  }
+  return null;
 }

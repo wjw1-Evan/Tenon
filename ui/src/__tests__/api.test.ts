@@ -72,6 +72,19 @@ describe("TenonApi（§15 客户端）", () => {
     );
   });
 
+  it("removeProject calls DELETE and never implies disk deletion", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ removed: true, disk_contents_deleted: false }), { status: 200 })
+    );
+    const api = new TenonApi({ port: 9999, token: "t" });
+    const result = await api.removeProject("p-remove");
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://127.0.0.1:9999/projects/p-remove");
+    expect(init.method).toBe("DELETE");
+    expect(init.headers["X-Tenon-Token"]).toBe("t");
+    expect(result.disk_contents_deleted).toBe(false);
+  });
+
   it("组合任务只提交 project-scoped children", async () => {
     fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
     const api = new TenonApi({ port: 9999, token: "t" });
@@ -86,6 +99,20 @@ describe("TenonApi（§15 客户端）", () => {
       "p-a",
       "p-b",
     ]);
+  });
+
+  it("权限策略使用专用收窄配置端点", async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({}), { status: 200 }));
+    const api = new TenonApi({ port: 9999, token: "t" });
+    await api.putTeamPolicy({ force_interactive: true, denied_tools: ["git_push"], max_cost_usd: 2 });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://127.0.0.1:9999/team-policy");
+    expect(init.method).toBe("PUT");
+    expect(JSON.parse(init.body)).toEqual({
+      force_interactive: true,
+      denied_tools: ["git_push"],
+      max_cost_usd: 2,
+    });
   });
 
   it("connectEvents 先换票、首帧携带 ticket（ADR-10）", async () => {

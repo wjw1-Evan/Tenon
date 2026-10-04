@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use tenon_core::tools::PatchOp;
 use tenon_fs::{FileOps, FileService};
-use tenon_sandbox::exec_command;
 use tenon_sandbox::WriteGuard;
+use tenon_sandbox::{exec_argv, exec_command};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolOutput {
@@ -126,6 +126,45 @@ fn project_rel(ctx: &ToolContext, path: &str) -> Result<String, ToolOutput> {
         .map_err(|e| ToolOutput::err(format!("路径越界: {e}")))
 }
 
+/// 远端名只能是 Git remote 短名；不允许 option 前缀、refspec 或 shell 空白。
+fn safe_git_remote(remote: &str) -> bool {
+    !remote.is_empty()
+        && remote.len() <= 128
+        && !remote.starts_with('-')
+        && remote
+            .chars()
+            .all(|c| c.is_alphanumeric() || "-_.".contains(c))
+}
+
+/// 分支 / tag 短名白名单：拒绝 refspec、option 前缀、控制字符与常见 shell 元字符。
+fn safe_git_branch(branch: &str) -> bool {
+    !branch.is_empty()
+        && branch.len() <= 256
+        && !branch.starts_with(['-', '/'])
+        && branch.chars().all(|c| {
+            !c.is_whitespace()
+                && !c.is_control()
+                && !matches!(
+                    c,
+                    ':' | '~'
+                        | '^'
+                        | '?'
+                        | '*'
+                        | '['
+                        | '\\'
+                        | '<'
+                        | '>'
+                        | '|'
+                        | '\''
+                        | '"'
+                        | '$'
+                        | ';'
+                        | '&'
+                        | '`'
+                )
+        })
+}
+
 /// 执行单个工具调用（已过权限审批；本函数只做执行与边界检查）。
 /// Err 变体含三栏冲突预览（§8.6）——尺寸可接受（clippy result_large_err 白名单）。
 #[allow(clippy::result_large_err)]
@@ -145,7 +184,18 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                 Err(e) => return e,
             };
             match ctx.files.read_file(&rel) {
-                Ok(content) => ToolOutput::ok(content),
+                Ok(content) => {
+                    // LLM 上下文预算（v1.69）：读入模型上下文的文件仍限 10MB；
+                    // 编辑器无大小限制与此无关，apply_patch 内部读不受此限。
+                    const CONTEXT_BUDGET_BYTES: usize = 10 * 1024 * 1024;
+                    if content.len() > CONTEXT_BUDGET_BYTES {
+                        return ToolOutput::err(format!(
+                            "文件过大（>{mb}MB），超出 Agent 上下文预算；可用 grep / list_dir 定位后按行读取",
+                            mb = CONTEXT_BUDGET_BYTES / 1024 / 1024
+                        ));
+                    }
+                    ToolOutput::ok(content)
+                }
                 Err(e) => ToolOutput::err(format!("读取失败: {e}")),
             }
         }
@@ -542,14 +592,150 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                 Err(e) => ToolOutput::err(format!("git 失败: {e}")),
             }
         }
-        "git_push" | "create_pr" => {
-            // 推送 / PR 需要 D 级审批 + 远端凭据；M0 返回明确未实现（不静默失败）
-            ToolOutput::err(format!(
-                "{tool} 需要远端凭据配置，当前版本未启用（审批已过，执行通道随 M2 落地）"
-            ))
+        "git_push" => {
+            if ctx.readonly {
+                return ToolOutput::err("只读会话禁用 git 推送");
+            }
+            let remote = args
+                .get("remote")
+                .and_then(|v| v.as_str())
+                .unwrap_or("origin");
+            let requested_branch = args.get("branch").and_then(|v| v.as_str());
+            if !safe_git_remote(remote) {
+                return ToolOutput::err("remote 名称非法");
+            }
+            if let Some(branch) = requested_branch {
+                if !safe_git_branch(branch) {
+                    return ToolOutput::err("branch 名称非法（不支持 refspec / force）");
+                }
+            }
+            let branch = match requested_branch {
+                Some(branch) => branch.to_string(),
+                None => {
+                    let out = std::process::Command::new("git")
+                        .arg("-C")
+                        .arg(&ctx.root)
+                        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                        .output();
+                    match out {
+                        Ok(out) if out.status.success() => {
+                            String::from_utf8_lossy(&out.stdout).trim().to_string()
+                        }
+                        Ok(out) => {
+                            return ToolOutput::err(format!(
+                                "无法识别当前分支: {}",
+                                String::from_utf8_lossy(&out.stderr).trim()
+                            ))
+                        }
+                        Err(e) => return ToolOutput::err(format!("git 失败: {e}")),
+                    }
+                }
+            };
+            if !safe_git_branch(&branch) {
+                return ToolOutput::err("当前分支名称非法");
+            }
+            let upstream = if args
+                .get("upstream")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                " --set-upstream"
+            } else {
+                ""
+            };
+            // D 级审批已在 session 层完成；远程名 / 分支经白名单校验后仍用
+            // 直接参数拼接（无 shell 注入面），并禁用交互式凭据提示。
+            let command = format!("git push --porcelain{upstream} {remote} {branch}");
+            let spec = tenon_sandbox::SandboxSpec::None;
+            match exec_command(&command, &ctx.root, ctx.command_timeout, &spec) {
+                Ok(out) => ToolOutput {
+                    ok: out.success(),
+                    content: tenon_core::redact::redact(&format!(
+                        "$ {command}\n{}\n{}",
+                        out.stdout, out.stderr
+                    )),
+                    changed_files: vec![],
+                    exit_code: out.exit_code,
+                    dirty_conflict: None,
+                    dirty_merged: None,
+                },
+                Err(e) => ToolOutput::err(format!("git push 失败: {e}")),
+            }
         }
 
+        "create_pr" => create_pull_request(ctx, args),
+
         other => ToolOutput::err(format!("未知工具: {other}")),
+    }
+}
+
+/// 创建 Pull Request（C+D 复合审批）：通过本机 `gh` CLI 使用用户已配置凭据。
+/// argv 直执不经 shell；`gh` 自身负责目标主机 / token 认证，输出仍统一脱敏。
+fn create_pull_request(ctx: &ToolContext, args: &serde_json::Value) -> ToolOutput {
+    if ctx.readonly {
+        return ToolOutput::err("只读会话禁用创建 Pull Request");
+    }
+    let Some(title) = args.get("title").and_then(|v| v.as_str()).map(str::trim) else {
+        return ToolOutput::err("缺少 title 参数");
+    };
+    if title.is_empty() {
+        return ToolOutput::err("title 不能为空");
+    }
+    for key in ["base", "head"] {
+        if let Some(value) = args.get(key).and_then(|v| v.as_str()) {
+            if !safe_git_branch(value) {
+                return ToolOutput::err(format!("{key} 分支名称非法"));
+            }
+        }
+    }
+    if args
+        .get("repository")
+        .and_then(|v| v.as_str())
+        .is_some_and(|value| value.starts_with('-'))
+    {
+        return ToolOutput::err("repository 参数非法");
+    }
+
+    let mut gh_args = vec![
+        "pr".to_string(),
+        "create".to_string(),
+        "--title".to_string(),
+        title.to_string(),
+    ];
+    if let Some(body) = args.get("body").and_then(|v| v.as_str()) {
+        gh_args.extend(["--body".to_string(), body.to_string()]);
+    }
+    if let Some(base) = args.get("base").and_then(|v| v.as_str()) {
+        gh_args.extend(["--base".to_string(), base.to_string()]);
+    }
+    if let Some(head) = args.get("head").and_then(|v| v.as_str()) {
+        gh_args.extend(["--head".to_string(), head.to_string()]);
+    }
+    if args.get("draft").and_then(|v| v.as_bool()).unwrap_or(false) {
+        gh_args.push("--draft".to_string());
+    }
+    if let Some(repository) = args.get("repository").and_then(|v| v.as_str()) {
+        gh_args.extend(["--repo".to_string(), repository.to_string()]);
+    }
+
+    match exec_argv("gh", &gh_args, &ctx.root, ctx.command_timeout, &[]) {
+        Ok(out) => {
+            let text = format!(
+                "gh pr create\nexit={}\n{}\n{}",
+                out.exit_code.unwrap_or(-1),
+                out.stdout,
+                out.stderr
+            );
+            ToolOutput {
+                ok: out.success() && !out.timed_out,
+                content: tenon_core::redact::redact(&text),
+                changed_files: vec![],
+                exit_code: out.exit_code,
+                dirty_conflict: None,
+                dirty_merged: None,
+            }
+        }
+        Err(e) => ToolOutput::err(format!("创建 PR 失败: {e}")),
     }
 }
 
@@ -768,5 +954,87 @@ mod tests {
         let (_d, c) = ctx();
         let out = execute_tool(&c, "git_commit", &serde_json::json!({"message": "m"}));
         assert!(!out.ok, "非 git 仓库提交失败但不崩溃");
+    }
+
+    #[test]
+    fn git_pushes_current_branch_to_local_remote_without_force() {
+        let work = tempfile::tempdir().unwrap();
+        let remote = tempfile::tempdir().unwrap();
+        let git = |args: &[&str], cwd: &Path| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .env("GIT_AUTHOR_NAME", "tenon")
+                .env("GIT_AUTHOR_EMAIL", "tenon@local")
+                .env("GIT_COMMITTER_NAME", "tenon")
+                .env("GIT_COMMITTER_EMAIL", "tenon@local")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {:?}: {}",
+                args,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(&["init", "--initial-branch=main", "--bare"], remote.path());
+        git(&["init", "--initial-branch=main"], work.path());
+        std::fs::write(work.path().join("file.txt"), "ready\n").unwrap();
+        git(&["add", "file.txt"], work.path());
+        git(&["commit", "-m", "ready"], work.path());
+        git(
+            &["remote", "add", "origin", remote.path().to_str().unwrap()],
+            work.path(),
+        );
+
+        let c = ToolContext::new(work.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "git_push", &serde_json::json!({"remote": "origin"}));
+        assert!(out.ok, "{}", out.content);
+        assert_eq!(out.exit_code, Some(0));
+
+        let pushed = std::process::Command::new("git")
+            .arg("-C")
+            .arg(remote.path())
+            .args(["rev-parse", "main"])
+            .output()
+            .unwrap();
+        assert!(pushed.status.success());
+    }
+
+    #[test]
+    fn git_push_rejects_branch_refspec_and_option_names() {
+        let (_d, c) = ctx();
+        for branch in ["-force", "main:other", "a b"] {
+            let out = execute_tool(
+                &c,
+                "git_push",
+                &serde_json::json!({"remote": "origin", "branch": branch}),
+            );
+            assert!(!out.ok, "{branch}: {out:?}");
+        }
+    }
+
+    #[test]
+    fn create_pr_validates_inputs_before_invoking_gh() {
+        let (_d, c) = ctx();
+        let out = execute_tool(&c, "create_pr", &serde_json::json!({}));
+        assert!(!out.ok);
+        assert!(out.content.contains("缺少 title"));
+
+        let out = execute_tool(
+            &c,
+            "create_pr",
+            &serde_json::json!({"title": "x", "base": "-force"}),
+        );
+        assert!(!out.ok);
+        assert!(out.content.contains("base 分支名称非法"));
+
+        let out = execute_tool(
+            &c,
+            "create_pr",
+            &serde_json::json!({"title": "x", "head": "a b"}),
+        );
+        assert!(!out.ok);
+        assert!(out.content.contains("head 分支名称非法"));
     }
 }

@@ -23,6 +23,8 @@ pub enum Level {
     C,
     /// D 不可逆
     D,
+    /// C+D 复合（出网 + 不可逆副作用，例如创建 PR）
+    Composite,
 }
 
 impl Level {
@@ -32,6 +34,7 @@ impl Level {
             Level::B => "b",
             Level::C => "c",
             Level::D => "d",
+            Level::Composite => "cd",
         }
     }
 }
@@ -93,7 +96,7 @@ impl Policy {
             Level::A => Decision::Auto,
             Level::B => self.decide_b(),
             // C / D 恒审批：任何档位、信任状态、Laya 判定均不可放宽。
-            Level::C | Level::D => {
+            Level::C | Level::D | Level::Composite => {
                 if self.readonly {
                     Decision::Denied("readonly")
                 } else {
@@ -211,6 +214,12 @@ mod tests {
         );
         assert_eq!(
             p.decide(Action { level: Level::D }),
+            Decision::Denied("readonly")
+        );
+        assert_eq!(
+            p.decide(Action {
+                level: Level::Composite
+            }),
             Decision::Denied("readonly")
         );
     }

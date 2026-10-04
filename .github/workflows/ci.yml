@@ -1,6 +1,5 @@
-# Tenon CI 骨架（ADR-13：三平台矩阵 = fmt / clippy / cargo test / vitest /
-# Playwright / 性能基准）。M0 交付 fmt + clippy + cargo test + vitest；
-# Windows 作业随 WSL2 沙箱（M1）启用；Playwright E2E 与性能基准随 M1 挂载。
+# Tenon CI（ADR-13：fmt / clippy / cargo test / vitest / Playwright / 性能基准）。
+# Windows 作业随 WSL2 沙箱（M1）启用；Playwright 与服务层性能门禁已挂载。
 
 name: CI
 
@@ -35,10 +34,6 @@ jobs:
         env:
           # GLM 联调测试在无 config.local.toml 时自动跳过
           TENON_SKIP_LIVE: "1"
-      # 性能基准（§18.4 / §8.7 预算进 CI）：cargo bench 任务挂载位——
-      # snapshot/exec/merge 基准随 M3 性能打磨补 criterion 配置
-      # - name: benches
-      #   run: cargo bench --workspace
 
   ui:
     name: UI (vitest)
@@ -59,3 +54,54 @@ jobs:
         run: pnpm --filter tenon-ui test
       - name: build
         run: pnpm --filter tenon-ui build
+
+  e2e:
+    name: E2E (real daemon)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: install Playwright Chromium
+        run: pnpm --filter tenon-ui exec playwright install --with-deps chromium
+      - name: build daemon and UI
+        run: |
+          cargo build -p tenon-daemon --bin tenon-daemon
+          pnpm --filter tenon-ui build
+      - name: Playwright multi-project daemon E2E
+        run: pnpm --filter tenon-ui test:e2e
+      - name: upload Playwright artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts
+          path: ui/test-results/
+          if-no-files-found: ignore
+
+  performance:
+    name: Performance budgets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # §8.7 验收预算：release profile 降低调试构建噪声；
+      # 用例自身保留绝对阈值，超预算即 CI 失败。
+      - name: service-layer budgets
+        run: cargo test -p tenon-fs --release --test performance_budgets -- --ignored --nocapture
+      # §8.7：runtime 已打开的项目切换核心链路 P50 预算。
+      - name: project switch budget
+        run: cargo test -p tenon-daemon --release --test daemon_tests warm_project_switch -- --ignored --nocapture
+      # §18.4 内核基准：merge / snapshot / sandbox-exec 持续输出趋势基线。
+      - name: kernel benches
+        run: cargo bench -p tenon-core -p tenon-sandbox -p tenon-snapshot --benches

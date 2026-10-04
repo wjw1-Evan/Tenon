@@ -11,8 +11,16 @@ export interface ProjectSummary {
   path: string;
   display_name: string;
   trusted: boolean;
-  open: boolean;
-  sessions: Array<{ id: string; status: string; model: string; updated_at: string }>;
+  sessions: Array<{
+    id: string;
+    status: string;
+    model: string;
+    /** 自动生成对话标题（v1.58）；空 / 缺省回退模型名 / 短 id。 */
+    title?: string;
+    updated_at: string;
+  }>;
+  /** 有活跃 runtime 的会话 id（§6.2：runtime 不跨 daemon 重启）。 */
+  session_runtimes?: string[];
   active_sessions: number;
   dirty_buffers: number;
   pending_approvals: Array<{
@@ -30,12 +38,13 @@ export interface ProjectUiState {
   sessionId?: string;
   tabs?: string[];
   activePath?: string | null;
+  splitPath?: string | null;
   leftWidth?: number;
   rightWidth?: number;
   bottomHeight?: number;
   sidebarOpen?: boolean;
   timelineOpen?: boolean;
-  bottomTab?: "timeline" | "trace" | "evals";
+  bottomTab?: "source" | "timeline" | "trace" | "evals";
 }
 
 export interface OpenedProject {
@@ -43,7 +52,6 @@ export interface OpenedProject {
   path: string;
   display_name: string;
   trusted: boolean;
-  open: boolean;
 }
 
 export interface PortfolioTask {
@@ -100,6 +108,26 @@ export type FileOperation =
 /** UI 偏好（§7.5 外观档等）：daemon 权威存储（跨启动 / 跨端）。 */
 export type UiPrefs = Record<string, string>;
 
+/** provider 设置条目（§15 /settings models 合并视图；api_key 明文永不回显）。 */
+export interface ProviderSettings {
+  kind?: string;
+  base_url?: string;
+  wire_api?: string;
+  model?: string;
+  api_key_env?: string;
+  /** 该 provider 在设置覆盖表中（可从设置删除；纯配置文件条目只能编辑）。 */
+  overridden?: boolean;
+  [k: string]: unknown;
+}
+
+/** 权限高级策略（v1.85）：只提供收窄能力，C/D 固定恒审批。 */
+export interface TeamPolicySettings {
+  force_interactive?: boolean;
+  denied_tools?: string[];
+  max_cost_usd?: number | null;
+  [k: string]: unknown;
+}
+
 /** 全局设置（§15 /settings 合并视图）。 */
 export interface SettingsData {
   session: {
@@ -109,6 +137,22 @@ export interface SettingsData {
     [k: string]: unknown;
   };
   exec?: { command_timeout_s?: number; [k: string]: unknown };
+  privacy?: {
+    telemetry?: boolean;
+    crash_reports?: "off" | "opt_in" | string;
+    [k: string]: unknown;
+  };
+  update?: {
+    channel?: "manual" | "auto" | string;
+    [k: string]: unknown;
+  };
+  models?: {
+    default?: string;
+    providers?: Record<string, ProviderSettings>;
+    laya?: Record<string, unknown>;
+    [k: string]: unknown;
+  };
+  team_policy?: TeamPolicySettings;
   [k: string]: unknown;
 }
 
@@ -169,10 +213,20 @@ export class TenonApi {
     return this.request<SettingsData>("/settings", { method: "PUT", json: body });
   }
 
-  registerProject(path: string) {
+  /** 读权限高级策略（v1.85）。 */
+  getTeamPolicy(): Promise<TeamPolicySettings> {
+    return this.request<TeamPolicySettings>("/team-policy");
+  }
+
+  /** 写权限高级策略（v1.85）：全量原子替换，仅对新会话生效。 */
+  putTeamPolicy(body: TeamPolicySettings): Promise<TeamPolicySettings> {
+    return this.request<TeamPolicySettings>("/team-policy", { method: "PUT", json: body });
+  }
+
+  registerProject(path: string, displayName?: string) {
     return this.request<{ id: string; trusted: boolean }>("/project", {
       method: "PUT",
-      json: { path },
+      json: displayName === undefined ? { path } : { path, display_name: displayName },
     });
   }
 
@@ -182,17 +236,16 @@ export class TenonApi {
     );
   }
 
-  openProject(path: string) {
+  openProject(path: string, displayName?: string) {
     return this.request<OpenedProject>("/projects/open", {
       method: "POST",
-      json: { path },
+      json: displayName === undefined ? { path } : { path, display_name: displayName },
     });
   }
 
-  closeProject(projectId: string, mode: "drain" | "pause" | "force" = "drain") {
-    return this.request<{ closed: boolean }>(`/projects/${projectId}/close`, {
-      method: "POST",
-      json: { mode },
+  removeProject(projectId: string) {
+    return this.request<{ removed: boolean; disk_contents_deleted: boolean }>(`/projects/${projectId}`, {
+      method: "DELETE",
     });
   }
 
@@ -315,9 +368,12 @@ export class TenonApi {
   }
 
   readFile(projectId: string, path: string) {
-    return this.request<{ path: string; content: string }>(
-      `/project/${projectId}/file?path=${encodeURIComponent(path)}`
-    );
+    const query = new URLSearchParams({ path });
+    return this.request<{
+      path: string;
+      content: string;
+      total_bytes: number;
+    }>(`/project/${projectId}/file?${query}`);
   }
 
   writeFile(projectId: string, path: string, content: string) {
@@ -334,6 +390,21 @@ export class TenonApi {
       method: "POST",
       json: { ops },
     });
+  }
+
+  l4Stats(projectId: string) {
+    return this.request<{
+      project_id: string;
+      chunks: number;
+      status?: { state: string; updated_at: string; error?: string | null };
+    }>(`/project/${projectId}/l4/stats`);
+  }
+
+  l4Rebuild(projectId: string) {
+    return this.request<{ queued: boolean; project_id: string }>(
+      `/project/${projectId}/l4/rebuild`,
+      { method: "POST" }
+    );
   }
 
   search(projectId: string, q: string) {
@@ -374,6 +445,8 @@ export class TenonApi {
       | "diagnostics"
       | "workspace_symbol"
       | "codeaction"
+      | "signature_help"
+      | "rename"
       | "format";
     line?: number;
     character?: number;
@@ -389,6 +462,99 @@ export class TenonApi {
         character: body.character ?? 0,
         extra: body.extra,
       },
+    });
+  }
+
+  /** AI ghost text（P2 实验，默认关闭）：仅发送光标前后窗口。 */
+  inlineComplete(body: {
+    project_id: string;
+    session_id: string;
+    path: string;
+    language?: string;
+    prefix: string;
+    suffix: string;
+  }) {
+    return this.request<{ completion: string; provider: string }>(
+      `/project/${body.project_id}/inline-complete`,
+      {
+        method: "POST",
+        json: {
+          session_id: body.session_id,
+          path: body.path,
+          language: body.language,
+          prefix: body.prefix,
+          suffix: body.suffix,
+        },
+      }
+    );
+  }
+
+  /** daemon 侧 tree-sitter 基础高亮 token 流（§8.2）。 */
+  getHighlights(projectId: string, path: string) {
+    return this.request<{
+      tokens: Array<{
+        kind: string;
+        start_line: number;
+        start_column: number;
+        end_line: number;
+        end_column: number;
+      }>;
+      language: string | null;
+      fallback?: boolean;
+    }>(`/project/${projectId}/highlight?path=${encodeURIComponent(path)}`);
+  }
+
+  /** Git source view：branch / changes / commits / inline blame（§8.1）。 */
+  getGitView(projectId: string, path?: string | null) {
+    const query = path ? `?path=${encodeURIComponent(path)}` : "";
+    return this.request<{
+      repository: boolean;
+      branch: string | null;
+      branches: Array<{ name: string; current: boolean; commit: string; upstream?: string }>;
+      changes: Array<{
+        path: string;
+        old_path?: string;
+        index_status: string;
+        worktree_status: string;
+      }>;
+      commits: Array<{
+        id: string;
+        short_id: string;
+        summary: string;
+        author: string;
+        email: string;
+        timestamp: number;
+      }>;
+      blame?: {
+        path: string;
+        lines: Array<{
+          line: number;
+          commit: string;
+          author: string;
+          email: string;
+          timestamp: number;
+          summary: string;
+          content: string;
+        }>;
+      } | null;
+    }>(`/project/${projectId}/git/view${query}`);
+  }
+
+  /** LSP WorkspaceEdit 原子应用：shadow checkpoint + 失败整体回滚（§8.5）。 */
+  applyLspEdit(
+    projectId: string,
+    workspaceEdit: unknown,
+    sessionId: string
+  ) {
+    return this.request<{
+      applied: boolean;
+      checkpoint_id: string;
+      before_tree: string;
+      after_tree: string;
+      files: Array<{ path: string; diff: string }>;
+    }>(`/project/${projectId}/lsp/apply`, {
+      method: "POST",
+      json: { workspace_edit: workspaceEdit, session_id: sessionId },
     });
   }
 
@@ -498,13 +664,80 @@ export class TenonApi {
         is_default: boolean;
       }>;
       default: string;
-      laya?: Record<string, unknown>;
+      /** Laya 状态（§15：版本 / 已下载 / 设备）。 */
+      laya?: {
+        enabled?: boolean;
+        downloaded?: boolean;
+        version?: string | null;
+        device?: string;
+        [k: string]: unknown;
+      };
     }>("/models");
   }
 
   costs(sessionId?: string) {
     const q = sessionId ? `?session=${sessionId}` : "";
     return this.request<Record<string, unknown>>(`/costs${q}`);
+  }
+
+  /** 已安装插件（§13 / §14.2）。 */
+  listPlugins() {
+    return this.request<{
+      installed: Array<{
+        id: string;
+        version: string;
+        permissions: string[];
+        installed_at: string;
+      }>;
+    }>("/plugins");
+  }
+
+  /** 静态 registry 检索（§13.2）。 */
+  searchPlugins(query: string) {
+    return this.request<{
+      hits: Array<{
+        id: string;
+        version: string;
+        sha256: string;
+        signature: string;
+        url: string;
+        description?: string;
+      }>;
+    }>("/plugins", { method: "PUT", json: { query } });
+  }
+
+  /** 插件安装：首次返回 D 级审批与权限 diff，批准后携 approval_id 安装。 */
+  installPlugin(
+    entry: {
+      id: string;
+      version: string;
+      sha256: string;
+      signature: string;
+      url: string;
+      description?: string;
+    },
+    installedPermissions: string[],
+    approvalId?: string
+  ) {
+    return this.request<{
+      approval_id?: string;
+      level?: string;
+      permission_diff?: {
+        added: string[];
+        removed: string[];
+        unchanged: string[];
+      };
+      installed?: boolean;
+      id?: string;
+      version?: string;
+    }>("/plugins/install", {
+      method: "POST",
+      json: {
+        entry,
+        installed_permissions: installedPermissions,
+        approval_id: approvalId,
+      },
+    });
   }
 
   /** 换取一次性 WS 票据（§12.6）。 */
@@ -516,7 +749,7 @@ export class TenonApi {
     return r.ticket;
   }
 
-  /** 连接事件流：先换票，首帧携带（ADR-10）。 */
+  /** 连接事件流：先换票；等待 auth ok 后才交给调用方（ADR-10）。 */
   async connectEvents(
     onEvent: (ev: unknown) => void,
     projectId?: string
@@ -527,18 +760,23 @@ export class TenonApi {
       `ws://127.0.0.1:${new URL(this.base).port}/ws${filter}`
     );
     await new Promise<void>((resolve, reject) => {
-      ws.onopen = () => resolve();
+      ws.onopen = () => ws.send(ticket);
       ws.onerror = () => reject(new Error("ws connect failed"));
+      ws.onmessage = (msg) => {
+        if (msg.data === "auth ok") {
+          ws.onmessage = (event) => {
+            try {
+              onEvent(JSON.parse(event.data));
+            } catch {
+              // 忽略非 JSON 帧
+            }
+          };
+          resolve();
+        } else if (msg.data === "auth failed") {
+          reject(new Error("ws auth failed"));
+        }
+      };
     });
-    ws.send(ticket);
-    ws.onmessage = (msg) => {
-      if (msg.data === "auth ok" || msg.data === "auth failed") return;
-      try {
-        onEvent(JSON.parse(msg.data));
-      } catch {
-        // 忽略非 JSON 帧
-      }
-    };
     return ws;
   }
 }

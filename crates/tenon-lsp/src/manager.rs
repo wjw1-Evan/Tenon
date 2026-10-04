@@ -407,18 +407,33 @@ fn wait_diagnostics(
     window: Duration,
 ) -> Result<serde_json::Value, LspManagerError> {
     let deadline = Instant::now() + window;
+    // 竞态防御：部分服务器（tsserver）先推一份空诊断、分析完成后再推真实
+    // 结果；若首个空推送立即返回，会把真实类型错误吞成「干净」（验证通道
+    // 误判）。空推送时给一个短宽限窗口等非空更新，干净文件最多多等 3s。
+    const EMPTY_PUSH_GRACE: Duration = Duration::from_secs(3);
+    let mut grace_deadline: Option<Instant> = None;
     loop {
         {
             let cache = cache.lock().expect("diag lock");
             if let Some((at, params)) = cache.get(uri) {
                 if at.elapsed() < Duration::from_secs(30) {
                     let items = params.get("diagnostics").cloned().unwrap_or_default();
-                    return Ok(items);
+                    let is_empty = items.as_array().map(|a| a.is_empty()).unwrap_or(false);
+                    if !is_empty {
+                        return Ok(items);
+                    }
+                    let ed = Instant::now() + EMPTY_PUSH_GRACE;
+                    grace_deadline = Some(match grace_deadline {
+                        Some(d) => d.min(ed),
+                        None => ed,
+                    });
                 }
             }
         }
-        if Instant::now() >= deadline {
-            // 无推送：按空诊断返回（服务器可能不支持该文档的诊断）
+        let effective_deadline = grace_deadline.map_or(deadline, |d| d.min(deadline));
+        if Instant::now() >= effective_deadline {
+            // 宽限内无非空更新：按最后已知（空）诊断返回（服务器可能不支持
+            // 该文档的诊断，或文件确实干净）
             return Ok(serde_json::Value::Array(vec![]));
         }
         std::thread::sleep(Duration::from_millis(100));

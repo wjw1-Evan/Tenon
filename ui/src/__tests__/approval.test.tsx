@@ -49,4 +49,22 @@ describe("审批卡片（§7.3）", () => {
     expect(info?.level).toBe("d");
     expect(pendingApprovalFromEvents([{ type: "user_input", payload: {} }])).toBeNull();
   });
+
+  it("pendingApprovalFromEvents 决策已落 trace 则不复活旧审批卡（回放回归）", () => {
+    const events = [
+      { type: "user_input", payload: {} },
+      { type: "approval_request", payload: { approval_id: "a1", tool: "run_build", level: "b", summary: "build" } },
+      { type: "patch_applied", payload: {} },
+      { type: "approval_decision", payload: { approval_id: "a1", decision: "once" } },
+      { type: "done", payload: {} },
+    ];
+    expect(pendingApprovalFromEvents(events)).toBeNull();
+    // 多轮审批：最后一个请求未决策 → 待审批
+    const events2 = [
+      { type: "approval_request", payload: { approval_id: "a1", tool: "run_build", level: "b", summary: "" } },
+      { type: "approval_decision", payload: { approval_id: "a1", decision: "once" } },
+      { type: "approval_request", payload: { approval_id: "a2", tool: "apply_patch", level: "b", summary: "patch" } },
+    ];
+    expect(pendingApprovalFromEvents(events2)?.approvalId).toBe("a2");
+  });
 });

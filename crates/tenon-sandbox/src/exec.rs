@@ -125,6 +125,58 @@ pub fn exec_command(
     })
 }
 
+/// argv 直执版本：用于代理侧 `gh` / 平台 CLI，不经 shell 解释。
+/// `extra_env` 只追加最小环境；凭据仍来自用户本机 CLI 配置或注入环境。
+pub fn exec_argv(
+    program: &str,
+    args: &[String],
+    cwd: &Path,
+    timeout: Duration,
+    extra_env: &[(&str, String)],
+) -> std::io::Result<ExecOutcome> {
+    let tmp = tempfile::tempdir()?;
+    let out_path = tmp.path().join("stdout");
+    let err_path = tmp.path().join("stderr");
+
+    let mut built = std::process::Command::new(program);
+    built.args(args).current_dir(cwd);
+    built.env_clear();
+    built.env("PATH", std::env::var("PATH").unwrap_or_default());
+    built.env("HOME", std::env::var("HOME").unwrap_or_default());
+    built.env("LANG", "C.UTF-8");
+    built.env("GH_NO_UPDATE_NOTIFIER", "1");
+    built.env("NO_COLOR", "1");
+    built.env("GIT_TERMINAL_PROMPT", "0");
+    for (key, value) in extra_env {
+        built.env(key, value);
+    }
+    built.stdin(Stdio::null());
+    built.stdout(std::fs::File::create(&out_path)?);
+    built.stderr(std::fs::File::create(&err_path)?);
+
+    let mut child = built.spawn()?;
+    let start = Instant::now();
+    let mut timed_out = false;
+    let status = loop {
+        match child.try_wait()? {
+            Some(status) => break Some(status),
+            None if start.elapsed() >= timeout => {
+                timed_out = true;
+                let _ = child.kill();
+                break Some(child.wait()?);
+            }
+            None => std::thread::sleep(Duration::from_millis(15)),
+        }
+    };
+
+    Ok(ExecOutcome {
+        exit_code: status.and_then(|s| s.code()),
+        stdout: std::fs::read_to_string(&out_path).unwrap_or_default(),
+        stderr: std::fs::read_to_string(&err_path).unwrap_or_default(),
+        timed_out,
+    })
+}
+
 #[cfg(target_os = "macos")]
 fn build_sandboxed_command(command: &str, sandbox: &SandboxSpec) -> Option<std::process::Command> {
     if matches!(sandbox, SandboxSpec::None) {
@@ -208,6 +260,31 @@ mod tests {
         assert!(out.stderr.contains("err"));
         assert!(!out.timed_out);
         assert!(!out.success());
+    }
+
+    #[test]
+    fn argv_exec_is_shell_free_and_redacts_nothing() {
+        let script = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            script.path(),
+            "#!/bin/sh\nprintf 'argv=%s\\n' \"$*\"\nprintf 'shell=%s\\n' \"$0\"\n",
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(script.path(), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        let out = exec_argv(
+            script.path().to_str().unwrap(),
+            &["--title".to_string(), "not a command".to_string()],
+            Path::new("/tmp"),
+            Duration::from_secs(5),
+            &[],
+        )
+        .unwrap();
+        assert!(out.success(), "{}{}", out.stdout, out.stderr);
+        assert!(out.stdout.contains("argv=--title not a command"));
     }
 
     #[test]

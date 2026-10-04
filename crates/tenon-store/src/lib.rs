@@ -35,6 +35,7 @@ pub enum Level {
     B,
     C,
     D,
+    Composite,
 }
 
 impl Level {
@@ -44,6 +45,7 @@ impl Level {
             Level::B => "b",
             Level::C => "c",
             Level::D => "d",
+            Level::Composite => "cd",
         }
     }
 }
@@ -107,6 +109,7 @@ pub enum EventKind {
     UserInput,
     Sensing,
     Decision,
+    ModelDelta,
     PatchApplied,
     CommandRun,
     Diagnostics,
@@ -120,6 +123,8 @@ pub enum EventKind {
     ModelFallback,
     DeciderCall,
     Error,
+    /// 对话标题生成完成（v1.58，payload {title}）。
+    SessionTitle,
 }
 
 impl EventKind {
@@ -128,6 +133,7 @@ impl EventKind {
             EventKind::UserInput => "user_input",
             EventKind::Sensing => "sensing",
             EventKind::Decision => "decision",
+            EventKind::ModelDelta => "model_delta",
             EventKind::PatchApplied => "patch_applied",
             EventKind::CommandRun => "command_run",
             EventKind::Diagnostics => "diagnostics",
@@ -141,6 +147,7 @@ impl EventKind {
             EventKind::ModelFallback => "model_fallback",
             EventKind::DeciderCall => "decider_call",
             EventKind::Error => "error",
+            EventKind::SessionTitle => "session_title",
         }
     }
 
@@ -149,6 +156,7 @@ impl EventKind {
             "user_input" => EventKind::UserInput,
             "sensing" => EventKind::Sensing,
             "decision" => EventKind::Decision,
+            "model_delta" => EventKind::ModelDelta,
             "patch_applied" => EventKind::PatchApplied,
             "command_run" => EventKind::CommandRun,
             "diagnostics" => EventKind::Diagnostics,
@@ -162,6 +170,7 @@ impl EventKind {
             "model_fallback" => EventKind::ModelFallback,
             "decider_call" => EventKind::DeciderCall,
             "error" => EventKind::Error,
+            "session_title" => EventKind::SessionTitle,
             _ => return None,
         })
     }
@@ -171,6 +180,9 @@ impl EventKind {
 pub struct Project {
     pub id: String,
     pub path: String,
+    /// 用户自定义显示名；空串 = 由路径末段派生（§6.4 Project 显示名）。
+    #[serde(default)]
+    pub display_name: String,
     pub trusted: bool,
     pub language_packs: Vec<String>,
     pub created_at: String,
@@ -182,6 +194,9 @@ pub struct Session {
     pub project_id: String,
     pub model: String,
     pub status: SessionStatus,
+    /// 首条消息自动生成的对话标题（v1.58）；空串 = 未生成，UI 回退模型名 / 短 id。
+    #[serde(default)]
+    pub title: String,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -288,7 +303,7 @@ pub struct Plugin {
     pub installed_at: String,
 }
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 6;
 
 const DDL: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -301,6 +316,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
     path TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL DEFAULT '',
     trusted INTEGER NOT NULL DEFAULT 0,
     language_packs TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL
@@ -311,6 +327,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     project_id TEXT NOT NULL REFERENCES projects(id),
     model TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'idle',
+    title TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -399,6 +416,8 @@ CREATE TABLE IF NOT EXISTS l4_chunks (
     project_id TEXT NOT NULL,
     path TEXT NOT NULL,
     symbol TEXT,
+    start_line INTEGER NOT NULL DEFAULT 1,
+    end_line INTEGER NOT NULL DEFAULT 1,
     text TEXT,
     embedding BLOB,
     updated_at TEXT NOT NULL
@@ -424,6 +443,8 @@ CREATE TABLE IF NOT EXISTS project_ui_state (
 #[derive(Debug, Clone)]
 pub struct L4ChunkRecord {
     pub symbol: Option<String>,
+    pub start_line: usize,
+    pub end_line: usize,
     pub text: String,
     pub embedding: Vec<f32>,
 }
@@ -434,6 +455,9 @@ pub struct L4SearchHit {
     pub id: i64,
     pub path: String,
     pub symbol: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub text: String,
     pub score: f32,
 }
 
@@ -491,6 +515,39 @@ impl Store {
                         [],
                     )?;
                 }
+                // v3 → v4：L4 切片补齐行区间（旧记录按切片文本行数近似回填）。
+                if !Self::column_exists(&conn, "l4_chunks", "start_line")? {
+                    conn.execute(
+                        "ALTER TABLE l4_chunks ADD COLUMN start_line INTEGER NOT NULL DEFAULT 1",
+                        [],
+                    )?;
+                }
+                if !Self::column_exists(&conn, "l4_chunks", "end_line")? {
+                    conn.execute(
+                        "ALTER TABLE l4_chunks ADD COLUMN end_line INTEGER NOT NULL DEFAULT 1",
+                        [],
+                    )?;
+                }
+                // v4 → v5：projects 补 display_name（§14.2 projects 表既定字段）。
+                if !Self::column_exists(&conn, "projects", "display_name")? {
+                    conn.execute(
+                        "ALTER TABLE projects ADD COLUMN display_name TEXT NOT NULL DEFAULT ''",
+                        [],
+                    )?;
+                }
+                // v5 → v6：sessions 补自动生成对话标题（v1.58，旧行回退空串）。
+                if !Self::column_exists(&conn, "sessions", "title")? {
+                    conn.execute(
+                        "ALTER TABLE sessions ADD COLUMN title TEXT NOT NULL DEFAULT ''",
+                        [],
+                    )?;
+                }
+                conn.execute(
+                    "UPDATE l4_chunks
+                     SET end_line = start_line + (LENGTH(text) - LENGTH(REPLACE(text, '\n', '')))
+                     WHERE end_line < start_line",
+                    [],
+                )?;
                 conn.execute_batch(
                     "UPDATE events SET project_id = COALESCE((SELECT project_id FROM sessions WHERE sessions.id = events.session_id), '')
                      WHERE project_id = '';
@@ -564,7 +621,7 @@ impl Store {
 
     pub fn project_by_path(&mut self, path: &str) -> Result<Option<Project>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, path, trusted, language_packs, created_at FROM projects WHERE path = ?1",
+            "SELECT id, path, display_name, trusted, language_packs, created_at FROM projects WHERE path = ?1",
         )?;
         let mut rows = stmt.query_map([path], row_to_project)?;
         Ok(rows.next().transpose()?)
@@ -572,7 +629,7 @@ impl Store {
 
     pub fn project(&mut self, id: &str) -> Result<Option<Project>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, path, trusted, language_packs, created_at FROM projects WHERE id = ?1",
+            "SELECT id, path, display_name, trusted, language_packs, created_at FROM projects WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map([id], row_to_project)?;
         Ok(rows.next().transpose()?)
@@ -580,7 +637,7 @@ impl Store {
 
     pub fn list_projects(&mut self) -> Result<Vec<Project>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, path, trusted, language_packs, created_at FROM projects ORDER BY created_at DESC",
+            "SELECT id, path, display_name, trusted, language_packs, created_at FROM projects ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([], row_to_project)?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -603,6 +660,15 @@ impl Store {
         Ok(())
     }
 
+    /// 设置项目显示名；空串回退为路径末段派生（§6.4 / §14.2）。
+    pub fn set_project_display_name(&mut self, id: &str, display_name: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE projects SET display_name = ?2 WHERE id = ?1",
+            params![id, display_name],
+        )?;
+        Ok(())
+    }
+
     pub fn set_project_language_packs(&mut self, id: &str, packs: &[String]) -> Result<()> {
         self.conn.execute(
             "UPDATE projects SET language_packs = ?2 WHERE id = ?1",
@@ -620,6 +686,7 @@ impl Store {
             project_id: project_id.to_string(),
             model: model.to_string(),
             status: SessionStatus::Idle,
+            title: String::new(),
             created_at: now.clone(),
             updated_at: now,
         };
@@ -640,7 +707,8 @@ impl Store {
 
     pub fn session(&mut self, id: &str) -> Result<Option<Session>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, model, status, created_at, updated_at FROM sessions WHERE id = ?1",
+            "SELECT id, project_id, model, status, title, created_at, updated_at
+             FROM sessions WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map([id], row_to_session)?;
         Ok(rows.next().transpose()?)
@@ -649,7 +717,7 @@ impl Store {
     /// 全部会话（崩溃恢复扫描用）。
     pub fn list_all_sessions(&mut self) -> Result<Vec<Session>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, model, status, created_at, updated_at
+            "SELECT id, project_id, model, status, title, created_at, updated_at
              FROM sessions ORDER BY created_at ASC",
         )?;
         let rows = stmt.query_map([], row_to_session)?;
@@ -658,7 +726,7 @@ impl Store {
 
     pub fn list_sessions(&mut self, project_id: &str) -> Result<Vec<Session>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, model, status, created_at, updated_at
+            "SELECT id, project_id, model, status, title, created_at, updated_at
              FROM sessions WHERE project_id = ?1 ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([project_id], row_to_session)?;
@@ -677,6 +745,15 @@ impl Store {
         self.conn.execute(
             "UPDATE sessions SET model = ?2, updated_at = ?3 WHERE id = ?1",
             params![id, model, Self::now()],
+        )?;
+        Ok(())
+    }
+
+    /// 写入自动生成的对话标题（v1.58）；空串视为未生成。
+    pub fn set_session_title(&mut self, id: &str, title: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET title = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, title, Self::now()],
         )?;
         Ok(())
     }
@@ -752,6 +829,16 @@ impl Store {
             |r| r.get(0),
         )?;
         Ok(seq)
+    }
+
+    /// 会话内某类型事件计数（v1.58 判定「首条用户消息」用）。
+    pub fn count_events_of_kind(&mut self, session_id: &str, kind: EventKind) -> Result<i64> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM events WHERE session_id = ?1 AND type = ?2",
+            params![session_id, kind.as_str()],
+            |r| r.get(0),
+        )?;
+        Ok(count)
     }
 
     // ---------- ui_prefs（§7.5 外观档等跨启动 UI 偏好） ----------
@@ -1221,12 +1308,14 @@ impl Store {
         let now = Self::now();
         for chunk in chunks {
             tx.execute(
-                "INSERT INTO l4_chunks (project_id, path, symbol, text, embedding, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO l4_chunks (project_id, path, symbol, start_line, end_line, text, embedding, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     project_id,
                     path,
                     chunk.symbol,
+                    chunk.start_line as i64,
+                    chunk.end_line as i64,
                     chunk.text,
                     f32_slice_to_blob(&chunk.embedding),
                     now
@@ -1268,7 +1357,8 @@ impl Store {
         top_k: usize,
     ) -> Result<Vec<L4SearchHit>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, path, COALESCE(symbol,''), embedding FROM l4_chunks
+            "SELECT id, path, COALESCE(symbol,''), start_line, end_line, text, embedding
+             FROM l4_chunks
              WHERE project_id = ?1 AND embedding IS NOT NULL",
         )?;
         let rows = stmt.query_map([project_id], |r| {
@@ -1276,18 +1366,24 @@ impl Store {
                 r.get::<_, i64>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
-                r.get::<_, Vec<u8>>(3)?,
+                r.get::<_, i64>(3)? as usize,
+                r.get::<_, i64>(4)? as usize,
+                r.get::<_, String>(5)?,
+                r.get::<_, Vec<u8>>(6)?,
             ))
         })?;
         let mut scored = Vec::new();
         for row in rows {
-            let (id, path, symbol, blob) = row?;
+            let (id, path, symbol, start_line, end_line, text, blob) = row?;
             let v = blob_to_f32_slice(&blob);
             let score = cosine(query, &v);
             scored.push(L4SearchHit {
                 id,
                 path,
                 symbol,
+                start_line,
+                end_line,
+                text,
                 score,
             });
         }
@@ -1347,9 +1443,10 @@ fn row_to_project(r: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
     Ok(Project {
         id: r.get(0)?,
         path: r.get(1)?,
-        trusted: r.get::<_, i64>(2)? != 0,
-        language_packs: serde_json::from_str(&r.get::<_, String>(3)?).unwrap_or_default(),
-        created_at: r.get(4)?,
+        display_name: r.get(2)?,
+        trusted: r.get::<_, i64>(3)? != 0,
+        language_packs: serde_json::from_str(&r.get::<_, String>(4)?).unwrap_or_default(),
+        created_at: r.get(5)?,
     })
 }
 
@@ -1359,8 +1456,9 @@ fn row_to_session(r: &rusqlite::Row<'_>) -> rusqlite::Result<Session> {
         project_id: r.get(1)?,
         model: r.get(2)?,
         status: SessionStatus::parse(&r.get::<_, String>(3)?).unwrap_or(SessionStatus::Idle),
-        created_at: r.get(4)?,
-        updated_at: r.get(5)?,
+        title: r.get(4)?,
+        created_at: r.get(5)?,
+        updated_at: r.get(6)?,
     })
 }
 
@@ -1426,6 +1524,7 @@ fn parse_level(s: &str) -> Level {
         "a" | "A" => Level::A,
         "c" | "C" => Level::C,
         "d" | "D" => Level::D,
+        "cd" | "CD" | "c+d" | "C+D" => Level::Composite,
         _ => Level::B,
     }
 }
@@ -1554,7 +1653,7 @@ mod tests {
                 .query_row("SELECT version FROM schema_version", [], |r| r
                     .get::<_, i64>(0))
                 .unwrap(),
-            3
+            SCHEMA_VERSION
         );
         assert_eq!(store.events(session_id).unwrap()[0].project_id, project_id);
         assert_eq!(
@@ -1565,6 +1664,71 @@ mod tests {
             store.session_usage(session_id).unwrap()[0].project_id,
             project_id
         );
+        // v4 → v5：旧库 projects 行补 display_name 列且默认空串。
+        assert_eq!(store.project(project_id).unwrap().unwrap().display_name, "");
+        // v5 → v6：旧会话行补 title 列且默认空串（UI 回退模型名 / 短 id）。
+        assert_eq!(store.session(session_id).unwrap().unwrap().title, "");
+    }
+
+    #[test]
+    fn session_title_roundtrip_with_session_title_event() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let sess = s.create_session(&p.id, "mock").unwrap();
+        // 新会话无标题（UI 回退模型名 / 短 id）。
+        assert_eq!(sess.title, "");
+        assert_eq!(s.session(&sess.id).unwrap().unwrap().title, "");
+
+        s.set_session_title(&sess.id, "修复登录超时").unwrap();
+        assert_eq!(s.session(&sess.id).unwrap().unwrap().title, "修复登录超时");
+        assert_eq!(s.list_sessions(&p.id).unwrap()[0].title, "修复登录超时");
+
+        // session_title 事件可解析回读；计数只算同类事件。
+        let ev = s
+            .append_event(
+                &sess.id,
+                EventKind::SessionTitle,
+                &json!({"title": "修复登录超时"}),
+            )
+            .unwrap();
+        assert_eq!(ev.kind, EventKind::SessionTitle);
+        assert_eq!(s.events(&sess.id).unwrap()[0].kind, EventKind::SessionTitle);
+        assert_eq!(
+            s.count_events_of_kind(&sess.id, EventKind::UserInput)
+                .unwrap(),
+            0
+        );
+        s.append_event(&sess.id, EventKind::UserInput, &json!({"text": "hi"}))
+            .unwrap();
+        assert_eq!(
+            s.count_events_of_kind(&sess.id, EventKind::UserInput)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            s.count_events_of_kind(&sess.id, EventKind::SessionTitle)
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn project_display_name_roundtrip() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        // 新登记默认空串（UI 回退为路径末段派生）。
+        assert_eq!(p.display_name, "");
+
+        s.set_project_display_name(&p.id, "My Custom Name").unwrap();
+        let renamed = s.project(&p.id).unwrap().unwrap();
+        assert_eq!(renamed.display_name, "My Custom Name");
+        assert_eq!(s.list_projects().unwrap()[0].display_name, "My Custom Name");
+
+        // 空串 = 清除自定义名，回退派生。
+        s.set_project_display_name(&p.id, "").unwrap();
+        assert_eq!(s.project(&p.id).unwrap().unwrap().display_name, "");
     }
 
     #[test]
@@ -1728,6 +1892,8 @@ mod tests {
             "src/app.rs",
             &[L4ChunkRecord {
                 symbol: Some("login".into()),
+                start_line: 1,
+                end_line: 1,
                 text: "pub fn login authenticate".into(),
                 embedding,
             }],

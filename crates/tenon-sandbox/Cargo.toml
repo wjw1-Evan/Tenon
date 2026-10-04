@@ -11,3 +11,7 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 tempfile = { workspace = true }
 libc = "0.2"
+
+[[bench]]
+name = "exec_bench"
+harness = false

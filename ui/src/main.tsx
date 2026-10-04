@@ -47,6 +47,30 @@ async function tauriInvoke<T>(cmd: string): Promise<T> {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** 桌面壳标记（§6.2 集成式标题栏：macOS 红绿灯内边距经 CSS 生效）。 */
+if (window.__TAURI_INTERNALS__) {
+  document.documentElement.classList.add("is-tauri");
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c] ?? c));
+}
+
+/** 品牌启动屏：握手轮询期间即渲染（桌面端最多等 10s，不再白屏）。 */
+function renderSplash(): void {
+  const el = document.getElementById("root");
+  if (!el) return;
+  el.innerHTML = `
+    <div id="boot-splash">
+      <div class="boot-mark">T</div>
+      <div class="boot-name">Tenon</div>
+      <div class="boot-note">正在连接 Tenon 内核</div>
+      <div class="boot-dots"><i></i><i></i><i></i></div>
+    </div>`;
+}
+
 /** Tauri 桌面壳：daemon 在后台线程启动，握手可能晚于页面就绪——轮询等待。 */
 async function fromTauri(maxMs = 10_000): Promise<Handshake | null> {
   if (!window.__TAURI_INTERNALS__) return null;
@@ -109,9 +133,11 @@ function renderFatal(message: string) {
   const el = document.getElementById("root");
   if (!el) return;
   el.innerHTML = `
-    <div style="display:flex;flex-direction:column;gap:12px;align-items:center;justify-content:center;height:100vh;font-family:system-ui;color:#e5e7eb;background:#111827;padding:24px;text-align:center">
-      <h1 style="font-size:18px;margin:0">Tenon 启动失败</h1>
-      <p style="max-width:480px;line-height:1.6;color:#9ca3af;margin:0;font-size:13px">${message}</p>
+    <div id="boot-splash" class="boot-failed">
+      <div class="boot-mark">T</div>
+      <div class="boot-name">Tenon 启动失败</div>
+      <p class="boot-note boot-error">${escapeHtml(message)}</p>
+      <div class="boot-hint">请重启应用；若持续失败请查看日志</div>
     </div>`;
 }
 
@@ -125,12 +151,14 @@ async function boot() {
     // 外观（§7.5）：先按本地缓存应用避免闪烁；daemon 端口动态导致
     // localStorage 按 origin 隔离，跨启动以 /ui-prefs 为权威再对齐
     applyTheme(loadThemePreference());
+    renderSplash();
     const handshake = await discoverHandshake();
     const prefs = await new TenonApi(handshake).getUiPrefs();
     if (isThemePreference(prefs.theme) && prefs.theme !== loadThemePreference()) {
       saveThemePreference(prefs.theme);
     }
     applyTheme(loadThemePreference());
+    rootEl.innerHTML = "";
     const root = createRoot(rootEl);
     root.render(
       <StrictMode>

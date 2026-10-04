@@ -11,7 +11,7 @@ pub mod linux;
 pub mod network;
 pub mod seatbelt;
 
-pub use exec::{exec_command, ExecOutcome, SandboxSpec};
+pub use exec::{exec_argv, exec_command, ExecOutcome, SandboxSpec};
 pub use guard::WriteGuard;
 pub use network::NetworkState;
 pub use seatbelt::seatbelt_profile;

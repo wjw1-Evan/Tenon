@@ -13,14 +13,16 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
-use tenon_agent::session::{AgentConfig, AgentSession, ControlCommand};
+use tenon_agent::session::{sanitize_title, AgentConfig, AgentSession, ControlCommand};
 use tenon_core::context::ProjectRules;
 use tenon_core::policy::Mode;
 use tenon_snapshot::SnapshotStore;
-use tenon_store::{ApprovalDecision, SessionStatus};
+use tenon_store::{ApprovalDecision, EventKind, SessionStatus};
 
 use crate::auth::auth_middleware;
-use crate::state::{DaemonState, SessionEntry};
+use crate::state::{
+    persist_team_policy, validate_team_policy, DaemonState, L4IndexRequest, SessionEntry,
+};
 
 pub fn build_router(state: Arc<DaemonState>) -> Router {
     let token = state.token.clone();
@@ -43,7 +45,6 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
         // ---------- 多项目控制面（§6.4 / §15） ----------
         .route("/projects", get(list_projects))
         .route("/projects/open", post(open_project))
-        .route("/projects/{id}/close", post(close_project))
         .route("/projects/{id}", delete(delete_project))
         .route(
             "/portfolio-tasks",
@@ -65,9 +66,13 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
         )
         .route("/project/{id}/file", get(read_file).put(write_file))
         .route("/project/{id}/file/ops", post(file_ops))
+        .route("/project/{id}/highlight", get(syntax_highlight))
+        .route("/project/{id}/git/view", get(git_source_view))
         .route("/project/{id}/search", get(search))
         .route("/project/{id}/search/replace", post(apply_search_replace))
         .route("/project/{id}/lsp", post(lsp_proxy))
+        .route("/project/{id}/inline-complete", post(inline_complete))
+        .route("/project/{id}/lsp/apply", post(apply_lsp_workspace_edit))
         // 兼容旧客户端：处理函数仍要求显式 project_id；v1.15 禁止隐式首项目。
         .route("/file", get(legacy_read_file).put(legacy_write_file))
         .route("/file/ops", post(legacy_file_ops))
@@ -92,8 +97,10 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
         .route("/lan/revoke", post(lan_revoke))
         .route("/project/{id}/l4/search", get(l4_search))
         .route("/project/{id}/l4/stats", get(l4_stats))
+        .route("/project/{id}/l4/rebuild", post(l4_rebuild))
         .route("/costs", get(costs))
         .route("/settings", get(get_settings).put(put_settings))
+        .route("/team-policy", get(get_team_policy).put(put_team_policy))
         // UI 偏好（§7.5 外观档）：daemon 端口动态导致 localStorage 按 origin
         // 隔离不可跨启动——此处为跨启动 / 跨端权威存储
         .route("/ui-prefs", get(get_ui_prefs).put(put_ui_prefs))
@@ -163,13 +170,16 @@ async fn create_agent_session(
         }
     }
     agent_cfg.circuit = (&state.config.agent.circuit).into();
+    let team_policy = state.team_policy.read().expect("team policy lock").clone();
+    team_policy.apply_to(&mut agent_cfg.policy);
+    agent_cfg.circuit.max_cost_usd = team_policy.clamp_cost(agent_cfg.circuit.max_cost_usd);
     agent_cfg.fix_rounds = state.config.agent.fix_loop.max_rounds;
     agent_cfg.command_timeout_s = state.config.agent.exec.command_timeout_s;
     agent_cfg.snapshots_root.clone_from(&state.snapshots_root);
     agent_cfg.working_dir = working_dir.map(std::path::PathBuf::from);
     agent_cfg.dirty = Some(state.dirty_buffers_for(&project.id).await);
     agent_cfg.lsp = Some(state.lsp.clone());
-    agent_cfg.team_denied_tools = state.team_policy.denied_tools.clone();
+    agent_cfg.team_denied_tools = team_policy.denied_tools;
     let write_lock = state.write_lock_for(&project.id).await;
     AgentSession::create(
         state.store.clone(),
@@ -181,6 +191,22 @@ async fn create_agent_session(
     )
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+/// 路径末段派生名（§6.4 显示名回退）。
+fn derived_project_name(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string())
+}
+
+/// 项目显示名解析（§6.4）：自定义名优先，空串回退为路径末段。
+fn project_display_name(project: &tenon_store::Project) -> String {
+    if !project.display_name.is_empty() {
+        return project.display_name.clone();
+    }
+    derived_project_name(&project.path)
 }
 
 async fn register_session_entry(
@@ -207,6 +233,7 @@ async fn register_session_entry(
 async fn ensure_open_project(
     state: &Arc<DaemonState>,
     path: &str,
+    display_name: Option<&str>,
 ) -> ApiResult<tenon_store::Project> {
     let canonical = std::fs::canonicalize(path).map_err(|e| {
         (
@@ -216,19 +243,60 @@ async fn ensure_open_project(
     })?;
     let project = {
         let mut store = state.store.lock().await;
-        store
-            .upsert_project(canonical.to_string_lossy().as_ref())
+        let canonical_text = canonical.to_string_lossy();
+        let mut project = match store
+            .project_by_path(&canonical_text)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        {
+            Some(project) => project,
+            None => {
+                // 先完成嵌套校验，再登记；拒绝路径不得污染 ProjectRegistry。
+                // 登记不受容量限制（v1.60：max_open 只约束内部运行时缓存）。
+                {
+                    let open = state.open_projects.lock().await;
+                    if !state.config.projects.allow_linked_workspace {
+                        for runtime in open.values() {
+                            let root = runtime.root.as_path();
+                            if root.starts_with(&canonical) || canonical.starts_with(root) {
+                                return Err((
+                                    StatusCode::CONFLICT,
+                                    format!(
+                                        "嵌套项目根默认拒绝：{} 与 {} 重叠；可在 [projects] 显式开启 linked workspace",
+                                        root.display(),
+                                        canonical.display()
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                }
+                store
+                    .upsert_project(&canonical_text)
+                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            }
+        };
+        // 显式传入项目名（模态添加 / 重开）时落库；空串清除自定义名回退派生（§6.4）。
+        if let Some(name) = display_name {
+            let trimmed = name.trim();
+            if trimmed != project.display_name {
+                store
+                    .set_project_display_name(&project.id, trimmed)
+                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            }
+            project.display_name = if trimmed.is_empty() {
+                derived_project_name(&project.path)
+            } else {
+                trimmed.to_string()
+            };
+        }
+        project
     };
 
+    // 运行时为内部缓存（v1.60 登记即用）：容量超限按 LRU 逐出最久未用 runtime，
+    // 而非拒绝请求；激活前先腾位。
+    state.evict_runtime_capacity(&project.id).await;
     let open = state.open_projects.lock().await;
     if !open.contains_key(&project.id) {
-        if open.len() >= state.config.projects.max_open {
-            return Err((
-                StatusCode::CONFLICT,
-                format!("已达到同时打开项目上限 {}", state.config.projects.max_open),
-            ));
-        }
         if !state.config.projects.allow_linked_workspace {
             for runtime in open.values() {
                 let root = runtime.root.as_path();
@@ -253,63 +321,24 @@ async fn ensure_open_project(
 #[derive(Deserialize)]
 struct OpenProjectBody {
     path: String,
+    /// 可选显示名（模态添加 / 重开时设置）；空串清除自定义名。
+    #[serde(default)]
+    display_name: Option<String>,
 }
 
 async fn open_project(
     State(state): State<Arc<DaemonState>>,
     Json(body): Json<OpenProjectBody>,
 ) -> Response {
-    match ensure_open_project(&state, &body.path).await {
+    match ensure_open_project(&state, &body.path, body.display_name.as_deref()).await {
         Ok(project) => Json(json!({
             "id": project.id,
             "path": project.path,
-            "display_name": std::path::Path::new(&project.path)
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| project.path.clone()),
+            "display_name": project_display_name(&project),
             "trusted": project.trusted,
-            "open": true,
         }))
         .into_response(),
         Err((status, message)) => api_err(status, message),
-    }
-}
-
-#[derive(Deserialize)]
-struct CloseProjectBody {
-    /// drain | pause | force
-    #[serde(default)]
-    mode: String,
-}
-
-async fn close_project(
-    State(state): State<Arc<DaemonState>>,
-    Path(id): Path<String>,
-    Json(body): Json<CloseProjectBody>,
-) -> Response {
-    // 关闭前停止该项目活跃代理会话；状态与事件已在 store，后续可 resume / 恢复。
-    let controlled = {
-        let sessions = state.sessions.lock().await;
-        sessions
-            .iter()
-            .filter(|(_, entry)| entry.project_id == id)
-            .map(|(_, entry)| entry.session.clone())
-            .collect::<Vec<_>>()
-    };
-    for session in controlled {
-        match body.mode.as_str() {
-            "force" => session.control(ControlCommand::Stop),
-            _ => session.control(ControlCommand::Pause),
-        }
-    }
-    if let Some(runtime) = state.project_runtime(&id).await {
-        state.lsp.close_project(&runtime.root).await;
-    }
-    let removed = state.close_project_runtime(&id).await.is_some();
-    if removed {
-        Json(json!({"closed": true, "controlled_sessions": true})).into_response()
-    } else {
-        api_err(StatusCode::NOT_FOUND, "project not open")
     }
 }
 
@@ -318,7 +347,7 @@ async fn delete_project(State(state): State<Arc<DaemonState>>, Path(id): Path<St
     {
         let sessions = state.sessions.lock().await;
         if sessions.values().any(|entry| entry.project_id == id) {
-            return api_err(StatusCode::CONFLICT, "项目仍有活跃会话；先关闭项目");
+            return api_err(StatusCode::CONFLICT, "项目仍有活跃会话；先停止其代理任务");
         }
     }
     if let Some(runtime) = state.project_runtime(&id).await {
@@ -385,7 +414,7 @@ async fn create_portfolio_task(
         if child.text.trim().is_empty() {
             return api_err(StatusCode::BAD_REQUEST, "子任务文本不能为空");
         }
-        let Some(root) = state.open_project_root(&child.project_id).await else {
+        let Some(root) = state.ensure_project_runtime(&child.project_id).await else {
             return api_err(StatusCode::NOT_FOUND, "project not open");
         };
         let project = {
@@ -542,12 +571,12 @@ async fn create_session(
                 _ => return api_err(StatusCode::NOT_FOUND, "project not found"),
             }
         };
-        match ensure_open_project(&state, &stored_path).await {
+        match ensure_open_project(&state, &stored_path, None).await {
             Ok(project) => project,
             Err((status, message)) => return api_err(status, message),
         }
     } else if let Some(project_path) = body.project_path.as_deref() {
-        match ensure_open_project(&state, project_path).await {
+        match ensure_open_project(&state, project_path, None).await {
             Ok(p) => p,
             Err((status, message)) => return api_err(status, message),
         }
@@ -595,9 +624,27 @@ async fn send_message(
             None => return api_err(StatusCode::NOT_FOUND, "session not found"),
         }
     };
+    // v1.58 对话标题：判定须先于 run_task 追加 user_input 事件，否则首条
+    // 消息会被误判为历史会话而走本地回填。
+    let title_state = {
+        let mut st = state.store.lock().await;
+        let untitled = st
+            .session(&id)
+            .ok()
+            .flatten()
+            .map(|s| s.title.is_empty())
+            .unwrap_or(false);
+        let first_message = st
+            .count_events_of_kind(&id, EventKind::UserInput)
+            .map(|n| n == 0)
+            .unwrap_or(false);
+        (untitled, first_message)
+    };
     // 后台执行任务；状态经 GET /session/{id} 轮询
     let state2 = state.clone();
     let sid = id.clone();
+    let text = body.text.clone();
+    let run_session = session.clone();
     tokio::spawn(async move {
         // §6.4 / §9.7：项目写锁在 AgentSession 内；这里提供跨项目全局上限。
         let _permit = state2
@@ -605,12 +652,53 @@ async fn send_message(
             .acquire()
             .await
             .map_err(|e| eprintln!("execution permit: {e}"));
-        let outcome = session.run_task(&body.text).await;
+        let outcome = run_session.run_task(&text).await;
         let mut sessions = state2.sessions.lock().await;
         if let Some(entry) = sessions.get_mut(&sid) {
             *entry.last_outcome.lock().await = Some(outcome);
         }
     });
+    if title_state.0 {
+        // 标题生成不阻塞任务循环：模型失败回退首条消息本地截断；历史遗留
+        // 无标题会话直接回填首条 user_input，不再调模型。
+        let state3 = state.clone();
+        let sid2 = id.clone();
+        let title_session = session.clone();
+        let text2 = body.text.clone();
+        tokio::spawn(async move {
+            let title = if title_state.1 {
+                title_session
+                    .generate_title(&text2)
+                    .await
+                    .unwrap_or_else(|_| sanitize_title(&text2, 16))
+            } else {
+                let first_text = {
+                    let mut st = state3.store.lock().await;
+                    st.events(&sid2)
+                        .ok()
+                        .and_then(|events| {
+                            events.into_iter().find(|e| e.kind == EventKind::UserInput)
+                        })
+                        .and_then(|e| {
+                            e.payload
+                                .get("text")
+                                .and_then(|t| t.as_str())
+                                .map(String::from)
+                        })
+                };
+                match first_text {
+                    Some(text) if !text.trim().is_empty() => sanitize_title(&text, 16),
+                    _ => return,
+                }
+            };
+            if title.is_empty() {
+                return;
+            }
+            if let Err(e) = title_session.set_title(&title).await {
+                eprintln!("session title: {e}");
+            }
+        });
+    }
     (StatusCode::ACCEPTED, Json(json!({"accepted": true}))).into_response()
 }
 
@@ -830,7 +918,7 @@ async fn model_suggest(
     Json(json!({
         "pure_read": pure_read,
         "source": source,
-        "default": state.default_provider,
+        "default": state.default_provider.read().unwrap().clone(),
     }))
     .into_response()
 }
@@ -896,7 +984,7 @@ async fn fuzzy_files(
     Path(id): Path<String>,
     Query(query): Query<FuzzyFilesQuery>,
 ) -> Response {
-    let Some(project_path) = state.open_project_root(&id).await else {
+    let Some(project_path) = state.ensure_project_runtime(&id).await else {
         return api_err(StatusCode::NOT_FOUND, "project not found");
     };
     let limit = query.limit.clamp(1, 500);
@@ -944,7 +1032,7 @@ async fn project_tree(
     Path(id): Path<String>,
     Query(query): Query<TreeQuery>,
 ) -> Response {
-    let Some(project_path) = state.open_project_root(&id).await else {
+    let Some(project_path) = state.ensure_project_runtime(&id).await else {
         return api_err(StatusCode::NOT_FOUND, "project not found");
     };
     let rel = match query.path.as_deref() {
@@ -984,14 +1072,26 @@ async fn read_file(
     Path(project_id): Path<String>,
     Query(q): Query<FilePathQuery>,
 ) -> Response {
-    let Some(root) = state.open_project_root(&project_id).await else {
+    let Some(root) = state.ensure_project_runtime(&project_id).await else {
         return api_err(StatusCode::NOT_FOUND, "project not found");
     };
-    let fs = tenon_fs::FileService::new(root);
-    match fs.read_file(&q.path) {
-        Ok(content) => Json(json!({"path": q.path, "content": content})).into_response(),
-        Err(e) => api_err(StatusCode::BAD_REQUEST, e.to_string()),
-    }
+    // 全量读取放入阻塞线程（§8.1 v1.69）：任意大小文件可打开，IO 不阻塞异步运行时。
+    let path = q.path.clone();
+    let view = tokio::task::spawn_blocking(move || {
+        tenon_fs::FileService::new(&root).read_file_view(&path)
+    })
+    .await;
+    let view = match view {
+        Ok(Ok(view)) => view,
+        Ok(Err(e)) => return api_err(StatusCode::BAD_REQUEST, e.to_string()),
+        Err(e) => return api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    };
+    Json(json!({
+        "path": q.path,
+        "content": view.content,
+        "total_bytes": view.total_bytes,
+    }))
+    .into_response()
 }
 
 #[derive(Deserialize)]
@@ -1005,13 +1105,154 @@ async fn write_file(
     Path(project_id): Path<String>,
     Json(body): Json<WriteFileBody>,
 ) -> Response {
-    let Some(root) = state.open_project_root(&project_id).await else {
+    let Some(root) = state.ensure_project_runtime(&project_id).await else {
         return api_err(StatusCode::NOT_FOUND, "project not found");
     };
     let fs = tenon_fs::FileService::new(root);
     match fs.write_file(&body.path, &body.content) {
         Ok(created) => Json(json!({"ok": true, "created": created})).into_response(),
         Err(e) => api_err(StatusCode::BAD_REQUEST, e.to_string()),
+    }
+}
+
+/// daemon 侧 tree-sitter 基础高亮 token 流（§8.2 / §16）。
+/// 当前 Rust grammar 已接入；其它语言回退 Monaco 基础高亮。
+async fn syntax_highlight(
+    State(state): State<Arc<DaemonState>>,
+    Path(project_id): Path<String>,
+    Query(q): Query<FilePathQuery>,
+) -> Response {
+    let Some(root) = state.ensure_project_runtime(&project_id).await else {
+        return api_err(StatusCode::NOT_FOUND, "project not open");
+    };
+    // tree-sitter 解析同步且无增量缓存：先按大小挡下超帽文件（不做全量读取），
+    // 读取与解析都在阻塞线程执行，大文件不拖累其它请求（§8.7）。
+    let path = q.path.clone();
+    let source = tokio::task::spawn_blocking(move || {
+        let fs = tenon_fs::FileService::new(&root);
+        match fs.file_size(&path) {
+            Ok(size) if size > 2 * 1024 * 1024 => Ok(None),
+            Ok(_) => fs
+                .read_file_view(&path)
+                .map(|view| Some(view.content))
+                .map_err(|e| e.to_string()),
+            Err(e) => Err(e.to_string()),
+        }
+    })
+    .await;
+    let source = match source {
+        Ok(Ok(Some(source))) => source,
+        Ok(Ok(None)) => {
+            return api_err(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "syntax highlight supports files up to 2MB",
+            )
+        }
+        Ok(Err(e)) => return api_err(StatusCode::BAD_REQUEST, e),
+        Err(e) => return api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    };
+    let worker_path = q.path.clone();
+    let worker_source = source.clone();
+    let tokens =
+        tokio::task::spawn_blocking(move || tenon_fs::highlight_file(&worker_path, &worker_source))
+            .await;
+    let token_to_value = |source: &str, token: tenon_fs::HighlightToken| {
+        let lines: Vec<&str> = source.split_inclusive('\n').collect();
+        let utf16 = |line_index: usize, byte_column: usize| -> usize {
+            lines
+                .get(line_index)
+                .map(|line| {
+                    let mut boundary = byte_column.min(line.len());
+                    while boundary > 0 && !line.is_char_boundary(boundary) {
+                        boundary -= 1;
+                    }
+                    let boundary = if line.is_char_boundary(boundary) {
+                        boundary
+                    } else {
+                        (0..boundary)
+                            .rev()
+                            .find(|offset| line.is_char_boundary(*offset))
+                            .unwrap_or(0)
+                    };
+                    line[..boundary].chars().map(char::len_utf16).sum()
+                })
+                .unwrap_or(0)
+        };
+        json!({
+            "kind": token.kind,
+            "start_line": token.start_row,
+            "start_column": utf16(token.start_row, token.start_col),
+            "end_line": token.end_row,
+            "end_column": utf16(token.end_row, token.end_col),
+        })
+    };
+    match tokens {
+        Ok(Some(tokens)) => Json(json!({
+            "path": q.path,
+            "tokens": tokens
+                .iter()
+                .map(|token| token_to_value(&source, token.clone()))
+                .collect::<Vec<_>>(),
+            "language": "rust",
+        }))
+        .into_response(),
+        Ok(None) => Json(json!({
+            "path": q.path,
+            "tokens": [],
+            "language": null,
+            "fallback": true,
+        }))
+        .into_response(),
+        Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+#[derive(Deserialize)]
+struct GitSourceViewQuery {
+    /// 活动文件路径；提供时返回 inline blame。
+    #[serde(default)]
+    path: Option<String>,
+}
+
+async fn git_source_view(
+    State(state): State<Arc<DaemonState>>,
+    Path(project_id): Path<String>,
+    Query(query): Query<GitSourceViewQuery>,
+) -> Response {
+    let Some(root) = state.ensure_project_runtime(&project_id).await else {
+        return api_err(StatusCode::NOT_FOUND, "project not open");
+    };
+    let blame_path = query.path.filter(|path| !path.is_empty());
+    let result: Result<Result<serde_json::Value, String>, tokio::task::JoinError> =
+        tokio::task::spawn_blocking(move || {
+        if !tenon_fs::git::is_repository(&root) {
+            return Ok(json!({"repository": false, "branch": null, "branches": [], "changes": [], "commits": [], "blame": null}));
+        }
+        let blame = match blame_path {
+            Some(path) => {
+                let fs = tenon_fs::FileService::new(root.clone());
+                let _validated = fs.resolve(&path).map_err(|e| e.to_string())?;
+                Some(json!({
+                    "path": path,
+                    "lines": tenon_fs::git::blame_file(&root, &path).unwrap_or_default(),
+                }))
+            }
+            None => None,
+        };
+        Ok(json!({
+            "repository": true,
+            "branch": tenon_fs::git::current_branch(&root),
+            "branches": tenon_fs::git::list_branches(&root),
+            "changes": tenon_fs::git::changed_files(&root),
+            "commits": tenon_fs::git::recent_commits(&root, 20),
+            "blame": blame,
+        }))
+    })
+    .await;
+    match result {
+        Ok(Ok(value)) => Json(value).into_response(),
+        Ok(Err(message)) => api_err(StatusCode::BAD_REQUEST, message),
+        Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }
 
@@ -1027,7 +1268,7 @@ async fn file_ops(
     Path(project_id): Path<String>,
     Json(body): Json<FileOpsBody>,
 ) -> Response {
-    let Some(root) = state.open_project_root(&project_id).await else {
+    let Some(root) = state.ensure_project_runtime(&project_id).await else {
         return api_err(StatusCode::NOT_FOUND, "project not found");
     };
     let ops = tenon_fs::FileOps::new(root);
@@ -1055,7 +1296,7 @@ async fn search(
     Path(project_id): Path<String>,
     Query(q): Query<SearchQuery>,
 ) -> Response {
-    let Some(root) = state.open_project_root(&project_id).await else {
+    let Some(root) = state.ensure_project_runtime(&project_id).await else {
         return api_err(StatusCode::NOT_FOUND, "project not found");
     };
     let opts = tenon_fs::SearchOptions::default();
@@ -1091,7 +1332,7 @@ async fn apply_search_replace(
     Path(project_id): Path<String>,
     Json(body): Json<SearchReplaceBody>,
 ) -> Response {
-    let Some(root) = state.open_project_root(&project_id).await else {
+    let Some(root) = state.ensure_project_runtime(&project_id).await else {
         return api_err(StatusCode::NOT_FOUND, "project not found");
     };
     if body.paths.is_empty() {
@@ -1247,9 +1488,159 @@ struct LspBody {
     extra: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct ApplyLspEditBody {
+    /// LSP WorkspaceEdit（changes / documentChanges 均支持）。
+    workspace_edit: Value,
+    /// 关联会话用于 checkpoint 时间轴；必须属于当前 project。
+    session_id: Option<String>,
+}
+
+async fn apply_lsp_workspace_edit(
+    State(state): State<Arc<DaemonState>>,
+    Path(project_id): Path<String>,
+    Json(body): Json<ApplyLspEditBody>,
+) -> Response {
+    let Some(root) = state.ensure_project_runtime(&project_id).await else {
+        return api_err(StatusCode::NOT_FOUND, "project not open");
+    };
+
+    // LSP workspace edit 是 B 级写：未保存缓冲不得被服务器结果静默覆盖。
+    let dirty = state.dirty_buffers_for(&project_id).await;
+    let planned = match crate::lsp_edit::plan_workspace_edit(&root, &body.workspace_edit) {
+        Ok(files) => files,
+        Err(e) => return api_err(StatusCode::BAD_REQUEST, e),
+    };
+    let conflicts: Vec<String> = planned
+        .iter()
+        .filter(|file| dirty.is_dirty(&file.path))
+        .map(|file| file.path.clone())
+        .collect();
+    if !conflicts.is_empty() {
+        return api_err(
+            StatusCode::CONFLICT,
+            format!("dirty buffer conflict: {}", conflicts.join(", ")),
+        );
+    }
+
+    let session_id = if let Some(session_id) = body.session_id.as_deref() {
+        let mut store = state.store.lock().await;
+        match store.session(session_id) {
+            Ok(Some(session)) if session.project_id == project_id => session_id.to_string(),
+            _ => return api_err(StatusCode::CONFLICT, "session does not belong to project"),
+        }
+    } else {
+        return api_err(
+            StatusCode::BAD_REQUEST,
+            "session_id is required for checkpoint",
+        );
+    };
+
+    // 独立 shadow 快照（§10.3）：先记 before，原子写全量；任一失败 restore(before)。
+    let snapshots = SnapshotStore::open(
+        &state.snapshots_root,
+        &project_id,
+        &root,
+        state.config.checkpoint.max_untracked_mb,
+    );
+    let snapshots = match snapshots {
+        Ok(snapshots) => snapshots,
+        Err(e) => return api_err(StatusCode::INTERNAL_SERVER_ERROR, format!("快照库: {e}")),
+    };
+    let before_tree = match tokio::task::spawn_blocking(move || snapshots.snapshot()).await {
+        Ok(Ok(tree)) => tree,
+        Ok(Err(e)) => return api_err(StatusCode::CONFLICT, format!("快照失败: {e}")),
+        Err(e) => return api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    };
+
+    let mut write_error: Option<String> = None;
+    for file in &planned {
+        let absolute = root.join(&file.path);
+        if let Some(parent) = absolute.parent() {
+            if let Err(e) = tokio::fs::create_dir_all(parent).await {
+                write_error = Some(format!("创建目录 {}: {e}", parent.display()));
+                break;
+            }
+        }
+        if let Err(e) = tokio::fs::write(&absolute, &file.after).await {
+            write_error = Some(format!("写入 {}: {e}", file.path));
+            break;
+        }
+    }
+    if let Some(error) = write_error {
+        let restore_snapshots = SnapshotStore::open(
+            &state.snapshots_root,
+            &project_id,
+            &root,
+            state.config.checkpoint.max_untracked_mb,
+        );
+        if let Ok(snapshots) = restore_snapshots {
+            let _ = tokio::task::spawn_blocking(move || snapshots.restore(&before_tree)).await;
+        }
+        return api_err(StatusCode::CONFLICT, format!("LSP edit 写入失败: {error}"));
+    }
+
+    let after_snapshots = SnapshotStore::open(
+        &state.snapshots_root,
+        &project_id,
+        &root,
+        state.config.checkpoint.max_untracked_mb,
+    );
+    let after_tree = match after_snapshots {
+        Ok(snapshots) => match tokio::task::spawn_blocking(move || snapshots.snapshot()).await {
+            Ok(Ok(tree)) => tree,
+            Ok(Err(e)) => {
+                let restore = SnapshotStore::open(
+                    &state.snapshots_root,
+                    &project_id,
+                    &root,
+                    state.config.checkpoint.max_untracked_mb,
+                );
+                if let Ok(snapshots) = restore {
+                    let _ =
+                        tokio::task::spawn_blocking(move || snapshots.restore(&before_tree)).await;
+                }
+                return api_err(StatusCode::CONFLICT, format!("快照失败: {e}"));
+            }
+            Err(e) => return api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        },
+        Err(e) => return api_err(StatusCode::INTERNAL_SERVER_ERROR, format!("快照库: {e}")),
+    };
+
+    let checkpoint = {
+        let mut store = state.store.lock().await;
+        store.insert_checkpoint(
+            &session_id,
+            &before_tree,
+            &planned
+                .iter()
+                .map(|file| file.path.clone())
+                .collect::<Vec<_>>(),
+            // 负 seq 标记编辑器原子操作；既有 rollback_last 可选中 LSP checkpoint。
+            Some(-1),
+        )
+    };
+    let checkpoint = match checkpoint {
+        Ok(checkpoint) => checkpoint,
+        Err(e) => return api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    };
+
+    Json(json!({
+        "applied": true,
+        "checkpoint_id": checkpoint.id,
+        "before_tree": before_tree,
+        "after_tree": after_tree,
+        "files": planned.iter().map(|file| json!({
+            "path": file.path,
+            "diff": file.diff,
+        })).collect::<Vec<_>>(),
+    }))
+    .into_response()
+}
+
 async fn lsp_proxy(State(state): State<Arc<DaemonState>>, Json(body): Json<LspBody>) -> Response {
     let project_root = if let Some(id) = body.project_id.as_deref() {
-        state.open_project_root(id).await
+        state.ensure_project_runtime(id).await
     } else if let Some(path) = body.project_path.as_deref() {
         let mut store = state.store.lock().await;
         match store.upsert_project(path) {
@@ -1279,6 +1670,64 @@ async fn lsp_proxy(State(state): State<Arc<DaemonState>>, Json(body): Json<LspBo
         Err(tenon_lsp::LspManagerError::BadPath(p)) => {
             api_err(StatusCode::BAD_REQUEST, format!("路径越界: {p}"))
         }
+        Err(e) => api_err(StatusCode::SERVICE_UNAVAILABLE, e.to_string()),
+    }
+}
+
+#[derive(Deserialize)]
+struct InlineCompleteBody {
+    session_id: String,
+    path: String,
+    #[serde(default)]
+    language: String,
+    prefix: String,
+    #[serde(default)]
+    suffix: String,
+}
+
+/// AI ghost text（P2 实验；UI 默认关闭）：单轮、只读、不进入工具循环。
+async fn inline_complete(
+    State(state): State<Arc<DaemonState>>,
+    Path(project_id): Path<String>,
+    Json(body): Json<InlineCompleteBody>,
+) -> Response {
+    let session = {
+        let sessions = state.sessions.lock().await;
+        match sessions.get(&body.session_id) {
+            Some(entry) if entry.project_id == project_id => Some(entry.session.clone()),
+            _ => None,
+        }
+    };
+    let Some(session) = session else {
+        return api_err(StatusCode::CONFLICT, "session does not belong to project");
+    };
+    // 只发送光标附近窗口，避免把大文件上下文整份送出。
+    const WINDOW: usize = 24_000;
+    let prefix: String = body
+        .prefix
+        .chars()
+        .rev()
+        .take(WINDOW)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    let suffix: String = body.suffix.chars().take(WINDOW).collect();
+    let language = if body.language.trim().is_empty() {
+        std::path::Path::new(&body.path)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("text")
+            .to_string()
+    } else {
+        body.language
+    };
+    match session.inline_complete(&language, &prefix, &suffix).await {
+        Ok(completion) => Json(json!({
+            "completion": completion,
+            "provider": "active-session",
+        }))
+        .into_response(),
         Err(e) => api_err(StatusCode::SERVICE_UNAVAILABLE, e.to_string()),
     }
 }
@@ -1498,7 +1947,7 @@ async fn clear_dirty_buffer(
 }
 
 async fn project_root_by_id(state: &Arc<DaemonState>, id: &str) -> Option<std::path::PathBuf> {
-    state.open_project_root(id).await
+    state.ensure_project_runtime(id).await
 }
 
 // ---------- 语言包向导（§8.4） ----------
@@ -1630,16 +2079,12 @@ async fn list_projects(State(state): State<Arc<DaemonState>>) -> Response {
         }
     }
     .await;
-    let open = state
-        .open_projects
-        .lock()
-        .await
-        .keys()
-        .cloned()
-        .collect::<Vec<_>>();
     let Some(projects) = projects_with_sessions else {
         return api_err(StatusCode::INTERNAL_SERVER_ERROR, "项目清单读取失败");
     };
+    // 活跃 runtime 会话（§6.2：runtime 不跨重启）；UI 由此区分可直接
+    // 操作的会话与仅存 DB 的历史会话，避免死会话操作 404。
+    let session_runtimes: Vec<String> = state.sessions.lock().await.keys().cloned().collect();
     let summaries: Vec<Value> = projects
         .into_iter()
         .map(|(project, sessions, pending_approvals, usage)| {
@@ -1658,13 +2103,9 @@ async fn list_projects(State(state): State<Arc<DaemonState>>) -> Response {
             json!({
                 "id": project.id,
                 "path": project.path,
-                "display_name": std::path::Path::new(&project.path)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| project.path.clone()),
+                "display_name": project_display_name(&project),
                 "trusted": project.trusted,
                 "language_packs": project.language_packs,
-                "open": open.contains(&project.id),
                 "dirty_buffers": state
                     .dirty_buffers
                     .try_lock()
@@ -1696,8 +2137,10 @@ async fn list_projects(State(state): State<Arc<DaemonState>>) -> Response {
                     "id": s.id,
                     "status": s.status.as_str(),
                     "model": s.model,
+                    "title": s.title,
                     "updated_at": s.updated_at,
                 })).collect::<Vec<_>>(),
+                "session_runtimes": session_runtimes,
                 "active_sessions": active,
             })
         })
@@ -1708,6 +2151,9 @@ async fn list_projects(State(state): State<Arc<DaemonState>>) -> Response {
 #[derive(Deserialize)]
 struct RegisterProjectBody {
     path: String,
+    /// 可选显示名；空串清除自定义名回退路径派生。
+    #[serde(default)]
+    display_name: Option<String>,
 }
 
 async fn register_project(
@@ -1715,10 +2161,30 @@ async fn register_project(
     Json(body): Json<RegisterProjectBody>,
 ) -> Response {
     let mut store = state.store.lock().await;
-    match store.upsert_project(&body.path) {
-        Ok(p) => Json(json!(p)).into_response(),
-        Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+    let project = match store.upsert_project(&body.path) {
+        Ok(p) => p,
+        Err(e) => return api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    };
+    let named = if let Some(name) = body.display_name.as_deref() {
+        let trimmed = name.trim();
+        if trimmed != project.display_name {
+            if let Err(e) = store.set_project_display_name(&project.id, trimmed) {
+                return api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
+            }
+        }
+        let resolved = if trimmed.is_empty() {
+            derived_project_name(&project.path)
+        } else {
+            trimmed.to_string()
+        };
+        tenon_store::Project {
+            display_name: resolved,
+            ..project
+        }
+    } else {
+        project
+    };
+    Json(json!(named)).into_response()
 }
 
 #[derive(Deserialize)]
@@ -1809,15 +2275,24 @@ async fn list_evals(State(state): State<Arc<DaemonState>>) -> Response {
 }
 
 async fn list_models(State(state): State<Arc<DaemonState>>) -> Response {
-    let models: Vec<Value> = state
-        .providers
+    // provider 表为读写锁（v1.40）：PUT /settings 模型键即时重建
+    let (providers, default) = {
+        let map = state.providers.read().unwrap();
+        let map = map
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect::<Vec<_>>();
+        let default = state.default_provider.read().unwrap().clone();
+        (map, default)
+    };
+    let models: Vec<Value> = providers
         .iter()
         .map(|(name, p)| {
             json!({
                 "name": name,
                 "default_model": p.default_model(),
                 "local": p.is_local(),
-                "is_default": *name == state.default_provider,
+                "is_default": *name == default,
             })
         })
         .collect();
@@ -1832,7 +2307,7 @@ async fn list_models(State(state): State<Arc<DaemonState>>) -> Response {
     });
     Json(json!({
         "models": models,
-        "default": state.default_provider,
+        "default": default,
         "laya": laya,
     }))
     .into_response()
@@ -1952,9 +2427,47 @@ async fn l4_stats(
     Path(project_id): Path<String>,
 ) -> Response {
     let mut store = state.store.lock().await;
-    match store.l4_chunk_count(&project_id) {
-        Ok(chunks) => Json(json!({ "project_id": project_id, "chunks": chunks })).into_response(),
+    let chunks = store.l4_chunk_count(&project_id);
+    drop(store);
+    let status = state
+        .l4_status
+        .lock()
+        .expect("l4 status lock")
+        .get(&project_id)
+        .cloned();
+    match chunks {
+        Ok(chunks) => Json(json!({
+            "project_id": project_id,
+            "chunks": chunks,
+            "status": status,
+        }))
+        .into_response(),
         Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+/// 手动重建 L4 全量索引（§10.1）：异步入队，状态经 `/l4/stats` 查询。
+async fn l4_rebuild(
+    State(state): State<Arc<DaemonState>>,
+    Path(project_id): Path<String>,
+) -> Response {
+    let Some(root) = state.ensure_project_runtime(&project_id).await else {
+        return api_err(StatusCode::NOT_FOUND, "project not open");
+    };
+    state.set_l4_status(&project_id, "queued", None);
+    match state
+        .l4_index_tx
+        .send(L4IndexRequest::Project {
+            project_id: project_id.clone(),
+            root,
+        })
+        .await
+    {
+        Ok(()) => Json(json!({"queued": true, "project_id": project_id})).into_response(),
+        Err(e) => {
+            state.set_l4_status(&project_id, "failed", Some(e.to_string()));
+            api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+        }
     }
 }
 
@@ -1995,14 +2508,47 @@ async fn get_settings(State(state): State<Arc<DaemonState>>) -> Response {
             obj.insert("command_timeout_s".into(), serde_json::json!(v));
         }
     }
+    let mut privacy = serde_json::to_value(&state.config.privacy).unwrap_or_default();
+    if let Some(obj) = privacy.as_object_mut() {
+        if let Some(v) = ov.privacy_telemetry {
+            obj.insert("telemetry".into(), serde_json::Value::Bool(v));
+        }
+        if let Some(v) = &ov.privacy_crash_reports {
+            obj.insert("crash_reports".into(), serde_json::Value::String(v.clone()));
+        }
+    }
+    let mut update = serde_json::to_value(&state.config.update).unwrap_or_default();
+    if let Some(obj) = update.as_object_mut() {
+        if let Some(v) = &ov.update_channel {
+            obj.insert("channel".into(), serde_json::Value::String(v.clone()));
+        }
+    }
+    // models 合并视图（v1.40）：覆盖叠加后回显；api_key 明文永不回显（§11 密钥存储）
+    let mut models = {
+        let mut m = state.config.models.clone();
+        ov.apply_models_to(&mut m);
+        serde_json::to_value(&m).unwrap_or_default()
+    };
+    if let Some(providers) = models.get_mut("providers").and_then(|p| p.as_object_mut()) {
+        for (name, entry) in providers.iter_mut() {
+            if let Some(e) = entry.as_object_mut() {
+                e.remove("api_key");
+                // 覆盖表条目可从设置删除；纯配置文件条目只能编辑（v1.40）
+                let overridden = ov.models_providers.contains_key(name);
+                e.insert("overridden".into(), serde_json::Value::Bool(overridden));
+            }
+        }
+    }
     Json(json!({
         "session": session,
         "exec": exec,
+        "models": models,
         "agent": state.config.agent,
         "checkpoint": state.config.checkpoint,
-        "privacy": state.config.privacy,
+        "privacy": privacy,
+        "update": update,
         "locale": state.config.locale,
-        "team_policy": state.team_policy,
+        "team_policy": state.team_policy.read().expect("team policy lock").clone(),
     }))
     .into_response()
 }
@@ -2010,14 +2556,56 @@ async fn get_settings(State(state): State<Arc<DaemonState>>) -> Response {
 async fn put_settings(State(state): State<Arc<DaemonState>>, Json(body): Json<Value>) -> Response {
     // 设置面板（§7.2 / §15）：校验 → 更新运行时覆盖 → 持久化 settings.json
     //（0600）→ 新会话即时生效（既有会话保持各自配置）
+    let models_changed = body.get("models").is_some();
     {
         let mut ov = state.settings_overrides.lock().unwrap();
         if let Err(e) = ov.merge_json(&body) {
             return api_err(StatusCode::BAD_REQUEST, e);
         }
-        ov.persist();
+        // models.default 须指向合并后已配置的 provider（v1.40）
+        if let Some(d) = &ov.models_default {
+            let mut models = state.config.models.clone();
+            ov.apply_models_to(&mut models);
+            if !models.providers.contains_key(d) {
+                return api_err(
+                    StatusCode::BAD_REQUEST,
+                    format!("models.default 指向未配置 provider：{d}"),
+                );
+            }
+        }
+        ov.persist_to(&state.settings_path);
+    }
+    if models_changed {
+        state.rebuild_providers();
     }
     get_settings(State(state)).await
+}
+
+async fn get_team_policy(State(state): State<Arc<DaemonState>>) -> Response {
+    let policy = state.team_policy.read().expect("team policy lock").clone();
+    Json(json!({
+        "force_interactive": policy.force_interactive,
+        "denied_tools": policy.denied_tools,
+        "max_cost_usd": policy.max_cost_usd,
+    }))
+    .into_response()
+}
+
+async fn put_team_policy(
+    State(state): State<Arc<DaemonState>>,
+    Json(body): Json<Value>,
+) -> Response {
+    // 高级策略是全量原子配置：先完整校验，再运行时切换并持久化；
+    // 失败时不污染旧策略，避免出现“半收窄”配置。
+    let policy = match validate_team_policy(&body) {
+        Ok(p) => p,
+        Err(e) => return api_err(StatusCode::BAD_REQUEST, e),
+    };
+    if let Err(e) = persist_team_policy(&policy, &state.policy_path) {
+        return api_err(StatusCode::INTERNAL_SERVER_ERROR, e);
+    }
+    *state.team_policy.write().expect("team policy lock") = policy;
+    get_team_policy(State(state)).await
 }
 
 /// UI 偏好读取（§7.5）：全部键值对。
@@ -2089,6 +2677,7 @@ async fn ws_first_frame_auth(
     }
     let _ = socket.send(Message::text("auth ok".to_string())).await;
     let mut file_events = state.file_events.subscribe();
+    let mut l4_status_events = state.l4_status_events.subscribe();
     // 事件流：轮询 store 推送（M1 换进程内广播）；断线续传按 seq 由 /trace 拉取
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(300));
     let mut last_seen: i64 = 0;
@@ -2121,6 +2710,24 @@ async fn ws_first_frame_auth(
             event = file_events.recv() => {
                 let Ok(event) = event else { continue };
                 if project_filter.as_ref().is_some_and(|filter| *filter != event.project_id) {
+                    continue;
+                }
+                if socket
+                    .send(Message::text(
+                        serde_json::to_string(&event).unwrap_or_default(),
+                    ))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            event = l4_status_events.recv() => {
+                let Ok(event) = event else { continue };
+                if project_filter
+                    .as_ref()
+                    .is_some_and(|filter| *filter != event.project_id)
+                {
                     continue;
                 }
                 if socket

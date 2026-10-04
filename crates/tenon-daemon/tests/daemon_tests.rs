@@ -1,10 +1,10 @@
 //! daemon 端到端集成测试（真 HTTP/WS；§15 API 全链路 + §12.6 鉴权面）。
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tenon_daemon::{serve, DaemonOptions};
-use tenon_models::{MockProvider, ScriptedReply};
+use tenon_models::{MockProvider, ModelProvider, ScriptedReply};
 
 fn base(port: u16) -> String {
     format!("http://127.0.0.1:{port}")
@@ -30,9 +30,37 @@ async fn start_daemon(script: Vec<ScriptedReply>) -> (tempfile::TempDir, u16, St
     options.default_provider = "mock".into();
     options.snapshots_root = Some(dir.path().join("snapshots"));
     options.endpoint_path = Some(dir.path().join("daemon.endpoint"));
+    options.settings_path = Some(dir.path().join("settings.json"));
+    options.policy_path = Some(dir.path().join("policy.toml"));
     options.laya_models_dir = Some(dir.path().join("models/laya"));
     let handle = serve(options).await.unwrap();
     (dir, handle.port, handle.token)
+}
+
+#[tokio::test]
+async fn fixed_port_and_token_serve_dev_hot_reload() {
+    // 开发热重载（v1.65）：`--port` 固定绑定端口、`--token` 固定握手 token
+    //（UI DEV 回落约定 127.0.0.1:9876 + token "dev"）；默认随机路径不受影响
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut options = DaemonOptions::in_memory();
+    options.bind_port = Some(port);
+    options.fixed_token = Some("dev".into());
+    options.endpoint_path = Some(dir.path().join("daemon.endpoint"));
+    options.settings_path = Some(dir.path().join("settings.json"));
+    let handle = serve(options).await.unwrap();
+    assert_eq!(handle.port, port);
+    assert_eq!(handle.token, "dev");
+
+    let r = client_with_token("dev")
+        .get(format!("{}/models", base(port)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
 }
 
 #[tokio::test]
@@ -141,6 +169,91 @@ async fn ws_ticket_single_use_flow() {
         .unwrap();
     let reply2 = ws2.next().await.unwrap().unwrap();
     assert!(reply2.to_string().contains("auth failed"), "{reply2}");
+}
+
+#[tokio::test]
+async fn ws_pushes_scoped_l4_status_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("indexed");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(project.join("src.rs"), "pub fn recall_context() {}\n").unwrap();
+
+    let (_tmp, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let opened: serde_json::Value = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({"path": project.to_string_lossy()}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let project_id = opened["id"].as_str().unwrap().to_string();
+
+    // 等初始索引就绪，再订阅并触发 rebuild，避免小夹具完成快于建立订阅。
+    for _ in 0..40 {
+        let stats: serde_json::Value = client
+            .get(format!("{}/project/{project_id}/l4/stats", base(port)))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        if stats["status"]["state"] == "ready" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    let ticket_resp: serde_json::Value = client
+        .post(format!("{}/ws-ticket", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    use futures::{SinkExt, StreamExt};
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!(
+        "ws://127.0.0.1:{port}/ws?project_id={project_id}"
+    ))
+    .await
+    .unwrap();
+    ws.send(tokio_tungstenite::tungstenite::Message::text(
+        ticket_resp["ticket"].as_str().unwrap().to_string(),
+    ))
+    .await
+    .unwrap();
+    let auth = ws.next().await.unwrap().unwrap();
+    assert!(auth.to_string().contains("auth ok"), "{auth}");
+
+    client
+        .post(format!("{}/project/{project_id}/l4/rebuild", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    let mut saw_ready = false;
+    while tokio::time::Instant::now() < deadline {
+        let msg = tokio::time::timeout(Duration::from_millis(500), ws.next()).await;
+        let Ok(Some(Ok(msg))) = msg else { continue };
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(&msg.to_string()) else {
+            continue;
+        };
+        if event["type"] == "l4_status"
+            && event["project_id"] == project_id
+            && event["state"] == "ready"
+        {
+            saw_ready = true;
+            break;
+        }
+    }
+    assert!(saw_ready, "project-scoped L4 status event should arrive");
 }
 
 #[tokio::test]
@@ -460,6 +573,34 @@ async fn file_api_endpoints() {
         "changed\n"
     );
 
+    // 大文件：v1.69 起全量返回且可写（移除只读分块与拒写）。
+    let large = format!("{}next\n", "A".repeat(10 * 1024 * 1024));
+    std::fs::write(project.join("large.txt"), large).unwrap();
+    let large_view: serde_json::Value = client
+        .get(format!("{}/project/{pid}/file?path=large.txt", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(large_view["total_bytes"], 10 * 1024 * 1024 + 5);
+    assert_eq!(
+        large_view["content"].as_str().unwrap().len(),
+        10 * 1024 * 1024 + 5
+    );
+    let rewritten = client
+        .put(format!("{}/project/{pid}/file", base(port)))
+        .json(&serde_json::json!({"path": "large.txt", "content": "truncate\n"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rewritten.status(), 200);
+    assert_eq!(
+        std::fs::read_to_string(project.join("large.txt")).unwrap(),
+        "truncate\n"
+    );
+
     // 路径越界被拒
     let escape = client
         .get(format!(
@@ -470,6 +611,102 @@ async fn file_api_endpoints() {
         .await
         .unwrap();
     assert_eq!(escape.status(), 400, "写守卫：越界读取拒绝");
+
+    // tree-sitter 高亮 token 流由 daemon 侧产出；txt 回退为空。
+    std::fs::write(
+        project.join("sample.rs"),
+        "pub fn syntax() { let done = true; }\n",
+    )
+    .unwrap();
+    let highlighted: serde_json::Value = client
+        .get(format!(
+            "{}/project/{pid}/highlight?path=sample.rs",
+            base(port)
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(highlighted["language"], "rust");
+    let token_kinds: Vec<&str> = highlighted["tokens"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|token| token["kind"].as_str())
+        .collect();
+    assert!(token_kinds.contains(&"keyword"), "{token_kinds:?}");
+    assert!(token_kinds.contains(&"function"), "{token_kinds:?}");
+    let plain: serde_json::Value = client
+        .get(format!("{}/project/{pid}/highlight?path=a.txt", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(plain["fallback"], true);
+    assert_eq!(plain["tokens"].as_array().unwrap().len(), 0);
+
+    // Git source view：branch / changes / commits / inline blame 只读聚合。
+    let git_dir = project.join(".git");
+    let _ = std::fs::remove_dir_all(&git_dir);
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&project)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    assert!(git(&["init", "-qb", "main"]).status.success());
+    std::fs::write(
+        project.join("source_view.txt"),
+        "source view line\nsecond source line\n",
+    )
+    .unwrap();
+    assert!(git(&["add", "."]).status.success());
+    assert!(git(&["config", "user.email", "dev@tenon.local"])
+        .status
+        .success());
+    assert!(git(&["config", "user.name", "Tenon Dev"]).status.success());
+    assert!(git(&["commit", "-qm", "source view fixture"])
+        .status
+        .success());
+    std::fs::write(project.join("changed.txt"), "working\n").unwrap();
+    let source: serde_json::Value = client
+        .get(format!(
+            "{}/project/{pid}/git/view?path=source%2Fview.txt",
+            base(port)
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(source["repository"], true);
+    assert_eq!(source["branch"], "main");
+    assert!(source["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|file| file["path"] == "changed.txt"));
+    assert_eq!(source["commits"].as_array().unwrap().len(), 1);
+    assert_eq!(source["blame"]["lines"].as_array().unwrap().len(), 0);
+    let source: serde_json::Value = client
+        .get(format!("{}/project/{pid}/git/view?path=a.txt", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let blame = source["blame"]["lines"].as_array().unwrap();
+    assert_eq!(blame.len(), 1);
+    assert_eq!(blame[0]["author"], "Tenon Dev");
+    assert_eq!(blame[0]["summary"], "source view fixture");
 
     // 搜索
     let hits: serde_json::Value = client
@@ -601,11 +838,12 @@ async fn multiproject_registry_isolation_and_lifecycle() {
         .await
         .unwrap();
     assert_eq!(list["projects"].as_array().unwrap().len(), 2);
+    // v1.60：open 状态字段随打开 / 关闭生命周期一并移除。
     assert!(list["projects"]
         .as_array()
         .unwrap()
         .iter()
-        .all(|p| p["open"].as_bool().unwrap()));
+        .all(|p| p.get("open").is_none()));
 
     // 文件 API 只读显式项目根。
     let pa: serde_json::Value = client
@@ -718,26 +956,81 @@ async fn multiproject_registry_isolation_and_lifecycle() {
         .unwrap();
     assert_eq!(nested.status(), 409, "嵌套项目根默认拒绝");
 
-    // 关闭只摘除 runtime，不删除登记或磁盘。
-    let closed: serde_json::Value = client
-        .post(format!("{}/projects/{bi}/close", base(port)))
-        .json(&serde_json::json!({"mode": "force"}))
+    // v1.60 登记即用：无显式关闭；移除登记时 daemon 自行摘除 runtime。
+    assert!(beta.join("root.txt").exists());
+
+    // 移除登记只删除注册记录；磁盘内容与仍打开的 A runtime 不受影响。
+    let removed = client
+        .delete(format!("{}/projects/{bi}", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(removed["removed"], true);
+    assert_eq!(removed["disk_contents_deleted"], false);
+    assert!(beta.join("root.txt").exists());
+    let list_after_remove: serde_json::Value = client
+        .get(format!("{}/projects", base(port)))
         .send()
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    assert_eq!(closed["closed"], true);
-    assert!(beta.join("root.txt").exists());
+    assert_eq!(list_after_remove["projects"].as_array().unwrap().len(), 1);
+}
 
-    // 关闭后文件 API 不得继续访问该 ProjectRuntime。
-    let closed_file = client
-        .get(format!("{}/project/{bi}/file?path=root.txt", base(port)))
+#[tokio::test]
+async fn registered_project_activates_runtime_on_first_use() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("registered-only");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(project.join("implicit.txt"), "registered ready\n").unwrap();
+    let (_tmp, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    let registered: serde_json::Value = client
+        .put(format!("{}/project", base(port)))
+        .json(&serde_json::json!({"path": project.to_string_lossy()}))
         .send()
         .await
+        .unwrap()
+        .json()
+        .await
         .unwrap();
-    assert_eq!(closed_file.status(), 404);
+    let pid = registered["id"].as_str().unwrap().to_string();
+
+    // v1.60：ProjectRuntime 是内部缓存；不先 POST /projects/open 也能访问。
+    let tree: serde_json::Value = client
+        .get(format!("{}/project/{pid}/tree", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let names = tree["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["name"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(names.contains(&"implicit.txt"));
+
+    let file: serde_json::Value = client
+        .get(format!(
+            "{}/project/{pid}/file?path=implicit.txt",
+            base(port)
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(file["content"], "registered ready\n");
 }
 
 #[tokio::test]
@@ -834,6 +1127,32 @@ async fn l4_incremental_index_and_search() {
         .json()
         .await
         .unwrap();
+    // 手动 rebuild：入队 → ready；stats 暴露状态与切片数。
+    let rebuild = client
+        .post(format!("{}/project/{pid}/l4/rebuild", base(port)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rebuild.status(), 200);
+    let mut ready = false;
+    for _ in 0..30 {
+        let stats: serde_json::Value = client
+            .get(format!("{}/project/{pid}/l4/stats", base(port)))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        if stats["status"]["state"] == "ready" {
+            assert!(stats["chunks"].as_u64().unwrap() > 0);
+            ready = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(ready, "manual rebuild should become ready");
+
     let old_score = old_search["hits"]
         .as_array()
         .unwrap()
@@ -850,6 +1169,93 @@ async fn l4_incremental_index_and_search() {
         new_score > old_score,
         "new query should outrank stale query: old={old_search} new={new_search}"
     );
+}
+
+#[tokio::test]
+async fn team_policy_api_persists_narrow_only_controls() {
+    let (tmp, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    let default: serde_json::Value = client
+        .get(format!("{}/team-policy", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(default["force_interactive"], false);
+    assert_eq!(default["denied_tools"].as_array().unwrap().len(), 0);
+
+    let saved = client
+        .put(format!("{}/team-policy", base(port)))
+        .json(&serde_json::json!({
+            "force_interactive": true,
+            "denied_tools": ["git_push", "apply_patch", "apply_patch"],
+            "max_cost_usd": 0.25,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(saved.status(), 200);
+    let saved: serde_json::Value = saved.json().await.unwrap();
+    assert_eq!(saved["force_interactive"], true);
+    assert_eq!(
+        saved["denied_tools"],
+        serde_json::json!(["apply_patch", "git_push"]),
+        "重复项去重并稳定排序"
+    );
+
+    let settings: serde_json::Value = client
+        .get(format!("{}/settings", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(settings["team_policy"]["force_interactive"], true);
+    assert_eq!(settings["team_policy"]["max_cost_usd"], 0.25);
+
+    let policy_path = tmp.path().join("policy.toml");
+    let persisted = std::fs::read_to_string(&policy_path).unwrap();
+    assert!(persisted.contains("force_interactive = true"));
+    assert!(persisted.contains("max_cost_usd = 0.25"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&policy_path)
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    for invalid in [
+        serde_json::json!({"force_interactive": "yes"}),
+        serde_json::json!({"denied_tools": [""]}),
+        serde_json::json!({"max_cost_usd": -1}),
+        serde_json::json!({"unknown": true}),
+    ] {
+        let bad = client
+            .put(format!("{}/team-policy", base(port)))
+            .json(&invalid)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(bad.status(), 400, "{invalid}");
+    }
+
+    let unchanged: serde_json::Value = client
+        .get(format!("{}/team-policy", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(unchanged["force_interactive"], true);
+    assert_eq!(unchanged["max_cost_usd"], 0.25);
 }
 
 #[tokio::test]
@@ -1421,6 +1827,8 @@ signature: ""
         .json(&serde_json::json!({
             "entry": search["hits"][0],
             "installed_permissions": ["fs.read:project"],
+            // 测试主机可能装有 ~/.tenon signing key；本地社区 fixture 显式走无钥开发模式。
+            "public_key": "0".repeat(64),
         }))
         .send()
         .await
@@ -1461,6 +1869,7 @@ signature: ""
             "entry": search["hits"][0],
             "approval_id": approval_id,
             "installed_permissions": ["fs.read:project"],
+            "public_key": "0".repeat(64),
         }))
         .send()
         .await
@@ -1667,27 +2076,6 @@ async fn project_runtime_streams_scoped_file_changes() {
         }
     }
     assert!(seen, "WS 应收到作用域内文件变更");
-
-    // 关闭后文件 API 拒绝，ProjectRuntime watcher / 资源被释放。
-    let closed: serde_json::Value = client
-        .post(format!("{}/projects/{project_id}/close", base(port)))
-        .json(&serde_json::json!({"mode": "force"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(closed["closed"], true);
-    let denied = client
-        .get(format!(
-            "{}/project/{project_id}/file?path=watched.txt",
-            base(port)
-        ))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(denied.status(), 404);
 }
 
 #[tokio::test]
@@ -1765,7 +2153,9 @@ async fn settings_panel_roundtrip_validation_and_persistence() {
 
     let r = put(serde_json::json!({
         "session": {"mode": "auto", "first_edit_buffer_ms": 1500, "approval_timeout_s": 60},
-        "exec": {"command_timeout_s": 90}
+        "exec": {"command_timeout_s": 90},
+        "privacy": {"telemetry": true, "crash_reports": "opt_in"},
+        "update": {"channel": "auto"}
     }))
     .await;
     assert_eq!(r.status(), 200);
@@ -1773,12 +2163,18 @@ async fn settings_panel_roundtrip_validation_and_persistence() {
     assert_eq!(merged["session"]["mode"], "auto");
     assert_eq!(merged["session"]["first_edit_buffer_ms"], 1500);
     assert_eq!(merged["exec"]["command_timeout_s"], 90);
+    assert_eq!(merged["privacy"]["telemetry"], true);
+    assert_eq!(merged["privacy"]["crash_reports"], "opt_in");
+    assert_eq!(merged["update"]["channel"], "auto");
 
     // 持久化文件（0600）
-    let file = tenon_config::Config::data_dir().join("settings.json");
+    let file = _tmp.path().join("settings.json");
     let text = std::fs::read_to_string(&file).unwrap();
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(v["session"]["mode"], "auto");
+    assert_eq!(v["privacy"]["telemetry"], true);
+    assert_eq!(v["privacy"]["crash_reports"], "opt_in");
+    assert_eq!(v["update"]["channel"], "auto");
 
     // 非法值逐一 400
     for bad in [
@@ -1786,6 +2182,8 @@ async fn settings_panel_roundtrip_validation_and_persistence() {
         serde_json::json!({"session": {"first_edit_buffer_ms": -1}}),
         serde_json::json!({"session": {"approval_timeout_s": 1}}),
         serde_json::json!({"exec": {"command_timeout_s": 99999}}),
+        serde_json::json!({"privacy": {"crash_reports": "always"}}),
+        serde_json::json!({"update": {"channel": "daily"}}),
     ] {
         let r = put(bad.clone()).await;
         assert_eq!(r.status(), 400, "bad={bad}");
@@ -1814,6 +2212,653 @@ async fn settings_panel_roundtrip_validation_and_persistence() {
     assert!(
         s["session_id"].is_string(),
         "未信任项目 auto 应回退交互档建会话"
+    );
+}
+
+#[tokio::test]
+async fn settings_models_roundtrip_rebuild_and_validation() {
+    // v1.40 设置面板模型分区：PUT models 键 → 校验 → 持久化 → provider 表即时重建；
+    // api_key 明文 400；GET 合并视图回显 overridden 且不回显密钥。
+    // 自建 daemon（无 CLI 默认 provider）：覆盖优先级 = CLI > 设置覆盖 > 配置文件。
+    let dir = tempfile::tempdir().unwrap();
+    let mut options = DaemonOptions::in_memory();
+    options.providers = vec![Arc::new(MockProvider::new("mock", "mock-1", vec![]))];
+    options.snapshots_root = Some(dir.path().join("snapshots"));
+    options.endpoint_path = Some(dir.path().join("daemon.endpoint"));
+    options.settings_path = Some(dir.path().join("settings.json"));
+    let handle = serve(options).await.unwrap();
+    let (port, token) = (handle.port, handle.token);
+    let client = client_with_token(&token);
+
+    let put = |body: serde_json::Value| {
+        let client = client.clone();
+        async move {
+            client
+                .put(format!("{}/settings", base(port)))
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+    let get_models = || {
+        let client = client.clone();
+        async move {
+            let r: serde_json::Value = client
+                .get(format!("{}/models", base(port)))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            r
+        }
+    };
+
+    // 合法 PUT：新增 provider + 设默认 → 200；GET /models 反映重建结果
+    let r = put(serde_json::json!({
+        "models": {
+            "default": "deepseek",
+            "providers": {
+                "deepseek": {
+                    "kind": "openai",
+                    "base_url": "https://api.deepseek.com",
+                    "model": "deepseek-chat",
+                    "api_key_env": "DEEPSEEK_API_KEY"
+                }
+            }
+        }
+    }))
+    .await;
+    assert_eq!(r.status(), 200);
+    let merged: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(merged["models"]["default"], "deepseek");
+    assert_eq!(
+        merged["models"]["providers"]["deepseek"]["overridden"],
+        true
+    );
+    assert!(
+        merged["models"]["providers"]["deepseek"]
+            .get("api_key")
+            .is_none(),
+        "合并视图永不回显 api_key 明文"
+    );
+
+    let models = get_models().await;
+    assert_eq!(models["default"], "deepseek");
+    let arr = models["models"].as_array().unwrap();
+    let deepseek = arr
+        .iter()
+        .find(|m| m["name"] == "deepseek")
+        .expect("重建后 provider 表应含 deepseek");
+    assert_eq!(deepseek["is_default"], true);
+    assert_eq!(deepseek["default_model"], "deepseek-chat");
+    // 注入 provider（测试 mock）在重建后保留
+    assert!(
+        arr.iter().any(|m| m["name"] == "mock"),
+        "注入 provider 不应被重建丢弃"
+    );
+
+    // 持久化：settings.json 含 models 覆盖
+    let file = dir.path().join("settings.json");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        v["models"]["providers"]["deepseek"]["base_url"],
+        "https://api.deepseek.com"
+    );
+
+    // 非法输入逐一 400：坏 kind / 坏 base_url / 明文密钥 / 坏 provider 名 / 未配置默认
+    for bad in [
+        serde_json::json!({"models": {"providers": {"x": {"kind": "grpc", "base_url": "https://a.b"}}}}),
+        serde_json::json!({"models": {"providers": {"x": {"kind": "openai", "base_url": "ftp://a.b"}}}}),
+        serde_json::json!({"models": {"providers": {"x": {"kind": "openai", "base_url": "https://a.b", "api_key": "sk-plain"}}}}),
+        serde_json::json!({"models": {"providers": {"Bad_Name": {"kind": "openai", "base_url": "https://a.b"}}}}),
+        serde_json::json!({"models": {"providers": {"x": {"kind": "openai", "base_url": "https://a.b", "api_key_env": "9BAD"}}}}),
+        serde_json::json!({"models": {"default": "nonexistent"}}),
+    ] {
+        let r = put(bad.clone()).await;
+        assert_eq!(r.status(), 400, "bad={bad}");
+    }
+
+    // 删除覆盖：providers 整体替换为空 + default 清空 → 表回退配置默认
+    let r = put(serde_json::json!({"models": {"default": "", "providers": {}}})).await;
+    assert_eq!(r.status(), 200);
+    let models = get_models().await;
+    assert!(
+        !models["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["name"] == "deepseek"),
+        "覆盖删除后 provider 表不应再含 deepseek"
+    );
+    assert_ne!(models["default"], "deepseek");
+}
+
+#[tokio::test]
+async fn project_display_name_register_open_and_rename() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("origin-name");
+    std::fs::create_dir_all(&project).unwrap();
+
+    let (_tmp, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let url = base(port);
+
+    // PUT /project 登记时带显示名 → 摘要返回自定义名
+    let registered: serde_json::Value = client
+        .put(format!("{url}/project"))
+        .json(&serde_json::json!({
+            "path": project.to_string_lossy(),
+            "display_name": "自定义项目名",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(registered["display_name"], "自定义项目名");
+
+    let listed: serde_json::Value = client
+        .get(format!("{url}/projects"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listed["projects"][0]["display_name"], "自定义项目名");
+
+    // POST /projects/open 重开换名 → 响应与摘要同步更新
+    let opened: serde_json::Value = client
+        .post(format!("{url}/projects/open"))
+        .json(&serde_json::json!({
+            "path": project.to_string_lossy(),
+            "display_name": "Renamed Project",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(opened["display_name"], "Renamed Project");
+
+    let listed: serde_json::Value = client
+        .get(format!("{url}/projects"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listed["projects"][0]["display_name"], "Renamed Project");
+
+    // 空串清除自定义名 → 回退路径末段派生
+    let cleared: serde_json::Value = client
+        .put(format!("{url}/project"))
+        .json(&serde_json::json!({
+            "path": project.to_string_lossy(),
+            "display_name": "",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(cleared["display_name"], "origin-name");
+}
+
+#[tokio::test]
+async fn lsp_workspace_edit_applies_atomically_with_checkpoint_and_dirty_guard() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("refactor");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join("a.ts"),
+        "const value = old;\nexport { value };\n",
+    )
+    .unwrap();
+
+    let (_tmp, port, token) = start_daemon(vec![ScriptedReply::Text("ok".into())]).await;
+    let client = client_with_token(&token);
+    let url = base(port);
+    let opened: serde_json::Value = client
+        .post(format!("{url}/projects/open"))
+        .json(&serde_json::json!({"path": project.to_string_lossy()}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let project_id = opened["id"].as_str().unwrap().to_string();
+    let session: serde_json::Value = client
+        .post(format!("{url}/session"))
+        .json(&serde_json::json!({"project_id": project_id, "provider": "mock"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let session_id = session["session_id"].as_str().unwrap().to_string();
+
+    // WorkspaceEdit：多文件形态只需一处；daemon 先快照，原子写，再补 checkpoint。
+    let uri = format!("file://{}", project.join("a.ts").to_string_lossy());
+    let applied: serde_json::Value = client
+        .post(format!("{url}/project/{project_id}/lsp/apply"))
+        .json(&serde_json::json!({
+            "session_id": session_id,
+            "workspace_edit": {"changes": {uri.clone(): [
+                {"range": {"start":{"line":0,"character":14},"end":{"line":0,"character":17}}, "newText": "new"}
+            ]}}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(applied["applied"], true);
+    assert_eq!(
+        std::fs::read_to_string(project.join("a.ts")).unwrap(),
+        "const value = new;\nexport { value };\n"
+    );
+    let checkpoint_id = applied["checkpoint_id"].as_str().unwrap().to_string();
+
+    // checkpoint 可通过既有 rollback 语义恢复到 LSP 写前 tree。
+    let rolled: serde_json::Value = client
+        .post(format!("{url}/checkpoint/{checkpoint_id}/rollback"))
+        .json(&serde_json::json!({"granularity": "checkpoint"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(rolled["rolled_back"][0], "a.ts");
+    assert_eq!(
+        std::fs::read_to_string(project.join("a.ts")).unwrap(),
+        "const value = old;\nexport { value };\n"
+    );
+
+    // 用户未保存缓冲不被 LSP server 结果静默覆盖。
+    client
+        .put(format!("{url}/project/{project_id}/buffers"))
+        .json(&serde_json::json!({"path": "a.ts", "dirty": "user edit"}))
+        .send()
+        .await
+        .unwrap();
+    let conflict = client
+        .post(format!("{url}/project/{project_id}/lsp/apply"))
+        .json(&serde_json::json!({
+            "session_id": session_id,
+            "workspace_edit": {"changes": {uri: [
+                {"range": {"start":{"line":0,"character":14},"end":{"line":0,"character":17}}, "newText": "new"}
+            ]}}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(conflict.status(), 409);
+    assert_eq!(
+        std::fs::read_to_string(project.join("a.ts")).unwrap(),
+        "const value = old;\nexport { value };\n"
+    );
+}
+
+#[tokio::test]
+async fn inline_complete_uses_project_scoped_active_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("completion");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(project.join("app.ts"), "const value = 1;\n").unwrap();
+
+    let (_tmp, port, token) = start_daemon(vec![ScriptedReply::Text("value = 2;".into())]).await;
+    let client = client_with_token(&token);
+    let opened: serde_json::Value = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({"path": project.to_string_lossy()}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let project_id = opened["id"].as_str().unwrap().to_string();
+    let session: serde_json::Value = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({"project_id": project_id, "provider": "mock"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let session_id = session["session_id"].as_str().unwrap().to_string();
+
+    let completed: serde_json::Value = client
+        .post(format!(
+            "{}/project/{project_id}/inline-complete",
+            base(port)
+        ))
+        .json(&serde_json::json!({
+            "session_id": session_id,
+            "path": "app.ts",
+            "language": "typescript",
+            "prefix": "const value = 1;\n",
+            "suffix": ""
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(completed["completion"], "value = 2;");
+
+    // 跨项目会话不得复用：伪造另一个 project id 必须拒绝。
+    let denied = client
+        .post(format!(
+            "{}/project/other-project/inline-complete",
+            base(port)
+        ))
+        .json(&serde_json::json!({
+            "session_id": session_id,
+            "path": "app.ts",
+            "language": "typescript",
+            "prefix": "",
+            "suffix": ""
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), 409);
+}
+
+async fn start_daemon_with_provider(
+    providers: Vec<Arc<dyn ModelProvider>>,
+) -> (tempfile::TempDir, u16, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut options = DaemonOptions::in_memory();
+    options.providers = providers;
+    options.default_provider = "mock".into();
+    options.snapshots_root = Some(dir.path().join("snapshots"));
+    options.endpoint_path = Some(dir.path().join("daemon.endpoint"));
+    options.settings_path = Some(dir.path().join("settings.json"));
+    let handle = serve(options).await.unwrap();
+    (dir, handle.port, handle.token)
+}
+
+async fn create_session(port: u16, token: &str, project: &std::path::Path) -> String {
+    let client = client_with_token(token);
+    let session: serde_json::Value = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({"project_path": project.to_string_lossy(), "provider": "mock"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    session["session_id"].as_str().unwrap().to_string()
+}
+
+/// 轮询 GET /projects 直至目标会话出现非空标题（标题生成在后台完成）。
+async fn wait_for_title(port: u16, token: &str, session_id: &str) -> String {
+    let client = client_with_token(token);
+    for _ in 0..100 {
+        let projects: serde_json::Value = client
+            .get(format!("{}/projects", base(port)))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        if let Some(title) = projects["projects"][0]["sessions"]
+            .as_array()
+            .and_then(|sessions| {
+                sessions
+                    .iter()
+                    .find(|s| s["id"].as_str() == Some(session_id))
+            })
+            .and_then(|s| s["title"].as_str())
+            .filter(|t| !t.is_empty())
+        {
+            return title.to_string();
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("session title not generated in time");
+}
+
+/// v1.58 对话标题：首条消息后台生成并展示于 /projects；第二条消息不再重生成，
+/// 任务脚本队列不受标题请求影响。
+#[tokio::test]
+async fn first_message_generates_session_title_once() {
+    let project = tempfile::tempdir().unwrap();
+    let provider = Arc::new(MockProvider::new(
+        "mock",
+        "mock-1",
+        vec![ScriptedReply::Text("任务回答".into())],
+    ));
+    let (_dir, port, token) = start_daemon_with_provider(vec![provider.clone()]).await;
+    let session_id = create_session(port, &token, project.path()).await;
+    let client = client_with_token(&token);
+
+    client
+        .post(format!("{}/session/{session_id}/message", base(port)))
+        .json(&serde_json::json!({"text": "帮我修复登录超时的问题"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        wait_for_title(port, &token, &session_id).await,
+        "Mock 会话标题"
+    );
+
+    // 第二条消息：已有标题即不重生成。
+    client
+        .post(format!("{}/session/{session_id}/message", base(port)))
+        .json(&serde_json::json!({"text": "换个话题"}))
+        .send()
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(provider.title_calls().len(), 1);
+}
+
+/// 模型失败时回退首条消息本地截断（不重试、不阻塞任务）。
+#[tokio::test]
+async fn title_falls_back_to_first_message_truncation_when_model_fails() {
+    let project = tempfile::tempdir().unwrap();
+    // 端口 1 连接必败：标题生成失败 → 回退本地截断。
+    let dead = Arc::new(tenon_models::OpenAiCompatProvider::new(
+        "mock",
+        "http://127.0.0.1:1/v1",
+        "",
+        Some("m".into()),
+    ));
+    let (_dir, port, token) = start_daemon_with_provider(vec![dead]).await;
+    let session_id = create_session(port, &token, project.path()).await;
+    let client = client_with_token(&token);
+
+    let text = "这个任务很长很长很长很长很长很长很长很长很长很长很长超出十六字";
+    client
+        .post(format!("{}/session/{session_id}/message", base(port)))
+        .json(&serde_json::json!({"text": text}))
+        .send()
+        .await
+        .unwrap();
+    let title = wait_for_title(port, &token, &session_id).await;
+    let expected: String = text.chars().take(16).collect();
+    assert_eq!(title, expected);
+}
+
+#[tokio::test]
+async fn runtime_capacity_evicts_lru_instead_of_rejecting() {
+    // v1.60 登记即用：max_open 只约束内部运行时缓存——超限逐出无活跃会话的
+    // 最久未用 runtime，登记 / 切换不再 409 拒绝；重新激活即恢复。
+    let dir = tempfile::tempdir().unwrap();
+    let mut options = DaemonOptions::in_memory();
+    options.config.projects.max_open = 2;
+    options.providers = vec![Arc::new(MockProvider::new("mock", "mock-1", vec![]))];
+    options.default_provider = "mock".into();
+    options.snapshots_root = Some(dir.path().join("snapshots"));
+    options.endpoint_path = Some(dir.path().join("daemon.endpoint"));
+    options.settings_path = Some(dir.path().join("settings.json"));
+    let handle = serve(options).await.unwrap();
+    let port = handle.port;
+    let client = client_with_token(&handle.token);
+
+    let p1 = dir.path().join("p1");
+    let p2 = dir.path().join("p2");
+    let p3 = dir.path().join("p3");
+    for p in [&p1, &p2, &p3] {
+        std::fs::create_dir_all(p).unwrap();
+    }
+    std::fs::write(p1.join("a.txt"), "a").unwrap();
+
+    let open = |path: &std::path::Path| {
+        let client = client.clone();
+        let path = path.to_string_lossy().to_string();
+        async move {
+            client
+                .post(format!("{}/projects/open", base(port)))
+                .json(&serde_json::json!({ "path": path }))
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+    let first = open(&p1).await;
+    assert_eq!(first.status(), 200);
+    let id1 = first.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(open(&p2).await.status(), 200);
+
+    // 摘要不再携带 open 字段（v1.60）
+    let listed: serde_json::Value = client
+        .get(format!("{}/projects", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(listed["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|p| p.get("open").is_none()));
+
+    // 第三个项目：容量超限不拒绝，LRU 逐出最久未用的 p1。
+    let third = open(&p3).await;
+    assert_eq!(third.status(), 200, "容量超限应 LRU 逐出而非 409");
+
+    // 登记即用：访问被逐出项目的文件 API 会隐式重新激活 runtime（v1.60）。
+    assert_eq!(open(&p1).await.status(), 200);
+    let back: serde_json::Value = client
+        .get(format!("{}/project/{id1}/file?path=a.txt", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(back["content"], "a");
+}
+/// §8.7 项目切换预算：runtime 已打开且有可复用会话时，核心切换链路
+/// （summary → ui-state → root tree）P50 必须 <150ms。
+#[tokio::test]
+#[ignore = "performance budget；performance CI 显式运行"]
+async fn warm_project_switch_core_calls_meet_p50_budget() {
+    let projects = tempfile::tempdir().unwrap();
+    let project_a = projects.path().join("switch-a");
+    let project_b = projects.path().join("switch-b");
+    for (root, name) in [(&project_a, "alpha"), (&project_b, "beta")] {
+        std::fs::create_dir_all(root).unwrap();
+        std::fs::write(root.join(format!("{name}.txt")), name).unwrap();
+    }
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    let mut ids = Vec::new();
+    for path in [&project_a, &project_b] {
+        let opened: serde_json::Value = client
+            .post(format!("{}/projects/open", base(port)))
+            .json(&serde_json::json!({"path": path.to_string_lossy()}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let id = opened["id"].as_str().unwrap().to_string();
+        let session: serde_json::Value = client
+            .post(format!("{}/session", base(port)))
+            .json(&serde_json::json!({"project_id": id}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(session["session_id"].as_str().is_some());
+        ids.push(id);
+    }
+
+    // 预热 HTTP 连接、watcher 与目录读取；预算只评估“runtime 已打开”的切换。
+    for _ in 0..2 {
+        for id in &ids {
+            for path in [
+                "/projects",
+                &format!("/project/{id}/ui-state"),
+                &format!("/project/{id}/tree"),
+            ] {
+                let status = client
+                    .get(format!("{}{path}", base(port)))
+                    .send()
+                    .await
+                    .unwrap()
+                    .status();
+                assert_eq!(status, 200);
+            }
+        }
+    }
+
+    let mut elapsed_ms = Vec::new();
+    for round in 0..9 {
+        let id = &ids[round % 2];
+        let start = Instant::now();
+        for path in [
+            "/projects",
+            &format!("/project/{id}/ui-state"),
+            &format!("/project/{id}/tree"),
+        ] {
+            let response = client
+                .get(format!("{}{path}", base(port)))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+        }
+        elapsed_ms.push(start.elapsed().as_millis() as u64);
+    }
+    elapsed_ms.sort_unstable();
+    let p50 = elapsed_ms[elapsed_ms.len() / 2];
+    eprintln!("warm project switch core calls: p50={p50}ms samples={elapsed_ms:?}");
+    assert!(
+        p50 < 150,
+        "项目切换核心链路超出 150ms P50：p50={p50}ms samples={elapsed_ms:?}"
     );
 }
 
@@ -1893,6 +2938,7 @@ async fn laya_auto_downloads_and_enables_on_startup() {
     let dir = tempfile::tempdir().unwrap();
     let mut options = DaemonOptions::in_memory();
     options.endpoint_path = Some(dir.path().join("daemon.endpoint"));
+    options.settings_path = Some(dir.path().join("settings.json"));
     options.laya_models_dir = Some(dir.path().join("models/laya"));
     options.laya_registry_url = Some(registry);
     options.laya_public_key = Some(public_key);
@@ -1912,6 +2958,7 @@ async fn laya_auto_download_disabled_stays_unloaded() {
     let dir = tempfile::tempdir().unwrap();
     let mut options = DaemonOptions::in_memory();
     options.endpoint_path = Some(dir.path().join("daemon.endpoint"));
+    options.settings_path = Some(dir.path().join("settings.json"));
     options.laya_models_dir = Some(dir.path().join("models/laya"));
     options.laya_registry_url = Some(registry);
     // in_memory() 默认 auto_download = false（§9.8：测试基座不出网）

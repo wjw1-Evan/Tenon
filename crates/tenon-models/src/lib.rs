@@ -16,11 +16,17 @@ pub mod routing;
 
 pub use anthropic::AnthropicProvider;
 pub use cost::{compute_cost, PriceTable};
-pub use keys::{EnvKeyStore, KeyStore, KeychainStore};
+pub use keys::{ChainKeyStore, EnvKeyStore, KeyStore, KeychainStore};
 pub use mock::{MockProvider, ScriptedReply};
 pub use openai::OpenAiCompatProvider;
 pub use routing::{is_pure_read_task, Router};
 
+/// 对话标题生成请求的标记（v1.58）：单轮无工具调用的系统提示以此开头，
+/// 供测试替身（MockProvider / E2E fake server）识别并返回固定短标题、
+/// 不消耗脚本队列——脚本化测试对模型调用次数 / 序列的断言不受自动标题影响。
+pub const TITLE_MARKER: &str = "TENON_TASK_TITLE";
+
+use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, thiserror::Error)]
@@ -151,12 +157,32 @@ impl ChatRequest {
     }
 }
 
-/// 模型供应商抽象。流式输出随 M1 UI 落地（`chat_stream`）；当前适配器
-/// 均为整响应返回，行为与设计功能语义一致（§11 流式为体验项）。
+/// 流式模型回合中的一个事件。
+#[derive(Debug, Clone)]
+pub enum ChatStreamEvent {
+    /// 已可呈现的增量文本。工具调用参数不向用户流式暴露。
+    Delta(String),
+    /// 当前回合的权威最终响应；usage / tool calls 只以此为准。
+    Final(ChatResponse),
+}
+
+pub type ChatStream = BoxStream<'static, ProviderResult<ChatStreamEvent>>;
+
+/// 模型供应商抽象。`chat_stream` 是任务回合的首选通道；适配器必须把
+/// 最终 `ChatResponse` 作为权威事件放在流末尾（§9.6 / §11）。
 #[async_trait::async_trait]
 pub trait ModelProvider: Send + Sync {
     fn name(&self) -> &str;
     async fn chat(&self, req: &ChatRequest) -> ProviderResult<ChatResponse>;
+    /// 默认降级为整响应模拟流：非流式后端也能接入同一 Agent / UI 协议。
+    async fn chat_stream(&self, req: &ChatRequest) -> ProviderResult<ChatStream> {
+        let resp = self.chat(req).await?;
+        let text = resp.content.clone();
+        let events = std::iter::once(Ok(ChatStreamEvent::Delta(text)))
+            .chain(std::iter::once(Ok(ChatStreamEvent::Final(resp))))
+            .collect::<Vec<_>>();
+        Ok(Box::pin(futures::stream::iter(events)))
+    }
     /// 本地模型（Ollama / Laya）：成本恒 0（§11）。
     fn is_local(&self) -> bool {
         false

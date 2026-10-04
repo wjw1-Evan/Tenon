@@ -40,6 +40,8 @@ tenon-registry = { path = "crates/tenon-registry" }
 tenon-mcp = { path = "crates/tenon-mcp" }
 
 anyhow = "1"
+async-stream = "0.3"
+bytes = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

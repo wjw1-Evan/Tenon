@@ -46,9 +46,33 @@ export function CheckpointTimeline({ api, t, sessionId, onRolledBack }: Props) {
     }
   }
 
+  /** 撤销最近一次回滚（§10.3 unrevert）：会话级控制指令。 */
+  async function unrevert() {
+    if (!sessionId) return;
+    setBusy(true);
+    try {
+      await api.control(sessionId, "unrollback");
+      onRolledBack?.();
+    } catch {
+      // 无可撤销的回滚时静默（时间轴保持原状）
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="timeline" data-testid="timeline">
-      <div className="timeline-head">{t("panel.timeline")}</div>
+      <div className="timeline-head">
+        <span>{t("panel.timeline")}</span>
+        <button
+          type="button"
+          className="timeline-unrevert"
+          disabled={busy || !sessionId}
+          onClick={() => void unrevert()}
+        >
+          {t("timeline.unrevert")}
+        </button>
+      </div>
       {checkpoints.length === 0 && <div className="muted">{t("timeline.empty")}</div>}
       <ul>
         {[...checkpoints].reverse().map((cp) => (

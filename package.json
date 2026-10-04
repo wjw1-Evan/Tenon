@@ -3,8 +3,12 @@
   "private": true,
   "version": "0.1.0",
   "scripts": {
+    "dev": "sh scripts/dev.sh",
+    "dev:daemon": "sh scripts/dev-daemon.sh",
+    "web": "pnpm ui:build && cargo run -p tenon-daemon --bin tenon-daemon -- --web",
     "ui": "pnpm --filter tenon-ui dev",
     "ui:test": "pnpm --filter tenon-ui test",
+    "ui:test:e2e": "cargo build -p tenon-daemon --bin tenon-daemon && pnpm --filter tenon-ui build && pnpm --filter tenon-ui test:e2e",
     "ui:build": "pnpm --filter tenon-ui build"
   }
 }

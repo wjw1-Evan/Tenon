@@ -9,17 +9,22 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc as StdArc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, RwLock};
 
+use futures::StreamExt;
 use tenon_core::circuit::{CircuitBreaker, CircuitLimits, CircuitStatus, PatchFootprint};
-use tenon_core::context::{ProjectRules, SessionMemory};
+use tenon_core::context::{
+    render_working_set, ContextSlice, ProjectRules, SessionMemory, WorkingSet,
+};
 use tenon_core::machine::{Limits as MachineLimits, State, StateMachine};
 use tenon_core::policy::{Action, Decision, Level, Mode, Policy};
 use tenon_core::tools::Tool;
-use tenon_models::{ChatMessage, ChatRequest, ModelProvider, ToolSpec, Usage};
+use tenon_models::{
+    ChatMessage, ChatRequest, ChatStreamEvent, ModelProvider, ToolSpec, Usage, TITLE_MARKER,
+};
 use tenon_snapshot::SnapshotStore;
 use tenon_store::{ApprovalDecision, Event, EventKind, Level as StoreLevel, SessionStatus, Store};
 
@@ -114,6 +119,8 @@ pub enum AgentError {
     Store(String),
     #[error("快照错误: {0}")]
     Snapshot(String),
+    #[error("模型错误: {0}")]
+    Model(String),
     #[error("审批不存在或已决策")]
     ApprovalInvalid,
 }
@@ -198,6 +205,26 @@ fn tool_specs() -> Vec<ToolSpec> {
         })),
         ("git_commit", "git 提交（D 级恒审批）", serde_json::json!({
             "type": "object", "properties": {"message": {"type": "string"}}, "required": ["message"]
+        })),
+        ("git_push", "推送当前分支到已配置远端（D 级恒审批；不支持 force）", serde_json::json!({
+            "type": "object",
+            "properties": {
+                "remote": {"type": "string", "default": "origin"},
+                "branch": {"type": "string"},
+                "upstream": {"type": "boolean"}
+            }
+        })),
+        ("create_pr", "创建 Pull Request（C+D 复合恒审批；使用本机 gh CLI 凭据）", serde_json::json!({
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "body": {"type": "string"},
+                "base": {"type": "string"},
+                "head": {"type": "string"},
+                "draft": {"type": "boolean"},
+                "repository": {"type": "string"}
+            },
+            "required": ["title"]
         })),
     ]
     .into_iter()
@@ -323,6 +350,98 @@ impl AgentSession {
         self.provider.read().await.default_model()
     }
 
+    /// AI ghost text（实验，默认 UI 关闭）：单轮只读补全，不进工具循环。
+    /// 仅发送前缀 / suffix / 语言；失败或空响应返回错误，由 UI 静默回退。
+    pub async fn inline_complete(
+        &self,
+        language: &str,
+        prefix: &str,
+        suffix: &str,
+    ) -> Result<String, AgentError> {
+        let provider = self.provider.read().await.clone();
+        let model = provider.default_model();
+        let mut request = ChatRequest::new(
+            model,
+            vec![
+                ChatMessage::system(
+                    "你是代码补全引擎。只输出光标处应插入的代码，不要解释、不要 Markdown 代码围栏、不要重复已有前缀。",
+                ),
+                ChatMessage::user(format!(
+                    "Language: {language}\n\n<|before_cursor|>\n{prefix}\n<|after_cursor|>\n{suffix}"
+                )),
+            ],
+        );
+        request.max_tokens = 256;
+        request.temperature = 0.1;
+        let response = provider
+            .chat(&request)
+            .await
+            .map_err(|e| AgentError::Model(e.to_string()))?;
+        self.record_usage(response.usage).await;
+        let mut text = response.content.trim().to_string();
+        if text.starts_with("```") {
+            text = text
+                .trim_start_matches("```")
+                .strip_prefix(language.trim())
+                .unwrap_or(&text)
+                .strip_prefix('\n')
+                .unwrap_or(&text)
+                .trim_end_matches("```")
+                .trim_end()
+                .to_string();
+        }
+        if text.is_empty() {
+            return Err(AgentError::Model("empty inline completion".into()));
+        }
+        Ok(text)
+    }
+
+    /// 对话标题自动生成（v1.58）：单轮、无工具目录、小 max_tokens，请求带
+    /// `TITLE_MARKER` 供测试替身识别；只发送首条消息开头，不外发完整任务文本。
+    /// 失败由调用方回退本地截断，不阻塞任务循环。
+    pub async fn generate_title(&self, user_text: &str) -> Result<String, AgentError> {
+        let provider = self.provider.read().await.clone();
+        let excerpt: String = user_text.chars().take(2000).collect();
+        let mut request = ChatRequest::new(
+            provider.default_model(),
+            vec![
+                ChatMessage::system(format!(
+                    "{TITLE_MARKER} 你是对话标题生成器：根据用户首条消息输出一个简短对话标题——\
+                     使用用户消息的语言、不超过 16 个字符、不加引号 / 句号 / 「标题：」类前缀，\
+                     只输出标题本身。"
+                )),
+                ChatMessage::user(excerpt),
+            ],
+        );
+        request.max_tokens = 48;
+        request.temperature = 0.2;
+        let response = provider
+            .chat(&request)
+            .await
+            .map_err(|e| AgentError::Model(e.to_string()))?;
+        self.record_usage(response.usage).await;
+        let title = sanitize_title(&response.content, 24);
+        if title.is_empty() {
+            return Err(AgentError::Model("empty session title".into()));
+        }
+        Ok(title)
+    }
+
+    /// 标题落库并广播 `session_title` 事件（WS 即时刷新对话列表，§14.2）。
+    pub async fn set_title(&self, title: &str) -> Result<(), AgentError> {
+        {
+            let mut st = self.store.lock().await;
+            st.set_session_title(&self.session_id, title)
+                .map_err(|e| AgentError::Store(e.to_string()))?;
+        }
+        self.emit(
+            EventKind::SessionTitle,
+            &serde_json::json!({"title": title}),
+        )
+        .await;
+        Ok(())
+    }
+
     /// 设置熔断器预算（创建后按 config.toml 覆盖）。
     pub async fn set_circuit_limits(&self, limits: CircuitLimits) {
         *self.circuit.lock().await = CircuitBreaker::new(limits);
@@ -418,6 +537,99 @@ impl AgentSession {
         Ok(())
     }
 
+    /// 流式调用当前模型；权威 usage / tool calls 只取流末尾 Final。
+    /// 小增量按 64 字符 / 120ms 合并，避免 SQLite 事件溯源被 token 级写入淹没。
+    async fn stream_model_turn(
+        &self,
+        provider: &StdArc<dyn ModelProvider>,
+        request: &ChatRequest,
+    ) -> Result<tenon_models::ChatResponse, String> {
+        let mut stream = provider
+            .chat_stream(request)
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut pending = String::new();
+        let mut last_flush = Instant::now();
+        let mut final_response = None;
+        while let Some(item) = stream.next().await {
+            match item.map_err(|e| e.to_string())? {
+                ChatStreamEvent::Delta(text) => {
+                    pending.push_str(&text);
+                    if pending.chars().count() >= 64
+                        || last_flush.elapsed() >= Duration::from_millis(120)
+                    {
+                        self.emit(EventKind::ModelDelta, &serde_json::json!({"text": pending}))
+                            .await;
+                        pending.clear();
+                        last_flush = Instant::now();
+                    }
+                }
+                ChatStreamEvent::Final(resp) => final_response = Some(resp),
+            }
+        }
+        if !pending.is_empty() {
+            self.emit(EventKind::ModelDelta, &serde_json::json!({"text": pending}))
+                .await;
+        }
+        final_response.ok_or_else(|| "模型流缺少最终响应".to_string())
+    }
+
+    /// 执行一个任务（完整 §9.1 循环）。
+    /// L4 → L1：任务查询本地持久索引，构造受 token 预算约束的工作集。
+    /// 检索失败 / 空索引回退为空；仓库内容按不可信数据注入。
+    async fn l4_working_set(&self, query: &str) -> WorkingSet {
+        const MAX_SLICES: usize = 4;
+        const MAX_CONTEXT_TOKENS: u64 = 12_000;
+        let embedding = tenon_fs::l4::embed(query, query);
+        let hits = {
+            let mut store = self.store.lock().await;
+            match store.l4_search(&self.config.project_id, &embedding, MAX_SLICES * 2) {
+                Ok(hits) => hits,
+                Err(e) => {
+                    tracing::debug!("L4 recall unavailable: {e}");
+                    return WorkingSet::default();
+                }
+            }
+        };
+        let mut slices = Vec::new();
+        let mut used_tokens = 0u64;
+        for hit in hits {
+            if hit.score <= 0.0 {
+                continue;
+            }
+            let mut content = hit.text.clone();
+            let mut tokens = tenon_core::context::estimate_tokens(&content);
+            if used_tokens + tokens > MAX_CONTEXT_TOKENS {
+                let remaining = MAX_CONTEXT_TOKENS.saturating_sub(used_tokens);
+                if remaining < 128 {
+                    break;
+                }
+                let end = content.char_indices().nth((remaining * 3) as usize);
+                if let Some((idx, _)) = end {
+                    content.truncate(idx);
+                    tokens = remaining;
+                }
+            }
+            slices.push(ContextSlice {
+                path: hit.path,
+                start_line: hit.start_line,
+                end_line: hit.end_line,
+                symbol: if hit.symbol.is_empty() {
+                    None
+                } else {
+                    Some(hit.symbol)
+                },
+                content,
+                relevance: Some(hit.score),
+            });
+            used_tokens += tokens;
+            if slices.len() >= MAX_SLICES {
+                break;
+            }
+        }
+        WorkingSet { slices }
+    }
+
     /// 执行一个任务（完整 §9.1 循环）。
     pub async fn run_task(&self, user_text: &str) -> TaskOutcome {
         let _guard = self.write_lock.inner.lock().await;
@@ -486,12 +698,36 @@ impl AgentSession {
             Err(e) => return self.snapshot_unavailable(e).await,
         };
 
+        // L1 工作集：从 L4 本地索引召回任务相关切片（§10.1 / §10.2）。
+        let working_set = self.l4_working_set(user_text).await;
+        if !working_set.slices.is_empty() {
+            self.emit(
+                EventKind::Sensing,
+                &serde_json::json!({
+                    "l4_recall": true,
+                    "slices": working_set.slices.iter().map(|slice| {
+                        serde_json::json!({
+                            "path": slice.path,
+                            "start_line": slice.start_line,
+                            "end_line": slice.end_line,
+                            "symbol": slice.symbol,
+                            "score": slice.relevance,
+                        })
+                    }).collect::<Vec<_>>(),
+                }),
+            )
+            .await;
+        }
+        let user_message = match render_working_set(&working_set) {
+            context if context.is_empty() => user_text.to_string(),
+            context => format!("{user_text}\n\n{context}"),
+        };
         let mut messages: Vec<ChatMessage> = vec![
             ChatMessage::system(tenon_core::prompt::build_system_prompt(
                 &self.rules.lock().await.clone(),
                 &self.memory.lock().await.clone(),
             )),
-            ChatMessage::user(user_text),
+            ChatMessage::user(user_message),
         ];
 
         let mut changed_files: Vec<String> = Vec::new();
@@ -503,6 +739,8 @@ impl AgentSession {
 
         let mut paused_reason: Option<String> = None;
         let mut error_msg: Option<String> = None;
+        // §9.1 v1.53：截断续跑——截断的中间输出不是回答，连续多次才按模型失败处理
+        let mut consecutive_truncations = 0u32;
 
         // ---- 模型回合循环（SENSING / DECIDING / EXECUTING 在回合内展开）----
         'rounds: for _round in 0..self.config.max_tool_rounds {
@@ -521,10 +759,10 @@ impl AgentSession {
                 model: provider.default_model(),
                 messages: messages.clone(),
                 tools,
-                max_tokens: 4096,
+                max_tokens: 16_384,
                 temperature: 0.2,
             };
-            let resp = match provider.chat(&request).await {
+            let resp = match self.stream_model_turn(&provider, &request).await {
                 Ok(r) => r,
                 Err(e) => {
                     // 侧向出口：模型失败 → ERROR（重试语义由 daemon 的 model_fallback 承接）
@@ -548,6 +786,29 @@ impl AgentSession {
                 &serde_json::json!({"intent": resp.content, "tool_calls": resp.tool_calls.len()}),
             )
             .await;
+
+            // v1.53：截断的回复（finish_reason=length）没有工具调用不等于任务完成——
+            // 推送已输出的部分并要求续写，避免长规划被 max_tokens 剪断后静默 Done。
+            if resp.tool_calls.is_empty() && resp.finish_reason.as_deref() == Some("length") {
+                consecutive_truncations += 1;
+                if consecutive_truncations >= 3 {
+                    self.force_state(State::Error).await;
+                    self.set_status(SessionStatus::Error).await;
+                    self.emit(
+                        EventKind::Error,
+                        &serde_json::json!({"error": "模型输出连续 3 次被截断（finish_reason=length）"}),
+                    )
+                    .await;
+                    error_msg = Some("模型输出连续截断（finish_reason=length）".into());
+                    break 'rounds;
+                }
+                messages.push(ChatMessage::assistant(resp.content.clone()));
+                messages.push(ChatMessage::user(
+                    "上一条回复因达到输出长度上限被截断。请从中断处直接继续：只输出剩余内容或发起工具调用，不要重复已输出的部分。",
+                ));
+                continue 'rounds;
+            }
+            consecutive_truncations = 0;
 
             if resp.tool_calls.is_empty() && changed_files.is_empty() {
                 // ---- 纯回答（无需改动）：ANSWERING → SUMMARIZING → DONE ----
@@ -865,6 +1126,7 @@ impl AgentSession {
                             Level::B => StoreLevel::B,
                             Level::C => StoreLevel::C,
                             Level::D => StoreLevel::D,
+                            Level::Composite => StoreLevel::Composite,
                         },
                         0,
                     );
@@ -1057,6 +1319,7 @@ impl AgentSession {
                     Level::B => StoreLevel::B,
                     Level::C => StoreLevel::C,
                     Level::D => StoreLevel::D,
+                    Level::Composite => StoreLevel::Composite,
                 },
             )
             .expect("insert approval")
@@ -1273,6 +1536,24 @@ enum ApprovalFlow {
     Timeout,
 }
 
+/// 清理模型产出 / 本地回退的对话标题（v1.58）：取首个非空行、去包裹引号与
+/// 结尾句读、按字符截断；空输入返回空串（调用方保持「未生成」语义）。
+pub fn sanitize_title(input: &str, max_chars: usize) -> String {
+    let first_line = input
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("");
+    let unwrapped = first_line
+        .strip_prefix(['"', '“', '‘', '「', '『', '《'])
+        .and_then(|s| s.strip_suffix(['"', '”', '’', '」', '』', '》']))
+        .unwrap_or(first_line)
+        .trim()
+        .trim_end_matches(['。', '.', '！', '？', '?', '!', '；', ';'])
+        .trim();
+    unwrapped.chars().take(max_chars).collect()
+}
+
 fn extract_host(tool: &str, args: &serde_json::Value) -> Option<String> {
     if tool != "http_fetch" {
         return None;
@@ -1294,8 +1575,26 @@ fn summarize_action(tool: &str, args: &serde_json::Value) -> String {
             "git 提交：{}",
             args.get("message").and_then(|m| m.as_str()).unwrap_or("")
         ),
-        "git_push" => "git 推送到远端".to_string(),
-        "create_pr" => "创建 Pull Request".to_string(),
+        "git_push" => {
+            let remote = args
+                .get("remote")
+                .and_then(|r| r.as_str())
+                .unwrap_or("origin");
+            match args.get("branch").and_then(|b| b.as_str()) {
+                Some(branch) => format!("git 推送 {branch} 到远端 {remote}"),
+                None => format!("git 推送当前分支到远端 {remote}"),
+            }
+        }
+        "create_pr" => {
+            let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("");
+            match (
+                args.get("base").and_then(|v| v.as_str()),
+                args.get("head").and_then(|v| v.as_str()),
+            ) {
+                (Some(base), Some(head)) => format!("创建 PR {head} → {base}：{title}（C+D 复合）"),
+                _ => format!("创建 Pull Request：{title}（C+D 复合）"),
+            }
+        }
         "install_deps" => format!(
             "安装依赖：{}",
             args.get("command").and_then(|c| c.as_str()).unwrap_or("?")

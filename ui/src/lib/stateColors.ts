@@ -25,3 +25,12 @@ export const STATE_COLORS: Record<AgentStateName, string> = {
   rolled_back: "#8a8f98",
   idle: "#8a8f98",
 };
+
+// 代理循环正在推进的状态：发送按钮此时显示「停止」（v1.59）。
+export const RUNNING_STATES: ReadonlySet<AgentStateName> = new Set([
+  "sensing",
+  "deciding",
+  "executing",
+  "verifying",
+  "fixing",
+]);

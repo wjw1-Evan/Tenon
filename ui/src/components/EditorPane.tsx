@@ -2,6 +2,21 @@
 // 代理写入行带「AI」角标（AI 修改高亮区，§8.6），用户编辑后解除。
 import Editor, { type Monaco } from "@monaco-editor/react";
 import { useEffect, useRef, useState } from "react";
+import type { editor as monacoEditor } from "monaco-editor";
+import type { Translate } from "../lib/i18n";
+import type { TenonApi } from "../lib/api";
+import {
+  lspRange,
+  lspUriToModelPath,
+  parseLspCompletions,
+  parseLspHover,
+  parseLspCodeActions,
+  parseLspLocations,
+  parseLspSignatureHelp,
+  toMonacoCompletionSuggestions,
+} from "../lib/lsp";
+import { recordCompletionPresentation } from "../lib/performance";
+import "../monacoSetup";
 
 type DecorationsCollection = { clear: () => void };
 type SelectionRange = {
@@ -23,6 +38,14 @@ type StandaloneEditor = {
     cb: (e: { selection: SelectionRange }) => void
   ) => { dispose: () => void };
   getModel: () => { getValueInRange: (range: SelectionRange) => string } | null;
+};
+
+type HighlightToken = {
+  kind: string;
+  start_line: number;
+  start_column: number;
+  end_line: number;
+  end_column: number;
 };
 
 /* Tenon 主题（§7.5 设计令牌同步）：与 styles.css 的 --surface /
@@ -48,7 +71,7 @@ const TENON_DARK = {
     "scrollbarSlider.hoverBackground": "#8B93A733",
     "scrollbarSlider.activeBackground": "#8B93A747",
   },
-} as const;
+} satisfies monacoEditor.IStandaloneThemeData;
 
 const TENON_LIGHT = {
   base: "vs",
@@ -71,7 +94,7 @@ const TENON_LIGHT = {
     "scrollbarSlider.hoverBackground": "#5F6B8133",
     "scrollbarSlider.activeBackground": "#5F6B8147",
   },
-} as const;
+} satisfies monacoEditor.IStandaloneThemeData;
 
 function defineTenonThemes(monaco: Monaco) {
   monaco.editor.defineTheme("tenon-dark", TENON_DARK);
@@ -108,6 +131,15 @@ export interface EditorSelection {
 }
 
 interface Props {
+  t: Translate;
+  api: TenonApi;
+  projectId: string | null;
+  projectRoot?: string;
+  sessionId?: string | null;
+  /** AI ghost text（P2 实验）：设计要求默认关闭。 */
+  inlineCompletionEnabled?: boolean;
+  /** watcher 文件事件版本；触发 tree-sitter 高亮刷新。 */
+  refreshToken?: number;
   tabs: EditorTab[];
   activePath: string | null;
   onSelect: (path: string) => void;
@@ -123,9 +155,26 @@ interface Props {
   goto?: { path: string; line: number; token: number } | null;
   /** 选区变化（去重后；null = 无选区）。行内指令上下文（§8.5）。 */
   onSelectionChange?: (sel: EditorSelection | null) => void;
+  /** 右侧分栏文件（§8.1 多标签 / 分栏）；null = 未分栏。 */
+  splitPath?: string | null;
+  /** 打开 / 关闭分栏；传 path 即打开指定右侧文件。 */
+  onSelectSplit?: (path: string | null) => void;
+  /** LSP 写盘前 flush 未保存缓冲。 */
+  onFlushFile?: (path: string) => Promise<void> | void;
+  /** daemon 已原子应用 WorkspaceEdit；调用方刷新打开文件 / 文件树。 */
+  onWorkspaceApplied?: (paths: string[]) => Promise<void> | void;
+  /** 命令面板撤销/重做入口（§8.2 v1.75）：挂载绑定 active editor，卸载解绑。 */
+  bindEditorApi?: (api: { undo: () => void; redo: () => void } | null) => void;
 }
 
 export function EditorPane({
+  t,
+  api,
+  projectId,
+  projectRoot,
+  sessionId = null,
+  inlineCompletionEnabled = false,
+  refreshToken = 0,
   tabs,
   activePath,
   onSelect,
@@ -136,14 +185,47 @@ export function EditorPane({
   unsavedTitle,
   goto,
   onSelectionChange,
+  splitPath = null,
+  onSelectSplit,
+  onFlushFile,
+  onWorkspaceApplied,
+  bindEditorApi,
 }: Props) {
   const editorRef = useRef<StandaloneEditor | null>(null);
+  // bindEditorApi 经 ref 透传：卸载解绑用最新回调，不进 effect 依赖。
+  const bindRef = useRef(bindEditorApi);
+  bindRef.current = bindEditorApi;
+  useEffect(() => () => bindRef.current?.(null), []);
   const decorationsRef = useRef<DecorationsCollection | null>(null);
   const resolvedTheme = useResolvedTheme();
   const activePathRef = useRef(activePath);
   const lastSelSigRef = useRef<string | null>(null);
   const selectionCbRef = useRef(onSelectionChange);
   const selSubRef = useRef<{ dispose: () => void } | null>(null);
+  const providersRef = useRef<Array<{ dispose: () => void }>>([]);
+  const syntaxDecorationsRef = useRef<DecorationsCollection | null>(null);
+  const [syntaxTokens, setSyntaxTokens] = useState<HighlightToken[]>([]);
+  const runtimeRef = useRef({
+    api,
+    projectId,
+    projectRoot,
+    sessionId,
+    onFlushFile,
+    onWorkspaceApplied,
+    inlineCompletionEnabled,
+  });
+
+  useEffect(() => {
+    runtimeRef.current = {
+      api,
+      projectId,
+      projectRoot,
+      sessionId,
+      onFlushFile,
+      onWorkspaceApplied,
+      inlineCompletionEnabled,
+    };
+  }, [api, projectId, projectRoot, sessionId, onFlushFile, onWorkspaceApplied]);
 
   useEffect(() => {
     activePathRef.current = activePath;
@@ -151,18 +233,300 @@ export function EditorPane({
   useEffect(() => {
     selectionCbRef.current = onSelectionChange;
   }, [onSelectionChange]);
+  // daemon 侧 tree-sitter token 流（§8.2 / §16）：活动文件切换 / watcher 保存后刷新。
+  useEffect(() => {
+    if (!projectId || !activePath) {
+      setSyntaxTokens([]);
+      return;
+    }
+    let alive = true;
+    const timer = window.setTimeout(() => {
+      api
+        .getHighlights(projectId, activePath)
+        .then((result) => {
+          if (alive) setSyntaxTokens(result.fallback ? [] : result.tokens ?? []);
+        })
+        .catch(() => {
+          if (alive) setSyntaxTokens([]);
+        });
+    }, 250);
+    return () => {
+      alive = false;
+      window.clearTimeout(timer);
+    };
+  }, [api, projectId, activePath, refreshToken]);
   useEffect(
     () => () => {
       selSubRef.current?.dispose();
       selSubRef.current = null;
+      providersRef.current.forEach((provider) => provider.dispose());
+      providersRef.current = [];
     },
     []
   );
 
+  function modelPath(uri: { path: string }) {
+    let path = decodeURIComponent(uri.path).replace(/^\//, "");
+    const root = runtimeRef.current.projectRoot?.replace(/\/$/, "");
+    if (root && path.startsWith(`${root}/`)) path = path.slice(root.length + 1);
+    return path;
+  }
+
+  function registerLanguageProviders(monaco: Monaco) {
+    const request = async (
+      path: string,
+      action: string,
+      line: number,
+      character: number,
+      extra?: string
+    ) => {
+      const runtime = runtimeRef.current;
+      if (!runtime.projectId || !path) return null;
+      await runtime.onFlushFile?.(path);
+      return runtime.api.lsp({
+        project_id: runtime.projectId,
+        path,
+      action: action as "completion",
+        line,
+        character,
+        extra,
+      });
+    };
+
+    const applyEdit = async (workspaceEdit: unknown, path: string) => {
+      const runtime = runtimeRef.current;
+      if (!runtime.projectId || !runtime.sessionId) {
+        throw new Error("active session required");
+      }
+      await runtime.onFlushFile?.(path);
+      const applied = await runtime.api.applyLspEdit(
+        runtime.projectId,
+        workspaceEdit,
+        runtime.sessionId
+      );
+      await runtime.onWorkspaceApplied?.(applied.files.map((file) => file.path));
+      return applied;
+    };
+
+    providersRef.current.push(
+      monaco.languages.registerCompletionItemProvider("*", {
+        triggerCharacters: [".", "/", "'", '"', "("],
+        async provideCompletionItems(model, position) {
+          const started = performance.now();
+          const path = modelPath(model.uri);
+          const result = await request(path, "completion", position.lineNumber - 1, position.column - 1);
+          const word = model.getWordUntilPosition(position);
+          const range = {
+            startLineNumber: position.lineNumber,
+            endLineNumber: position.lineNumber,
+            startColumn: word.startColumn,
+            endColumn: word.endColumn,
+          };
+          const suggestions = toMonacoCompletionSuggestions(
+            parseLspCompletions(result?.result),
+            range
+          );
+          recordCompletionPresentation(performance.now() - started);
+          return { suggestions };
+        },
+      })
+    );
+
+    providersRef.current.push(
+      monaco.languages.registerHoverProvider("*", {
+        async provideHover(model, position, token) {
+          const path = modelPath(model.uri);
+          const result = await request(path, "hover", position.lineNumber - 1, position.column - 1);
+          const value = parseLspHover(result?.result);
+          if (token.isCancellationRequested || !value) return { contents: [] };
+          return { contents: [{ value }], range: lspRange(null) };
+        },
+      })
+    );
+
+    providersRef.current.push(
+      monaco.languages.registerDefinitionProvider("*", {
+        async provideDefinition(model, position, token) {
+          const path = modelPath(model.uri);
+          const result = await request(path, "definition", position.lineNumber - 1, position.column - 1);
+          if (token.isCancellationRequested) return [];
+          return parseLspLocations(result?.result, runtimeRef.current.projectRoot).map((location) => ({
+            uri: monaco.Uri.parse(location.uri),
+            range: location.range,
+          }));
+        },
+      })
+    );
+
+    providersRef.current.push(
+      monaco.languages.registerReferenceProvider("*", {
+        async provideReferences(model, position, _context, token) {
+          const path = modelPath(model.uri);
+          const result = await request(path, "references", position.lineNumber - 1, position.column - 1);
+          if (token.isCancellationRequested) return [];
+          return parseLspLocations(result?.result, runtimeRef.current.projectRoot)
+            .map((location) => ({
+              uri: monaco.Uri.parse(location.uri),
+              range: location.range,
+            }));
+        },
+      })
+    );
+
+    providersRef.current.push(
+      monaco.languages.registerSignatureHelpProvider("*", {
+        signatureHelpTriggerCharacters: ["(", ","],
+        async provideSignatureHelp(model, position, _token, _context) {
+          const path = modelPath(model.uri);
+          const result = await request(path, "signature_help", position.lineNumber - 1, position.column - 1);
+          const value = parseLspSignatureHelp(result?.result);
+          if (_token.isCancellationRequested || !value) return null;
+          return {
+            value: {
+              signatures: [{ label: value, parameters: [] }],
+              activeSignature: 0,
+              activeParameter: 0,
+            },
+            dispose: () => {},
+          };
+        },
+      })
+    );
+
+    providersRef.current.push(
+      monaco.languages.registerDocumentFormattingEditProvider("*", {
+        async provideDocumentFormattingEdits(model, _token, _options) {
+          const path = modelPath(model.uri);
+          const result = await request(path, "format", 0, 0);
+          const edits = Array.isArray(result?.result) ? result.result : [];
+          if (edits.length === 0) return [];
+          await applyEdit(
+            { changes: { [`file://${runtimeRef.current.projectRoot}/${path}`]: edits } },
+            path
+          );
+          // daemon 已原子写盘；onWorkspaceApplied 会刷新 model value。
+          return [];
+        },
+      })
+    );
+
+    providersRef.current.push(
+      monaco.languages.registerRenameProvider("*", {
+        async provideRenameEdits(model, position, newName, token) {
+          const path = modelPath(model.uri);
+          const result = await request(
+            path,
+            "rename",
+            position.lineNumber - 1,
+            position.column - 1,
+            newName
+          );
+          const workspaceEdit = result?.result;
+          if (token.isCancellationRequested || !workspaceEdit) return null;
+          await applyEdit(workspaceEdit, path);
+          return null;
+        },
+        resolveRenameLocation() {
+          return null;
+        },
+      })
+    );
+
+    const applyCommandId = "tenon.lsp.applyWorkspaceEdit";
+    providersRef.current.push(
+      monaco.editor.registerCommand(
+        applyCommandId,
+        async (_accessor, workspaceEdit: unknown, path: string) => {
+          await applyEdit(workspaceEdit, path);
+        }
+      )
+    );
+
+    providersRef.current.push(
+      monaco.languages.registerCodeActionProvider("*", {
+        async provideCodeActions(model, _range, _context, token) {
+          const path = modelPath(model.uri);
+          const result = await request(path, "codeaction", 0, 0);
+          if (token.isCancellationRequested) return { actions: [], dispose: () => {} };
+          return {
+            actions: parseLspCodeActions(result?.result).map((action) => ({
+              title: action.title,
+              kind: action.kind ?? "quickfix",
+              isPreferred: action.kind === "quickfix",
+              command: {
+                id: applyCommandId,
+                title: action.title,
+                arguments: [action.workspaceEdit, path],
+              },
+            })),
+            dispose: () => {},
+          };
+        },
+      })
+    );
+
+    providersRef.current.push(
+      monaco.languages.registerInlineCompletionsProvider("*", {
+        freeInlineCompletions() {},
+        async provideInlineCompletions(model, position, _context, token) {
+          const runtime = runtimeRef.current;
+          const path = modelPath(model.uri);
+          if (
+            !runtime.inlineCompletionEnabled ||
+            !runtime.projectId ||
+            !runtime.sessionId ||
+            !path ||
+            token.isCancellationRequested
+          ) {
+            return { items: [], enableForwardStability: true };
+          }
+          // 停顿后再请求，避免每次按键打模型。
+          await new Promise((resolve) => window.setTimeout(resolve, 350));
+          if (token.isCancellationRequested) return { items: [], enableForwardStability: true };
+          const value = model.getValue();
+          const offset = model.getOffsetAt(position);
+          const prefix = value.slice(Math.max(0, offset - 24_000), offset);
+          const suffix = value.slice(offset, offset + 24_000);
+          try {
+            const response = await runtime.api.inlineComplete({
+              project_id: runtime.projectId,
+              session_id: runtime.sessionId,
+              path,
+              language: path.split(".").pop(),
+              prefix,
+              suffix,
+            });
+            if (token.isCancellationRequested || !response.completion) {
+              return { items: [], enableForwardStability: true };
+            }
+            let text = response.completion;
+            const remainder = value.slice(offset);
+            let common = 0;
+            while (
+              common < text.length &&
+              common < remainder.length &&
+              text[common] === remainder[common]
+            ) {
+              common += 1;
+            }
+            text = text.slice(common);
+            if (!text) return { items: [], enableForwardStability: true };
+            return {
+              items: [{ insertText: text }],
+              enableForwardStability: true,
+            };
+          } catch {
+            return { items: [], enableForwardStability: true };
+          }
+        },
+      })
+    );
+  }
+
   // AI 角标装饰：行号变化时重建
   useEffect(() => {
     const editor = editorRef.current;
-    if (!editor) return;
+    if (!editor || typeof editor.createDecorationsCollection !== "function") return;
     const lines = activePath ? (aiModifiedLines?.[activePath] ?? []) : [];
     if (lines.length === 0) {
       decorationsRef.current?.clear();
@@ -187,11 +551,36 @@ export function EditorPane({
   }, [aiModifiedLines, activePath]);
   useEffect(() => {
     const editor = editorRef.current;
+    if (!editor || typeof editor.createDecorationsCollection !== "function") return;
+    const ranges = syntaxTokens.map((token) => ({
+      range: {
+        startLineNumber: token.start_line + 1,
+        startColumn: token.start_column + 1,
+        endLineNumber: token.end_line + 1,
+        endColumn: token.end_column + 1,
+      },
+      options: { inlineClassName: `tenon-hl-${token.kind}` },
+    }));
+    syntaxDecorationsRef.current?.clear();
+    syntaxDecorationsRef.current = editor.createDecorationsCollection(ranges);
+  }, [syntaxTokens, activePath]);
+  useEffect(() => {
+    const editor = editorRef.current;
     if (!editor || !goto || activePath !== goto.path) return;
     editor.revealLineInCenter(goto.line);
     editor.focus();
   }, [goto, activePath]);
   const active = tabs.find((t) => t.path === activePath);
+  const splitTab = splitPath ? tabs.find((tab) => tab.path === splitPath) : undefined;
+  const splitCandidates = tabs.filter((tab) => tab.path !== activePath);
+  const toggleSplit = () => {
+    if (!onSelectSplit) return;
+    if (splitPath) {
+      onSelectSplit(null);
+      return;
+    }
+    onSelectSplit(splitCandidates[0]?.path ?? null);
+  };
   return (
     <div className="editor-pane" data-testid="editor-pane">
       <div className="tabs" role="tablist">
@@ -226,18 +615,51 @@ export function EditorPane({
             </button>
           </span>
         ))}
+        <button
+          type="button"
+          className={`tab-split ${splitPath ? "active" : ""}`}
+          data-testid="editor-split"
+          aria-pressed={Boolean(splitPath)}
+          disabled={!onSelectSplit || tabs.length < 2 || (!splitPath && splitCandidates.length === 0)}
+          title={splitPath ? t("editor.split_close") : t("editor.split_open")}
+          onClick={toggleSplit}
+        >
+          {splitPath ? t("editor.split_close") : t("editor.split_open")}
+        </button>
       </div>
-      <div className="editor-body">
+      <div className={`editor-body ${splitTab ? "split" : ""}`}>
         {active ? (
+          <section className="editor-group">
           <Editor
             height="100%"
             theme={resolvedTheme === "light" ? "tenon-light" : "tenon-dark"}
             beforeMount={defineTenonThemes}
             loading={<div className="editor-loading">加载中…</div>}
+            options={{
+              // 简洁大方的编辑面（§7.5）：minimap 在 WebView 渲染错位（E2E
+              // 实测）且非必需，禁用；其余为阅读体验微调。
+              minimap: { enabled: false },
+              fontSize: 13,
+              lineHeight: 1.7,
+              fontLigatures: true,
+              smoothScrolling: true,
+              cursorBlinking: "smooth",
+              cursorSmoothCaretAnimation: "on",
+              renderLineHighlight: "all",
+              scrollBeyondLastLine: false,
+              padding: { top: 8, bottom: 24 },
+              stickyScroll: { enabled: false },
+            }}
             path={active.path}
             value={active.content}
-            onMount={(editor) => {
+            onMount={(editor, monacoInstance) => {
               editorRef.current = editor;
+              registerLanguageProviders(monacoInstance);
+              // 命令面板撤销/重做（§8.2 v1.75）：trigger active editor，不依赖焦点。
+              bindEditorApi?.({
+                undo: () => editor.trigger("palette", "undo", null),
+                redo: () => editor.trigger("palette", "redo", null),
+              });
               // 选区上报（§8.5 行内指令上下文）：按 path + 区间签名去重，
               // 光标移动 / 输入不重复触发上层渲染。
               selSubRef.current?.dispose();
@@ -274,8 +696,50 @@ export function EditorPane({
               onChange(active.path, v ?? "");
             }}
           />
+          </section>
         ) : (
-          <div className="muted editor-empty">Tenon</div>
+          <section className="editor-group">
+            <div className="muted editor-empty">Tenon</div>
+          </section>
+        )}
+        {splitTab && (
+          <section className="editor-group secondary" data-testid="editor-split-group">
+            <div className="split-head">
+              <label className="muted" htmlFor="split-file-select">{t("editor.split_file")}</label>
+              <select
+                id="split-file-select"
+                data-testid="split-file-select"
+                value={splitTab.path}
+                onChange={(event) => onSelectSplit?.(event.target.value)}
+              >
+                {tabs
+                  .filter((tab) => tab.path !== activePath)
+                  .map((tab) => (
+                    <option key={tab.path} value={tab.path}>{tab.path}</option>
+                  ))}
+              </select>
+            </div>
+            <Editor
+              height="100%"
+              theme={resolvedTheme === "light" ? "tenon-light" : "tenon-dark"}
+              beforeMount={defineTenonThemes}
+              loading={<div className="editor-loading">加载中…</div>}
+              options={{
+                minimap: { enabled: false },
+                fontSize: 13,
+                lineHeight: 1.7,
+                fontLigatures: true,
+                smoothScrolling: true,
+                renderLineHighlight: "all",
+                scrollBeyondLastLine: false,
+                padding: { top: 8, bottom: 24 },
+              stickyScroll: { enabled: false },
+              }}
+              path={splitTab.path}
+              value={splitTab.content}
+              onChange={(value) => onChange(splitTab.path, value ?? "")}
+            />
+          </section>
         )}
       </div>
     </div>

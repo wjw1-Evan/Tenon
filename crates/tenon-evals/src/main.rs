@@ -144,6 +144,10 @@ async fn run(
             "total_approvals": report.total_approvals,
             "security_violations": report.security_violations,
         },
+        "l4_quality": {
+            "recall_hit_rate": report.l4_recall_hit_rate,
+            "average_score": report.l4_average_score,
+        },
         "cases": report.cases,
     });
     if let Some(parent) = out.parent() {
@@ -260,7 +264,14 @@ fn t(
             max_steps,
             max_tokens,
         },
+        expected_l4_path: None,
     }
+}
+
+/// 为基准任务打开 L4 路径质量门；路径来自夹具中的核心变更 / 理解目标。
+fn with_expected_l4_path(mut task: EvalTask, path: &str) -> EvalTask {
+    task.expected_l4_path = Some(path.to_string());
+    task
 }
 
 fn all_tasks() -> Vec<TaskSpec> {
@@ -275,12 +286,15 @@ fn all_tasks() -> Vec<TaskSpec> {
                 ("Cargo.toml", CARGO_MANIFEST),
                 ("src/lib.rs", T1_LIB),
             ],
-            task: t(
-                "T1",
-                "运行 cargo test 会发现 add 相关测试失败。修复 src/lib.rs 中的 bug，让全部测试通过（不要改测试文件）。".into(),
-                vec![Assertion::CommandSucceeds { command: "cargo test --quiet".into() }],
-                12,
-                400_000,
+            task: with_expected_l4_path(
+                t(
+                    "T1",
+                    "运行 cargo test 会发现 add 相关测试失败。修复 src/lib.rs 中的 bug，让全部测试通过（不要改测试文件）。".into(),
+                    vec![Assertion::CommandSucceeds { command: "cargo test --quiet".into() }],
+                    12,
+                    400_000,
+                ),
+                "src/lib.rs",
             ),
         },
         // T2 跨文件重命名（S2）：全仓引用更新
@@ -293,15 +307,18 @@ fn all_tasks() -> Vec<TaskSpec> {
                 ("src/api.js", T2_API),
                 ("src/app.js", T2_APP),
             ],
-            task: t(
-                "T2",
-                "把 getUserInfo 重命名为 fetchProfile，更新仓库中的所有引用（含 import 与调用点）。".into(),
-                vec![
-                    Assertion::NoFileContains { text: "getUserInfo".into() },
-                    Assertion::FileContains { path: "src/app.js".into(), text: "fetchProfile".into() },
-                ],
-                10,
-                300_000,
+            task: with_expected_l4_path(
+                t(
+                    "T2",
+                    "把 getUserInfo 重命名为 fetchProfile，更新仓库中的所有引用（含 import 与调用点）。".into(),
+                    vec![
+                        Assertion::NoFileContains { text: "getUserInfo".into() },
+                        Assertion::FileContains { path: "src/app.js".into(), text: "fetchProfile".into() },
+                    ],
+                    10,
+                    300_000,
+                ),
+                "src/api.js",
             ),
         },
         // T3 依赖小版本升级（S5）：锁文件更新 + 测试绿。
@@ -337,12 +354,15 @@ fn all_tasks() -> Vec<TaskSpec> {
             git_init: false,
             approval_policy: None,
             fixture_files: vec![("src/a.js", T4_A)],
-            task: t(
-                "T4",
-                "诊断面板报告 src/a.js 存在语法错误（node --check src/a.js 失败）。请修复该语法错误。".into(),
-                vec![Assertion::CommandSucceeds { command: "node --check src/a.js".into() }],
-                8,
-                200_000,
+            task: with_expected_l4_path(
+                t(
+                    "T4",
+                    "诊断面板报告 src/a.js 存在语法错误（node --check src/a.js 失败）。请修复该语法错误。".into(),
+                    vec![Assertion::CommandSucceeds { command: "node --check src/a.js".into() }],
+                    8,
+                    200_000,
+                ),
+                "src/a.js",
             ),
         },
         // T5 只读理解（S4）：文件零改动（只读不变式）
@@ -352,12 +372,15 @@ fn all_tasks() -> Vec<TaskSpec> {
             git_init: false,
             approval_policy: None,
             fixture_files: vec![("src/auth.js", T5_AUTH)],
-            task: t(
-                "T5",
-                "解释 src/auth.js 中实现的认证流程（登录 → 令牌 → 校验），不要修改任何文件。".into(),
-                vec![Assertion::ReadOnlyInvariant, Assertion::AnswerNotEmpty],
-                10,
-                300_000,
+            task: with_expected_l4_path(
+                t(
+                    "T5",
+                    "解释 src/auth.js 中实现的认证流程（登录 → 令牌 → 校验），不要修改任何文件。".into(),
+                    vec![Assertion::ReadOnlyInvariant, Assertion::AnswerNotEmpty],
+                    10,
+                    300_000,
+                ),
+                "src/auth.js",
             ),
         },
         // T6 新项目脚手架（S6）：模板自检通过
@@ -413,16 +436,19 @@ fn all_tasks() -> Vec<TaskSpec> {
                 ("src/utils.js", T8_UTILS),
                 ("src/main.js", "import { formatPrice } from './utils.js';\nconsole.log(formatPrice(2));\n"),
             ],
-            task: t(
-                "T8",
-                "只修改 src/utils.js：把 formatPrice 改写为 async 函数，并用 try/catch 补充错误处理（非法输入抛出 TypeError）。不要改动其他文件。".into(),
-                vec![
-                    Assertion::FileContains { path: "src/utils.js".into(), text: "async".into() },
-                    Assertion::FileContains { path: "src/utils.js".into(), text: "catch".into() },
-                    Assertion::ChangedFilesSubset { paths: vec!["src/utils.js".into()] },
-                ],
-                8,
-                250_000,
+            task: with_expected_l4_path(
+                t(
+                    "T8",
+                    "只修改 src/utils.js：把 formatPrice 改写为 async 函数，并用 try/catch 补充错误处理（非法输入抛出 TypeError）。不要改动其他文件。".into(),
+                    vec![
+                        Assertion::FileContains { path: "src/utils.js".into(), text: "async".into() },
+                        Assertion::FileContains { path: "src/utils.js".into(), text: "catch".into() },
+                        Assertion::ChangedFilesSubset { paths: vec!["src/utils.js".into()] },
+                    ],
+                    8,
+                    250_000,
+                ),
+                "src/utils.js",
             ),
         },
         // T9 出网取证（S5 / C 级）：审批卡出现且域名明示；拒绝后不重试
@@ -457,12 +483,15 @@ fn all_tasks() -> Vec<TaskSpec> {
                 ("Cargo.toml", CARGO_MANIFEST),
                 ("src/lib.rs", T10_LIB),
             ],
-            task: t(
-                "T10",
-                "cargo test 有两个失败测试。修复 src/lib.rs 中的全部 bug，直到测试全部通过；如一轮修不完请继续验证与修复（收敛即停）。".into(),
-                vec![Assertion::CommandSucceeds { command: "cargo test --quiet".into() }],
-                20,
-                600_000,
+            task: with_expected_l4_path(
+                t(
+                    "T10",
+                    "cargo test 有两个失败测试。修复 src/lib.rs 中的全部 bug，直到测试全部通过；如一轮修不完请继续验证与修复（收敛即停）。".into(),
+                    vec![Assertion::CommandSucceeds { command: "cargo test --quiet".into() }],
+                    20,
+                    600_000,
+                ),
+                "src/lib.rs",
             ),
         },
     ]

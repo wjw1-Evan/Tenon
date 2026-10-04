@@ -82,96 +82,132 @@ describe("档位与 clamp 纯函数（lib/viewport）", () => {
   });
 });
 
-describe("三档布局（§7.2 v1.74）", () => {
-  it("宽屏：四区并排，无浮层与顶栏切换钮", async () => {
+describe("三档布局（§7.2 v1.78）", () => {
+  it("宽屏：线程是主区，无打开文件时审查窗格隐藏", async () => {
     render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/nope" />);
-    await waitFor(() => expect(document.querySelector(".zone-right")).not.toBeNull());
+    await waitFor(() => expect(screen.getByTestId("task-input-box")).toBeTruthy());
     const workspace = screen.getByTestId("workspace");
     expect(workspace.getAttribute("data-band")).toBe("wide");
     expect(workspace.className).not.toContain("compact");
     expect(screen.queryByTestId("float-backdrop")).toBeNull();
-    expect(screen.queryByTestId("agent-float-toggle")).toBeNull();
-    expect(document.querySelector(".zone-left")).not.toBeNull();
+    expect(screen.queryByTestId("editor-float-toggle")).toBeNull();
+    expect(document.querySelector(".zone-thread")).not.toBeNull();
+    expect(document.querySelector(".zone-center")).toBeNull();
   });
 
-  it("跨入窄屏：代理面板转浮层默认展开，侧栏收起，分屏把手隐藏", async () => {
+  it("窄屏无线程浮层：线程留在文档流，侧栏按需唤出", async () => {
     render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/nope" />);
-    await waitFor(() => expect(document.querySelector(".zone-right")).not.toBeNull());
-    expect(document.querySelector(".zone-left")).not.toBeNull();
+    await waitFor(() => expect(screen.getByTestId("task-input-box")).toBeTruthy());
+    expect(document.querySelector(".zone-thread")).not.toBeNull();
 
     setViewport(700);
     await waitFor(() =>
       expect(screen.getByTestId("workspace").getAttribute("data-band")).toBe("narrow")
     );
-    // 转档由 effect 落浮层默认态（第二跳 commit），等它落地
-    await waitFor(() => expect(screen.getByTestId("float-backdrop")).toBeTruthy());
-    const workspace = screen.getByTestId("workspace");
-    expect(workspace.className).toContain("compact");
-    expect(screen.getByTestId("agent-float-toggle")).toBeTruthy();
-    // 代理浮层默认展开且带浮层类；侧栏不占位
-    expect(document.querySelector(".zone-right")?.className).toContain("zone-float");
-    expect(document.querySelector(".zone-left")).toBeNull();
-  });
+    await waitFor(() => expect(screen.getByTestId("workspace").className).toContain("compact"));
+    // 无打开文件时没有编辑器浮层 / 顶栏审查入口；线程持续可见。
+    expect(screen.queryByTestId("float-backdrop")).toBeNull();
+    expect(screen.queryByTestId("editor-float-toggle")).toBeNull();
+    expect(screen.getByTestId("task-input-box")).toBeTruthy();
 
-  it("rail 切侧栏浮层（与代理互斥），遮罩点击收起，顶栏钮唤回代理", async () => {
-    render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/nope" />);
-    await waitFor(() => expect(document.querySelector(".zone-right")).not.toBeNull());
-    setViewport(700);
-    await waitFor(() => expect(screen.getByTestId("float-backdrop")).toBeTruthy());
-
-    // rail 点「项目」：侧栏浮层开、代理浮层收（互斥）
-    // （旧基底 rail 首钮叫 rail-files，新工作树为 rail-projects，二者等效）
-    const railFirst = () =>
-      document.querySelector<HTMLElement>(
-        '[data-testid="rail-projects"], [data-testid="rail-files"]'
-      )!;
-    fireEvent.click(railFirst());
+    // rail 点「项目」：侧栏浮层开；同视图再点收起。
+    fireEvent.click(screen.getByTestId("rail-projects"));
     await waitFor(() => expect(document.querySelector(".zone-left")).not.toBeNull());
-    await waitFor(() => expect(document.querySelector(".zone-right")).toBeNull());
     expect(screen.getByTestId("float-backdrop")).toBeTruthy();
 
-    // 同视图再点：收起（无浮层）
-    fireEvent.click(railFirst());
+    fireEvent.click(screen.getByTestId("rail-projects"));
     await waitFor(() => expect(document.querySelector(".zone-left")).toBeNull());
     await waitFor(() => expect(screen.queryByTestId("float-backdrop")).toBeNull());
-
-    // 遮罩收起后经顶栏钮唤回代理浮层
-    fireEvent.click(screen.getByTestId("agent-float-toggle"));
-    await waitFor(() => expect(document.querySelector(".zone-right")).not.toBeNull());
-    fireEvent.click(screen.getByTestId("float-backdrop"));
-    await waitFor(() => expect(document.querySelector(".zone-right")).toBeNull());
-    await waitFor(() => expect(screen.queryByTestId("float-backdrop")).toBeNull());
+    expect(screen.getByTestId("task-input-box")).toBeTruthy();
   });
 
-  it("中屏渲染期 clamp：宽度按视口收敛且不改写记忆值", async () => {
+  it("中屏渲染期 clamp：侧栏收敛且不改写记忆值，线程保持弹性", async () => {
     const backing = localStorage as unknown as { setItem: (k: string, v: string) => void };
     backing.setItem("tenon:leftWidth", "400");
     backing.setItem("tenon:rightWidth", "500");
     render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/nope" />);
-    await waitFor(() => expect(document.querySelector(".zone-right")).not.toBeNull());
+    await waitFor(() => expect(screen.getByTestId("task-input-box")).toBeTruthy());
     expect(screen.getByTestId("workspace").getAttribute("data-band")).toBe("wide");
-    // 1000px 视口：左 ≤240、右 ≤340
     setViewport(1000);
     await waitFor(() =>
       expect(screen.getByTestId("workspace").getAttribute("data-band")).toBe("middle")
     );
     await waitFor(() => {
       const left = document.querySelector<HTMLElement>(".zone-left");
-      const right = document.querySelector<HTMLElement>(".zone-right");
+      const thread = document.querySelector<HTMLElement>(".zone-thread");
       expect(left?.style.width).toBe("240px");
-      // v1.64：无打开文件时代理区是弹性主区，不使用右栏记忆宽。
-      expect(right?.style.width).toBe("");
-      expect(right?.style.flex).toBe("1 1 0%");
+      expect(thread?.style.flex).toBe("1 1 0%");
+      expect(document.querySelector(".zone-center")).toBeNull();
     });
-    // 记忆值不被改写：回宽屏原样恢复
     setViewport(1280);
     await waitFor(() => {
       const left = document.querySelector<HTMLElement>(".zone-left");
-      const right = document.querySelector<HTMLElement>(".zone-right");
       expect(left?.style.width).toBe("400px");
-      expect(right?.style.width).toBe("");
     });
     expect(localStorage.getItem("tenon:leftWidth")).toBe("400");
     expect(localStorage.getItem("tenon:rightWidth")).toBe("500");
+  });
+
+  it("窄屏编辑器审查窗格浮层（v1.78）：有 tab 时顶栏钮唤出，遮罩收起", async () => {
+    // 项目打开成功 + ui-state 恢复一个 tab：编辑器浮层链路完整。
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((input: RequestInfo | URL) => {
+        const url = String(input);
+        let body: unknown = {};
+        if (url.includes("/pairing")) {
+          body = { port: 9876, token: "dev" };
+        } else if (url.includes("/ws-ticket")) {
+          body = { ticket: "t", expires_in_s: 60 };
+        } else if (url.includes("/projects/open")) {
+          body = { id: "p1", path: "/tmp/repo", display_name: "repo", trusted: true };
+        } else if (url.includes("/projects")) {
+          body = {
+            projects: [
+              {
+                id: "p1",
+                path: "/tmp/repo",
+                display_name: "repo",
+                trusted: true,
+                sessions: [],
+                active_sessions: 0,
+                dirty_buffers: 0,
+                pending_approvals: [],
+                usage: { input_tokens: 0, output_tokens: 0, cost_usd: 0 },
+              },
+            ],
+          };
+        } else if (url.includes("/ui-state")) {
+          body = { tabs: ["a.txt"], activePath: "a.txt" };
+        } else if (url.includes("/file?")) {
+          body = { path: "a.txt", content: "hello", total_bytes: 5 };
+        } else if (url.includes("/tree")) {
+          body = { entries: [] };
+        } else if (url.includes("/session")) {
+          body = { session_id: "s1", project_id: "p1" };
+        }
+        return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+      })
+    );
+    render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/repo" />);
+    await waitFor(() => expect(screen.getByTestId("task-input-box")).toBeTruthy());
+    setViewport(700);
+    await waitFor(() =>
+      expect(screen.getByTestId("workspace").getAttribute("data-band")).toBe("narrow")
+    );
+
+    // 有打开 tab：切换钮渲染；点击唤出编辑器浮层 + 遮罩；线程仍在流主区。
+    const toggle = await screen.findByTestId("editor-float-toggle");
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(document.querySelector(".zone-center")?.className).toContain("zone-float")
+    );
+    expect(screen.getByTestId("float-backdrop")).toBeTruthy();
+    expect(screen.getByTestId("task-input-box")).toBeTruthy();
+
+    // 遮罩点击收起。
+    fireEvent.click(screen.getByTestId("float-backdrop"));
+    await waitFor(() => expect(document.querySelector(".zone-center")).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId("float-backdrop")).toBeNull());
   });
 });
