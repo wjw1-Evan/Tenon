@@ -239,3 +239,19 @@ async fn intersecting_subtasks_rejected_not_raced() {
         "文件集相交 → 拒绝（§9.5）: {schedule:?}"
     );
 }
+
+#[tokio::test]
+async fn team_policy_denied_tools_enforced_in_executor() {
+    // M3 团队策略：denied_tools 在执行器强制（跨会话只收窄，优先级最高）
+    let dir = tempfile::tempdir().unwrap();
+    let mut ctx = tenon_agent::executor::ToolContext::new(dir.path(), Duration::from_secs(10));
+    ctx.team_denied_tools = vec!["apply_patch".to_string()];
+    let out = tenon_agent::executor::execute_tool(
+        &ctx,
+        "apply_patch",
+        &serde_json::json!({"file": "x.txt", "range": null, "content": "y"}),
+    );
+    assert!(!out.ok);
+    assert!(out.content.contains("团队策略禁用"), "{out:?}");
+    assert!(!dir.path().join("x.txt").exists());
+}

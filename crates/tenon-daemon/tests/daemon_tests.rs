@@ -714,6 +714,7 @@ async fn language_pack_detect_and_wizard_flow() {
         .json()
         .await
         .unwrap();
+    eprintln!("PLUGIN first: {first}");
     assert_eq!(first["level"], "d");
     let approval_id = first["approval_id"].as_str().unwrap().to_string();
 
@@ -888,4 +889,140 @@ async fn lan_pairing_flow_end_to_end() {
         .await
         .unwrap();
     assert_eq!(revoked_denied.status(), 403, "吊销后 LAN 访问应被拒");
+}
+
+#[tokio::test]
+async fn plugin_registry_install_flow_with_permission_diff() {
+    // registry fixture：静态 index + 包体（同一本地 HTTP 服务器）
+    let manifest_yaml = r#"id: community.demo
+version: 1.0.0
+runtime: external
+permissions:
+  - fs.read:project
+  - net:registry:npm
+provides:
+  languages: [demo]
+signature: ""
+"#;
+    let payload = manifest_yaml.as_bytes().to_vec();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let pkg_port = listener.local_addr().unwrap().port();
+    let index = serde_json::json!({
+        "plugins": [{
+            "id": "community.demo", "version": "1.0.0",
+            "sha256": tenon_registry::sha256_hex(&payload),
+            "signature": "", "url": format!("http://127.0.0.1:{pkg_port}/pkg.yaml"),
+            "description": "demo plugin"
+        }]
+    });
+    let index_body = index.to_string();
+    std::thread::spawn(move || {
+        // 直接使用移动进来的 listener（绑定已在上方完成，避免重绑 AddrInUse）
+        for stream in listener.incoming().flatten() {
+            let mut s = stream;
+            let mut buf = [0u8; 4096];
+            let _ = std::io::Read::read(&mut s, &mut buf);
+            let req = String::from_utf8_lossy(&buf);
+            let body = if req.contains("pkg.yaml") {
+                payload.clone()
+            } else {
+                index_body.clone().into_bytes()
+            };
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = std::io::Write::write_all(&mut s, resp.as_bytes());
+            let _ = std::io::Write::write_all(&mut s, &body);
+            let _ = std::io::Write::flush(&mut s);
+        }
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut options = DaemonOptions::in_memory();
+    options.providers = vec![Arc::new(MockProvider::new(
+        "mock",
+        "mock-1",
+        vec![ScriptedReply::Text("ok".into())],
+    ))];
+    options.default_provider = "mock".into();
+    options.snapshots_root = Some(dir.path().join("snapshots"));
+    let handle = tenon_daemon::serve(options).await.unwrap();
+    let local = client_with_token(&handle.token);
+
+    // 1. registry 检索
+    let search: serde_json::Value = local
+        .put(format!("{}/plugins", base(handle.port)))
+        .json(&serde_json::json!({"query": "demo", "registry_url": format!("http://127.0.0.1:{pkg_port}/index.json")}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(search["hits"][0]["id"], "community.demo");
+
+    // 2. 安装第一调：权限 diff + D 级卡（新增 net:registry:npm 高亮）
+    let first: serde_json::Value = local
+        .post(format!("{}/plugins/install", base(handle.port)))
+        .json(&serde_json::json!({
+            "entry": search["hits"][0],
+            "installed_permissions": ["fs.read:project"],
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    eprintln!("PLUGIN first: {first}");
+    assert_eq!(first["level"], "d");
+    assert_eq!(
+        first["permission_diff"]["added"][0], "net:registry:npm",
+        "新增权限高亮（§13.2）: {first}"
+    );
+    let approval_id = first["approval_id"].as_str().unwrap().to_string();
+
+    // 3. 未批准复调 → 403
+    let denied = local
+        .post(format!("{}/plugins/install", base(handle.port)))
+        .json(&serde_json::json!({
+            "entry": search["hits"][0],
+            "approval_id": approval_id,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), 403);
+
+    // 4. 批准 → 安装 + 入库
+    local
+        .post(format!("{}/approval/{approval_id}", base(handle.port)))
+        .json(&serde_json::json!({"decision": "once"}))
+        .send()
+        .await
+        .unwrap();
+    let installed: serde_json::Value = local
+        .post(format!("{}/plugins/install", base(handle.port)))
+        .json(&serde_json::json!({
+            "entry": search["hits"][0],
+            "approval_id": approval_id,
+            "installed_permissions": ["fs.read:project"],
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(installed["installed"], true);
+    let list: serde_json::Value = local
+        .get(format!("{}/plugins", base(handle.port)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(list["installed"][0]["id"], "community.demo");
 }

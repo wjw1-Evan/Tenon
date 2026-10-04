@@ -124,8 +124,10 @@ impl LspManager {
 
     /// 语义请求入口（§15 POST /lsp）。
     ///
-    /// `op ∈ { completion, hover, definition, references, diagnostics, format }`；
-    /// `line` / `character` 为 LSP 0-based 坐标（character 为 UTF-16 单位）。
+    /// `op ∈ { completion, hover, definition, references, diagnostics,
+    /// codeaction, rename, workspace_symbol, signature_help, format }`；
+    /// `line` / `character` 为 LSP 0-based 坐标（character 为 UTF-16 单位）；
+    /// `extra`：rename → `new_name`，workspace_symbol → `query`。
     pub async fn request(
         &self,
         project_root: &Path,
@@ -133,7 +135,10 @@ impl LspManager {
         op: &str,
         line: u32,
         character: u32,
+        extra: Option<&str>,
     ) -> Result<serde_json::Value, LspManagerError> {
+        // spawn_blocking 需 'static：转为 owned
+        let extra_owned: Option<String> = extra.map(String::from);
         // 路径边界：目标文件必须位于项目内（§12.1 铁律七的宿主侧边界检查）
         let uri = file_uri(project_root, file);
         if !crate::guard::uri_within(project_root, &uri) {
@@ -200,6 +205,20 @@ impl LspManager {
         let text_doc = serde_json::json!({ "uri": uri, "version": version });
         let position = serde_json::json!({ "line": line, "character": character });
 
+        // workspace/symbol：按查询名搜全工作区符号（不绑定单文件）
+        if op == "workspace_symbol" {
+            let query = extra_owned.clone().unwrap_or_default();
+            let h = host.clone();
+            return run_blocking(move || {
+                h.request(
+                    "workspace/symbol",
+                    serde_json::json!({ "query": query }),
+                    REQUEST_TIMEOUT,
+                )
+            })
+            .await;
+        }
+
         if op == "diagnostics" {
             // 拉取优先（LSP 3.17 textDocument/diagnostic）；不支持拉取的服务器
             // 退回等待 publishDiagnostics 推送（§15 diagnostics 语义）
@@ -261,6 +280,27 @@ impl LspManager {
                     "context": { "diagnostics": [], "only": ["quickfix"] },
                 }),
             ),
+            "signature_help" => (
+                "textDocument/signatureHelp",
+                serde_json::json!({ "textDocument": text_doc, "position": position }),
+            ),
+            "rename" => {
+                let Some(new_name) = extra_owned.clone() else {
+                    return Err(LspManagerError::Request(
+                        "rename 需 extra=new_name（§15：安全重命名走 LSP workspace edit，§8.1）"
+                            .into(),
+                    ));
+                };
+                let new_name = new_name.to_string();
+                (
+                    "textDocument/rename",
+                    serde_json::json!({
+                        "textDocument": text_doc,
+                        "position": position,
+                        "newName": new_name,
+                    }),
+                )
+            }
             "format" => (
                 "textDocument/formatting",
                 serde_json::json!({

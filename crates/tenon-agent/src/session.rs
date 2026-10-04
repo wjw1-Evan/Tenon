@@ -46,6 +46,8 @@ pub struct AgentConfig {
     pub laya: Option<Arc<tenon_laya::LayaRuntime>>,
     /// 脏缓冲注册表（§8.6 人机共编；None = daemon 未接入）。
     pub dirty: Option<Arc<tenon_fs::DirtyBufferRegistry>>,
+    /// 团队策略工具黑名单（M3：跨会话只收窄）。
+    pub team_denied_tools: Vec<String>,
 }
 
 impl AgentConfig {
@@ -67,6 +69,7 @@ impl AgentConfig {
             max_tool_rounds: 24,
             laya: None,
             dirty: None,
+            team_denied_tools: Vec::new(),
         }
     }
 }
@@ -231,6 +234,7 @@ impl AgentSession {
         );
         tool_ctx.readonly = readonly;
         tool_ctx.dirty = config.dirty.clone();
+        tool_ctx.team_denied_tools = config.team_denied_tools.clone();
         let (control_tx, control_rx) = mpsc::unbounded_channel();
         let (events_tx, _) = broadcast::channel(1024);
         let circuit_limits = config.circuit;

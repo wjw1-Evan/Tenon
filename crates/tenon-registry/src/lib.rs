@@ -193,10 +193,13 @@ pub fn verify_manifest_signature(
 /// 静态 index 中按条目校验（签名对 sha256 hex 字节，与 Laya 同约定）。
 pub fn verify_entry(entry: &RegistryEntry, public_key_hex: &str) -> Result<()> {
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-    if is_reserved_id(&entry.id) && public_key_hex.bytes().all(|b| b == b'0') {
-        // 占位密钥下官方条目仅查格式（开发环境）
-        if entry.sha256.len() != 64 || entry.signature.is_empty() {
-            return Err(RegistryError::Invalid("官方条目缺校验字段".into()));
+    // 开发模式（占位全零公钥，无任何密钥配置）：跳过签名（无钥可验），
+    // 仅要求 sha256 完整性字段存在（下载后仍强制 SHA-256 校验）。
+    // 保留字条目的官方签名约束由 pre_install_check 单独把关（§12.5）；
+    // 正式发布注入真实公钥后，签名校验无条件强制。
+    if public_key_hex.bytes().all(|b| b == b'0') {
+        if entry.sha256.len() != 64 {
+            return Err(RegistryError::Invalid("条目缺 sha256".into()));
         }
         return Ok(());
     }
@@ -244,6 +247,63 @@ pub fn permission_diff(old: &[String], new: &[String]) -> PermissionDiff {
             .map(|s| (*s).clone())
             .collect(),
     }
+}
+
+/// 安装计划（下载 + 校验所需字段；与 laya 同约定：签名对 sha256 hex 字节）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstallPlan {
+    pub version: u32,
+    pub sha256: String,
+    pub signature: String,
+    pub url: String,
+    #[serde(default)]
+    pub size_bytes: Option<u64>,
+}
+
+/// 公钥解析顺序：`TENON_REGISTRY_PUBLIC_KEY` / `TENON_LAYA_PUBLIC_KEY` 环境变量
+/// → `~/.tenon/keys/signing.pub` → None（开发模式）。
+pub fn load_public_key() -> Option<String> {
+    for var in ["TENON_REGISTRY_PUBLIC_KEY", "TENON_LAYA_PUBLIC_KEY"] {
+        if let Ok(k) = std::env::var(var) {
+            if !k.is_empty() {
+                return Some(k);
+            }
+        }
+    }
+    let path = std::env::var("HOME")
+        .ok()
+        .map(|h| std::path::PathBuf::from(h).join(".tenon/keys/signing.pub"));
+    if let Some(path) = path {
+        if let Ok(k) = std::fs::read_to_string(&path) {
+            let k = k.trim().to_string();
+            if !k.is_empty() {
+                return Some(k);
+            }
+        }
+    }
+    None
+}
+
+/// 下载条目并校验 SHA-256（须已过 D 级审批）。
+pub async fn download_entry(plan: &InstallPlan) -> Result<Vec<u8>> {
+    let resp = reqwest::Client::new()
+        .get(&plan.url)
+        .timeout(std::time::Duration::from_secs(120))
+        .send()
+        .await
+        .map_err(|e| RegistryError::Download(e.to_string()))?;
+    if !resp.status().is_success() {
+        return Err(RegistryError::Download(format!("HTTP {}", resp.status())));
+    }
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| RegistryError::Download(e.to_string()))?
+        .to_vec();
+    if sha256_hex(&bytes) != plan.sha256 {
+        return Err(RegistryError::BadChecksum);
+    }
+    Ok(bytes)
 }
 
 /// 从静态 index 检索（简单子串匹配 id / description）。

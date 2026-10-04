@@ -20,6 +20,7 @@ tenon-models = { workspace = true }
 tenon-agent = { workspace = true }
 tenon-lsp = { workspace = true }
 tenon-laya = { workspace = true }
+tenon-registry = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

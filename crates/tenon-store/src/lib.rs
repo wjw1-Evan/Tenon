@@ -274,6 +274,16 @@ pub struct EvalRun {
     pub created_at: String,
 }
 
+/// 已安装插件记录（§14.2 plugins 表）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Plugin {
+    pub id: String,
+    pub version: String,
+    pub permissions: Vec<String>,
+    pub signature: String,
+    pub installed_at: String,
+}
+
 const SCHEMA_VERSION: i64 = 1;
 
 const DDL: &str = r#"
@@ -890,6 +900,50 @@ impl Store {
                 input_tokens: r.get(1)?,
                 output_tokens: r.get(2)?,
                 cost_usd: r.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    // ---------- plugins（§14.2 安装记录） ----------
+
+    /// 插件安装记录（§13.2：版本锁定 + 签名入库）。
+    pub fn insert_plugin(
+        &mut self,
+        id: &str,
+        version: &str,
+        permissions: &[String],
+        signature: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO plugins (id, version, permissions, signature, installed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(id) DO UPDATE SET
+               version = ?2, permissions = ?3, signature = ?4, installed_at = ?5",
+            params![
+                id,
+                version,
+                serde_json::to_string(permissions)?,
+                signature,
+                Self::now()
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// 已装插件列表（权限 diff 的「已装版本」来源）。
+    pub fn list_plugins(&mut self) -> Result<Vec<Plugin>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, version, permissions, signature, installed_at
+             FROM plugins ORDER BY installed_at ASC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(Plugin {
+                id: r.get(0)?,
+                version: r.get(1)?,
+                permissions: serde_json::from_str(&r.get::<_, String>(2)?).unwrap_or_default(),
+                signature: r.get(3)?,
+                installed_at: r.get(4)?,
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)

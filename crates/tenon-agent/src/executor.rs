@@ -78,6 +78,8 @@ pub struct ToolContext {
     pub mcp: Option<std::sync::Arc<tenon_mcp::McpConnection>>,
     /// MCP 工具分级策略（默认 D；net:* → C）。
     pub mcp_policy: tenon_mcp::McpLevelPolicy,
+    /// 团队策略工具黑名单（M3：跨会话只收窄；命中即拒绝）。
+    pub team_denied_tools: Vec<String>,
 }
 
 impl ToolContext {
@@ -94,6 +96,7 @@ impl ToolContext {
             dirty: None,
             mcp: None,
             mcp_policy: tenon_mcp::McpLevelPolicy::default(),
+            team_denied_tools: Vec::new(),
         }
     }
 
@@ -117,6 +120,10 @@ fn project_rel(ctx: &ToolContext, path: &str) -> Result<String, ToolOutput> {
 /// Err 变体含三栏冲突预览（§8.6）——尺寸可接受（clippy result_large_err 白名单）。
 #[allow(clippy::result_large_err)]
 pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> ToolOutput {
+    // 团队策略工具黑名单（M3：只收窄；优先级最高，只读开关之前）
+    if ctx.team_denied_tools.iter().any(|t| t == tool) {
+        return ToolOutput::err(format!("团队策略禁用工具: {tool}（只收窄，§19/§12.2）"));
+    }
     match tool {
         // ---------- A 级只读 ----------
         "read_file" => {

@@ -58,6 +58,8 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
         .route("/search", get(search))
         .route("/lsp", post(lsp_proxy))
         .route("/lsp/openvsx", post(register_openvsx))
+        .route("/plugins", get(list_plugins).put(search_registry))
+        .route("/plugins/install", post(install_plugin))
         // ---------- 管理（§15） ----------
         .route("/project", get(list_projects).put(register_project))
         .route("/project/trust", put(set_project_trust))
@@ -136,6 +138,8 @@ async fn create_session(
     agent_cfg.snapshots_root.clone_from(&state.snapshots_root);
     // §8.6 人机共编：代理写盘前检查 UI 未保存缓冲并三方合并
     agent_cfg.dirty = Some(state.dirty_buffers.clone());
+    // M3 团队策略：工具黑名单跨会话只收窄
+    agent_cfg.team_denied_tools = state.team_policy.denied_tools.clone();
 
     let write_lock = state.write_lock_for(&project.id).await;
     let session = match AgentSession::create(
@@ -301,18 +305,27 @@ async fn approval_decision(
             _ => return api_err(StatusCode::NOT_FOUND, "approval not found"),
         }
     };
-    let session = {
-        let sessions = state.sessions.lock().await;
-        sessions.get(&sid).map(|e| e.session.clone())
-    };
-    let Some(session) = session else {
-        return api_err(StatusCode::NOT_FOUND, "session not found");
-    };
-    match session
-        .decide_approval(&approval_id, decision, &action)
+    // 会话审批（交互卡）：委派会话（事件 + 唤醒等待者）；
+    // 系统级审批（system:*，如插件安装 / Laya 下载）：直接落库
+    if let Some(session) = state
+        .sessions
+        .lock()
         .await
+        .get(&sid)
+        .map(|e| e.session.clone())
     {
-        Ok(()) => Json(json!({"ok": true})).into_response(),
+        return match session
+            .decide_approval(&approval_id, decision, &action)
+            .await
+        {
+            Ok(()) => Json(json!({"ok": true})).into_response(),
+            Err(e) => api_err(StatusCode::CONFLICT, e.to_string()),
+        };
+    }
+    let mut store = state.store.lock().await;
+    match store.decide_approval(&approval_id, decision) {
+        Ok(Some(_)) => Json(json!({"ok": true})).into_response(),
+        Ok(None) => api_err(StatusCode::NOT_FOUND, "approval not found"),
         Err(e) => api_err(StatusCode::CONFLICT, e.to_string()),
     }
 }
@@ -596,6 +609,9 @@ struct LspBody {
     line: u32,
     #[serde(default)]
     character: u32,
+    /// rename → new_name；workspace_symbol → query
+    #[serde(default)]
+    extra: Option<String>,
 }
 
 async fn lsp_proxy(State(state): State<Arc<DaemonState>>, Json(body): Json<LspBody>) -> Response {
@@ -608,6 +624,7 @@ async fn lsp_proxy(State(state): State<Arc<DaemonState>>, Json(body): Json<LspBo
             &body.action,
             body.line,
             body.character,
+            body.extra.as_deref(),
         )
         .await
     {
@@ -617,6 +634,174 @@ async fn lsp_proxy(State(state): State<Arc<DaemonState>>, Json(body): Json<LspBo
         }
         Err(e) => api_err(StatusCode::SERVICE_UNAVAILABLE, e.to_string()),
     }
+}
+
+// ---------- 插件 registry（§13 / M2） ----------
+
+/// 已装插件列表（store plugins 表，§14.2）。
+async fn list_plugins(State(state): State<Arc<DaemonState>>) -> Response {
+    let mut store = state.store.lock().await;
+    let installed: Vec<Value> = store
+        .list_plugins()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|p| {
+            json!({
+                "id": p.id, "version": p.version,
+                "permissions": p.permissions, "signature": p.signature,
+                "installed_at": p.installed_at,
+            })
+        })
+        .collect();
+    Json(json!({ "installed": installed })).into_response()
+}
+
+#[derive(Deserialize)]
+struct RegistrySearchBody {
+    query: String,
+    #[serde(default)]
+    registry_url: Option<String>,
+}
+
+/// registry 检索（§13.2 检索）。
+async fn search_registry(
+    State(_state): State<Arc<DaemonState>>,
+    Json(body): Json<RegistrySearchBody>,
+) -> Response {
+    let index = match tenon_registry::fetch_index(body.registry_url.as_deref()).await {
+        Ok(i) => i,
+        Err(e) => return api_err(StatusCode::BAD_GATEWAY, format!("registry 不可达: {e}")),
+    };
+    let hits: Vec<Value> = tenon_registry::search_index(&index, &body.query)
+        .into_iter()
+        .map(|e| json!(e))
+        .collect();
+    Json(json!({ "hits": hits })).into_response()
+}
+
+#[derive(Deserialize)]
+struct InstallPluginBody {
+    /// registry 条目（客户端从检索结果取得）；或直接给 manifest YAML
+    entry: tenon_registry::RegistryEntry,
+    /// 两阶段：省略 approval_id → 返回权限 diff + D 级卡；带已批准 id → 安装
+    #[serde(default)]
+    approval_id: Option<String>,
+    /// 已装版本权限（客户端从 GET /plugins 取；用于权限 diff 展示）
+    #[serde(default)]
+    installed_permissions: Vec<String>,
+    #[serde(default)]
+    public_key: Option<String>,
+}
+
+async fn install_plugin(
+    State(state): State<Arc<DaemonState>>,
+    Json(body): Json<InstallPluginBody>,
+) -> Response {
+    use tenon_registry as treg;
+    // 签名校验（官方条目走发布公钥解析链；社区条目须带公钥）
+    let pk = body
+        .public_key
+        .clone()
+        .or_else(treg::load_public_key)
+        .unwrap_or_else(|| "0".repeat(64));
+    if let Err(e) = treg::verify_entry(&body.entry, &pk) {
+        eprintln!(
+            "[plugins-debug] verify_entry failed pk_prefix={} entry_sig_empty={} sha_len={}",
+            &pk[..8.min(pk.len())],
+            body.entry.signature.is_empty(),
+            body.entry.sha256.len()
+        );
+        return api_err(StatusCode::BAD_GATEWAY, format!("签名校验失败: {e}"));
+    }
+    // 下载 + SHA-256 校验
+    let pkg_bytes = match treg::download_entry(&treg::InstallPlan {
+        version: 0,
+        sha256: body.entry.sha256.clone(),
+        signature: body.entry.signature.clone(),
+        url: body.entry.url.clone(),
+        size_bytes: None,
+    })
+    .await
+    {
+        Ok(b) => b,
+        Err(e) => return api_err(StatusCode::BAD_GATEWAY, format!("下载失败: {e}")),
+    };
+    let manifest = match treg::parse_manifest(&String::from_utf8_lossy(pkg_bytes.as_slice())) {
+        Ok(m) => m,
+        Err(e) => return api_err(StatusCode::BAD_GATEWAY, format!("manifest 解析失败: {e}")),
+    };
+    // 保留字安装期拦截（§12.5）
+    if let Err(e) = treg::pre_install_check(&manifest, body.entry.id.starts_with("official.")) {
+        return api_err(StatusCode::FORBIDDEN, e.to_string());
+    }
+
+    // 权限 diff（§13.2：新增权限高亮）
+    let diff = treg::permission_diff(&body.installed_permissions, &manifest.permissions);
+
+    // 两阶段 D 级审批：第一调（无 approval_id）→ 返回 diff + 审批卡
+    let Some(approval_id) = body.approval_id else {
+        let approval = {
+            let mut st = state.store.lock().await;
+            st.insert_approval(
+                "system:plugin",
+                &format!(
+                    "安装插件 {} v{}（新增权限: {}）",
+                    manifest.id,
+                    manifest.version,
+                    if diff.added.is_empty() {
+                        "无".into()
+                    } else {
+                        diff.added.join(", ")
+                    }
+                ),
+                tenon_store::Level::D,
+            )
+            .expect("insert approval")
+        };
+        return Json(json!({
+            "approval_id": approval.id,
+            "level": "d",
+            "permission_diff": diff,
+            "manifest": manifest,
+        }))
+        .into_response();
+    };
+    // 第二调：校验审批已「允许」
+    let approved = {
+        let mut st = state.store.lock().await;
+        st.approval(&approval_id)
+            .ok()
+            .flatten()
+            .map(|a| matches!(a.decision, Some(tenon_store::ApprovalDecision::Once)))
+            .unwrap_or(false)
+    };
+    if !approved {
+        return api_err(StatusCode::FORBIDDEN, "D 级审批未通过（§13.2）");
+    }
+    // 版本锁定 + 入库（安装到 ~/.tenon/plugins/，§14.1）
+    let dir = tenon_config::Config::data_dir().join("plugins");
+    std::fs::create_dir_all(&dir).ok();
+    let pkg_path = dir.join(format!(
+        "{}-{}.yaml",
+        manifest.id.replace('/', "_"),
+        manifest.version
+    ));
+    std::fs::write(&pkg_path, pkg_bytes.as_slice()).ok();
+    let mut st = state.store.lock().await;
+    st.insert_plugin(
+        &manifest.id,
+        &manifest.version,
+        &manifest.permissions,
+        &body.entry.signature,
+    )
+    .ok();
+    Json(json!({
+        "installed": true,
+        "id": manifest.id,
+        "version": manifest.version,
+        "permission_diff": diff,
+    }))
+    .into_response()
 }
 
 // ---------- 脏缓冲（§8.6 人机共编） ----------
@@ -964,6 +1149,7 @@ struct LanPairBody {
 
 /// 显式开启局域网访问：生成一次性配对码（返回给已登录的本机 UI）。
 async fn lan_enable(State(state): State<Arc<DaemonState>>) -> Response {
+    let _ = &state;
     let code = state.lan_pairing.enable();
     Json(json!({ "enabled": true, "code": code, "ttl_s": 300 })).into_response()
 }

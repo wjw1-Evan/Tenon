@@ -24,7 +24,7 @@ async fn semantic(
     character: u32,
 ) -> Result<serde_json::Value, LspManagerError> {
     // 首次请求包含语言服务器启动与项目加载（REQUEST_TIMEOUT 45s 足够）
-    mgr.request(root, file, op, line, character).await
+    mgr.request(root, file, op, line, character, None).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -125,7 +125,7 @@ async fn typescript_pack_diagnostics_report_type_errors() {
 
     let mgr = LspManager::new();
     let diag = mgr
-        .request(dir.path(), "bad.ts", "diagnostics", 0, 0)
+        .request(dir.path(), "bad.ts", "diagnostics", 0, 0, None)
         .await
         .expect("diagnostics 请求");
     let items = diag
@@ -158,14 +158,14 @@ async fn python_pack_hover_and_diagnostics() {
     let mgr = LspManager::new();
     // hover：greet 函数名（行 0，char 5）
     let hover = mgr
-        .request(dir.path(), "main.py", "hover", 0, 5)
+        .request(dir.path(), "main.py", "hover", 0, 5, None)
         .await
         .expect("hover 请求");
     assert!(hover.get("contents").is_some(), "pyright hover: {hover}");
 
     // diagnostics：greet(123) 参数类型错误
     let diag = mgr
-        .request(dir.path(), "main.py", "diagnostics", 0, 0)
+        .request(dir.path(), "main.py", "diagnostics", 0, 0, None)
         .await
         .expect("diagnostics 请求");
     let items = diag
@@ -200,7 +200,7 @@ async fn missing_server_returns_unavailable() {
     std::fs::write(dir.path().join("src/lib.rs"), "pub fn a() {}\n").unwrap();
     let mgr = LspManager::new();
     let err = mgr
-        .request(dir.path(), "src/lib.rs", "hover", 0, 0)
+        .request(dir.path(), "src/lib.rs", "hover", 0, 0, None)
         .await
         .expect_err("应报语言包不可用");
     assert!(err.to_string().contains("未安装"), "{err}");
@@ -222,7 +222,7 @@ async fn typescript_codeaction_returns_quickfix_for_errors() {
     let mgr = LspManager::new();
     // codeAction 在错误行（0,0）：tsserver 基于 context.diagnostics 或空上下文返回修复建议
     let actions = mgr
-        .request(dir.path(), "bad.ts", "codeaction", 0, 0)
+        .request(dir.path(), "bad.ts", "codeaction", 0, 0, None)
         .await
         .expect("codeaction 请求");
     // tsserver 对不可赋值错误提供 quickfix；断言数组形态即可（服务器差异容忍）
@@ -251,7 +251,9 @@ async fn openvsx_dynamic_pack_serves_semantics() {
     std::fs::write(dir.path().join("demo.zomb"), "const y: number = 1;\n").unwrap();
     let mgr = LspManager::new();
     // .zomb 扩展经动态包命中 typescript 服务器
-    let hover = mgr.request(dir.path(), "demo.zomb", "hover", 0, 6).await;
+    let hover = mgr
+        .request(dir.path(), "demo.zomb", "hover", 0, 6, None)
+        .await;
     // tsserver 对 .zomb 未知扩展可能降级为纯文本 hover（无 contents）——
     // 只断言请求链路走通（无 PackUnavailable/路径错误）
     match hover {
