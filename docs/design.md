@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v1.85** |
-| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.84） |
+| 版本 | **v1.86** |
+| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86） |
 | 状态 | 定稿（v1.10 决策闭环），M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 | 历史评审 | v0.1 / v0.3 两轮共 41 项、v1.0 复审 21 项问题的结论已全部并入本方案（过程文档已清理） |
@@ -119,6 +119,7 @@
 | **v1.83** | **§7.1 / §4.2 隐私与更新设置面板落地：`/settings` 支持 `privacy.telemetry` / `privacy.crash_reports`（off | opt_in）与 `update.channel`（manual | auto），校验、0600 持久化并合并回显；设置面板新增隐私 / 更新分区，默认保持遥测关、崩溃报告关、更新手动。当前 v1.83 持久化用户偏好与合并视图，自动更新执行器仍按 M3「可选通道」另行评审** |
 | **v1.84** | **§7.1 / §13.2 插件管理面板落地：设置面板新增插件分区，展示已装插件 / 权限；接入静态 registry 检索与两阶段 D 级安装——首次返回权限 diff，用户显式批准后携 approval_id 安装并刷新清单；新增前端 API 封装与组件测试覆盖已装清单、权限 diff、两阶段安装。后端签名 / SHA-256 / 保留字 / D 级审批语义不变** |
 | **v1.85** | **§7.1 / §12.2 / §15 权限高级策略面板落地：设置面板新增「权限策略」分区，管理 TeamPolicy 的强制交互档、全局工具黑名单与单任务成本上限；`GET/PUT /team-policy` 原子校验并持久化 `~/.tenon/policy.toml`（0600），新建会话注入黑名单、force_interactive 收窄 B 级档位、成本上限取全局配置更严值。A/B/C/D 固定分级与 C/D 恒审批不提供放宽开关** |
+| **v1.86** | **§4.2 / §6.2 / §15 自动更新执行器落地：ed25519 签名更新清单按平台锁定版本 / URL / SHA-256，下载写入 `~/.tenon/updates/staged/` 后原子 staging；daemon 启动绑定前将已验证产物原子替换当前可执行文件并继续启动。默认 manual；auto 仅按用户设置周期检查，缺公钥 / 坏签名 / 坏哈希 / 降级版本一律拒装；daemon 侧 staging + 壳/进程监督重启边界清晰，不做运行中原地热替换** |
 
 
 
@@ -750,6 +751,8 @@ L4 按包隔离、语言服务器按需启动；子代理限定单包；检索�
 
 **权限策略（TeamPolicy，v1.85）**：全局约束只允许收窄——`force_interactive=true` 禁用自动档；`denied_tools` 在所有会话的工具入口前拒绝；`max_cost_usd` 与全局配置取更小值。字段经 `/team-policy` 校验后原子持久化到 `~/.tenon/policy.toml`（0600），仅对新会话生效；既有会话不回写放宽或收窄策略，避免运行中边界漂移。固定分级不变：策略没有 A/B 升级、C/D 免审批或快照关闭开关。
 
+**更新执行器（v1.86）**：更新清单必须包含平台 triple、大于当前版本、artifact SHA-256 与对该哈希的 ed25519 签名；配置必须钉扎公钥，无公钥直接 fail closed。下载限长、限时，先落同目录 `.tmp`，SHA-256 通过且权限收敛后才原子改名 staging；daemon 启动绑定端口前用 staged 产物原子替换当前可执行文件，替换失败保留旧版并记录状态。默认 manual 不出网；`auto` 只做周期检查与 staging，不运行不可信安装脚本，也没有运行中原地热替换——可用更新在 daemon/壳重启时生效。
+
 ### 12.3 沙箱与网络三态
 
 | 平台 | 机制 | v1 |
@@ -882,6 +885,9 @@ registry 检索 → 展示**权限 diff**（相对已装版本新增权限高亮
 | GET | `/portfolio-tasks` | 跨项目组合任务聚合视图（父任务状态、子会话、审批、成本） |
 | POST | `/portfolio-tasks` | 创建项目组合任务；body 是 project-scoped child task 数组，父任务不共享代码上下文 |
 | GET / PUT | `/team-policy` | 权限高级策略读取 / 校验持久化（v1.85）；PUT 后新会话生效 |
+| GET | `/updates` | 当前版本、通道、staged 更新与最近检查状态（v1.86） |
+| POST | `/updates/check` | 立即检查、验签下载并 staging；manual 入口 / auto 立即触发共用 |
+| POST | `/updates/apply` | 标记 staged 版本下次启动生效（v1.86；不做运行中热替换） |
 | POST | `/checkpoint/:id/rollback` | 回滚（body 指定粒度：checkpoint 级 restore / 按事件 revert，§7.3） |
 
 **编辑器与文件**（UI 为纯 React，文件与语言智能全在此 API 之上）：
@@ -1104,7 +1110,11 @@ WS 事件与会话 events 表一一对应，均含 `project_id`；断线重连�
 
 ```toml
 locale          = "auto"       # auto | zh-CN | en（Q5：英文为源语言）
-update.channel  = "manual"     # manual | auto（默认 manual，§4.2）
+update.channel         = "manual"     # manual | auto（默认 manual，§4.2）
+update.manifest_url    = "https://tenonide.dev/updates/manifest.json"
+update.public_key_hex  = ""           # 必填后 updater 才可用；空串禁用远端检查（fail closed）
+update.check_interval_s = 21600       # 仅 auto 生效；0 禁用周期检查
+update.staging_dir     = ""           # 空串 = ~/.tenon/updates/staged；测试 / 企业镜像可覆盖
 
 [session]
 mode              = "interactive"  # interactive | auto；TOFU 信任后才可 auto（§12.7）

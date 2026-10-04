@@ -19,6 +19,11 @@ function makeApi(
     putSettings: put,
     putTeamPolicy: vi.fn().mockResolvedValue({}),
     listPlugins: vi.fn().mockResolvedValue({ installed: [] }),
+    getUpdates: vi.fn().mockResolvedValue({
+      current_version: "0.1.0",
+      channel: "manual",
+      staged: null,
+    }),
     models: vi.fn().mockResolvedValue(models),
   } as unknown as TenonApi;
 }
@@ -214,6 +219,7 @@ describe("SettingsDialog", () => {
       putSettings: put,
       putTeamPolicy: putPolicy,
       listPlugins: vi.fn().mockResolvedValue({ installed: [] }),
+      getUpdates: vi.fn().mockResolvedValue({ current_version: "0.1.0", staged: null }),
       models: vi.fn().mockResolvedValue({ models: [], default: "", laya: null }),
     } as unknown as TenonApi;
     render(
@@ -249,6 +255,7 @@ describe("SettingsDialog", () => {
       putSettings: put,
       putTeamPolicy: putPolicy,
       listPlugins: vi.fn().mockResolvedValue({ installed: [] }),
+      getUpdates: vi.fn().mockResolvedValue({ current_version: "0.1.0", staged: null }),
       models: vi.fn().mockResolvedValue({ models: [], default: "", laya: null }),
     } as unknown as TenonApi;
     render(
@@ -259,5 +266,41 @@ describe("SettingsDialog", () => {
     await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
     expect(putPolicy).not.toHaveBeenCalled();
     expect(put).not.toHaveBeenCalled();
+  });
+
+  it("更新执行器：展示 staged 版本并可立即检查", async () => {
+    const staged = {
+      version: "0.2.0",
+      target: "test-target",
+      sha256: "a".repeat(64),
+      path: "/tmp/staged",
+      size_bytes: 4,
+    };
+    const check = vi.fn().mockResolvedValue({
+      current_version: "0.1.0",
+      channel: "manual",
+      last_check_at: "2026-10-05T00:00:00Z",
+      staged,
+    });
+    const api = {
+      putSettings: vi.fn().mockResolvedValue(settings),
+      putTeamPolicy: vi.fn().mockResolvedValue({}),
+      listPlugins: vi.fn().mockResolvedValue({ installed: [] }),
+      getUpdates: vi.fn().mockResolvedValue({
+        current_version: "0.1.0",
+        channel: "manual",
+        staged: null,
+      }),
+      checkUpdates: check,
+      models: vi.fn().mockResolvedValue({ models: [], default: "", laya: null }),
+    } as unknown as TenonApi;
+    render(
+      <SettingsDialog api={api} t={t} settings={settings} saveMode="auto" onSaveModeChange={() => {}} onClose={() => {}} onSaved={() => {}} />
+    );
+    expect(screen.getByTestId("settings-update-apply").hasAttribute("disabled")).toBe(true);
+    fireEvent.click(screen.getByTestId("settings-update-check"));
+    await waitFor(() => expect(check).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByTestId("settings-update-apply").hasAttribute("disabled")).toBe(false));
+    expect(screen.getByTestId("settings-updates-status").textContent).toContain("0.2.0");
   });
 });

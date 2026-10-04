@@ -128,6 +128,21 @@ export interface TeamPolicySettings {
   [k: string]: unknown;
 }
 
+/** 更新执行器状态（v1.86）：staged 表示已验证、重启后生效。 */
+export interface UpdateStatusData {
+  current_version: string;
+  channel: "manual" | "auto" | string;
+  last_check_at?: string | null;
+  last_error?: string | null;
+  staged?: {
+    version: string;
+    target: string;
+    sha256: string;
+    path: string;
+    size_bytes: number;
+  } | null;
+}
+
 /** 全局设置（§15 /settings 合并视图）。 */
 export interface SettingsData {
   session: {
@@ -221,6 +236,21 @@ export class TenonApi {
   /** 写权限高级策略（v1.85）：全量原子替换，仅对新会话生效。 */
   putTeamPolicy(body: TeamPolicySettings): Promise<TeamPolicySettings> {
     return this.request<TeamPolicySettings>("/team-policy", { method: "PUT", json: body });
+  }
+
+  /** 读更新执行器状态（v1.86）。 */
+  getUpdates(): Promise<UpdateStatusData> {
+    return this.request<UpdateStatusData>("/updates");
+  }
+
+  /** 立即检查并 staging 签名更新（v1.86）。 */
+  checkUpdates(): Promise<UpdateStatusData> {
+    return this.request<UpdateStatusData>("/updates/check", { method: "POST" });
+  }
+
+  /** 接受 staged 更新，下次 daemon / 壳重启时生效（v1.86）。 */
+  applyUpdates(): Promise<{ accepted: boolean; restart_required: boolean }> {
+    return this.request("/updates/apply", { method: "POST" });
   }
 
   registerProject(path: string, displayName?: string) {

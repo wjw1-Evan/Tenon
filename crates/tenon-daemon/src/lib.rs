@@ -10,9 +10,13 @@ mod lsp_edit;
 mod pairing;
 mod routes;
 mod state;
+pub mod updates;
 
 pub use pairing::PairingStore;
 pub use state::{DaemonOptions, DaemonState, SessionEntry};
+pub use updates::{
+    apply_staged_update, find_staged_update, mark_staged_update, take_apply_request, StagedUpdate,
+};
 
 use axum::Router;
 use std::path::PathBuf;
@@ -40,6 +44,28 @@ pub async fn serve(options: DaemonOptions) -> std::io::Result<DaemonHandle> {
         .clone()
         .unwrap_or_else(|| Config::data_dir().join("daemon.endpoint"));
     let state = Arc::new(DaemonState::new(options).await);
+    // v1.86 更新执行器：只应用显式请求；绑定前原子替换并重验哈希。失败保留旧版。
+    match crate::updates::take_apply_request(&state.updates_staging_dir) {
+        Ok(Some(staged)) => {
+            let current_exe = std::env::current_exe()?;
+            match crate::updates::apply_staged_update(
+                std::path::Path::new(&staged.path),
+                &current_exe,
+            ) {
+                Ok(()) => {
+                    let _ = std::fs::remove_file(&staged.path);
+                    tracing::info!(
+                        "更新已在启动前应用: v{} → {}",
+                        staged.version,
+                        current_exe.display()
+                    );
+                }
+                Err(e) => tracing::warn!("staged 更新应用失败，继续旧版: {e}"),
+            }
+        }
+        Ok(None) => {}
+        Err(e) => tracing::warn!("staged 更新请求解析失败: {e}"),
+    }
     // 崩溃恢复（§10.3）：重启扫描非终态会话 → 回滚最近快照 → ROLLED_BACK 入 Trace
     match tenon_agent::recover_stale_sessions(state.store.clone(), &state.snapshots_root).await {
         Ok(report) if !report.sessions.is_empty() => {
@@ -56,6 +82,54 @@ pub async fn serve(options: DaemonOptions) -> std::io::Result<DaemonHandle> {
 
     // Laya 自动下载并启用（§9.8 v1.71）：启动即后台拉取，失败静默回退
     state.spawn_laya_auto_download(laya_registry_url);
+
+    // 自动更新执行器（v1.86）：只在用户显式选择 auto 后出网；manual 仅有 /updates/check。
+    {
+        let state = state.clone();
+        let interval = state.config.update.check_interval_s;
+        let manifest_url = state.config.update.manifest_url.clone();
+        let public_key = state.config.update.public_key_hex.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticker.tick().await;
+                // 运行中切换通道也生效；manual / 未知值继续等待，不出网。
+                if state.effective_update_channel() != "auto" {
+                    continue;
+                }
+                match crate::updates::stage_update(
+                    &manifest_url,
+                    &public_key,
+                    env!("CARGO_PKG_VERSION"),
+                    &crate::updates::current_target(),
+                    &state.updates_staging_dir,
+                )
+                .await
+                {
+                    Ok(staged) => {
+                        state.record_update_check(None);
+                        // auto 通道的确认语义：用户开启后，已验证 staging 自动请求重启应用。
+                        if let Err(e) =
+                            crate::updates::mark_staged_update(&staged, &state.updates_staging_dir)
+                        {
+                            state.record_update_check(Some(&e.to_string()));
+                        } else {
+                            tracing::info!("更新已 staging: v{}（重启生效）", staged.version);
+                        }
+                    }
+                    Err(
+                        crate::updates::UpdateError::NotNewer
+                        | crate::updates::UpdateError::NoPlatform,
+                    ) => state.record_update_check(None),
+                    Err(e) => {
+                        state.record_update_check(Some(&e.to_string()));
+                        tracing::warn!("自动更新检查失败: {e}");
+                    }
+                }
+            }
+        });
+    }
 
     // L4 增量索引 worker（§10.1）：项目激活 / watcher 变更驱动。
     if let Some(requests) = state.take_l4_requests() {

@@ -133,6 +133,7 @@ async fn main() -> anyhow::Result<()> {
         endpoint_path: None,
         settings_path,
         policy_path,
+        updates_staging_dir: None,
         bind_port,
         fixed_token,
         laya_registry_url: None,

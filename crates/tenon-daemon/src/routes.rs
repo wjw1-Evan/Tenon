@@ -23,6 +23,7 @@ use crate::auth::auth_middleware;
 use crate::state::{
     persist_team_policy, validate_team_policy, DaemonState, L4IndexRequest, SessionEntry,
 };
+use crate::updates::{current_target, find_staged_update, mark_staged_update, stage_update};
 
 pub fn build_router(state: Arc<DaemonState>) -> Router {
     let token = state.token.clone();
@@ -101,6 +102,9 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
         .route("/costs", get(costs))
         .route("/settings", get(get_settings).put(put_settings))
         .route("/team-policy", get(get_team_policy).put(put_team_policy))
+        .route("/updates", get(get_updates))
+        .route("/updates/check", post(check_updates))
+        .route("/updates/apply", post(apply_updates))
         // UI 偏好（§7.5 外观档）：daemon 端口动态导致 localStorage 按 origin
         // 隔离不可跨启动——此处为跨启动 / 跨端权威存储
         .route("/ui-prefs", get(get_ui_prefs).put(put_ui_prefs))
@@ -2606,6 +2610,80 @@ async fn put_team_policy(
     }
     *state.team_policy.write().expect("team policy lock") = policy;
     get_team_policy(State(state)).await
+}
+
+fn updates_status(state: &DaemonState) -> Response {
+    let staged = find_staged_update(
+        &state.updates_staging_dir,
+        &current_target(),
+        env!("CARGO_PKG_VERSION"),
+    )
+    .map_err(|e| e.to_string())
+    .ok()
+    .flatten();
+    Json(serde_json::json!({
+        "current_version": env!("CARGO_PKG_VERSION"),
+        "channel": state.effective_update_channel(),
+        "last_check_at": state.update_last_check.lock().expect("update check lock").clone(),
+        "last_error": state.update_last_error.lock().expect("update error lock").clone(),
+        "staged": staged,
+    }))
+    .into_response()
+}
+
+async fn get_updates(State(state): State<Arc<DaemonState>>) -> Response {
+    updates_status(&state)
+}
+
+async fn check_updates(State(state): State<Arc<DaemonState>>) -> Response {
+    let result = stage_update(
+        &state.config.update.manifest_url,
+        &state.config.update.public_key_hex,
+        env!("CARGO_PKG_VERSION"),
+        &current_target(),
+        &state.updates_staging_dir,
+    )
+    .await;
+    match result {
+        Ok(_) => {
+            state.record_update_check(None);
+            updates_status(&state)
+        }
+        Err(e) => {
+            state.record_update_check(Some(&e.to_string()));
+            let status = if matches!(
+                e,
+                crate::updates::UpdateError::NotNewer
+                    | crate::updates::UpdateError::NoPlatform
+                    | crate::updates::UpdateError::PublicKeyMissing
+            ) {
+                StatusCode::OK
+            } else {
+                StatusCode::BAD_GATEWAY
+            };
+            api_err(status, e.to_string())
+        }
+    }
+}
+
+async fn apply_updates(State(state): State<Arc<DaemonState>>) -> Response {
+    match find_staged_update(
+        &state.updates_staging_dir,
+        &current_target(),
+        env!("CARGO_PKG_VERSION"),
+    ) {
+        Ok(Some(staged)) => match mark_staged_update(&staged, &state.updates_staging_dir) {
+            Ok(()) => Json(serde_json::json!({
+                "accepted": true,
+                "restart_required": true,
+                "staged": staged,
+            }))
+            .into_response(),
+            Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        },
+        Ok(None) => api_err(StatusCode::CONFLICT, "没有 staged 更新"),
+        Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
 }
 
 /// UI 偏好读取（§7.5）：全部键值对。

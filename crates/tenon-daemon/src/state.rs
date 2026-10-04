@@ -360,6 +360,8 @@ pub struct DaemonOptions {
     pub settings_path: Option<std::path::PathBuf>,
     /// 权限策略文件；None = `~/.tenon/policy.toml`（测试必须覆盖避免并行竞争）。
     pub policy_path: Option<std::path::PathBuf>,
+    /// 更新 staging 目录；None = `~/.tenon/updates/staged`（v1.86）。
+    pub updates_staging_dir: Option<std::path::PathBuf>,
     /// 固定端口（开发热重载 `--port`）；None = 随机端口（默认，§12.6）。
     pub bind_port: Option<u16>,
     /// 固定握手 token（开发热重载 `--token`）；None = 随机 token（默认）。
@@ -391,6 +393,7 @@ impl DaemonOptions {
             endpoint_path: None,
             settings_path: None,
             policy_path: None,
+            updates_staging_dir: None,
             bind_port: None,
             fixed_token: None,
             laya_registry_url: None,
@@ -591,6 +594,11 @@ pub struct DaemonState {
     pub settings_path: std::path::PathBuf,
     /// 权限高级策略权威文件（v1.85）；测试显式隔离。
     pub policy_path: std::path::PathBuf,
+    /// 更新 staging 目录（v1.86）；测试显式隔离。
+    pub updates_staging_dir: std::path::PathBuf,
+    /// 更新执行器最近检查 / 错误（内存态，重启重置）。
+    pub update_last_check: std::sync::Mutex<Option<String>>,
+    pub update_last_error: std::sync::Mutex<Option<String>>,
     /// L4 增量索引队列（§10.1）；ProjectRuntime 激活 / watcher 变化入队。
     pub l4_index_tx: tokio::sync::mpsc::Sender<L4IndexRequest>,
     pub l4_index_rx: std::sync::Mutex<Option<tokio::sync::mpsc::Receiver<L4IndexRequest>>>,
@@ -622,6 +630,26 @@ impl DaemonState {
             .mode
             .clone()
             .unwrap_or_else(|| "interactive".into())
+    }
+
+    /// 运行中更新通道：设置覆盖优先于 config（v1.83）。
+    pub fn effective_update_channel(&self) -> String {
+        self.settings_overrides
+            .lock()
+            .unwrap()
+            .update_channel
+            .clone()
+            .unwrap_or_else(|| match self.config.update.channel {
+                tenon_config::UpdateChannel::Auto => "auto".into(),
+                tenon_config::UpdateChannel::Manual => "manual".into(),
+            })
+    }
+
+    /// updater 完成一次检查后记录权威状态。
+    pub fn record_update_check(&self, error: Option<&str>) {
+        *self.update_last_check.lock().expect("update check lock") =
+            Some(chrono::Utc::now().to_rfc3339());
+        *self.update_last_error.lock().expect("update error lock") = error.map(str::to_string);
     }
 }
 
@@ -737,6 +765,10 @@ impl DaemonState {
             .policy_path
             .clone()
             .unwrap_or_else(|| Config::data_dir().join("policy.toml"));
+        let updates_staging_dir = options
+            .updates_staging_dir
+            .clone()
+            .unwrap_or_else(|| Config::data_dir().join("updates/staged"));
         let team_policy = load_team_policy(&policy_path);
         let state = Self {
             store: Arc::new(Mutex::new(store)),
@@ -771,7 +803,10 @@ impl DaemonState {
             snapshots_root,
             settings_path,
             policy_path,
+            updates_staging_dir,
             settings_overrides: std::sync::Mutex::new(settings_overrides),
+            update_last_check: std::sync::Mutex::new(None),
+            update_last_error: std::sync::Mutex::new(None),
             l4_index_tx,
             l4_index_rx: std::sync::Mutex::new(Some(l4_index_rx)),
             l4_status: std::sync::Mutex::new(HashMap::new()),

@@ -351,10 +351,30 @@ pub struct ModelsConfig {
     pub laya: LayaConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UpdateConfig {
     pub channel: UpdateChannel,
+    /// 静态签名更新清单（v1.86）；manual 模式只有显式检查才访问。
+    pub manifest_url: String,
+    /// ed25519 公钥（hex，32 bytes）；空串 = updater fail closed。
+    pub public_key_hex: String,
+    /// auto 周期检查间隔；0 禁用。
+    pub check_interval_s: u64,
+    /// 空 = `~/.tenon/updates/staged`。
+    pub staging_dir: String,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            channel: UpdateChannel::Manual,
+            manifest_url: "https://tenonide.dev/updates/manifest.json".into(),
+            public_key_hex: String::new(),
+            check_interval_s: 21_600,
+            staging_dir: String::new(),
+        }
+    }
 }
 
 /// 全局配置（附录 E）。

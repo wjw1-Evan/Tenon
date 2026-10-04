@@ -32,6 +32,7 @@ async fn start_daemon(script: Vec<ScriptedReply>) -> (tempfile::TempDir, u16, St
     options.endpoint_path = Some(dir.path().join("daemon.endpoint"));
     options.settings_path = Some(dir.path().join("settings.json"));
     options.policy_path = Some(dir.path().join("policy.toml"));
+    options.updates_staging_dir = Some(dir.path().join("updates/staged"));
     options.laya_models_dir = Some(dir.path().join("models/laya"));
     let handle = serve(options).await.unwrap();
     (dir, handle.port, handle.token)
@@ -1168,6 +1169,51 @@ async fn l4_incremental_index_and_search() {
     assert!(
         new_score > old_score,
         "new query should outrank stale query: old={old_search} new={new_search}"
+    );
+}
+
+#[tokio::test]
+async fn update_executor_reports_fail_closed_check_without_staging() {
+    let (tmp, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    let status: serde_json::Value = client
+        .get(format!("{}/updates", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(status["current_version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(status["channel"], "manual");
+    assert!(status["staged"].is_null());
+
+    let checked = client
+        .post(format!("{}/updates/check", base(port)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(checked.status(), 200);
+    let body = checked.text().await.unwrap();
+    assert!(body.contains("更新公钥未配置"), "{body}");
+
+    let after: serde_json::Value = client
+        .get(format!("{}/updates", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(after["last_error"], "更新公钥未配置");
+    assert!(after["staged"].is_null());
+    assert!(
+        !tmp.path().join("updates/staged").exists()
+            || std::fs::read_dir(tmp.path().join("updates/staged"))
+                .unwrap()
+                .count()
+                == 0
     );
 }
 
