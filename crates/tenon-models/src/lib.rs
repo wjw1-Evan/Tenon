@@ -171,11 +171,13 @@ pub fn build_provider(
     cfg: &tenon_config::ProviderConfig,
     keys: &dyn KeyStore,
 ) -> ProviderResult<std::sync::Arc<dyn ModelProvider>> {
+    // 密钥解析链：api_key_env 环境变量 → api_key 直填（仅开发期本地文件）→ 空
     let api_key = cfg
         .api_key_env
         .as_deref()
         .filter(|s| !s.is_empty())
         .and_then(|env| keys.get(env))
+        .or_else(|| cfg.api_key.clone())
         .unwrap_or_default();
     let kind = cfg.kind.unwrap_or_default();
     match kind {
@@ -218,6 +220,7 @@ mod tests {
                 base_url: "https://example.com/api/anthropic".into(),
                 wire_api: None,
                 api_key_env: Some("TENON_TEST_KEY".into()),
+                api_key: None,
                 model: Some("glm-4.6".into()),
             },
         );

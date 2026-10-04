@@ -16,7 +16,7 @@ use crate::transport::ProcessConnection;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 /// 诊断推送等待窗口。
-const DIAGNOSTICS_WAIT: Duration = Duration::from_secs(6);
+const DIAGNOSTICS_WAIT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, thiserror::Error)]
 pub enum LspManagerError {

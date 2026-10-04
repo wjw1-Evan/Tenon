@@ -4,7 +4,7 @@
 //! 开发期本地联调文件 `config.local.toml` 由调用方显式加载、不入库。
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub const CONFIG_VERSION_NOTE: &str = "schema: design.md 附录 E (v1.11)";
 
@@ -278,6 +278,8 @@ pub struct ProviderConfig {
     pub wire_api: Option<String>,
     /// 钥匙串引用的环境变量名，不落盘密钥
     pub api_key_env: Option<String>,
+    /// 开发期直填密钥（仅 config.local.toml git-ignore 文件；正式配置走钥匙串）
+    pub api_key: Option<String>,
     /// 该 provider 默认模型（v1.11）
     pub model: Option<String>,
 }
@@ -348,6 +350,13 @@ impl Config {
     /// 解析 TOML 文本；未列出的字段全部取设计默认值。
     pub fn parse_toml(s: &str) -> Result<Self, toml::de::Error> {
         toml::from_str(s)
+    }
+
+    /// 从文件加载（开发期 config.local.toml / 全局 config.toml 共用）。
+    pub fn parse_toml_file(path: &Path) -> std::result::Result<Self, ConfigError> {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| ConfigError::Io(path.to_path_buf(), e.to_string()))?;
+        Self::parse_toml(&text).map_err(|e| ConfigError::Parse(path.to_path_buf(), e.to_string()))
     }
 
     /// 从 `~/.tenon/config.toml` 加载；文件不存在时返回默认值。

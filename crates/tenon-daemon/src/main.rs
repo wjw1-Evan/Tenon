@@ -20,6 +20,7 @@ async fn main() -> anyhow::Result<()> {
     let mut provider = String::new();
     let mut generate_keys = false;
     let mut no_lock = false;
+    let mut config_path: Option<std::path::PathBuf> = None;
     let mut lan_bind = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -27,6 +28,7 @@ async fn main() -> anyhow::Result<()> {
             "--db" => db_path = args.next().map(std::path::PathBuf::from),
             "--project" => project = args.next(),
             "--provider" => provider = args.next().unwrap_or_default(),
+            "--config" => config_path = args.next().map(std::path::PathBuf::from),
             "--generate-keys" => generate_keys = true,
             "--no-lock" => no_lock = true,
             "--lan" => lan_bind = true,
@@ -66,7 +68,10 @@ async fn main() -> anyhow::Result<()> {
         )
     };
 
-    let config = Config::load_global().unwrap_or_default();
+    let config = match config_path {
+        Some(p) => Config::parse_toml_file(&p).unwrap_or_default(),
+        None => Config::load_global().unwrap_or_default(),
+    };
     let options = DaemonOptions {
         db_path,
         lan_bind,

@@ -121,9 +121,8 @@ static DYNAMIC_PACKS: Mutex<Vec<LanguagePack>> = Mutex::new(Vec::new());
 /// 注册动态语言包（Open VSX 转换产物；优先于内置包匹配）。
 pub fn register_dynamic_pack(pack: LanguagePack) {
     let mut packs = DYNAMIC_PACKS.lock().expect("dynamic packs lock");
-    if !packs.iter().any(|p| p.language == pack.language) {
-        packs.push(pack);
-    }
+    // 允许同语言不同扩展名的多个动态包（按 extensions 匹配）
+    packs.push(pack);
 }
 
 /// 动态包查询（pack_for_file 在内置包未命中时回落至此）。

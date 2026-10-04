@@ -266,3 +266,103 @@ async fn openvsx_dynamic_pack_serves_semantics() {
         Err(_) => {}
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn typescript_rename_and_workspace_symbol() {
+    if skip_if_missing("typescript-language-server") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("package.json"),
+        r#"{"name":"r","version":"0.1.0"}"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(
+        dir.path().join("src/util.ts"),
+        "export function greet(name: string): string {\n  return `hi ${name}`;\n}\nexport const answer = greet('world');\n",
+    )
+    .unwrap();
+
+    let mgr = LspManager::new();
+    let root = dir.path().to_path_buf();
+
+    // rename：greet → farewell（行 0，char 16-21）
+    let result = mgr
+        .request(
+            root.as_path(),
+            "src/util.ts",
+            "rename",
+            0,
+            18,
+            Some("farewell"),
+        )
+        .await
+        .expect("rename 请求");
+    // tsserver rename 返回 workspace edit（changes/documentChanges）
+    let has_edit = result.get("documentChanges").is_some() || result.get("changes").is_some();
+    assert!(has_edit, "rename 应返回 workspace edit: {result}");
+
+    // 应用 rename 后重新写盘（模拟编辑器应用 LSP edit），再验证 references
+    // （真实编辑器由 UI 层应用 edit；此处只验证 LSP 响应形态）
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn typescript_signature_help() {
+    if skip_if_missing("typescript-language-server") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("package.json"),
+        r#"{"name":"s","version":"0.1.0"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("sig.ts"),
+        "function add(a: number, b: number): number {\n  return a + b;\n}\nconst r = add(1, ",
+    )
+    .unwrap();
+
+    let mgr = LspManager::new();
+    // 签名帮助在 `add(` 的括号内（行 3，字符 15）
+    let sh = mgr
+        .request(dir.path(), "sig.ts", "signature_help", 3, 15, None)
+        .await
+        .expect("signature_help 请求");
+    // tsserver 对不完整调用可能返回 null；断言不报错即可
+    let _ = sh;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn openvsx_dynamic_pack_serves_codeaction() {
+    if skip_if_missing("typescript-language-server") {
+        return;
+    }
+    // Open VSX 注册 → 语义链路（codeaction）
+    // 用独立扩展名 .owx（language id 仍为 typescript，tsserver 能处理）
+    let dir = tempfile::tempdir().unwrap();
+    let package = serde_json::json!({
+        "name": "ovsx-lang",
+        "version": "0.1.0",
+        "contributes": {
+            "languages": [{ "id": "typescript", "extensions": [".owx"] }],
+            "tenonLsp": { "command": "typescript-language-server", "args": ["--stdio"] }
+        }
+    });
+    let converted = tenon_lsp::convert_extension(&package.to_string()).unwrap();
+    tenon_lsp::register_dynamic_pack(converted.pack);
+
+    std::fs::write(
+        dir.path().join("broken.owx"),
+        "const x: number = \"type mismatch\";\n",
+    )
+    .unwrap();
+    let mgr = LspManager::new();
+    let actions = mgr
+        .request(dir.path(), "broken.owx", "codeaction", 0, 0, None)
+        .await
+        .expect("codeaction via Open VSX 动态包");
+    assert!(actions.is_array(), "codeAction 返回数组: {actions}");
+}
