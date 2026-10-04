@@ -26,6 +26,10 @@ interface Props {
   onChange: (path: string, content: string) => void;
   /** 代理改动行号（行级 AI 角标；用户编辑该文件后解除）。 */
   aiModifiedLines?: Record<string, number[]>;
+  /** 有未保存编辑的文件集合（§8.2 自动保存指示）。 */
+  unsavedPaths?: Record<string, true>;
+  /** 未保存圆点的无障碍文案（中英文案外置）。 */
+  unsavedTitle?: string;
 }
 
 export function EditorPane({
@@ -35,6 +39,8 @@ export function EditorPane({
   onClose,
   onChange,
   aiModifiedLines,
+  unsavedPaths,
+  unsavedTitle,
 }: Props) {
   const editorRef = useRef<StandaloneEditor | null>(null);
   const decorationsRef = useRef<DecorationsCollection | null>(null);
@@ -78,6 +84,16 @@ export function EditorPane({
             onClick={() => onSelect(t.path)}
           >
             {t.path}
+            {unsavedPaths?.[t.path] && (
+              <span
+                className="unsaved-dot"
+                data-testid={`unsaved-${t.path}`}
+                title={unsavedTitle}
+                aria-label={unsavedTitle}
+              >
+                ●
+              </span>
+            )}
             <button
               className="tab-close"
               aria-label={`close ${t.path}`}

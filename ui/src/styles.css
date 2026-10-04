@@ -158,3 +158,5 @@ button:disabled { opacity: 0.5; cursor: default; }
 .resize-horizontal:hover, .resize-horizontal:active { background: var(--accent); }
 .resize-vertical { height: 5px; cursor: row-resize; background: transparent; transition: background 0.15s; }
 .resize-vertical:hover, .resize-vertical:active { background: var(--accent); }
+
+.unsaved-dot { margin-left: 6px; color: var(--patch-border); font-size: 10px; }

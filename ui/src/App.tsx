@@ -25,6 +25,7 @@ import { AgentTracePanel } from "./components/AgentTracePanel";
 import { EvalsPanel } from "./components/EvalsPanel";
 import { LanguagePackWizard } from "./components/LanguagePackWizard";
 import { unionLines } from "./lib/aiLines";
+import { createAutoSaver, type AutoSaver } from "./lib/autosave";
 import { CommandPalette, type Command } from "./components/CommandPalette";
 
 export default function App({
@@ -53,6 +54,26 @@ export default function App({
   const [aiLines, setAiLines] = useState<Record<string, number[]>>({});
   const projectIdRef = useRef<string | null>(null);
   const dirtyTimers = useRef<Map<string, number>>(new Map());
+  // 自动保存（§8.2）：tab 未保存圆点 + 去抖写盘调度器
+  const [unsaved, setUnsaved] = useState<Record<string, true>>({});
+  const autosaverRef = useRef<AutoSaver | null>(null);
+  useEffect(() => {
+    const saver = createAutoSaver(async (path, content) => {
+      const pid = projectIdRef.current;
+      if (!pid) return;
+      await api.writeFile(pid, path, content);
+      // 落盘成功 → 脏缓冲解除（§8.6「未保存缓冲」语义：已保存不再是缓冲）
+      await api.clearBuffer(pid, path).catch(() => {});
+      setUnsaved((prev) => {
+        if (!prev[path]) return prev;
+        const next = { ...prev };
+        delete next[path];
+        return next;
+      });
+    }, 1000);
+    autosaverRef.current = saver;
+    return () => saver.dispose();
+  }, [api]);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [agentState, setAgentState] = useState<AgentStateName>("idle");
   const [routeNote, setRouteNote] = useState<string | null>(null);
@@ -142,12 +163,16 @@ export default function App({
       onTimeline: () => setTimelineOpen((v) => !v),
       onSidebar: () => setSidebarOpen((v) => !v),
       onStop: () => sessionId && api.control(sessionId, "stop"),
+      onSave: () => {
+        const p = activePath;
+        if (p) void autosaverRef.current?.flush(p);
+      },
       onPauseOrClose: () => {
         if (paletteOpen) setPaletteOpen(false);
         else if (sessionId) api.control(sessionId, "pause");
       },
     }),
-    [api, sessionId, paletteOpen]
+    [api, sessionId, paletteOpen, activePath]
   );
   useShortcuts(handlers);
 
@@ -306,8 +331,17 @@ export default function App({
             tabs={tabs}
             activePath={activePath}
             aiModifiedLines={aiLines}
+            unsavedPaths={unsaved}
+            unsavedTitle={t("editor.unsaved")}
             onSelect={setActivePath}
             onClose={(p) => {
+              void autosaverRef.current?.flush(p);
+              setUnsaved((prev) => {
+                if (!prev[p]) return prev;
+                const next = { ...prev };
+                delete next[p];
+                return next;
+              });
               setTabs((prev) => prev.filter((tab) => tab.path !== p));
               if (activePath === p) {
                 setActivePath(tabs.find((tab) => tab.path !== p)?.path ?? null);
@@ -317,6 +351,8 @@ export default function App({
               setTabs((prev) => prev.map((tab) => (tab.path === p ? { ...tab, content } : tab)));
               // §8.6：用户编辑 → 该文件 AI 角标解除 + 脏缓冲推送（去抖）
               setAiLines((prev) => ({ ...prev, [p]: [] }));
+              autosaverRef.current?.schedule(p, content);
+              setUnsaved((prev) => (prev[p] ? prev : { ...prev, [p]: true }));
               const pid = projectIdRef.current;
               if (pid) {
                 const dirtyKey = `${pid}\u0000${p}`;

@@ -8,6 +8,7 @@ export interface ShortcutHandlers {
   onStop?: () => void; // Cmd/Ctrl+.
   onTimeline?: () => void; // Cmd/Ctrl+Alt+Z
   onSidebar?: () => void; // Cmd/Ctrl+B
+  onSave?: () => void; // Cmd/Ctrl+S（自动保存下的立即保存，§8.2）
 }
 
 export function useShortcuts(handlers: ShortcutHandlers) {
@@ -31,6 +32,9 @@ export function useShortcuts(handlers: ShortcutHandlers) {
       } else if (mod && !e.shiftKey && e.key.toLowerCase() === "b") {
         e.preventDefault();
         handlers.onSidebar?.();
+      } else if (mod && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        handlers.onSave?.();
       }
     };
     window.addEventListener("keydown", onKey);

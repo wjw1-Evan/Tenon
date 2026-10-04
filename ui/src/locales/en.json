@@ -40,5 +40,6 @@
   "settings.theme": "theme",
   "theme.system": "System",
   "theme.dark": "Dark",
-  "theme.light": "Light"
+  "theme.light": "Light",
+  "editor.unsaved": "unsaved"
 }

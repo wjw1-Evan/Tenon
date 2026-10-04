@@ -40,5 +40,6 @@
   "settings.theme": "theme",
   "theme.system": "跟随系统",
   "theme.dark": "深色",
-  "theme.light": "浅色"
+  "theme.light": "浅色",
+  "editor.unsaved": "未保存"
 }
