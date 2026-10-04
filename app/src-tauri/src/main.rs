@@ -145,6 +145,12 @@ fn main() {
                     let state = handle.state::<AppState>();
                     *state.handshake.lock().unwrap() = Some(hs.clone());
                     *state._child.lock().unwrap() = Some(child);
+                    // 诊断：sidecar 握手落 stderr（端口 / token 前缀，便于联调定位）
+                    eprintln!(
+                        "[tenon-shell] daemon ready: port={} token_prefix={}",
+                        hs.port,
+                        &hs.token[..8.min(hs.token.len())]
+                    );
                     let _ = handle.emit("tenon://handshake", &hs);
                     // 将 WebView 导航至 daemon 同源托管的 UI（浏览器同款链路：
                     // 握手经 URL 参数直传，UI 经 http://127.0.0.1 调 API，无跨域）
