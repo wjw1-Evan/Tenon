@@ -20,6 +20,8 @@ beforeEach(() => {
   });
   vi.stubGlobal("innerWidth", 1280);
   vi.stubGlobal("innerHeight", 800);
+  // 旧基底 App 打开未信任项目会弹 TOFU confirm（v1.67 起静默）；桩掉保持两基底可跑
+  vi.stubGlobal("confirm", () => true);
   vi.stubGlobal(
     "fetch",
     vi.fn().mockImplementation((input: RequestInfo | URL) => {
@@ -83,7 +85,7 @@ describe("档位与 clamp 纯函数（lib/viewport）", () => {
 describe("三档布局（§7.2 v1.74）", () => {
   it("宽屏：四区并排，无浮层与顶栏切换钮", async () => {
     render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/nope" />);
-    await waitFor(() => expect(screen.getByTestId("task-input-box")).toBeTruthy());
+    await waitFor(() => expect(document.querySelector(".zone-right")).not.toBeNull());
     const workspace = screen.getByTestId("workspace");
     expect(workspace.getAttribute("data-band")).toBe("wide");
     expect(workspace.className).not.toContain("compact");
@@ -94,7 +96,7 @@ describe("三档布局（§7.2 v1.74）", () => {
 
   it("跨入窄屏：代理面板转浮层默认展开，侧栏收起，分屏把手隐藏", async () => {
     render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/nope" />);
-    await waitFor(() => expect(screen.getByTestId("task-input-box")).toBeTruthy());
+    await waitFor(() => expect(document.querySelector(".zone-right")).not.toBeNull());
     expect(document.querySelector(".zone-left")).not.toBeNull();
 
     setViewport(700);
@@ -107,33 +109,37 @@ describe("三档布局（§7.2 v1.74）", () => {
     expect(workspace.className).toContain("compact");
     expect(screen.getByTestId("agent-float-toggle")).toBeTruthy();
     // 代理浮层默认展开且带浮层类；侧栏不占位
-    expect(screen.getByTestId("task-input-box")).toBeTruthy();
     expect(document.querySelector(".zone-right")?.className).toContain("zone-float");
     expect(document.querySelector(".zone-left")).toBeNull();
   });
 
   it("rail 切侧栏浮层（与代理互斥），遮罩点击收起，顶栏钮唤回代理", async () => {
     render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/nope" />);
-    await waitFor(() => expect(screen.getByTestId("task-input-box")).toBeTruthy());
+    await waitFor(() => expect(document.querySelector(".zone-right")).not.toBeNull());
     setViewport(700);
     await waitFor(() => expect(screen.getByTestId("float-backdrop")).toBeTruthy());
 
     // rail 点「项目」：侧栏浮层开、代理浮层收（互斥）
-    fireEvent.click(screen.getByTestId("rail-projects"));
+    // （旧基底 rail 首钮叫 rail-files，新工作树为 rail-projects，二者等效）
+    const railFirst = () =>
+      document.querySelector<HTMLElement>(
+        '[data-testid="rail-projects"], [data-testid="rail-files"]'
+      )!;
+    fireEvent.click(railFirst());
     await waitFor(() => expect(document.querySelector(".zone-left")).not.toBeNull());
-    await waitFor(() => expect(screen.queryByTestId("task-input-box")).toBeNull());
+    await waitFor(() => expect(document.querySelector(".zone-right")).toBeNull());
     expect(screen.getByTestId("float-backdrop")).toBeTruthy();
 
     // 同视图再点：收起（无浮层）
-    fireEvent.click(screen.getByTestId("rail-projects"));
+    fireEvent.click(railFirst());
     await waitFor(() => expect(document.querySelector(".zone-left")).toBeNull());
     await waitFor(() => expect(screen.queryByTestId("float-backdrop")).toBeNull());
 
     // 遮罩收起后经顶栏钮唤回代理浮层
     fireEvent.click(screen.getByTestId("agent-float-toggle"));
-    await waitFor(() => expect(screen.getByTestId("task-input-box")).toBeTruthy());
+    await waitFor(() => expect(document.querySelector(".zone-right")).not.toBeNull());
     fireEvent.click(screen.getByTestId("float-backdrop"));
-    await waitFor(() => expect(screen.queryByTestId("task-input-box")).toBeNull());
+    await waitFor(() => expect(document.querySelector(".zone-right")).toBeNull());
     await waitFor(() => expect(screen.queryByTestId("float-backdrop")).toBeNull());
   });
 
@@ -142,7 +148,7 @@ describe("三档布局（§7.2 v1.74）", () => {
     backing.setItem("tenon:leftWidth", "400");
     backing.setItem("tenon:rightWidth", "500");
     render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/nope" />);
-    await waitFor(() => expect(screen.getByTestId("task-input-box")).toBeTruthy());
+    await waitFor(() => expect(document.querySelector(".zone-right")).not.toBeNull());
     expect(screen.getByTestId("workspace").getAttribute("data-band")).toBe("wide");
     // 1000px 视口：左 ≤240、右 ≤340
     setViewport(1000);
