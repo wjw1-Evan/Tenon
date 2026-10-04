@@ -1,6 +1,6 @@
 // 主工作区（设计方案 §7.2 四区布局）：文件树 | 编辑器 | 代理会话 + 底部时间轴。
 // 三区可折叠；快捷键 §7.4。
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { TenonApi } from "./lib/api";
 import { createTranslator, LOCALE_CHANGE, type Locale } from "./lib/i18n";
 import type { AgentStateName } from "./lib/stateColors";
@@ -114,7 +114,14 @@ export default function App({
     [t, api, sessionId]
   );
 
-  void openProject; // 启动页（M0：挂载即开；M1 换项目选择页 + TOFU 卡）
+  // M0：挂载即自动打开项目并建会话（M1 换项目选择页 + TOFU 卡）
+  const [openError, setOpenError] = useState<string | null>(null);
+  useEffect(() => {
+    openProject().catch((e) => {
+      setOpenError(String(e));
+    });
+  }, [openProject]);
+  void openError; // 后续展示在 UI 上（M1 错误态）
 
   return (
     <div className="app" data-testid="app">

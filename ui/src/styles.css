@@ -108,3 +108,5 @@ button:disabled { opacity: 0.5; cursor: default; }
 .evals-head { color: var(--muted); margin-bottom: 6px; }
 .evals-panel table { width: 100%; border-collapse: collapse; font-size: 11px; }
 .evals-panel th, .evals-panel td { border-bottom: 1px solid var(--border); padding: 3px 6px; text-align: left; }
+
+.trace-metrics span[data-testid="out-speed"], .trace-metrics span[data-testid="inp-speed"] { color: #2da44e; font-weight: 500; }

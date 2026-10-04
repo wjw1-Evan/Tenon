@@ -1,6 +1,6 @@
 // AgentTrace 面板（设计方案 §14.2 / M2 交付）：
-// 工具调用明细 / token 与成本 / 审批记录——本地生成、全可查。
-import { useEffect, useMemo, useState } from "react";
+// 工具调用明细 / token 与成本 / 审批记录 / token 速度——本地生成、全可查。
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { TenonApi } from "../lib/api";
 
 interface TraceEvent {
@@ -15,6 +15,13 @@ interface Props {
   sessionId: string | null;
 }
 
+/// token 速度采样（两次测量窗口间的增量 / 时间差）。
+interface SpeedSample {
+  prevOut: number;
+  prevInp: number;
+  prevAt: number; // performance.now()
+}
+
 export function AgentTracePanel({ api, sessionId }: Props) {
   const [events, setEvents] = useState<TraceEvent[]>([]);
   const [tokens, setTokens] = useState<{ inp: number; out: number; cost: number }>({
@@ -22,6 +29,11 @@ export function AgentTracePanel({ api, sessionId }: Props) {
     out: 0,
     cost: 0,
   });
+  /// 输出 token/s（滚动窗口采样）
+  const [outSpeed, setOutSpeed] = useState<number | null>(null);
+  /// 输入 token/s
+  const [inpSpeed, setInpSpeed] = useState<number | null>(null);
+  const speedRef = useRef<SpeedSample | null>(null);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -32,11 +44,23 @@ export function AgentTracePanel({ api, sessionId }: Props) {
         const costs = await api.costs(sessionId);
         if (!alive) return;
         setEvents((trace.events ?? []) as TraceEvent[]);
-        setTokens({
-          inp: Number(costs.input_tokens ?? 0),
-          out: Number(costs.output_tokens ?? 0),
-          cost: Number(costs.cost_usd ?? 0),
-        });
+        const inp = Number(costs.input_tokens ?? 0);
+        const out = Number(costs.output_tokens ?? 0);
+        setTokens({ inp, out, cost: Number(costs.cost_usd ?? 0) });
+
+        // token/s：每次轮询计算增量速率（1.5s 窗口）
+        const now = performance.now();
+        const prev = speedRef.current;
+        if (prev && now > prev.prevAt) {
+          const dt = (now - prev.prevAt) / 1000;
+          const dOut = out - prev.prevOut;
+          const dInp = inp - prev.prevInp;
+          if (dt > 0) {
+            setOutSpeed(dOut > 0 ? +(dOut / dt).toFixed(1) : 0);
+            setInpSpeed(dInp > 0 ? +(dInp / dt).toFixed(1) : 0);
+          }
+        }
+        speedRef.current = { prevOut: out, prevInp: inp, prevAt: now };
       } catch {
         // 断线重试
       }
@@ -67,6 +91,12 @@ export function AgentTracePanel({ api, sessionId }: Props) {
       <div className="trace-metrics" data-testid="trace-metrics">
         <span>输入 {tokens.inp} tok</span>
         <span>输出 {tokens.out} tok</span>
+        {inpSpeed !== null && inpSpeed > 0 && (
+          <span data-testid="inp-speed">{inpSpeed} tok/s ↑</span>
+        )}
+        {outSpeed !== null && outSpeed > 0 && (
+          <span data-testid="out-speed">{outSpeed} tok/s ↓</span>
+        )}
         <span>成本 ${tokens.cost.toFixed(4)}</span>
         <span>审批 {approvals.length} 次</span>
       </div>
