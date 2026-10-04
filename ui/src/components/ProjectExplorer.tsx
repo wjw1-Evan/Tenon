@@ -1,7 +1,7 @@
-// 项目浏览器（左侧栏「项目」视图，v1.63 参考 ZCode 客户端侧栏项目文件夹；v1.70 移除视图 tab）：
-// 单一项目文件夹树——每项目一行可折叠文件夹（点击行即隐式激活并展开），
-// 展开后行下内嵌该项目会话列表；行尾「源码」按钮切换该行下内嵌的该项目文件树；
-// 列表底部常驻「添加项目」（v1.43 模态）。
+// 项目浏览器（左侧栏「项目」视图，v1.88 对齐 Codex projects sidebar 内容布局）：
+// 顶部搜索 + 添加入口，Name / Updated 列头统一项目索引密度；每项目一行可折叠文件夹
+// （点击行即隐式激活并展开），默认内嵌最近 10 条会话；行尾「源码」按钮切换文件树。
+// 「All activity」为同构列表组，承接跨项目监控但不占据仪表盘式首屏。
 import { useEffect, useState } from "react";
 import type { PortfolioTask, ProjectSummary, TenonApi } from "../lib/api";
 import type { Translate } from "../lib/i18n";
@@ -10,6 +10,8 @@ import { FileTree, type FileTreeChange } from "./FileTree";
 
 const PE_EXPANDED_KEY = "tenon:peExpanded";
 const PE_FILES_KEY = "tenon:peFiles";
+/** Codex 项目行展开后默认只物化最近会话，长列表显式展开。 */
+const RECENT_SESSION_LIMIT = 10;
 
 function loadSet(key: string): Set<string> {
   try {
@@ -93,6 +95,40 @@ function folderBadges(t: Translate, project: ProjectSummary) {
   ]
     .filter(Boolean)
     .join(" · ");
+}
+
+/** 项目最近会话更新时间：作为 Updated 列的轻量排序 / 扫读线索。 */
+function latestUpdatedAt(project: ProjectSummary): string | null {
+  return project.sessions.reduce<string | null>(
+    (latest, session) => (!latest || session.updated_at > latest ? session.updated_at : latest),
+    null
+  );
+}
+
+/** 相对时间只用于侧栏扫读；精确时间保留在行 title，不做 daemon 依赖。 */
+function formatUpdatedAt(value: string | null, t: Translate): string {
+  if (!value) return t("projects.updated_never");
+  const time = Date.parse(value);
+  if (Number.isNaN(time)) return t("projects.updated_never");
+  const elapsed = Math.max(0, Date.now() - time);
+  const minutes = Math.floor(elapsed / 60_000);
+  if (minutes < 1) return t("relative.now");
+  if (minutes < 60) return t("relative.minutes_ago", { count: minutes });
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return t("relative.hours_ago", { count: hours });
+  const days = Math.floor(hours / 24);
+  if (days < 30) return t("relative.days_ago", { count: days });
+  return new Date(time).toLocaleDateString();
+}
+
+/** Codex 式紧凑搜索图标。 */
+function SearchIcon() {
+  return (
+    <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+      <circle cx={11} cy={11} r={7} />
+      <path d="m20 20-4-4" />
+    </svg>
+  );
 }
 
 /** 会话显示名：自动标题优先（v1.58）；无标题回退模型名，同名多会话附短 id 后缀。 */
@@ -204,6 +240,10 @@ export function ProjectExplorer({
   const [activityFilter, setActivityFilter] = useState<ActivityFilter>("all");
   const [stoppingId, setStoppingId] = useState<string | null>(null);
   const [worktreeBusyId, setWorktreeBusyId] = useState<string | null>(null);
+  /** Codex projects sidebar 索引：项目 / 会话标题本地即时过滤。 */
+  const [query, setQuery] = useState("");
+  /** 超过最近 10 条的项目的显式展开集合；不落盘，保持项目列表轻量。 */
+  const [allSessionsOpen, setAllSessionsOpen] = useState<Set<string>>(new Set());
 
   const runProjectAction = async (
     project: ProjectSummary,
@@ -284,6 +324,21 @@ export function ProjectExplorer({
     onSelectSession(row.project.id, row.session.id);
   };
 
+  /** Codex 索引搜索：项目名 / 路径优先，会话标题与模型名兜底。 */
+  const normalizedQuery = query.trim().toLowerCase();
+  const visibleProjects = normalizedQuery
+    ? projects.filter((project) => {
+        const haystack = [
+          project.display_name,
+          project.path,
+          ...project.sessions.map((session) => `${session.title ?? ""} ${session.model}`),
+        ]
+          .join(" ")
+          .toLowerCase();
+        return haystack.includes(normalizedQuery);
+      })
+    : projects;
+
   const stopSession = async (sessionId: string) => {
     setStoppingId(sessionId);
     try {
@@ -361,15 +416,24 @@ export function ProjectExplorer({
   const renderSessions = (project: ProjectSummary) => {
     const counts = countSessionNames(project.sessions);
     const activeSessionId = sessionsByProject[project.id] ?? null;
+    const orderedSessions = [...project.sessions].sort((a, b) =>
+      (b.updated_at ?? "").localeCompare(a.updated_at ?? "")
+    );
+    const showAll = allSessionsOpen.has(project.id);
+    const sessions =
+      orderedSessions.length > RECENT_SESSION_LIMIT && !showAll
+        ? orderedSessions.slice(0, RECENT_SESSION_LIMIT)
+        : orderedSessions;
     const tasks = portfolioTasks.filter((task) =>
       task.children.some((child) => child.project_id === project.id)
     );
     return (
       <ul className="pe-chat-list" data-testid={`chat-list-${project.id}`}>
-        {project.sessions.map((session) => (
+        {sessions.map((session) => (
           <li key={session.id} className="pe-chat-item">
             <button
               type="button"
+              data-testid={`chat-row-${session.id}`}
               className={
                 session.id === activeSessionId ? "pe-chat-row active" : "pe-chat-row"
               }
@@ -429,6 +493,25 @@ export function ProjectExplorer({
             </li>
           );
         })}
+        {orderedSessions.length > RECENT_SESSION_LIMIT && (
+          <li>
+            <button
+              type="button"
+              className="pe-show-all"
+              data-testid={`session-show-all-${project.id}`}
+              onClick={() =>
+                setAllSessionsOpen((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(project.id)) next.delete(project.id);
+                  else next.add(project.id);
+                  return next;
+                })
+              }
+            >
+              {showAll ? t("projects.show_less") : t("projects.show_more")}
+            </button>
+          </li>
+        )}
         {project.sessions.length === 0 && tasks.length === 0 && (
           <li className="pe-empty">{t("projects.chats_empty")}</li>
         )}
@@ -458,91 +541,123 @@ export function ProjectExplorer({
 
   return (
     <div className="project-explorer" data-testid="project-explorer">
-      {/* 全局活动条（v1.87 §7.2，参考 Codex 侧栏线程流）：跨项目聚合监控 / 导航 /
-          就地停止；审批决策面仍唯一在各项目代理面板（v1.60 决策延续）。 */}
-      <section className="pe-section pe-activity" data-testid="global-activity">
+      {/* Codex projects sidebar：紧凑搜索 + 常驻添加；列表用 Name / Updated 统一节奏。 */}
+      <div className="pe-toolbar">
+        <label className="pe-search">
+          <SearchIcon />
+          <input
+            data-testid="project-search"
+            value={query}
+            placeholder={t("projects.search")}
+            aria-label={t("projects.search")}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </label>
         <button
           type="button"
-          className="pe-activity-bar"
-          data-testid="global-activity-bar"
-          aria-expanded={activityOpen}
-          onClick={() => setActivityOpen((open) => !open)}
+          className="pe-add"
+          data-testid="project-add"
+          aria-label={t("projects.add_title")}
+          disabled={busyId === "__add__"}
+          aria-expanded={adding}
+          title={t("projects.add_title")}
+          onClick={() => setAdding(true)}
         >
-          <span
-            className="pe-dot"
-            style={{ background: runningCount ? "#d9a514" : "#8a8f98" }}
-          />
-          <span className="pe-activity-count">{t("activity.running")} {runningCount}</span>
-          <span
-            className="pe-activity-count"
-            style={approvalsCount ? { color: "#e07b28", fontWeight: 600 } : undefined}
-          >
-            {t("activity.approvals")} {approvalsCount}
-          </span>
-          <span className="pe-activity-count">{t("activity.done")} {doneCount}</span>
-          <ChevronIcon />
+          +
         </button>
-        {activityOpen && (
-          <div className="pe-activity-panel" data-testid="global-activity-list">
-            <div className="pe-activity-filters">
-              {ACTIVITY_FILTERS.map((filter) => (
-                <button
-                  key={filter}
-                  type="button"
-                  className={activityFilter === filter ? "active" : ""}
-                  onClick={() => setActivityFilter(filter)}
-                >
-                  {t(`activity.filter.${filter}`)}
-                </button>
-              ))}
-            </div>
-            {visibleRows.length === 0 && <div className="pe-empty">{t("activity.empty")}</div>}
-            <ul className="pe-activity-list">
-              {visibleRows.map(({ project, session, approvals }) => (
-                <li key={session.id} className="pe-activity-item">
-                  <button
-                    type="button"
-                    className="pe-activity-row"
-                    onClick={() => jumpToSession({ project, session, approvals })}
-                    title={session.id}
-                  >
-                    <span
-                      className="pe-dot"
-                      style={{ background: statusDotColor(session.status) }}
-                    />
-                    <span className="pe-activity-project">{project.display_name}</span>
-                    <span className="pe-activity-title">
-                      {sessionDisplayName(session)}
-                      {session.worktree_path ? " ⎇" : ""}
-                    </span>
-                    <span className="pe-chat-status">{stateLabel(t, session.status)}</span>
-                    {approvals > 0 && (
-                      <span className="pe-activity-approvals">
-                        {t("activity.approvals")} {approvals}
-                      </span>
-                    )}
-                  </button>
-                  {RUNNING.has(session.status) && (
-                    <button
-                      type="button"
-                      className="pe-action danger"
-                      disabled={stoppingId === session.id}
-                      onClick={() => void stopSession(session.id)}
-                    >
-                      {t("activity.stop")}
-                    </button>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </section>
+      </div>
+      <div className="pe-columns">
+        <span>{t("projects.column.name")}</span>
+        <span>{t("projects.column.updated")}</span>
+      </div>
       <section className="pe-section pe-chats">
         <ul className="pe-tree" data-testid="project-list">
-          {projects.map((project) => {
+          {/* All activity 与项目行同构，跨项目监控不再用首屏胶囊打断项目索引。 */}
+          <li className="pe-activity-group">
+            <section className="pe-section pe-activity" data-testid="global-activity">
+              <button
+                type="button"
+                className="pe-activity-bar"
+                data-testid="global-activity-bar"
+                aria-expanded={activityOpen}
+                onClick={() => setActivityOpen((open) => !open)}
+              >
+                <span
+                  className="pe-dot"
+                  style={{ background: runningCount ? "#d9a514" : "#8a8f98" }}
+                />
+                <span className="pe-activity-label">{t("activity.title")}</span>
+                <span className="pe-activity-count">{t("activity.running")} {runningCount}</span>
+                <span
+                  className="pe-activity-count"
+                  style={approvalsCount ? { color: "#e07b28", fontWeight: 600 } : undefined}
+                >
+                  {t("activity.approvals")} {approvalsCount}
+                </span>
+                <span className="pe-activity-count">{t("activity.done")} {doneCount}</span>
+                <ChevronIcon />
+              </button>
+              {activityOpen && (
+                <div className="pe-activity-panel" data-testid="global-activity-list">
+                  <div className="pe-activity-filters">
+                    {ACTIVITY_FILTERS.map((filter) => (
+                      <button
+                        key={filter}
+                        type="button"
+                        className={activityFilter === filter ? "active" : ""}
+                        onClick={() => setActivityFilter(filter)}
+                      >
+                        {t(`activity.filter.${filter}`)}
+                      </button>
+                    ))}
+                  </div>
+                  {visibleRows.length === 0 && <div className="pe-empty">{t("activity.empty")}</div>}
+                  <ul className="pe-activity-list">
+                    {visibleRows.map(({ project, session, approvals }) => (
+                      <li key={session.id} className="pe-activity-item">
+                        <button
+                          type="button"
+                          className="pe-activity-row"
+                          onClick={() => jumpToSession({ project, session, approvals })}
+                          title={session.id}
+                        >
+                          <span
+                            className="pe-dot"
+                            style={{ background: statusDotColor(session.status) }}
+                          />
+                          <span className="pe-activity-project">{project.display_name}</span>
+                          <span className="pe-activity-title">
+                            {sessionDisplayName(session)}
+                            {session.worktree_path ? " ⎇" : ""}
+                          </span>
+                          <span className="pe-chat-status">{stateLabel(t, session.status)}</span>
+                          {approvals > 0 && (
+                            <span className="pe-activity-approvals">
+                              {t("activity.approvals")} {approvals}
+                            </span>
+                          )}
+                        </button>
+                        {RUNNING.has(session.status) && (
+                          <button
+                            type="button"
+                            className="pe-action danger"
+                            disabled={stoppingId === session.id}
+                            onClick={() => void stopSession(session.id)}
+                          >
+                            {t("activity.stop")}
+                          </button>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </section>
+          </li>
+          {visibleProjects.map((project) => {
             const isOpen = expanded.has(project.id);
             const showFiles = filesOpen.has(project.id);
+            const updatedAt = latestUpdatedAt(project);
             return (
               <li key={project.id} className="pe-folder">
                 <div
@@ -561,24 +676,34 @@ export function ProjectExplorer({
                   >
                     <ChevronIcon />
                     <FolderIcon />
-                    <span className="pe-project-name">{project.display_name}</span>
-                    <span className="pe-project-meta">{folderBadges(t, project)}</span>
+                    <span className="pe-project-main">
+                      <span className="pe-project-name">{project.display_name}</span>
+                      <span className="pe-project-meta">{folderBadges(t, project)}</span>
+                    </span>
+                    <span
+                      className="pe-updated"
+                      title={updatedAt ? new Date(updatedAt).toLocaleString() : undefined}
+                    >
+                      {formatUpdatedAt(updatedAt, t)}
+                    </span>
                   </button>
                   <div className="pe-row-actions">
                     <button
                       type="button"
                       className="pe-action"
                       data-testid={`project-files-${project.id}`}
+                      aria-label={t("projects.source")}
                       aria-pressed={showFiles}
                       title={t("projects.source")}
                       onClick={() => toggleFiles(project.id)}
                     >
-                      {t("projects.source")}
+                      {"</>"}
                     </button>
                     <button
                       type="button"
                       className="pe-action danger"
                       data-testid={`project-remove-${project.id}`}
+                      aria-label={t("projects.remove")}
                       disabled={busyId === project.id || project.sessions.length > 0}
                       title={
                         project.sessions.length
@@ -587,7 +712,7 @@ export function ProjectExplorer({
                       }
                       onClick={() => void runProjectAction(project, onRemoveProject)}
                     >
-                      {t("projects.remove")}
+                      ×
                     </button>
                   </div>
                 </div>
@@ -608,17 +733,10 @@ export function ProjectExplorer({
             );
           })}
           {projects.length === 0 && <li className="pe-empty">{t("projects.empty")}</li>}
+          {projects.length > 0 && visibleProjects.length === 0 && (
+            <li className="pe-empty">{t("projects.no_matches")}</li>
+          )}
         </ul>
-        <button
-          type="button"
-          className="pe-tree-add"
-          data-testid="project-add"
-          disabled={busyId === "__add__"}
-          aria-expanded={adding}
-          onClick={() => setAdding(true)}
-        >
-          ＋ {t("projects.add")}
-        </button>
       </section>
 
       {adding && (

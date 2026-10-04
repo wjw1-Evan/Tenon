@@ -211,6 +211,64 @@ describe("ProjectExplorer multi-project control surface", () => {
     expect(screen.getByText("修复登录超时")).toBeInTheDocument();
     expect(screen.getByText("mock")).toBeInTheDocument();
   });
+
+  // v1.88 Codex projects sidebar：项目名 / 路径 / 会话标题即时索引过滤。
+  it("filters the project index by project and session text", () => {
+    const matching = {
+      ...project("open-a"),
+      sessions: [
+        { id: "s-a", status: "idle", model: "mock", title: "payment retry", updated_at: "now" },
+      ],
+    };
+    renderExplorer([matching, project("open-b")]);
+    fireEvent.change(screen.getByTestId("project-search"), {
+      target: { value: "payment" },
+    });
+    expect(screen.getByTestId("project-item-open-a")).toBeInTheDocument();
+    expect(screen.queryByTestId("project-item-open-b")).not.toBeInTheDocument();
+    expect(screen.queryByText("projects.no_matches")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByTestId("project-search"), {
+      target: { value: "does-not-exist" },
+    });
+    expect(screen.getByText("projects.no_matches")).toBeInTheDocument();
+  });
+
+  // v1.88 Codex 项目行：Updated 列取最近会话，支持侧栏快速扫读。
+  it("shows the latest session timestamp in the Updated column", () => {
+    const dated = {
+      ...project("open-a"),
+      sessions: [
+        { id: "s-old", status: "done", model: "mock", updated_at: "2026-10-04T00:00:00Z" },
+        { id: "s-new", status: "idle", model: "mock", updated_at: "2026-10-05T00:00:00Z" },
+      ],
+    };
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-05T01:00:00Z"));
+    try {
+      renderExplorer([dated]);
+      const row = screen.getByTestId("project-item-open-a");
+      expect(row).toHaveTextContent("relative.hours_ago");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // v1.88 Codex 展开语义：默认最近 10 条，显式开关后才物化完整列表。
+  it("materializes the ten most recent sessions first and expands all explicitly", () => {
+    const sessions = Array.from({ length: 13 }, (_, index) => ({
+      id: `s-${String(index).padStart(2, "0")}`,
+      status: "idle",
+      model: "mock",
+      title: `Session ${index}`,
+      updated_at: `2026-10-05T00:${String(12 - index).padStart(2, "0")}:00Z`,
+    }));
+    renderExplorer([{ ...project("open-a"), sessions }]);
+    expect(screen.getAllByTestId(/^chat-row-s-/)).toHaveLength(10);
+    expect(screen.queryByText("Session 12")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("session-show-all-open-a"));
+    expect(screen.getAllByTestId(/^chat-row-s-/)).toHaveLength(13);
+    expect(screen.getByText("Session 12")).toBeInTheDocument();
+  });
 });
 
 // ---------- 全局活动条（v1.87 §7.2，参考 Codex 侧栏线程流） ----------

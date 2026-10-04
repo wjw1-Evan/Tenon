@@ -18,6 +18,13 @@
   "projects.active": "个活跃会话",
   "projects.approvals": "待审批",
   "projects.dirty": "未保存",
+  "projects.search": "搜索项目",
+  "projects.column.name": "名称",
+  "projects.column.updated": "更新",
+  "projects.updated_never": "—",
+  "projects.show_more": "显示全部",
+  "projects.show_less": "收起",
+  "projects.no_matches": "没有匹配的项目",
   "panel.packs": "语言包",
   "panel.editor": "编辑器",
   "rail.label": "侧栏视图",
@@ -233,6 +240,7 @@
   "activity.running": "运行中",
   "activity.approvals": "待审批",
   "activity.done": "已完成",
+  "activity.title": "全部活动",
   "activity.filter.all": "全部",
   "activity.filter.running": "运行中",
   "activity.filter.approvals": "待审批",
@@ -243,5 +251,9 @@
   "projects.new_worktree_session": "独立 worktree 会话（可与主根并行）",
   "projects.worktree_merge": "合并",
   "projects.worktree_discard": "丢弃",
-  "projects.worktree_discard_confirm": "确认丢弃该受管 worktree？未合并的改动将删除（不影响项目根）。"
+  "projects.worktree_discard_confirm": "确认丢弃该受管 worktree？未合并的改动将删除（不影响项目根）。",
+  "relative.now": "刚刚",
+  "relative.minutes_ago": "{count} 分钟前",
+  "relative.hours_ago": "{count} 小时前",
+  "relative.days_ago": "{count} 天前"
 }

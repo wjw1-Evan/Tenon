@@ -455,6 +455,66 @@ button:disabled { opacity: 0.45; cursor: default; }
   padding: 6px 12px;
   font-size: 12px;
 }
+/* Codex projects sidebar 索引（v1.88）：搜索 / 添加入口 + Name / Updated 节奏 */
+.pe-toolbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pe-search {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--overlay);
+  color: var(--muted);
+}
+.pe-search:focus-within { border-color: var(--accent); color: var(--accent-text); }
+.pe-search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--fg);
+  font-size: 12px;
+}
+.pe-search input::placeholder { color: var(--muted); }
+.pe-add {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--raised);
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.pe-add:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-text); }
+.pe-add:disabled { opacity: 0.45; cursor: not-allowed; }
+.pe-columns {
+  flex-shrink: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 8px 8px 3px;
+  border-bottom: 1px solid var(--border);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.pe-columns span:last-child { min-width: 68px; text-align: right; }
+
 /* 项目文件夹树（v1.63）：登记项目平铺为可折叠文件夹行，展开内嵌会话列表 */
 .pe-tree {
   flex: 1;
@@ -470,6 +530,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   display: flex;
   align-items: center;
   border-radius: 7px;
+  position: relative;
   /* 高亮挂在整行容器：hover / active 覆盖含行尾操作的完整一行 */
 }
 .pe-folder-row:hover { background: var(--raised); }
@@ -480,8 +541,8 @@ button:disabled { opacity: 0.45; cursor: default; }
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 6px;
+  gap: 8px;
+  padding: 6px;
   border: none;
   background: transparent;
   border-radius: 7px;
@@ -500,49 +561,64 @@ button:disabled { opacity: 0.45; cursor: default; }
 .pe-folder-btn.active .pe-caret { color: var(--accent-text); }
 .pe-folder-icon { flex-shrink: 0; color: var(--muted); }
 .pe-folder-btn.active .pe-folder-icon { color: var(--accent-text); }
-/* 行尾操作：hover / 键盘聚焦时显现，避免常驻视觉噪音 */
-.pe-folder-row .pe-row-actions { display: none; flex-shrink: 0; }
+/* 行尾操作：hover / 键盘聚焦时覆盖显现，不挤压 Codex 式项目主列 */
+.pe-folder-row .pe-row-actions {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  z-index: 1;
+  display: none;
+  transform: translateY(-50%);
+  background: inherit;
+  padding-left: 16px;
+}
 .pe-folder-row:hover .pe-row-actions,
 .pe-folder-row:focus-within .pe-row-actions { display: flex; }
-/* 列表底部常驻「添加项目」行 */
-.pe-tree-add {
-  flex-shrink: 0;
+/* 展开列表超过 Codex 默认最近 10 条时的显式开关 */
+.pe-show-all {
+  width: 100%;
+  padding: 4px 8px;
   border: none;
-  border-top: 1px solid var(--border);
   background: transparent;
-  color: var(--fg);
-  padding: 8px 12px;
-  font-size: 12px;
+  color: var(--accent-text);
+  font-size: 11.5px;
   text-align: left;
   cursor: pointer;
 }
-.pe-tree-add:hover:not(:disabled) { color: var(--accent-text); background: var(--accent-soft); }
-.pe-tree-add:disabled { opacity: 0.45; cursor: not-allowed; }
+.pe-show-all:hover { background: var(--raised); }
 
 /* 行内嵌源码文件树（v1.70）：缩进对齐会话列表，限高内部滚动；行尾「源码」按钮切换 */
 .pe-source { padding-left: 26px; }
 .pe-source .file-tree-shell { max-height: 40vh; overflow-y: auto; }
 
-/* 全局活动条（v1.87 §7.2）：跨项目聚合监控面，参考 Codex 侧栏线程流 */
-.pe-activity { flex-shrink: 0; }
+/* 全局活动组（v1.87/v1.88）：与项目行同构，跨项目聚合监控不占仪表盘首屏 */
+.pe-activity-group { border-bottom: 1px solid var(--border); }
+.pe-activity { flex-shrink: 0; padding-bottom: 4px; }
 .pe-activity-bar {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 7px;
   width: 100%;
-  padding: 7px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--raised);
+  padding: 6px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
   color: var(--fg-strong);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
 }
-.pe-activity-bar:hover { border-color: var(--accent); }
+.pe-activity-bar:hover { background: var(--raised); }
+.pe-activity-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .pe-activity-count { white-space: nowrap; }
 .pe-activity-panel {
-  margin-top: 6px;
+  margin: 2px 0 4px;
+  padding-left: 18px;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -597,6 +673,12 @@ button:disabled { opacity: 0.45; cursor: default; }
   white-space: nowrap;
 }
 .pe-activity-approvals { color: #e07b28; font-weight: 600; white-space: nowrap; }
+.pe-activity-bar .pe-caret {
+  margin-left: auto;
+  color: var(--muted);
+  transition: transform 120ms ease;
+}
+.pe-activity-bar[aria-expanded="true"] .pe-caret { transform: rotate(90deg); }
 .pe-dot {
   width: 8px;
   height: 8px;
@@ -647,15 +729,34 @@ button:disabled { opacity: 0.45; cursor: default; }
   color: var(--accent-text);
 }
 .pe-project-name {
-  flex: 1;
-  min-width: 0;
+  display: block;
+  width: 100%;
   font-weight: 600;
   color: var(--fg-strong);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.pe-folder-btn.active .pe-project-name { color: var(--accent-text); }
+.pe-folder-btn.active .pe-project-name,
+.pe-folder-btn.active .pe-updated { color: var(--accent-text); }
+.pe-project-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.pe-updated {
+  flex-shrink: 0;
+  min-width: 68px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .pe-chat-name {
   font-weight: 550;
   color: var(--fg-strong);

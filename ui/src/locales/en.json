@@ -18,6 +18,13 @@
   "projects.active": "active",
   "projects.approvals": "approvals",
   "projects.dirty": "dirty",
+  "projects.search": "Search projects",
+  "projects.column.name": "Name",
+  "projects.column.updated": "Updated",
+  "projects.updated_never": "—",
+  "projects.show_more": "Show all",
+  "projects.show_less": "Collapse",
+  "projects.no_matches": "No matching projects",
   "panel.packs": "Language packs",
   "panel.editor": "Editor",
   "rail.label": "Sidebar views",
@@ -233,6 +240,7 @@
   "activity.running": "Running",
   "activity.approvals": "Approvals",
   "activity.done": "Done",
+  "activity.title": "All activity",
   "activity.filter.all": "All",
   "activity.filter.running": "Running",
   "activity.filter.approvals": "Approvals",
@@ -243,5 +251,9 @@
   "projects.new_worktree_session": "Managed worktree session (parallel to main root)",
   "projects.worktree_merge": "Merge",
   "projects.worktree_discard": "Discard",
-  "projects.worktree_discard_confirm": "Discard this managed worktree? Unmerged changes will be deleted (project root untouched)."
+  "projects.worktree_discard_confirm": "Discard this managed worktree? Unmerged changes will be deleted (project root untouched).",
+  "relative.now": "Just now",
+  "relative.minutes_ago": "{count}m ago",
+  "relative.hours_ago": "{count}h ago",
+  "relative.days_ago": "{count}d ago"
 }
