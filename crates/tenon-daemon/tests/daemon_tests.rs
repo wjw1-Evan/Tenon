@@ -503,14 +503,16 @@ async fn file_api_endpoints() {
         "changed\n"
     );
 
-    // file ops
+    // file ops（v1.72 起 /file/ops 不再提供创建，创建由会话大模型决策；此处覆盖 rename）
+    std::fs::write(project.join("a_repo.rs"), "fn a() {}\n").unwrap();
     client
         .post(format!("{}/project/{pid}/file/ops", base(port)))
-        .json(&serde_json::json!({"ops": [{"op": "create_file", "path": "new.rs", "content": "fn a() {}\n"}]}))
+        .json(&serde_json::json!({"ops": [{"op": "rename", "from": "a_repo.rs", "to": "new.rs"}]}))
         .send()
         .await
         .unwrap();
     assert!(project.join("new.rs").exists());
+    assert!(!project.join("a_repo.rs").exists());
 
     // v1.15 兼容层：legacy 隐式项目必须显式 project_id。
     let legacy = client

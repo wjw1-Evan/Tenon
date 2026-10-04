@@ -46,8 +46,6 @@
   "settings.language": "语言",
   "diff.ai_badge": "AI",
   "tree.empty": "打开项目后浏览文件",
-  "tree.new_file": "新建文件",
-  "tree.new_folder": "新建文件夹",
   "tree.rename": "重命名",
   "tree.delete": "删除",
   "tree.cancel": "取消",

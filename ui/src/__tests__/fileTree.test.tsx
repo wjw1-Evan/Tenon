@@ -1,4 +1,4 @@
-// 懒加载层级文件树 + 项目内 CRUD（§8.1）。
+// 懒加载层级文件树 + 项目内重命名 / 删除（§8.1；v1.72 起创建由会话大模型决策）。
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FileTree } from "../components/FileTree";
@@ -69,9 +69,11 @@ describe("FileTree", () => {
     expect(treeMock).toHaveBeenCalledWith("project-1", "src");
   });
 
-  it("创建文件调用 project-scoped file ops 并通知刷新", async () => {
-    treeMock.mockResolvedValue({ entries: [] });
-    fileOpsMock.mockResolvedValue({ results: [{ ok: true, outcome: "created" }] });
+  it("重命名走 project-scoped file ops 并回传新旧路径", async () => {
+    treeMock.mockResolvedValue({
+      entries: [{ path: "old.ts", name: "old.ts", kind: "file", git_status: "" }],
+    });
+    fileOpsMock.mockResolvedValue({ results: [{ ok: true, outcome: "renamed" }] });
     const onOperation = vi.fn();
     render(
       <FileTree
@@ -83,19 +85,20 @@ describe("FileTree", () => {
         onOperation={onOperation}
       />
     );
-    fireEvent.click(await screen.findByTestId("tree-new-file"));
-    fireEvent.change(document.getElementById("tree-prompt-input") as HTMLInputElement, {
-      target: { value: "src/new.ts" },
-    });
+    fireEvent.click(await screen.findByTitle("tree.rename"));
+    const input = document.getElementById("tree-prompt-input") as HTMLInputElement;
+    expect(input.value).toBe("old.ts");
+    fireEvent.change(input, { target: { value: "new.ts" } });
     fireEvent.click(screen.getByRole("button", { name: "tree.save" }));
     await waitFor(() =>
       expect(fileOpsMock).toHaveBeenCalledWith("project-1", [
-        { op: "create_file", path: "src/new.ts", content: "" },
+        { op: "rename", from: "old.ts", to: "new.ts" },
       ])
     );
     expect(onOperation).toHaveBeenCalledWith({
-      type: "created",
-      path: "src/new.ts",
+      type: "renamed",
+      from: "old.ts",
+      to: "new.ts",
       kind: "file",
     });
   });

@@ -93,8 +93,6 @@ export interface LspSymbol {
 }
 
 export type FileOperation =
-  | { op: "create_file"; path: string; content?: string }
-  | { op: "create_dir"; path: string }
   | { op: "rename"; from: string; to: string }
   | { op: "move"; from: string; to: string }
   | { op: "delete"; path: string };

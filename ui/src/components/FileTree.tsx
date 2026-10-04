@@ -1,4 +1,5 @@
-// 文件树（设计方案 §8.1）：懒加载层级、git 状态装饰、watcher 同步与项目内 CRUD。
+// 文件树（设计方案 §8.1）：懒加载层级、git 状态装饰、watcher 同步与项目内
+// 重命名 / 移动 / 删除（v1.72 起不含创建——项目内创建由会话大模型决策执行）。
 import { useEffect, useState } from "react";
 import type { FileOperation, TenonApi } from "../lib/api";
 import type { Translate } from "../lib/i18n";
@@ -11,7 +12,6 @@ interface Entry {
 }
 
 export type FileTreeChange =
-  | { type: "created"; path: string; kind: Entry["kind"] }
   | { type: "renamed"; from: string; to: string; kind: Entry["kind"] }
   | { type: "deleted"; path: string };
 
@@ -33,12 +33,9 @@ const STATUS_DOT: Record<string, string> = {
   renamed: "var(--verify, #7d4fd3)",
 };
 
-type PromptMode = "new-file" | "new-dir" | "rename";
-
 interface PromptState {
-  mode: PromptMode;
   parent: string;
-  target?: Entry;
+  target: Entry;
   value: string;
 }
 
@@ -73,12 +70,10 @@ function ActionButton({
   label,
   onClick,
   disabled,
-  testId,
 }: {
   label: string;
   onClick: () => void;
   disabled?: boolean;
-  testId?: string;
 }) {
   return (
     <button
@@ -87,13 +82,12 @@ function ActionButton({
       aria-label={label}
       title={label}
       disabled={disabled}
-      data-testid={testId}
       onClick={(event) => {
         event.stopPropagation();
         onClick();
       }}
     >
-      {label === "rename" ? "✎" : label === "delete" ? "✕" : "+"}
+      {label === "delete" ? "✕" : "✎"}
     </button>
   );
 }
@@ -114,23 +108,11 @@ function TreeActions({
   const parent = entry ? (entry.kind === "dir" ? entry.path : parentOf(entry.path)) : "";
   return (
     <span className="tree-actions">
-      <ActionButton
-        label={t("tree.new_file")}
-        testId={entry ? undefined : "tree-new-file"}
-        disabled={busy}
-        onClick={() => onPrompt({ mode: "new-file", parent, value: "" })}
-      />
-      <ActionButton
-        label={t("tree.new_folder")}
-        testId={entry ? undefined : "tree-new-dir"}
-        disabled={busy}
-        onClick={() => onPrompt({ mode: "new-dir", parent, value: "" })}
-      />
       {entry && (
         <ActionButton
           label={t("tree.rename")}
           disabled={busy}
-          onClick={() => onPrompt({ mode: "rename", parent, target: entry, value: entry.name })}
+          onClick={() => onPrompt({ parent, target: entry, value: entry.name })}
         />
       )}
       {entry && (
@@ -318,19 +300,8 @@ export function FileTree({
     }
   };
 
-  const create = async (state: PromptState, name: string) => {
-    const path = joinPath(state.parent, name);
-    const kind: Entry["kind"] = state.mode === "new-dir" ? "dir" : "file";
-    await run(
-      state.mode === "new-dir"
-        ? { op: "create_dir", path }
-        : { op: "create_file", path, content: "" },
-      { type: "created", path, kind }
-    );
-  };
-
   const rename = async (state: PromptState, name: string) => {
-    const entry = state.target!;
+    const entry = state.target;
     const to = joinPath(state.parent, name);
     await run(
       { op: "rename", from: entry.path, to },
@@ -341,10 +312,7 @@ export function FileTree({
   const submitPrompt = () => {
     if (!prompt || !prompt.value.trim()) return;
     const name = prompt.value.trim();
-    void (prompt.mode === "rename"
-      ? rename(prompt, name)
-      : create(prompt, name)
-    ).finally(() => setPrompt(null));
+    void rename(prompt, name).finally(() => setPrompt(null));
   };
 
   const deleteEntry = (entry: Entry) => {
@@ -363,12 +331,6 @@ export function FileTree({
   return (
     <div className="file-tree-shell">
       <div className="tree-toolbar">
-        <TreeActions
-          t={t}
-          busy={busy}
-          onPrompt={setPrompt}
-          onDelete={deleteEntry}
-        />
         {busy && <span className="tree-busy">{t("tree.working")}</span>}
       </div>
       {error && (
@@ -401,9 +363,7 @@ export function FileTree({
               submitPrompt();
             }}
           >
-            <label htmlFor="tree-prompt-input">
-              {prompt.mode === "rename" ? t("tree.rename") : t(`tree.${prompt.mode}`)}
-            </label>
+            <label htmlFor="tree-prompt-input">{t("tree.rename")}</label>
             <input
               id="tree-prompt-input"
               value={prompt.value}

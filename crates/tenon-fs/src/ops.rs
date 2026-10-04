@@ -1,37 +1,21 @@
 //! 文件 CRUD 操作（设计方案 §8.1 / §15 `POST /file/ops`）：全部经写守卫。
+//! v1.72 起不含创建类操作——项目内创建由会话大模型决策执行。
 
-use crate::{FsError, Result};
+use crate::Result;
 use serde::{Deserialize, Serialize};
 use tenon_sandbox::WriteGuard;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "op")]
 pub enum FileOp {
-    CreateFile {
-        path: String,
-        #[serde(default)]
-        content: String,
-    },
-    CreateDir {
-        path: String,
-    },
-    Rename {
-        from: String,
-        to: String,
-    },
-    Move {
-        from: String,
-        to: String,
-    },
-    Delete {
-        path: String,
-    },
+    Rename { from: String, to: String },
+    Move { from: String, to: String },
+    Delete { path: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum OpOutcome {
-    Created,
     Renamed,
     Moved,
     Deleted,
@@ -62,25 +46,6 @@ impl FileOps {
 
     pub fn apply(&self, op: &FileOp) -> Result<OpOutcome> {
         match op {
-            FileOp::CreateFile { path, content } => {
-                let p = self.resolve(path)?;
-                if p.exists() {
-                    return Err(FsError::Io(std::io::Error::new(
-                        std::io::ErrorKind::AlreadyExists,
-                        format!("already exists: {path}"),
-                    )));
-                }
-                if let Some(parent) = p.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                std::fs::write(&p, content)?;
-                Ok(OpOutcome::Created)
-            }
-            FileOp::CreateDir { path } => {
-                let p = self.resolve(path)?;
-                std::fs::create_dir_all(&p)?;
-                Ok(OpOutcome::Created)
-            }
             FileOp::Rename { from, to } => {
                 let src = self.resolve(from)?;
                 let dst = self.resolve(to)?;
@@ -120,22 +85,9 @@ mod tests {
     }
 
     #[test]
-    fn create_rename_delete_cycle() {
-        let (_d, ops) = ops();
-        let o = ops
-            .apply(&FileOp::CreateFile {
-                path: "a.txt".into(),
-                content: "hi".into(),
-            })
-            .unwrap();
-        assert_eq!(o, OpOutcome::Created);
-        // 重复创建报错
-        assert!(ops
-            .apply(&FileOp::CreateFile {
-                path: "a.txt".into(),
-                content: "".into()
-            })
-            .is_err());
+    fn rename_delete_cycle() {
+        let (dir, ops) = ops();
+        std::fs::write(dir.path().join("a.txt"), "hi").unwrap();
 
         let o = ops
             .apply(&FileOp::Rename {
@@ -161,9 +113,8 @@ mod tests {
             })
             .is_err());
         assert!(ops
-            .apply(&FileOp::CreateFile {
-                path: "/tmp/evil".into(),
-                content: "".into()
+            .apply(&FileOp::Delete {
+                path: "/tmp/evil".into()
             })
             .is_err());
         assert!(ops
@@ -172,15 +123,5 @@ mod tests {
                 to: "../y".into()
             })
             .is_err());
-    }
-
-    #[test]
-    fn create_dir_nested() {
-        let (_d, ops) = ops();
-        ops.apply(&FileOp::CreateDir {
-            path: "a/b/c".into(),
-        })
-        .unwrap();
-        assert!(ops.root().join("a/b/c").is_dir());
     }
 }
