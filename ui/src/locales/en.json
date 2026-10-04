@@ -77,5 +77,13 @@
   "settings.note_new_sessions": "Session and agent values apply to new sessions.",
   "settings.save": "Save",
   "settings.cancel": "Cancel",
-  "settings.open": "Open settings"
+  "settings.open": "Open settings",
+  "inline.title": "Inline AI instruction",
+  "inline.placeholder": "Describe the change for the selection… (Cmd/Ctrl+Enter to send)",
+  "inline.range": "{path} lines {start}-{end}",
+  "inline.whole_file": "Whole file: {path}",
+  "inline.no_file": "Open a file to give inline instructions",
+  "inline.send": "Send",
+  "inline.cancel": "Cancel",
+  "follow.toggle": "Follow"
 }

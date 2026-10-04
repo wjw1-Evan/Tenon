@@ -77,5 +77,13 @@
   "settings.note_new_sessions": "会话与代理参数对新会话生效。",
   "settings.save": "保存",
   "settings.cancel": "取消",
-  "settings.open": "打开设置"
+  "settings.open": "打开设置",
+  "inline.title": "行内 AI 指令",
+  "inline.placeholder": "描述对选中区的修改…（Cmd/Ctrl+Enter 发送）",
+  "inline.range": "{path} 第 {start}-{end} 行",
+  "inline.whole_file": "整个文件：{path}",
+  "inline.no_file": "打开文件后可下达行内指令",
+  "inline.send": "发送",
+  "inline.cancel": "取消",
+  "follow.toggle": "跟随"
 }

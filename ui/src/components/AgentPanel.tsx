@@ -23,6 +23,9 @@ interface Props {
   onLatestDiff?: (diff: string | null) => void;
   onDirtyConflict?: (c: DirtyConflictView | null) => void;
   onPatchLines?: (path: string, lines: number[]) => void;
+  /** 跟随模式（§8.5）：代理写入时编辑器自动滚动到改动处；App 持有状态，此处仅展示开关。 */
+  followMode?: boolean;
+  onToggleFollow?: () => void;
 }
 
 interface EventItem {
@@ -40,6 +43,8 @@ export function AgentPanel({
   onLatestDiff,
   onDirtyConflict,
   onPatchLines,
+  followMode,
+  onToggleFollow,
 }: Props) {
   const [events, setEvents] = useState<EventItem[]>([]);
   const [status, setStatus] = useState<AgentStateName>("idle");
@@ -137,6 +142,17 @@ export function AgentPanel({
           aria-label={status}
         />
         <span className="state-label">{t(`state.${status}`)}</span>
+        <button
+          type="button"
+          className={followMode ? "agent-follow on" : "agent-follow"}
+          aria-pressed={followMode ?? false}
+          title={t("follow.toggle")}
+          aria-label={t("follow.toggle")}
+          data-testid="follow-toggle"
+          onClick={onToggleFollow}
+        >
+          {t("follow.toggle")}
+        </button>
         <button className="agent-stop" onClick={stop} disabled={!sessionId}>
           {t("message.stop")}
         </button>

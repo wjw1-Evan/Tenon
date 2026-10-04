@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | **v1.28** |
+| 版本 | **v1.39** |
 | 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.28） |
 | 状态 | 定稿（v1.10 决策闭环），M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
@@ -60,6 +60,7 @@
 | **v1.26** | **§7.2 / §15 设置面板落地（本期子集）：外观 / 语言 / 会话默认档 / 代理参数（首改缓冲、审批超时、命令超时）；`PUT /settings` 校验并持久化 `~/.tenon/settings.json`（0600，启动合并），新会话即时生效；`mode=auto` 仅对已信任项目生效（未信任回退交互档）；入口 Cmd/Ctrl+, + 命令面板** |
 | **v1.27** | **§7.2 / §7.5 UI 布局重设计：左侧新增 activity rail（文件 / 搜索 / 语言包三视图单显，active 再点折叠侧栏，`tenon:sideView` localStorage 记忆）；侧栏不再纵向堆叠三组件；顶栏精简（副标题移除、模型路由紧凑化——模型下拉 + ✦ 路由建议气泡）；Monaco 深浅双主题与设计令牌同步（tenon-dark / tenon-light）；状态点运行态呼吸动画（data-state 驱动）** |
 | **v1.28** | **§10.1 / §14.2 实施同步：L4 本地索引落地——`tenon-fs::l4` 本地确定性 embedding + symbol / line chunking；SQLite `replace_l4_file / delete_l4_file / clear_l4_project / l4_search / l4_chunk_count`；ProjectRuntime 激活触发全量 gitignore-aware scan；watcher 变更 500ms 去抖原子增量替换；`GET /project/:id/l4/search|stats`；集成测试覆盖初始索引、命中与增量更新** |
+| **v1.39** | **§7.4 / §8.5 共生集成点补全（S2 / T8）：① 行内 AI 指令 Cmd/Ctrl+I——编辑器选区（无选区退化为整文件）自然语言改写，弹出卡展示文件 / 行区间 / 选区摘要，指令带「选中区外零改动、无新诊断」约束经当前 `project_id` 会话注入，就地 diff 由既有 AI 行角标呈现；② 跟随模式——代理写入已打开文件时自动 reveal 首个改动行（默认开、可一键关闭，偏好存 localStorage）；③ §7.4 快捷键补 Cmd/Ctrl+J 底部面板开合（终端区仍 M3 评估）** |
 
 
 ---

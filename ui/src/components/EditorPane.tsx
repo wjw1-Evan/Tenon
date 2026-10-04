@@ -4,6 +4,12 @@ import Editor, { type Monaco } from "@monaco-editor/react";
 import { useEffect, useRef, useState } from "react";
 
 type DecorationsCollection = { clear: () => void };
+type SelectionRange = {
+  startLineNumber: number;
+  startColumn: number;
+  endLineNumber: number;
+  endColumn: number;
+};
 type StandaloneEditor = {
   createDecorationsCollection: (
     ranges: Array<{
@@ -13,6 +19,10 @@ type StandaloneEditor = {
   ) => DecorationsCollection;
   revealLineInCenter: (lineNumber: number) => void;
   focus: () => void;
+  onDidChangeCursorSelection: (
+    cb: (e: { selection: SelectionRange }) => void
+  ) => { dispose: () => void };
+  getModel: () => { getValueInRange: (range: SelectionRange) => string } | null;
 };
 
 /* Tenon 主题（§7.5 设计令牌同步）：与 styles.css 的 --surface /
@@ -89,6 +99,14 @@ export interface EditorTab {
   content: string;
 }
 
+/** 编辑器当前选区（行内指令上下文，§8.5）；text 为空即无选区。 */
+export interface EditorSelection {
+  path: string;
+  startLine: number;
+  endLine: number;
+  text: string;
+}
+
 interface Props {
   tabs: EditorTab[];
   activePath: string | null;
@@ -103,6 +121,8 @@ interface Props {
   unsavedTitle?: string;
   /** fuzzy finder / 诊断跳转（§7.4）：path + 1-based line。 */
   goto?: { path: string; line: number; token: number } | null;
+  /** 选区变化（去重后；null = 无选区）。行内指令上下文（§8.5）。 */
+  onSelectionChange?: (sel: EditorSelection | null) => void;
 }
 
 export function EditorPane({
@@ -115,10 +135,29 @@ export function EditorPane({
   unsavedPaths,
   unsavedTitle,
   goto,
+  onSelectionChange,
 }: Props) {
   const editorRef = useRef<StandaloneEditor | null>(null);
   const decorationsRef = useRef<DecorationsCollection | null>(null);
   const resolvedTheme = useResolvedTheme();
+  const activePathRef = useRef(activePath);
+  const lastSelSigRef = useRef<string | null>(null);
+  const selectionCbRef = useRef(onSelectionChange);
+  const selSubRef = useRef<{ dispose: () => void } | null>(null);
+
+  useEffect(() => {
+    activePathRef.current = activePath;
+  }, [activePath]);
+  useEffect(() => {
+    selectionCbRef.current = onSelectionChange;
+  }, [onSelectionChange]);
+  useEffect(
+    () => () => {
+      selSubRef.current?.dispose();
+      selSubRef.current = null;
+    },
+    []
+  );
 
   // AI 角标装饰：行号变化时重建
   useEffect(() => {
@@ -199,6 +238,31 @@ export function EditorPane({
             value={active.content}
             onMount={(editor) => {
               editorRef.current = editor;
+              // 选区上报（§8.5 行内指令上下文）：按 path + 区间签名去重，
+              // 光标移动 / 输入不重复触发上层渲染。
+              selSubRef.current?.dispose();
+              selSubRef.current = editor.onDidChangeCursorSelection((e) => {
+                const path = activePathRef.current;
+                const sel = e.selection;
+                const text =
+                  sel.startLineNumber === sel.endLineNumber &&
+                  sel.startColumn === sel.endColumn
+                    ? ""
+                    : (editor.getModel()?.getValueInRange(sel) ?? "");
+                const sig = `${path}\u0000${sel.startLineNumber}:${sel.endLineNumber}\u0000${text ? "1" : "0"}`;
+                if (sig === lastSelSigRef.current) return;
+                lastSelSigRef.current = sig;
+                selectionCbRef.current?.(
+                  text
+                    ? {
+                        path: path ?? "",
+                        startLine: sel.startLineNumber,
+                        endLine: sel.endLineNumber,
+                        text,
+                      }
+                    : null
+                );
+              });
             }}
             onChange={(v) => {
               // 用户编辑该文件 → 行级 AI 角标解除（§8.6）

@@ -17,7 +17,8 @@ import { useShortcuts } from "./hooks";
 import { FileTree, type FileTreeChange } from "./components/FileTree";
 import { SearchPanel } from "./components/SearchPanel";
 import { FileFinder } from "./components/FileFinder";
-import { EditorPane, type EditorTab } from "./components/EditorPane";
+import { EditorPane, type EditorSelection, type EditorTab } from "./components/EditorPane";
+import { InlineInstruction, buildInlineTask, type InlineTarget } from "./components/InlineInstruction";
 import { AgentPanel } from "./components/AgentPanel";
 import { CheckpointTimeline } from "./components/CheckpointTimeline";
 import { DiffPanel } from "./components/DiffPanel";
@@ -105,6 +106,32 @@ export default function App({
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [finderOpen, setFinderOpen] = useState(false);
   const [timelineOpen, setTimelineOpen] = useState(true);
+  /** 行内指令（§7.4 Cmd+I / §8.5）：编辑器选区上下文与弹卡开关。 */
+  const [selection, setSelection] = useState<EditorSelection | null>(null);
+  const [inlineOpen, setInlineOpen] = useState(false);
+  /** 跟随模式（§8.5）：代理写入文件时自动打开并滚动到首个改动行；默认开、可关。 */
+  const [followMode, setFollowMode] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("tenon:followMode") !== "off";
+    } catch {
+      return true;
+    }
+  });
+  const followModeRef = useRef(followMode);
+  useEffect(() => {
+    followModeRef.current = followMode;
+  }, [followMode]);
+  const toggleFollow = useCallback(() => {
+    setFollowMode((v) => {
+      const next = !v;
+      try {
+        localStorage.setItem("tenon:followMode", next ? "on" : "off");
+      } catch {
+        // 仅当前会话生效
+      }
+      return next;
+    });
+  }, []);
   const [latestDiff, setLatestDiff] = useState<string | null>(null);
   const [dirtyConflict, setDirtyConflict] = useState<DirtyConflict | null>(null);
   const [aiLines, setAiLines] = useState<Record<string, number[]>>({});
@@ -368,6 +395,16 @@ export default function App({
     []
   );
 
+  /** 行内指令（§8.5 / S2 / T8）：选区上下文组装后直接发送当前项目会话。 */
+  const sendInline = useCallback(
+    (instruction: string, target: InlineTarget) => {
+      const sid = sessionId;
+      if (!sid) return;
+      void api.sendMessage(sid, buildInlineTask(instruction, target)).catch(() => {});
+    },
+    [api, sessionId]
+  );
+
   const onStateChange = useCallback((s: AgentStateName) => setAgentState(s), []);
   const handlers = useMemo(
     () => ({
@@ -375,6 +412,10 @@ export default function App({
       onGotoFile: () => setFinderOpen(true),
       onTimeline: () => setTimelineOpen((v) => !v),
       onSidebar: () => setSidebarOpen((v) => !v),
+      onPanel: () => setTimelineOpen((v) => !v),
+      onInlineInstruction: () => {
+        if (activePath) setInlineOpen(true);
+      },
       onStop: () => sessionId && api.control(sessionId, "stop"),
       onSave: () => {
         const p = activePath;
@@ -733,6 +774,7 @@ export default function App({
             unsavedPaths={unsaved}
             unsavedTitle={t("editor.unsaved")}
             goto={gotoLine}
+            onSelectionChange={setSelection}
             onSelect={setActivePath}
             onClose={(p) => {
               void autosaverRef.current?.flush(p);
@@ -787,13 +829,19 @@ export default function App({
             sessionId={sessionId}
             onStateChange={onStateChange}
             onLatestDiff={setLatestDiff}
-            onPatchLines={(path, lines) =>
+            onPatchLines={(path, lines) => {
               setAiLines((prev) => ({
                 ...prev,
                 [path]: unionLines(prev[path] ?? [], lines),
-              }))
-            }
+              }));
+              // 跟随模式（§8.5）：代理写入时自动打开/滚动到首个改动行（可关）。
+              if (followModeRef.current && lines.length > 0) {
+                void openFile(path, lines[0]);
+              }
+            }}
             onDirtyConflict={setDirtyConflict}
+            followMode={followMode}
+            onToggleFollow={toggleFollow}
           />
         </section>
       </div>
@@ -869,6 +917,14 @@ export default function App({
           {bottomTab === "evals" && <EvalsPanel api={api} />}
         </footer>
       )}
+      <InlineInstruction
+        open={inlineOpen}
+        selection={selection}
+        activePath={activePath}
+        t={t}
+        onClose={() => setInlineOpen(false)}
+        onSend={sendInline}
+      />
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} commands={commands} />
       {settingsOpen && (
         <SettingsDialog

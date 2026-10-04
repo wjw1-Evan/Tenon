@@ -1242,3 +1242,64 @@ button:disabled { opacity: 0.45; cursor: default; }
   width: 100%;
 }
 .settings-note { font-size: 11px; margin: 8px 0 0; }
+
+/* ─────────────────────────── 行内指令（§7.4 Cmd+I / §8.5） ─────────────────────────── */
+.inline-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 46;
+  background: rgba(8, 10, 16, 0.4);
+  display: grid;
+  place-items: start center;
+  padding-top: 14vh;
+}
+:root[data-theme="light"] .inline-overlay { background: rgba(15, 23, 42, 0.26); }
+.inline-card {
+  width: min(560px, 90vw);
+  background: var(--overlay);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-l);
+  padding: 14px;
+  box-shadow: var(--shadow-pop);
+  animation: pop-in 0.16s ease-out;
+}
+.inline-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+.inline-context {
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.inline-card textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 64px;
+  background: var(--surface);
+  color: var(--fg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-m, 8px);
+  padding: 8px 10px;
+  font: inherit;
+}
+.inline-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+.inline-actions .primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent-strong);
+}
+
+/* ─────────────────────────── 跟随模式开关（§8.5） ─────────────────────────── */
+.agent-follow {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+}
+.agent-follow.on {
+  color: var(--accent-text);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
