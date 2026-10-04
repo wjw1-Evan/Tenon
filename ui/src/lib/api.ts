@@ -1,6 +1,17 @@
 // daemon 本地 API 客户端（设计方案 §15）。
 // 认证：HTTP 用 X-Tenon-Token；WS 用一次性 ticket（首帧携带，ADR-10）。
 
+/** daemon 错误体统一为 {"error": "..."}；解析失败回退原文，避免把原始 JSON 泄漏进 UI。 */
+function daemonErrorMessage(raw: string): string {
+  try {
+    const parsed = JSON.parse(raw) as { error?: unknown };
+    if (typeof parsed.error === "string" && parsed.error.trim()) return parsed.error;
+  } catch {
+    // 非 JSON 原样返回
+  }
+  return raw;
+}
+
 export interface Handshake {
   port: number;
   token: string;
@@ -197,7 +208,7 @@ export class TenonApi {
     const resp = await fetch(`${this.base}${path}`, { ...init, headers, body });
     if (!resp.ok) {
       const text = await resp.text();
-      throw new Error(`API ${resp.status}: ${text}`);
+      throw new Error(`API ${resp.status}: ${daemonErrorMessage(text)}`);
     }
     return (await resp.json()) as T;
   }

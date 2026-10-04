@@ -587,14 +587,16 @@ export function ProjectExplorer({
                   style={{ background: runningCount ? "#d9a514" : "#8a8f98" }}
                 />
                 <span className="pe-activity-label">{t("activity.title")}</span>
-                <span className="pe-activity-count">{t("activity.running")} {runningCount}</span>
+                <span className="pe-activity-counts">
+                  <span className="pe-activity-count">{t("activity.running")} {runningCount}</span>
                 <span
                   className="pe-activity-count"
                   style={approvalsCount ? { color: "#e07b28", fontWeight: 600 } : undefined}
                 >
                   {t("activity.approvals")} {approvalsCount}
                 </span>
-                <span className="pe-activity-count">{t("activity.done")} {doneCount}</span>
+                  <span className="pe-activity-count">{t("activity.done")} {doneCount}</span>
+                </span>
                 <ChevronIcon />
               </button>
               {activityOpen && (

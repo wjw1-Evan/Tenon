@@ -1573,20 +1573,53 @@ enum ApprovalFlow {
     Timeout,
 }
 
-/// 清理模型产出 / 本地回退的对话标题（v1.58）：取首个非空行、去包裹引号与
-/// 结尾句读、按字符截断；空输入返回空串（调用方保持「未生成」语义）。
+/// 模型标题常见的元文本前缀（实测 GLM 会输出 "The user says: …" /
+/// "The user wants …" 类英文套壳，违反 v1.58「只输出标题本身」）：剥掉后取正文。
+const TITLE_META_PREFIXES: &[&str] = &[
+    "the user says:",
+    "the user wants",
+    "the user asks:",
+    "user says:",
+    "user wants",
+    "title:",
+    "标题：",
+    "标题:",
+];
+
+/// 清理模型产出 / 本地回退的对话标题（v1.58）：取首个非空行、剥元文本前缀、
+/// 去包裹引号与结尾句读、按字符截断；空输入返回空串（调用方保持「未生成」语义）。
 pub fn sanitize_title(input: &str, max_chars: usize) -> String {
     let first_line = input
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty())
         .unwrap_or("");
-    let unwrapped = first_line
+    let stripped = TITLE_META_PREFIXES
+        .iter()
+        .find_map(|prefix| {
+            // 前缀均为 ASCII，直接按字节做大小写无关匹配，避免 Unicode
+            // 大小写转换改变字节长度导致切边 panic。
+            if first_line.len() >= prefix.len()
+                && first_line.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
+            {
+                Some(&first_line[prefix.len()..])
+            } else {
+                None
+            }
+        })
+        .unwrap_or(first_line)
+        .trim();
+    let unwrapped = stripped
         .strip_prefix(['"', '“', '‘', '「', '『', '《'])
         .and_then(|s| s.strip_suffix(['"', '”', '’', '」', '』', '》']))
-        .unwrap_or(first_line)
+        .unwrap_or(stripped)
         .trim()
         .trim_end_matches(['。', '.', '！', '？', '?', '!', '；', ';'])
+        .trim();
+    // 尾部非引号时成对剥离失效（如 The user says: "xxx"正文）——补剥孤立前引号。
+    let unwrapped = unwrapped
+        .strip_prefix(['"', '“', '‘'])
+        .unwrap_or(unwrapped)
         .trim();
     unwrapped.chars().take(max_chars).collect()
 }

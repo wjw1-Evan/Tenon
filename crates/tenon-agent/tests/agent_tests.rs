@@ -707,6 +707,29 @@ fn sanitize_title_takes_first_line_and_strips_wrappers() {
     assert_eq!(tenon_agent::sanitize_title("  \n ", 24), "");
 }
 
+/// 实测 GLM 会输出 "The user says: …" 类英文元文本——清洗后只留正文。
+#[test]
+fn sanitize_title_strips_english_meta_prefixes() {
+    assert_eq!(
+        tenon_agent::sanitize_title("The user says: \"只回复文字\"你好", 24),
+        "只回复文字\"你好"
+    );
+    assert_eq!(
+        tenon_agent::sanitize_title("The user wants a title about 登录超时", 24),
+        "a title about 登录超时"
+    );
+    assert_eq!(
+        tenon_agent::sanitize_title("标题：修复登录超时", 24),
+        "修复登录超时"
+    );
+    // 无前缀不受影响；大小写变体同样剥除。
+    assert_eq!(tenon_agent::sanitize_title("登录超时", 24), "登录超时");
+    assert_eq!(
+        tenon_agent::sanitize_title("THE USER SAYS: 登录超时", 24),
+        "登录超时"
+    );
+}
+
 /// v1.58 对话标题：单轮、无工具、带 TITLE_MARKER；不消耗任务脚本队列。
 #[tokio::test]
 async fn generate_title_is_single_turn_marked_and_keeps_script_intact() {

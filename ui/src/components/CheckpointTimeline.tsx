@@ -78,6 +78,13 @@ export function CheckpointTimeline({ api, t, sessionId, onRolledBack }: Props) {
         {[...checkpoints].reverse().map((cp) => (
           <li key={cp.id} className="timeline-node">
             <code className="tree-oid">{cp.tree.slice(0, 8)}</code>
+            <time
+              className="timeline-time"
+              dateTime={cp.created_at}
+              title={new Date(cp.created_at).toLocaleString()}
+            >
+              {new Date(cp.created_at).toLocaleTimeString()}
+            </time>
             <span className="files">{cp.files.join(", ") || "—"}</span>
             <button disabled={busy} onClick={() => rollback(cp.id)}>
               {t("timeline.rollback")}

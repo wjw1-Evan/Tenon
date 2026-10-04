@@ -28,6 +28,7 @@ function groupHits(hits: SearchHit[]): ResultGroup[] {
 
 export function SearchPanel({ api, t, projectId, onOpenFile, onChanged }: Props) {
   const [query, setQuery] = useState("");
+  const [plainText, setPlainText] = useState(false);
   const [replacement, setReplacement] = useState("");
   const [hits, setHits] = useState<SearchHit[]>([]);
   const [previews, setPreviews] = useState<Record<string, string>>({});
@@ -43,19 +44,26 @@ export function SearchPanel({ api, t, projectId, onOpenFile, onChanged }: Props)
     [selected]
   );
 
+  /** 纯文本模式：转义正则元字符后按字面搜索（对用户隐藏 rg 正则门槛）。 */
+  const effectiveQuery = useMemo(
+    () =>
+      plainText ? query.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : query.trim(),
+    [plainText, query]
+  );
+
   const runSearch = useCallback(async () => {
-    if (!projectId || !query.trim()) return;
+    if (!projectId || !effectiveQuery) return;
     setLoading(true);
     setError(null);
     setSearched(true);
     try {
-      const response = await api.search(projectId, query.trim());
+      const response = await api.search(projectId, effectiveQuery);
       setHits(response.hits ?? []);
       setSelected(
         Object.fromEntries((response.hits ?? []).map((hit) => [hit.path, true as const]))
       );
       if (replacement) {
-        const preview = await api.searchPreview(projectId, query.trim(), replacement);
+        const preview = await api.searchPreview(projectId, effectiveQuery, replacement);
         setPreviews(Object.fromEntries(preview.previews.map((item) => [item.path, item.diff])));
       } else {
         setPreviews({});
@@ -65,17 +73,18 @@ export function SearchPanel({ api, t, projectId, onOpenFile, onChanged }: Props)
   } finally {
     setLoading(false);
   }
-  }, [api, projectId, query, replacement]);
+  }, [api, effectiveQuery, projectId, replacement]);
 
   useEffect(() => {
     setRegexError(null);
-    if (!replacement) return;
+    // 纯文本模式查询已转义，无需正则校验。
+    if (!replacement || plainText) return;
     try {
       new RegExp(query);
     } catch (e) {
       setRegexError(String(e));
     }
-  }, [query, replacement]);
+  }, [plainText, query, replacement]);
 
   const apply = useCallback(async () => {
     if (!projectId || selectedPaths.length === 0) return;
@@ -84,7 +93,7 @@ export function SearchPanel({ api, t, projectId, onOpenFile, onChanged }: Props)
     try {
       const response = await api.applySearchReplace(
         projectId,
-        query.trim(),
+        effectiveQuery,
         replacement,
         selectedPaths
       );
@@ -109,7 +118,7 @@ export function SearchPanel({ api, t, projectId, onOpenFile, onChanged }: Props)
     } finally {
       setApplying(false);
     }
-  }, [api, onChanged, projectId, query, replacement, selectedPaths]);
+  }, [api, effectiveQuery, onChanged, projectId, replacement, selectedPaths]);
 
   return (
     <section className="search-panel" data-testid="search-panel" aria-label={t("search.title")}>
@@ -122,16 +131,27 @@ export function SearchPanel({ api, t, projectId, onOpenFile, onChanged }: Props)
       >
         <input
           aria-label={t("search.query")}
-          placeholder={t("search.query")}
+          placeholder={plainText ? t("search.query_plain") : t("search.query")}
           value={query}
           onChange={(event) => setQuery(event.target.value)}
         />
-        <input
-          aria-label={t("search.replace_with")}
-          placeholder={t("search.replace_with")}
-          value={replacement}
-          onChange={(event) => setReplacement(event.target.value)}
-        />
+        {hits.length > 0 && (
+          <input
+            aria-label={t("search.replace_with")}
+            placeholder={t("search.replace_with")}
+            value={replacement}
+            onChange={(event) => setReplacement(event.target.value)}
+          />
+        )}
+        <label className="search-plain-toggle">
+          <input
+            type="checkbox"
+            checked={plainText}
+            onChange={(event) => setPlainText(event.target.checked)}
+            data-testid="search-plain-toggle"
+          />
+          {t("search.plain_text")}
+        </label>
         <button type="submit" disabled={loading || !projectId || !query.trim()}>
           {loading ? t("search.searching") : t("search.title")}
         </button>
@@ -148,7 +168,32 @@ export function SearchPanel({ api, t, projectId, onOpenFile, onChanged }: Props)
       )}
       {searched && (
         <div className="search-summary">
-          {loading ? t("search.searching") : `${hits.length} ${t("search.results")}`}
+          {loading ? (
+            t("search.searching")
+          ) : (
+            <>
+              <span>
+                {hits.length} {t("search.results")}
+              </span>
+              {hits.length > 0 && (
+                <label className="search-select-all">
+                  <input
+                    type="checkbox"
+                    checked={selectedPaths.length === hits.length}
+                    onChange={(event) =>
+                      setSelected(
+                        event.target.checked
+                          ? Object.fromEntries(hits.map((hit) => [hit.path, true as const]))
+                          : {}
+                      )
+                    }
+                    data-testid="search-select-all"
+                  />
+                  {t("search.select_all")}
+                </label>
+              )}
+            </>
+          )}
         </div>
       )}
       <ul className="search-groups">

@@ -1356,7 +1356,12 @@ export default function App({
         onClose={() => setInlineOpen(false)}
         onSend={sendInline}
       />
-      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} commands={commands} />
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        commands={commands}
+        t={t}
+      />
       {settingsOpen && (
         <SettingsDialog
           api={api}

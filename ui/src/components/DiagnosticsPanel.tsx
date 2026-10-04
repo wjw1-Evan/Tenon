@@ -31,6 +31,11 @@ function severityLabel(t: Translate, severity: number) {
   return t("diagnostic.info");
 }
 
+/** 无内置语言包的文件类型（daemon 返回 503）按「无诊断」降级，不作为错误轰炸。 */
+function isNoLanguagePackError(message: string): boolean {
+  return message.includes("语言包不可用");
+}
+
 function normalize(value: unknown, path: string): EditorDiagnostic[] {
   const raw = Array.isArray(value)
     ? value
@@ -74,6 +79,7 @@ export function DiagnosticsPanel({
   const [items, setItems] = useState<EditorDiagnostic[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [noLanguagePack, setNoLanguagePack] = useState(false);
   const [manualRefresh, setManualRefresh] = useState(0);
   const signature = useMemo(
     () => `${projectId ?? ""}\u0000${path ?? ""}\u0000${refreshToken}\u0000${manualRefresh}`,
@@ -95,11 +101,19 @@ export function DiagnosticsPanel({
           if (!alive) return;
           setItems(normalize(response.result, path));
           setError(null);
+          setNoLanguagePack(false);
         })
         .catch((e) => {
           if (!alive) return;
           setItems([]);
-          setError(String(e));
+          const message = String(e);
+          if (isNoLanguagePackError(message)) {
+            setError(null);
+            setNoLanguagePack(true);
+          } else {
+            setError(message);
+            setNoLanguagePack(false);
+          }
         })
         .finally(() => {
           if (alive) setLoading(false);
@@ -127,6 +141,11 @@ export function DiagnosticsPanel({
         <>
           <div className="diagnostic-path muted" title={path}>{path}</div>
           {loading && <div className="muted">{t("diagnostic.loading")}</div>}
+          {!loading && noLanguagePack && (
+            <div className="muted" data-testid="diagnostics-no-language-pack">
+              {t("diagnostic.no_language_pack")}
+            </div>
+          )}
           {error && (
             <div className="tree-error" role="alert">
               {t("diagnostic.unavailable")}: {error}

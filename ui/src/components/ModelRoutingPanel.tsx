@@ -13,6 +13,14 @@ interface ModelEntry {
   is_default: boolean;
 }
 
+/** provider 命名约定（附录 E）：`glm` / `glm_responses` / `glm_anthropic` 为同
+ * 端点的三种协议封装；对话框按后缀标注协议，避免同名模型三选一无可辨差异。 */
+function protocolLabel(t: Translate, name: string): string {
+  if (name.endsWith("_responses")) return t("model.protocol_responses");
+  if (name.endsWith("_anthropic")) return t("model.protocol_anthropic");
+  return t("model.protocol_openai");
+}
+
 interface Props {
   api: TenonApi;
   sessionId: string | null;
@@ -145,6 +153,7 @@ export function ModelRoutingPanel({ api, sessionId, t, onSwitched }: Props) {
                     <span className="model-option-name">{m.name}</span>
                     <span className="muted model-option-meta">
                       {m.default_model}
+                      {` · ${protocolLabel(t, m.name)}`}
                       {m.local ? ` · ${t("model.local_free")}` : ""}
                     </span>
                   </button>

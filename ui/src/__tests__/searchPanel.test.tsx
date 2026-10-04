@@ -62,6 +62,9 @@ describe("SearchPanel", () => {
       />
     );
     fireEvent.change(await screen.findByLabelText("search.query"), { target: { value: "beta" } });
+    // 替换输入在出现结果后才渲染（先搜后换的动线）。
+    fireEvent.click(screen.getByRole("button", { name: "search.title" }));
+    await screen.findByText("a.txt");
     fireEvent.change(screen.getByLabelText("search.replace_with"), { target: { value: "BETA" } });
     fireEvent.click(screen.getByRole("button", { name: "search.title" }));
     await waitFor(() => expect(previewMock).toHaveBeenCalled());

@@ -609,13 +609,23 @@ button:disabled { opacity: 0.45; cursor: default; }
   cursor: pointer;
 }
 .pe-activity-bar:hover { background: var(--raised); }
+.pe-activity-bar { min-width: 0; }
 .pe-activity-label {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 0 1 auto;
 }
 .pe-activity-count { white-space: nowrap; }
+.pe-activity-counts {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+}
 .pe-activity-panel {
   margin: 2px 0 4px;
   padding-left: 18px;
@@ -914,6 +924,19 @@ button:disabled { opacity: 0.45; cursor: default; }
 .search-form { display: grid; gap: 6px; }
 .search-form input { width: 100%; }
 .search-summary { margin: 7px 1px; font-size: 11px; color: var(--muted); }
+.search-summary > span:first-child { margin-right: 8px; }
+.search-plain-toggle,
+.search-select-all {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.search-plain-toggle input,
+.search-select-all input { width: auto; margin: 0; }
 .search-groups {
   list-style: none;
   margin: 0;
@@ -1161,12 +1184,14 @@ button:disabled { opacity: 0.45; cursor: default; }
 
 .unsaved-dot { margin-left: 7px; color: var(--patch-border); font-size: 10px; }
 
-.editor-body { flex: 1; min-height: 0; position: relative; overflow: hidden; }
+.editor-body { flex: 1; min-height: 0; position: relative; overflow: hidden; display: flex; flex-direction: column; }
 .editor-body.split {
   display: grid;
   grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr);
 }
 .editor-group {
+  /* 非 split 的 .editor-body 是 block 时不拉伸子项，Monaco 会塌陷成默认 5px。 */
+  flex: 1 1 0;
   min-width: 0;
   min-height: 0;
   display: flex;
@@ -1374,6 +1399,16 @@ button:disabled { opacity: 0.45; cursor: default; }
   display: flex;
   flex-direction: column;
   gap: 7px;
+}
+.agent-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 12.5px;
+  text-align: center;
+  padding: 24px;
 }
 
 /* 事件卡：左侧语义色标 */
@@ -1729,6 +1764,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.timeline-time { color: var(--muted); font-size: 10.5px; white-space: nowrap; }
 .timeline-node button { font-size: 11px; padding: 2px 9px; }
 
 /* Diff 面板 */
@@ -1862,6 +1898,10 @@ button:disabled { opacity: 0.45; cursor: default; }
   font-size: 12.5px;
   color: var(--fg);
   box-shadow: none;
+}
+.palette li.active button {
+  background: var(--accent-soft);
+  color: var(--accent-text);
 }
 .palette li button:hover { background: var(--accent-soft); color: var(--fg-strong); }
 .palette li button[data-active="true"] { background: var(--accent-soft-strong); color: var(--accent-text); }

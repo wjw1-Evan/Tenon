@@ -74,6 +74,16 @@ export function AgentPanel({
     markWorkspaceInputReady();
   }, []);
 
+  // 会话切换即清空本地事件流：轮询按 after=0 重新拉取，若不清空，
+  // 上一会话的事件残留会导致新会话线程显示旧会话消息（实测缺陷）。
+  useEffect(() => {
+    setEvents([]);
+    setStreamText("");
+    setStatus("idle");
+    setLatestDiff(null);
+    setStopRequested(false);
+  }, [sessionId]);
+
   // 流式输出保持最新增量可见；用户向上回看时不强制拉底。
   useEffect(() => {
     const feed = feedRef.current;
@@ -209,6 +219,11 @@ export function AgentPanel({
       </div>
 
       <div className="agent-feed" ref={feedRef} data-testid="agent-feed">
+        {events.length === 0 && !streamText && (
+          <div className="agent-empty" data-testid="agent-empty">
+            {sessionId ? t("thread.empty") : t("thread.no_session")}
+          </div>
+        )}
         {events.map((e) => (
           <EventCard key={e.id} ev={e} t={t} />
         ))}
@@ -282,7 +297,7 @@ function EventCard({ ev, t }: { ev: EventItem; t: Translate }) {
       // 连续增量由上方单个 stream 卡承接，避免 token / 批次渲染成事件瀑布。
       return null;
     case "decision": {
-      const intent = String(ev.payload.intent ?? "");
+      const intent = decisionDisplayText(String(ev.payload.intent ?? ""));
       if (ev.payload.first_edit === true) {
         return <div className="ev ev-info">⏳ {t("state.executing")}…</div>;
       }
@@ -310,4 +325,20 @@ function EventCard({ ev, t }: { ev: EventItem; t: Translate }) {
     default:
       return null;
   }
+}
+
+/** 决策 / 收尾回答可能是模型输出的 JSON（intent/answer 结构）——解出人类可读部分呈现。 */
+function decisionDisplayText(raw: string): string {
+  const text = raw.trim();
+  if (!text.startsWith("{") || !text.endsWith("}")) return text;
+  try {
+    const parsed = JSON.parse(text) as { answer?: unknown; intent?: unknown };
+    for (const key of ["answer", "intent"] as const) {
+      const value = parsed[key];
+      if (typeof value === "string" && value.trim()) return value.trim();
+    }
+  } catch {
+    // 非 JSON 原样呈现
+  }
+  return text;
 }
