@@ -61,6 +61,8 @@ pub struct DaemonState {
     pub dirty_buffers: Arc<tenon_fs::DirtyBufferRegistry>,
     /// 局域网配对（M3 §12.6：显式开启 + 一次性码 + 可吊销令牌；默认关闭）。
     pub lan_pairing: Arc<PairingStore>,
+    /// daemon 监听端口（/pairing 自发现回传给 UI）。
+    pub port: std::sync::atomic::AtomicU16,
     /// 团队策略（M3：只收窄；`~/.tenon/policy.toml` 不存在 = 无约束）。
     pub team_policy: tenon_core::policy::TeamPolicy,
     pub config: Config,
@@ -116,6 +118,7 @@ impl DaemonState {
             store: Arc::new(Mutex::new(store)),
             lsp: Arc::new(LspManager::new()),
             lan_pairing: Arc::new(PairingStore::new()),
+            port: std::sync::atomic::AtomicU16::new(0),
             team_policy: load_team_policy(),
             dirty_buffers: Arc::new(tenon_fs::DirtyBufferRegistry::new()),
             laya: Arc::new(LayaRuntime::open(
