@@ -745,10 +745,12 @@ async fn pairing_entry_local_only_and_evals_listing() {
     ))];
     options.default_provider = "mock".into();
     options.snapshots_root = Some(dir.path().join("snapshots"));
+    options.project = Some(project.display().to_string());
     let handle = tenon_daemon::serve(options).await.unwrap();
     let client = client_with_token(&handle.token);
 
-    // 配对入口：免 token 可达（本机），含 ws_ticket 与 lan 状态
+    // 配对入口：免 token 可达（本机），含 ws_ticket 与 lan 状态；
+    // project 回传启动注册的项目根（浏览器自发现 UI 据此打开同一项目）
     let pairing: serde_json::Value = reqwest::get(format!("{}/pairing", base(handle.port)))
         .await
         .unwrap()
@@ -758,6 +760,11 @@ async fn pairing_entry_local_only_and_evals_listing() {
     assert_eq!(pairing["local_only"], true);
     assert_eq!(pairing["lan_enabled"], false);
     assert!(pairing["ws_ticket"].as_str().is_some());
+    assert_eq!(
+        pairing["project"],
+        project.display().to_string(),
+        "/pairing 须回传注册项目根"
+    );
 
     // evals：tenon-evals 未运行 → 空列表（tenon-evals 跑完即有数据）
     let evals: serde_json::Value = client

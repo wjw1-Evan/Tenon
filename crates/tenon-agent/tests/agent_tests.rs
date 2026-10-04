@@ -114,6 +114,59 @@ async fn patch_task_auto_mode_writes_verifies_and_checkpoints() {
 }
 
 #[tokio::test]
+async fn session_approval_remembers_b_level_for_session() {
+    // §7.3「本会话记住」：B 级（apply_patch）首次审批选 Session，
+    // 同会话后续 B 级直通——不再出现第二张审批卡
+    let (_dir, session, _store, _p) = setup(
+        vec![
+            ScriptedReply::Tool {
+                name: "apply_patch".into(),
+                args: serde_json::json!({"file": "a.txt", "range": null, "content": "one\n"}),
+            },
+            ScriptedReply::Tool {
+                name: "apply_patch".into(),
+                args: serde_json::json!({"file": "b.txt", "range": null, "content": "two\n"}),
+            },
+            ScriptedReply::Text("两个文件都已写入。".into()),
+        ],
+        false,
+        Mode::Interactive,
+    )
+    .await;
+    let mut rx = session.subscribe();
+    let session2 = session.clone();
+    let approver = tokio::spawn(async move {
+        let mut approvals = 0;
+        while let Ok(ev) = rx.recv().await {
+            if ev.kind == EventKind::ApprovalRequest {
+                approvals += 1;
+                assert!(
+                    approvals <= 1,
+                    "Session 决策后同类别 B 级不得再次请求审批"
+                );
+                let id = ev.payload["approval_id"].as_str().unwrap().to_string();
+                // 路由语义：decide_approval 收到的是库中 action 列（摘要），
+                // 会话记忆须仍以工具名生效
+                session2
+                    .decide_approval(&id, ApprovalDecision::Session, "写入 a.txt")
+                    .await
+                    .unwrap();
+            }
+        }
+    });
+    let outcome = session.run_task("写两个文件").await;
+    approver.abort();
+    match outcome {
+        TaskOutcome::Done(card) => {
+            assert_eq!(card.changed_files.len(), 2, "两个补丁都应落盘");
+        }
+        other => panic!("期望 Done，实际 {other:?}"),
+    }
+    assert_eq!(std::fs::read_to_string(_dir.path().join("a.txt")).unwrap(), "one\n");
+    assert_eq!(std::fs::read_to_string(_dir.path().join("b.txt")).unwrap(), "two\n");
+}
+
+#[tokio::test]
 async fn interactive_mode_requires_approval_for_b_and_deny_replans() {
     // 交互档：B 级需审批 → 拒绝 → 改案（改用只读回答）
     let (_dir, session, _store, _p) = setup(

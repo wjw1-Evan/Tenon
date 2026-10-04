@@ -231,3 +231,67 @@ async fn laya_risk_assist_warns_on_dangerous_commands() {
         "危险命令风险应更高: {r_dangerous} vs {r_safe}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn risk_assist_rule_hit_records_decider_call_and_hint() {
+    // §9.8 集成点 #2：规则命中 → decider_call（feature=risk, rule=true）
+    // + 工具输出注入「建议人工确认」提示；分级与审批不受影响
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(Mutex::new(Store::open_in_memory().unwrap()));
+    let project_id = {
+        let mut st = store.lock().await;
+        st.upsert_project(dir.path().to_str().unwrap()).unwrap().id
+    };
+    let snapshots = Arc::new(
+        SnapshotStore::open(&dir.path().join("snaps"), &project_id, dir.path(), 2).unwrap(),
+    );
+    let provider = Arc::new(MockProvider::new(
+        "mock",
+        "mock-1",
+        vec![
+            ScriptedReply::Tool {
+                name: "run_tests".into(),
+                args: serde_json::json!({"command": "cargo test --quiet && git push --force"}),
+            },
+            ScriptedReply::Text("完成".into()),
+        ],
+    ));
+    let mut config =
+        AgentConfig::for_project(dir.path().to_path_buf(), &project_id, true, Mode::Auto);
+    config.first_edit_buffer_ms = 5;
+    config.laya = Some(laya_runtime());
+    let session = AgentSession::create(
+        store.clone(),
+        snapshots,
+        provider,
+        config,
+        ProjectWriteLock::new(),
+        ProjectRules::default(),
+    )
+    .await
+    .unwrap();
+    let outcome = session.run_task("跑一下测试").await;
+    assert!(matches!(outcome, TaskOutcome::Done(_)));
+
+    let mut st = store.lock().await;
+    let events = st.events(&session.session_id).unwrap();
+    let risk_call = events
+        .iter()
+        .find(|e| e.kind == EventKind2::DeciderCall && e.payload["feature"] == "risk")
+        .expect("应有 risk decider_call 事件");
+    assert_eq!(risk_call.payload["rule"], true, "规则命中须标记 rule=true");
+    assert!(
+        risk_call.payload["result"].as_f64().unwrap() >= 0.9,
+        "强推命令风险分应 ≥0.9"
+    );
+    // 提示注入工具输出（Trace 可见），且不含输入原文（§14.2）
+    let tool_ev = events
+        .iter()
+        .find(|e| e.kind == EventKind2::CommandRun)
+        .expect("应有命令执行事件");
+    let content = tool_ev.payload["output"]["content"].as_str().unwrap();
+    assert!(content.contains("建议人工确认"), "提示须入工具输出：{content}");
+    assert!(!content.contains("跑一下测试"), "decider 事件不得含任务原文");
+}
+
+use tenon_store::EventKind as EventKind2;

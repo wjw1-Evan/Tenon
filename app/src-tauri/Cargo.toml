@@ -13,3 +13,4 @@ tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
+dirs = "6"

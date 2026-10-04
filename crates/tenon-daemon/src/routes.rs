@@ -1023,6 +1023,8 @@ async fn pairing_info(State(state): State<Arc<DaemonState>>) -> Response {
         "token": state.token,
         "ws_ticket": ws_ticket,
         "lan_enabled": false,
+        // 启动时注册的项目根：浏览器自发现 UI 据此打开同一项目（而非 cwd）
+        "project": state.default_project,
     }))
     .into_response()
 }

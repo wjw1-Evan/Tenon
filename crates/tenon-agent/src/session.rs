@@ -142,6 +142,8 @@ pub struct AgentSession {
     control_tx: mpsc::UnboundedSender<ControlCommand>,
     control_rx: Mutex<mpsc::UnboundedReceiver<ControlCommand>>,
     approvals: Mutex<std::collections::HashMap<String, mpsc::Sender<ApprovalDecision>>>,
+    /// 审批 id → 工具名（decide_approval 时恢复「本会话记住」的正确键）。
+    approval_tools: Mutex<std::collections::HashMap<String, String>>,
     /// 「本会话记住」的审批动作（§7.3 允许一次 / 本会话记住）。
     session_approved: Mutex<BTreeSet<String>>,
     events_tx: broadcast::Sender<Event>,
@@ -259,6 +261,7 @@ impl AgentSession {
             control_tx,
             control_rx: Mutex::new(control_rx),
             approvals: Mutex::new(std::collections::HashMap::new()),
+            approval_tools: Mutex::new(std::collections::HashMap::new()),
             session_approved: Mutex::new(BTreeSet::new()),
             events_tx,
             first_edit_done: AtomicBool::new(false),
@@ -369,10 +372,19 @@ impl AgentSession {
             }
         }
         if decision == ApprovalDecision::Session {
+            // 路由回传的 action 是库中摘要（summarize_action 产物）；
+            // 会话级记忆须以工具名为键（与执行循环 contains(call.name) 匹配）
+            let tool = self
+                .approval_tools
+                .lock()
+                .await
+                .get(approval_id)
+                .cloned()
+                .unwrap_or_else(|| action.to_string());
             self.session_approved
                 .lock()
                 .await
-                .insert(action.to_string());
+                .insert(tool);
         }
         self.emit(
             EventKind::ApprovalDecision,
@@ -563,9 +575,10 @@ impl AgentSession {
                 let tool = Tool::from_name(&call.name);
                 let level = tool.and_then(|t| t.level()).unwrap_or(Level::C);
 
-                // 「本会话记住」的审批动作直通（§7.3）
-                let session_ok =
-                    level == Level::C && self.session_approved.lock().await.contains(&call.name);
+                // 「本会话记住」的审批动作直通（§7.3）：B/C 级按动作类别记忆；
+                // D 级永不记忆（不可逆 / 外部副作用，逐次审批）
+                let session_ok = matches!(level, Level::B | Level::C)
+                    && self.session_approved.lock().await.contains(&call.name);
                 let decision = if session_ok {
                     Decision::Auto
                 } else if self.tool_ctx.readonly && level != Level::A {
@@ -701,8 +714,96 @@ impl AgentSession {
                     }
                 }
 
+                // ---- Laya 命令风险辅助（§9.8 集成点 #2）：规则引擎为主、
+                // Laya 补盲区；打分仅生成「建议人工确认」提示并入 Trace
+                //（decider_call），不改变 A/B/C/D 分级与档位语义 ----
+                let mut risk_hint: Option<String> = None;
+                if matches!(
+                    call.name.as_str(),
+                    "run_tests" | "run_build" | "install_deps"
+                ) {
+                    let cmd = call
+                        .arguments
+                        .get("command")
+                        .and_then(|c| c.as_str())
+                        .unwrap_or("");
+                    if !cmd.is_empty() {
+                        match tenon_core::risk::rule_risk(cmd) {
+                            Some(score) => {
+                                self.emit(
+                                    EventKind::DeciderCall,
+                                    &serde_json::json!({
+                                        "feature": "risk",
+                                        "kind": "score",
+                                        "result": (f64::from(score) * 100.0).round() / 100.0,
+                                        "rule": true,
+                                    }),
+                                )
+                                .await;
+                                if score >= 0.7 {
+                                    risk_hint = Some(format!(
+                                        "⚠️ [Laya] 命令风险 {score:.2}（规则命中）——建议人工确认"
+                                    ));
+                                }
+                            }
+                            None => {
+                                if let Some(laya) = &self.config.laya {
+                                    match laya.risk(cmd).await {
+                                        tenon_laya::LayaOutcome::Success {
+                                            value, duration_ms, ..
+                                        } => {
+                                            let score = (f64::from(value) * 100.0).round() / 100.0;
+                                            self.emit(
+                                                EventKind::DeciderCall,
+                                                &serde_json::json!({
+                                                    "feature": "risk",
+                                                    "kind": "score",
+                                                    "result": score,
+                                                    "duration_ms": duration_ms,
+                                                    "rule": false,
+                                                }),
+                                            )
+                                            .await;
+                                            if score >= 0.7 {
+                                                risk_hint = Some(format!(
+                                                    "⚠️ [Laya] 命令风险 {score:.2}——建议人工确认"
+                                                ));
+                                            }
+                                        }
+                                        other => {
+                                            let reason = match &other {
+                                                tenon_laya::LayaOutcome::Unavailable(r) => {
+                                                    (*r).to_string()
+                                                }
+                                                tenon_laya::LayaOutcome::TimedOut => {
+                                                    "timeout".to_string()
+                                                }
+                                                _ => String::new(),
+                                            };
+                                            self.emit(
+                                                EventKind::DeciderCall,
+                                                &serde_json::json!({
+                                                    "feature": "risk",
+                                                    "kind": "score",
+                                                    "fallback": true,
+                                                    "reason": reason,
+                                                }),
+                                            )
+                                            .await;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // ---- 执行 ----
-                let output = execute_tool(&self.tool_ctx, &call.name, &call.arguments);
+                let mut output = execute_tool(&self.tool_ctx, &call.name, &call.arguments);
+                // 风险提示入工具输出（Trace 与模型可见；仅提示，不改分级）
+                if let Some(hint) = &risk_hint {
+                    output.content = format!("{hint}\n{}", output.content);
+                }
                 let output_json = serde_json::to_value(&output).unwrap_or_default();
                 let ev = self
                     .emit(
@@ -937,6 +1038,11 @@ impl AgentSession {
             )
             .expect("insert approval")
         };
+        // 库中 action 列存摘要；此处记住 id → 工具名，供会话级记忆用
+        self.approval_tools
+            .lock()
+            .await
+            .insert(approval.id.clone(), tool.to_string());
         self.emit(
             EventKind::ApprovalRequest,
             &serde_json::json!({

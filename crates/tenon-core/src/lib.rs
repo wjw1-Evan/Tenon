@@ -10,6 +10,7 @@ pub mod merge;
 pub mod policy;
 pub mod prompt;
 pub mod redact;
+pub mod risk;
 pub mod tools;
 
 pub use circuit::{CircuitBreaker, CircuitLimits, CircuitStatus, PatchFootprint, TripReason};

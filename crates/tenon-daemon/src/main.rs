@@ -73,8 +73,10 @@ async fn main() -> anyhow::Result<()> {
         None => Config::load_global().unwrap_or_default(),
     };
     let options = DaemonOptions {
-        db_path,
+        // 默认持久库 ~/.tenon/db.sqlite（§14.1）；--db 显式覆盖；None 仅测试用
+        db_path: db_path.or_else(|| Some(Config::data_dir().join("db.sqlite"))),
         lan_bind,
+        project: project.clone(),
         config,
         providers: vec![],
         default_provider: provider,

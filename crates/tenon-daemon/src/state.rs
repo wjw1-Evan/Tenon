@@ -28,6 +28,8 @@ pub struct DaemonOptions {
     pub default_provider: String,
     /// 快照库根目录；None = ~/.tenon/snapshots。
     pub snapshots_root: Option<std::path::PathBuf>,
+    /// 启动时注册的项目根（§6.2 `--project`；/pairing 回传给 UI）。
+    pub project: Option<String>,
 }
 
 impl DaemonOptions {
@@ -39,6 +41,7 @@ impl DaemonOptions {
             providers: vec![],
             default_provider: String::new(),
             snapshots_root: None,
+            project: None,
         }
     }
 }
@@ -71,6 +74,8 @@ pub struct DaemonState {
     pub sessions: Mutex<HashMap<String, SessionEntry>>,
     pub providers: HashMap<String, Arc<dyn ModelProvider>>,
     pub default_provider: String,
+    /// 启动时注册的项目根（/pairing 自发现回传）。
+    pub default_project: Option<String>,
     /// 项目级写锁表（§9.7：同一项目同时刻仅一个会话 EXECUTING）。
     pub project_locks: Mutex<HashMap<String, ProjectWriteLock>>,
     pub snapshots_root: std::path::PathBuf,
@@ -131,6 +136,7 @@ impl DaemonState {
             sessions: Mutex::new(HashMap::new()),
             providers,
             default_provider,
+            default_project: options.project,
             project_locks: Mutex::new(HashMap::new()),
             snapshots_root,
         }
