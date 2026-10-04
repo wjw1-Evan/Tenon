@@ -17,6 +17,8 @@ export interface ProjectSummary {
     model: string;
     /** 自动生成对话标题（v1.58）；空 / 缺省回退模型名 / 短 id。 */
     title?: string;
+    /** 会话级受管 worktree 路径（v1.87）；空 = 项目主根会话。 */
+    worktree_path?: string;
     updated_at: string;
   }>;
   /** 有活跃 runtime 的会话 id（§6.2：runtime 不跨 daemon 重启）。 */
@@ -302,10 +304,20 @@ export class TenonApi {
   }
 
   /** mode 空串 = 由 daemon 按全局设置默认档决定（§7.2 / §15）。 */
-  createSession(projectId: string, mode: "interactive" | "auto" | "", provider = "") {
-    return this.request<{ session_id: string; project_id: string }>("/session", {
+  createSession(
+    projectId: string,
+    mode: "interactive" | "auto" | "",
+    provider = "",
+    /** v1.87 §9.7："managed" = 会话级受管 worktree，可与主根会话并行执行。 */
+    worktree?: "managed"
+  ) {
+    return this.request<{
+      session_id: string;
+      project_id: string;
+      worktree_path?: string | null;
+    }>("/session", {
       method: "POST",
-      json: { project_id: projectId, mode, provider },
+      json: { project_id: projectId, mode, provider, worktree: worktree ?? null },
     });
   }
 
@@ -329,6 +341,24 @@ export class TenonApi {
     return this.request<{ ok: boolean }>(`/session/${sessionId}/control`, {
       method: "POST",
       json: { action, value },
+    });
+  }
+
+  /** 受管 worktree 会话收尾·合并（v1.87）：三方合入项目根；409 = 冲突预览。 */
+  mergeWorktreeSession(sessionId: string) {
+    return this.request<{
+      merged: string[];
+      skipped: Array<{ path: string; reason: string }>;
+      conflicts: Array<{ path: string }>;
+      snapshot_tree?: string;
+    }>(`/session/${sessionId}/worktree/merge`, { method: "POST" });
+  }
+
+  /** 受管 worktree 会话收尾·丢弃（v1.87）：confirm 必填，不动用户根。 */
+  discardWorktreeSession(sessionId: string, confirm: boolean) {
+    return this.request<{ discarded: boolean }>(`/session/${sessionId}/worktree/discard`, {
+      method: "POST",
+      json: { confirm },
     });
   }
 

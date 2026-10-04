@@ -105,6 +105,22 @@ fn user_git_dir(workspace: &Path) -> Option<PathBuf> {
 }
 
 impl SnapshotStore {
+    /// 删除某工作区对应的 shadow 快照分片（v1.87 §9.7 受管 worktree「丢弃」收尾；
+    /// 分片不存在视为幂等成功）。
+    pub fn remove_worktree_shard(
+        snapshots_root: &Path,
+        project_id: &str,
+        workspace: &Path,
+    ) -> Result<()> {
+        let shard = snapshots_root
+            .join(sanitize(project_id))
+            .join(worktree_hash(workspace));
+        if shard.exists() {
+            std::fs::remove_dir_all(&shard)?;
+        }
+        Ok(())
+    }
+
     /// 打开（必要时初始化）shadow 快照库。
     pub fn open(
         snapshots_root: &Path,

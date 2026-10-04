@@ -352,6 +352,8 @@ pub struct DaemonOptions {
     pub default_provider: String,
     /// 快照库根目录；None = ~/.tenon/snapshots。
     pub snapshots_root: Option<std::path::PathBuf>,
+    /// 受管 worktree 根目录；None = ~/.tenon/worktrees（v1.87 §9.7）。
+    pub worktrees_root: Option<std::path::PathBuf>,
     /// 启动时注册的项目根（§6.2 `--project`；/pairing 回传给 UI）。
     pub project: Option<String>,
     /// 握手 endpoint 文件；None = `~/.tenon/daemon.endpoint`（测试必须覆盖避免并行竞争）。
@@ -389,6 +391,7 @@ impl DaemonOptions {
             providers: vec![],
             default_provider: String::new(),
             snapshots_root: None,
+            worktrees_root: None,
             project: None,
             endpoint_path: None,
             settings_path: None,
@@ -407,6 +410,8 @@ pub struct SessionEntry {
     pub session: Arc<AgentSession>,
     pub project_root: std::path::PathBuf,
     pub project_id: String,
+    /// 会话级受管 worktree 根（v1.87；None = 主根会话）。
+    pub managed_worktree: Option<std::path::PathBuf>,
     pub last_outcome: Mutex<Option<TaskOutcome>>,
     pub last_seq: i64,
 }
@@ -577,6 +582,8 @@ pub struct DaemonState {
     pub default_project: Option<String>,
     /// 项目级写锁表（§9.7：同一项目同时刻仅一个会话 EXECUTING）。
     pub project_locks: Mutex<HashMap<String, ProjectWriteLock>>,
+    /// 受管 worktree 根（v1.87 §9.7：`~/.tenon/worktrees/<project_id>/<session_id>/`）。
+    pub worktrees_root: std::path::PathBuf,
     /// 已打开 ProjectRuntime 的 project_id → canonical root（§6.4）。
     pub open_projects: Mutex<HashMap<String, Arc<ProjectRuntime>>>,
     /// 跨项目并发调度（§6.4 / §9.7）。
@@ -746,6 +753,10 @@ impl DaemonState {
         let snapshots_root = options
             .snapshots_root
             .unwrap_or_else(|| Config::data_dir().join("snapshots"));
+        let worktrees_root = options
+            .worktrees_root
+            .clone()
+            .unwrap_or_else(|| Config::data_dir().join("worktrees"));
         let laya_dir = options
             .laya_models_dir
             .clone()
@@ -795,6 +806,7 @@ impl DaemonState {
             cli_default,
             default_project: options.project,
             project_locks: Mutex::new(HashMap::new()),
+            worktrees_root,
             open_projects: Mutex::new(HashMap::new()),
             execution_permits,
             portfolio_tasks: Mutex::new(HashMap::new()),

@@ -130,6 +130,7 @@ async fn main() -> anyhow::Result<()> {
         providers: vec![],
         default_provider: provider,
         snapshots_root: None,
+        worktrees_root: None,
         endpoint_path: None,
         settings_path,
         policy_path,

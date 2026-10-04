@@ -29,6 +29,7 @@ async fn start_daemon(script: Vec<ScriptedReply>) -> (tempfile::TempDir, u16, St
     options.providers = vec![Arc::new(MockProvider::new("mock", "mock-1", script))];
     options.default_provider = "mock".into();
     options.snapshots_root = Some(dir.path().join("snapshots"));
+    options.worktrees_root = Some(dir.path().join("worktrees"));
     options.endpoint_path = Some(dir.path().join("daemon.endpoint"));
     options.settings_path = Some(dir.path().join("settings.json"));
     options.policy_path = Some(dir.path().join("policy.toml"));
@@ -3053,4 +3054,227 @@ async fn laya_manual_download_installs_without_approval() {
         .await
         .unwrap();
     assert_eq!(models["laya"]["downloaded"], serde_json::json!(true));
+}
+
+// ---------- 受管 worktree 并行会话（v1.87 §9.7） ----------
+
+fn git(repo: &std::path::Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?} 失败: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[tokio::test]
+async fn managed_worktree_session_merge_conflict_and_discard() {
+    let repo = tempfile::tempdir().unwrap();
+    let root = repo.path();
+    git(root, &["init", "-q"]);
+    git(root, &["config", "user.email", "t@tenon.dev"]);
+    git(root, &["config", "user.name", "t"]);
+    std::fs::write(root.join("tracked.txt"), "line1\nline2\nline3\n").unwrap();
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "init"]);
+
+    // 非 git 项目 → 受管 worktree 会话创建必须 400（§9.5 worktree 隔离要求 git）
+    let plain = tempfile::tempdir().unwrap();
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    let opened = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({"path": plain.path().to_str().unwrap()}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(opened.status(), 200);
+    let plain_id = opened.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let resp = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({"project_id": plain_id, "worktree": "managed"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "非 git 仓库拒绝受管 worktree 会话");
+    let _ = client
+        .delete(format!("{}/projects/{plain_id}", base(port)))
+        .send()
+        .await;
+
+    // git 项目：打开 + 创建受管 worktree 会话
+    let opened = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({"path": root.to_str().unwrap()}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(opened.status(), 200);
+    let pid = opened.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let resp = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({"project_id": pid, "worktree": "managed"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let created = resp.json::<serde_json::Value>().await.unwrap();
+    let sid = created["session_id"].as_str().unwrap().to_string();
+    let wt_path = created["worktree_path"].as_str().unwrap().to_string();
+    assert!(!wt_path.is_empty(), "响应必须携带 worktree 路径");
+    let wt = std::path::PathBuf::from(&wt_path);
+    assert!(wt.exists(), "受管 worktree 目录应已创建");
+    assert!(
+        !wt.starts_with(root),
+        "worktree 不在用户工作区内（§9.5 内核托管）"
+    );
+
+    // worktree 内模拟代理改动：改 tracked.txt + 新增 new_file.txt
+    std::fs::write(wt.join("tracked.txt"), "line1\nWT\nline3\n").unwrap();
+    std::fs::write(wt.join("new_file.txt"), "hello wt\n").unwrap();
+
+    // 主根同文件另一改 → 三方冲突，整体不落盘
+    std::fs::write(root.join("tracked.txt"), "line1\nPROJECT\nline3\n").unwrap();
+    let resp = client
+        .post(format!("{}/session/{sid}/worktree/merge", base(port)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 409, "重叠改动必须冲突");
+    let body = resp.json::<serde_json::Value>().await.unwrap();
+    assert_eq!(body["error"], "MERGE_CONFLICT");
+    assert_eq!(body["report"]["conflicts"][0]["path"], "tracked.txt");
+    assert_eq!(
+        std::fs::read_to_string(root.join("tracked.txt")).unwrap(),
+        "line1\nPROJECT\nline3\n",
+        "冲突不得静默覆盖主根"
+    );
+
+    // 主根回到 base 后重合并 → 干净合入（改写 + 新文件）
+    std::fs::write(root.join("tracked.txt"), "line1\nline2\nline3\n").unwrap();
+    let resp = client
+        .post(format!("{}/session/{sid}/worktree/merge", base(port)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let report = resp.json::<serde_json::Value>().await.unwrap();
+    let merged = report["merged"].as_array().unwrap();
+    assert!(merged.contains(&serde_json::json!("tracked.txt")));
+    assert!(merged.contains(&serde_json::json!("new_file.txt")));
+    assert_eq!(
+        std::fs::read_to_string(root.join("tracked.txt")).unwrap(),
+        "line1\nWT\nline3\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("new_file.txt")).unwrap(),
+        "hello wt\n"
+    );
+    assert!(
+        report["snapshot_tree"].as_str().is_some(),
+        "合并前项目根 shadow 快照（§10.3 回滚原语）必须存在"
+    );
+
+    // 脏缓冲跳过：worktree 新增 dirty.txt，主根登记脏缓冲 → 合并跳过且不落盘
+    std::fs::write(wt.join("dirty.txt"), "dirty\n").unwrap();
+    let resp = client
+        .put(format!("{}/project/{pid}/buffers", base(port)))
+        .json(&serde_json::json!({"path": "dirty.txt", "dirty": "ui edit"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let resp = client
+        .post(format!("{}/session/{sid}/worktree/merge", base(port)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let report = resp.json::<serde_json::Value>().await.unwrap();
+    assert_eq!(
+        report["skipped"][0]["reason"], "dirty_buffer",
+        "脏缓冲文件必须显式跳过（§8.6 不静默覆盖）"
+    );
+    assert!(!root.join("dirty.txt").exists());
+
+    // 丢弃：缺 confirm → 400；confirm → 删除 worktree 与快照分片，主根不动
+    let resp = client
+        .post(format!("{}/session/{sid}/worktree/discard", base(port)))
+        .json(&serde_json::json!({"confirm": false}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let resp = client
+        .post(format!("{}/session/{sid}/worktree/discard", base(port)))
+        .json(&serde_json::json!({"confirm": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert!(!wt.exists(), "丢弃后 worktree 目录应删除");
+    assert_eq!(
+        std::fs::read_to_string(root.join("tracked.txt")).unwrap(),
+        "line1\nWT\nline3\n",
+        "丢弃不影响已合并内容"
+    );
+
+    // 非受管会话走收尾端点 → 409 NOT_MANAGED_WORKTREE
+    let resp = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({"project_id": pid}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let plain_sid = resp.json::<serde_json::Value>().await.unwrap()["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let resp = client
+        .post(format!("{}/session/{plain_sid}/worktree/merge", base(port)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 409);
+
+    // /projects 摘要带 worktree_path（全局活动条 / 会话列表数据源）
+    let resp = client
+        .get(format!("{}/projects", base(port)))
+        .send()
+        .await
+        .unwrap();
+    let projects = resp.json::<serde_json::Value>().await.unwrap();
+    let sessions = projects["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == serde_json::json!(pid))
+        .unwrap()["sessions"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let managed = sessions
+        .iter()
+        .find(|s| s["id"] == serde_json::json!(sid))
+        .unwrap();
+    assert_eq!(managed["worktree_path"], serde_json::json!(wt_path));
+    let plain = sessions
+        .iter()
+        .find(|s| s["id"] == serde_json::json!(plain_sid))
+        .unwrap();
+    assert_eq!(plain["worktree_path"], serde_json::json!(""));
 }

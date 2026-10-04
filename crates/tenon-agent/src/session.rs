@@ -5,7 +5,7 @@
 //! `force_state` 对齐并保留计数（拒绝改案 ≤2、模型重试 ≤2、修复轮次）。
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc as StdArc;
 use std::sync::Arc;
@@ -57,6 +57,12 @@ pub struct AgentConfig {
     pub team_denied_tools: Vec<String>,
     /// 项目内相对 / 绝对 cwd；命令在项目根沙箱内切到这里执行（§6.4）。
     pub working_dir: Option<PathBuf>,
+    /// 预生成会话 ID（v1.87 受管 worktree 需先有 id 再建目录；None = store 生成）。
+    pub session_id: Option<String>,
+    /// 会话级受管 worktree 根（v1.87 §9.7）；Some = 写边界 / 命令 cwd / 快照均按它隔离。
+    pub managed_worktree: Option<PathBuf>,
+    /// 写锁作用域键（§9.7 并行写锁）：主根会话 "root"，受管 worktree 会话为其路径。
+    pub write_scope: String,
 }
 
 impl AgentConfig {
@@ -81,6 +87,9 @@ impl AgentConfig {
             dirty: None,
             team_denied_tools: Vec::new(),
             working_dir: None,
+            session_id: None,
+            managed_worktree: None,
+            write_scope: "root".to_string(),
         }
     }
 }
@@ -125,15 +134,22 @@ pub enum AgentError {
     ApprovalInvalid,
 }
 
-/// 项目级写锁（§9.7：同一项目同一时刻仅一个会话 EXECUTING）。
+/// 项目写锁（§9.7 v1.87 并行写锁：按 `(project_id, worktree_scope)` 计——
+/// 主根会话互斥，不同受管 worktree 会话可并行；全局配额由 daemon 控制）。
 #[derive(Default, Clone)]
 pub struct ProjectWriteLock {
-    inner: Arc<tokio::sync::Mutex<()>>,
+    locks: Arc<Mutex<std::collections::HashMap<String, Arc<Mutex<()>>>>>,
 }
 
 impl ProjectWriteLock {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 取指定作用域的锁实例（惰性创建；调用方再 `.lock().await`）。
+    pub async fn lock_for(&self, scope: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.locks.lock().await;
+        locks.entry(scope.to_string()).or_default().clone()
     }
 }
 
@@ -152,6 +168,10 @@ pub struct AgentSession {
     tool_ctx: ToolContext,
     /// 任务级写互斥（§9.7）。
     write_lock: ProjectWriteLock,
+    /// 写锁作用域键（§9.7 v1.87 并行写锁）。
+    write_scope: String,
+    /// 会话级受管 worktree 根（v1.87；None = 项目主根会话）。
+    managed_worktree: Option<PathBuf>,
     control_tx: mpsc::UnboundedSender<ControlCommand>,
     control_rx: Mutex<mpsc::UnboundedReceiver<ControlCommand>>,
     approvals: Mutex<std::collections::HashMap<String, mpsc::Sender<ApprovalDecision>>>,
@@ -250,6 +270,11 @@ fn tool_specs_read_only() -> Vec<ToolSpec> {
 }
 
 impl AgentSession {
+    /// 会话级受管 worktree 根（v1.87；None = 主根会话）。
+    pub fn managed_worktree(&self) -> Option<&Path> {
+        self.managed_worktree.as_deref()
+    }
+
     /// 创建会话（store 会话行 + shadow 快照库）。
     pub async fn create(
         store: Arc<Mutex<Store>>,
@@ -262,14 +287,19 @@ impl AgentSession {
         let model = provider.default_model();
         let session = {
             let mut st = store.lock().await;
-            st.create_session(&config.project_id, &model)
-                .map_err(|e| AgentError::Store(e.to_string()))?
+            match &config.session_id {
+                Some(id) => st.create_session_with_id(id, &config.project_id, &model),
+                None => st.create_session(&config.project_id, &model),
+            }
+            .map_err(|e| AgentError::Store(e.to_string()))?
         };
         let readonly = config.policy.readonly || rules.readonly == Some(true);
-        let mut tool_ctx = ToolContext::new(
-            &config.project_root,
-            Duration::from_secs(config.command_timeout_s),
-        );
+        let tool_root = config
+            .managed_worktree
+            .clone()
+            .unwrap_or_else(|| config.project_root.clone());
+        let mut tool_ctx =
+            ToolContext::new(&tool_root, Duration::from_secs(config.command_timeout_s));
         tool_ctx.readonly = readonly;
         if let Some(working_dir) = &config.working_dir {
             let joined = if working_dir.is_absolute() {
@@ -292,6 +322,8 @@ impl AgentSession {
         let (control_tx, control_rx) = mpsc::unbounded_channel();
         let (events_tx, _) = broadcast::channel(1024);
         let circuit_limits = config.circuit;
+        let write_scope = config.write_scope.clone();
+        let managed_worktree = config.managed_worktree.clone();
         let machine = StateMachine::with_limits(MachineLimits {
             deny_retries: 2,
             model_retries: 2,
@@ -309,6 +341,8 @@ impl AgentSession {
             provider: RwLock::new(provider),
             tool_ctx,
             write_lock,
+            write_scope,
+            managed_worktree,
             control_tx,
             control_rx: Mutex::new(control_rx),
             approvals: Mutex::new(std::collections::HashMap::new()),
@@ -632,7 +666,10 @@ impl AgentSession {
 
     /// 执行一个任务（完整 §9.1 循环）。
     pub async fn run_task(&self, user_text: &str) -> TaskOutcome {
-        let _guard = self.write_lock.inner.lock().await;
+        // §9.7 v1.87 并行写锁：按 (project_id, worktree_scope) 计——主根会话互斥，
+        // 不同受管 worktree 会话可与主根及彼此并行；全局配额由 daemon 控制。
+        let scope_lock = self.write_lock.lock_for(&self.write_scope).await;
+        let _guard = scope_lock.lock().await;
         self.first_edit_done.store(false, Ordering::SeqCst);
         self.touched_files.lock().await.clear();
         self.deny_count.store(0, Ordering::SeqCst);
@@ -1604,5 +1641,29 @@ fn summarize_action(tool: &str, args: &serde_json::Value) -> String {
             args.get("file").and_then(|f| f.as_str()).unwrap_or("?")
         ),
         other => format!("执行 {other}"),
+    }
+}
+
+#[cfg(test)]
+mod parallel_write_lock_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn different_worktree_scopes_run_in_parallel() {
+        // §9.7 v1.87 并行写锁：主根与受管 worktree 作用域互不阻塞。
+        let lock = ProjectWriteLock::new();
+        let root = lock.lock_for("root").await;
+        let wt = lock.lock_for("/tmp/wt/a").await;
+        let _root_guard = root.lock().await;
+        // 不同作用域立即可锁（并行）
+        let wt_guard = tokio::time::timeout(Duration::from_millis(100), wt.lock())
+            .await
+            .expect("worktree 作用域不应被主根写锁阻塞");
+        drop(wt_guard);
+        // 同作用域仍互斥
+        let root_again = lock.lock_for("root").await;
+        let contended = tokio::time::timeout(Duration::from_millis(100), root_again.lock()).await;
+        assert!(contended.is_err(), "同作用域写锁必须互斥");
     }
 }

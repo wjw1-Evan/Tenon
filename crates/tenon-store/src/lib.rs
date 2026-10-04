@@ -197,6 +197,9 @@ pub struct Session {
     /// 首条消息自动生成的对话标题（v1.58）；空串 = 未生成，UI 回退模型名 / 短 id。
     #[serde(default)]
     pub title: String,
+    /// 会话级受管 worktree 路径（v1.87 §9.7）；空串 = 绑定项目主根。
+    #[serde(default)]
+    pub worktree_path: String,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -303,7 +306,7 @@ pub struct Plugin {
     pub installed_at: String,
 }
 
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 const DDL: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -328,6 +331,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     model TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'idle',
     title TEXT NOT NULL DEFAULT '',
+    worktree_path TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -542,6 +546,13 @@ impl Store {
                         [],
                     )?;
                 }
+                // v6 → v7：sessions 补会话级受管 worktree 路径（v1.87 §9.7，空 = 主根会话）。
+                if !Self::column_exists(&conn, "sessions", "worktree_path")? {
+                    conn.execute(
+                        "ALTER TABLE sessions ADD COLUMN worktree_path TEXT NOT NULL DEFAULT ''",
+                        [],
+                    )?;
+                }
                 conn.execute(
                     "UPDATE l4_chunks
                      SET end_line = start_line + (LENGTH(text) - LENGTH(REPLACE(text, '\n', '')))
@@ -679,25 +690,44 @@ impl Store {
 
     // ---------- sessions ----------
 
+    /// 会话 ID 生成（v1.87：受管 worktree 路径依赖预生成 id；daemon 经此免引 uuid）。
+    pub fn new_session_id() -> String {
+        Uuid::now_v7().to_string()
+    }
+
     pub fn create_session(&mut self, project_id: &str, model: &str) -> Result<Session> {
+        let id = Uuid::now_v7().to_string();
+        self.create_session_with_id(&id, project_id, model)
+    }
+
+    /// 预生成会话 ID 的创建入口（v1.87：受管 worktree 路径依赖会话 id）。
+    pub fn create_session_with_id(
+        &mut self,
+        id: &str,
+        project_id: &str,
+        model: &str,
+    ) -> Result<Session> {
         let now = Self::now();
         let s = Session {
-            id: Uuid::now_v7().to_string(),
+            id: id.to_string(),
             project_id: project_id.to_string(),
             model: model.to_string(),
             status: SessionStatus::Idle,
             title: String::new(),
+            worktree_path: String::new(),
             created_at: now.clone(),
             updated_at: now,
         };
         self.conn.execute(
-            "INSERT INTO sessions (id, project_id, model, status, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO sessions (id, project_id, model, status, title, worktree_path, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 s.id,
                 s.project_id,
                 s.model,
                 s.status.as_str(),
+                s.title,
+                s.worktree_path,
                 s.created_at,
                 s.updated_at
             ],
@@ -705,9 +735,18 @@ impl Store {
         Ok(s)
     }
 
+    /// 登记会话级受管 worktree 路径（v1.87 §9.7）；空串回退主根。
+    pub fn set_session_worktree(&mut self, id: &str, worktree_path: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET worktree_path = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, worktree_path, Self::now()],
+        )?;
+        Ok(())
+    }
+
     pub fn session(&mut self, id: &str) -> Result<Option<Session>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, model, status, title, created_at, updated_at
+            "SELECT id, project_id, model, status, title, worktree_path, created_at, updated_at
              FROM sessions WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map([id], row_to_session)?;
@@ -717,7 +756,7 @@ impl Store {
     /// 全部会话（崩溃恢复扫描用）。
     pub fn list_all_sessions(&mut self) -> Result<Vec<Session>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, model, status, title, created_at, updated_at
+            "SELECT id, project_id, model, status, title, worktree_path, created_at, updated_at
              FROM sessions ORDER BY created_at ASC",
         )?;
         let rows = stmt.query_map([], row_to_session)?;
@@ -726,7 +765,7 @@ impl Store {
 
     pub fn list_sessions(&mut self, project_id: &str) -> Result<Vec<Session>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, model, status, title, created_at, updated_at
+            "SELECT id, project_id, model, status, title, worktree_path, created_at, updated_at
              FROM sessions WHERE project_id = ?1 ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([project_id], row_to_session)?;
@@ -1457,8 +1496,9 @@ fn row_to_session(r: &rusqlite::Row<'_>) -> rusqlite::Result<Session> {
         model: r.get(2)?,
         status: SessionStatus::parse(&r.get::<_, String>(3)?).unwrap_or(SessionStatus::Idle),
         title: r.get(4)?,
-        created_at: r.get(5)?,
-        updated_at: r.get(6)?,
+        worktree_path: r.get(5)?,
+        created_at: r.get(6)?,
+        updated_at: r.get(7)?,
     })
 }
 
@@ -1988,5 +2028,33 @@ mod tests {
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].verdict, "pass");
         assert_eq!(runs[0].metrics_json["steps"], 5);
+    }
+}
+
+#[cfg(test)]
+mod managed_worktree_tests {
+    use super::*;
+
+    fn mem() -> Store {
+        Store::open_in_memory().expect("store")
+    }
+
+    #[test]
+    fn managed_worktree_session_fields_roundtrip() {
+        // v1.87 §9.7：sessions.worktree_path（schema v7）+ 预生成 id 创建。
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let sid = Store::new_session_id();
+        let sess = s.create_session_with_id(&sid, &p.id, "mock").unwrap();
+        assert_eq!(sess.id, sid);
+        assert_eq!(sess.worktree_path, "", "主根会话 worktree_path 为空");
+        s.set_session_worktree(&sid, "/tmp/wt/s1").unwrap();
+        let got = s.session(&sid).unwrap().unwrap();
+        assert_eq!(got.worktree_path, "/tmp/wt/s1");
+        assert_eq!(
+            s.list_sessions(&p.id).unwrap()[0].worktree_path,
+            "/tmp/wt/s1"
+        );
     }
 }

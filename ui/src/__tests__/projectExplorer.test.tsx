@@ -20,17 +20,20 @@ function project(id: string): ProjectSummary {
   };
 }
 
-function api() {
-  return { tree: treeMock } as unknown as TenonApi;
+function api(overrides: Partial<TenonApi> = {}) {
+  return { tree: treeMock, control: vi.fn().mockResolvedValue({ ok: true }), mergeWorktreeSession: vi.fn().mockResolvedValue({ merged: [], skipped: [], conflicts: [] }), discardWorktreeSession: vi.fn().mockResolvedValue({ discarded: true }), ...overrides } as unknown as TenonApi;
 }
 
-function renderExplorer(projects: ProjectSummary[]) {
+function renderExplorer(projects: ProjectSummary[], apiOverrides: Partial<TenonApi> = {}) {
   const onSwitchProject = vi.fn();
   const onOpenProject = vi.fn().mockResolvedValue(undefined);
   const onRemoveProject = vi.fn().mockResolvedValue(undefined);
+  const onSelectSession = vi.fn();
+  const onCreateSession = vi.fn();
+  const apiMock = api(apiOverrides);
   render(
     <ProjectExplorer
-      api={api()}
+      api={apiMock}
       t={(key) => key}
       projects={projects}
       projectId={projects[0]?.id ?? null}
@@ -41,12 +44,13 @@ function renderExplorer(projects: ProjectSummary[]) {
       onSwitchProject={onSwitchProject}
       onOpenProject={onOpenProject}
       onRemoveProject={onRemoveProject}
-      onSelectSession={() => {}}
+      onSelectSession={onSelectSession}
+      onCreateSession={onCreateSession}
       onOpenFile={() => {}}
       onFileTreeChange={() => {}}
     />
   );
-  return { onSwitchProject, onOpenProject, onRemoveProject };
+  return { onSwitchProject, onOpenProject, onRemoveProject, onSelectSession, onCreateSession, api: apiMock };
 }
 
 describe("ProjectExplorer multi-project control surface", () => {
@@ -206,5 +210,122 @@ describe("ProjectExplorer multi-project control surface", () => {
     expect(screen.getByTestId("chat-list-open-a")).toBeInTheDocument();
     expect(screen.getByText("修复登录超时")).toBeInTheDocument();
     expect(screen.getByText("mock")).toBeInTheDocument();
+  });
+});
+
+// ---------- 全局活动条（v1.87 §7.2，参考 Codex 侧栏线程流） ----------
+
+function projectWithSessions(
+  id: string,
+  sessions: Array<Partial<ProjectSummary["sessions"][number]> & { id: string }>,
+  approvals: ProjectSummary["pending_approvals"] = []
+): ProjectSummary {
+  return {
+    ...project(id),
+    sessions: sessions.map((session) => ({
+      status: "idle",
+      model: "mock",
+      updated_at: "2026-10-05T00:00:00Z",
+      ...session,
+    })),
+    pending_approvals: approvals,
+  };
+}
+
+describe("Global activity strip (v1.87 multi-project monitoring)", () => {
+  beforeEach(() => {
+    const backing = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => (backing.has(k) ? backing.get(k)! : null),
+      setItem: (k: string, v: string) => void backing.set(k, v),
+      removeItem: (k: string) => void backing.delete(k),
+      clear: () => backing.clear(),
+    });
+    treeMock.mockReset();
+    treeMock.mockResolvedValue({ entries: [] });
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("aggregates cross-project counts and flattens sessions on expand", () => {
+    const a = projectWithSessions("proj-a", [
+      { id: "s-a1", status: "executing", updated_at: "2026-10-05T01:00:00Z" },
+      { id: "s-a2", status: "done" },
+    ]);
+    const b = projectWithSessions("proj-b", [
+      { id: "s-b1", status: "idle" },
+    ], [
+      { id: "ap-1", session_id: "s-b1", action: "apply_patch", level: "b", created_at: "t" },
+    ]);
+    renderExplorer([a, b]);
+    const bar = screen.getByTestId("global-activity-bar");
+    expect(bar).toHaveTextContent("activity.running 1");
+    expect(bar).toHaveTextContent("activity.approvals 1");
+    expect(bar).toHaveTextContent("activity.done 1");
+    fireEvent.click(bar);
+    const list = screen.getByTestId("global-activity-list");
+    // 跨项目平铺：三个会话全部可见，无需展开项目文件夹
+    expect(list).toHaveTextContent("proj-a");
+    expect(list).toHaveTextContent("proj-b");
+  });
+
+  it("jumps to the target project and session from a global row", () => {
+    const a = projectWithSessions("proj-a", [{ id: "s-a1", status: "idle" }]);
+    const b = projectWithSessions("proj-b", [
+      { id: "s-b1", status: "idle", updated_at: "2026-10-05T02:00:00Z" },
+    ]);
+    const { onSwitchProject, onSelectSession } = renderExplorer([a, b]);
+    fireEvent.click(screen.getByTestId("global-activity-bar"));
+    fireEvent.click(screen.getAllByRole("button", { name: /proj-b/ })[0]);
+    expect(onSwitchProject).toHaveBeenCalledWith(expect.objectContaining({ id: "proj-b" }));
+    expect(onSelectSession).toHaveBeenCalledWith("proj-b", "s-b1");
+  });
+
+  it("filters rows by approvals and exposes in-place stop for running sessions", async () => {
+    const a = projectWithSessions("proj-a", [
+      { id: "s-run", status: "executing" },
+      { id: "s-idle", status: "idle" },
+    ]);
+    const { api: apiMock } = renderExplorer([a]);
+    fireEvent.click(screen.getByTestId("global-activity-bar"));
+    fireEvent.click(screen.getByRole("button", { name: "activity.filter.approvals" }));
+    // 无待审批 → 空态
+    expect(screen.getByText("activity.empty")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "activity.filter.running" }));
+    const stop = screen.getAllByRole("button", { name: "activity.stop" })[0];
+    fireEvent.click(stop);
+    await waitFor(() => expect(apiMock.control).toHaveBeenCalledWith("s-run", "stop"));
+  });
+
+  it("creates plain and managed worktree sessions from per-project entries", () => {
+    const a = projectWithSessions("proj-a", [{ id: "s-a1", status: "idle" }]);
+    const { onCreateSession } = renderExplorer([a]);
+    fireEvent.click(screen.getByTestId(`session-new-proj-a`));
+    expect(onCreateSession).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "proj-a" }),
+      false
+    );
+    fireEvent.click(screen.getByTestId(`session-new-worktree-proj-a`));
+    expect(onCreateSession).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "proj-a" }),
+      true
+    );
+  });
+
+  it("offers merge / discard actions on managed worktree sessions only", async () => {
+    const a = projectWithSessions("proj-a", [
+      { id: "s-wt", status: "done", worktree_path: "/tmp/wt/s-wt" },
+      { id: "s-root", status: "done" },
+    ]);
+    const { api: apiMock } = renderExplorer([a]);
+    // 全局列表标题带 ⎇ 标记（受管 worktree）
+    fireEvent.click(screen.getByTestId("global-activity-bar"));
+    expect(screen.getAllByText(/⎇/).length).toBeGreaterThan(0);
+    // 会话行 hover 操作：仅受管会话出现合并 / 丢弃
+    const merge = screen.getByRole("button", { name: "projects.worktree_merge" });
+    fireEvent.click(merge);
+    await waitFor(() =>
+      expect(apiMock.mergeWorktreeSession).toHaveBeenCalledWith("s-wt")
+    );
   });
 });

@@ -5,6 +5,7 @@
 import { useEffect, useState } from "react";
 import type { PortfolioTask, ProjectSummary, TenonApi } from "../lib/api";
 import type { Translate } from "../lib/i18n";
+import { RUNNING_STATES } from "../lib/stateColors";
 import { FileTree, type FileTreeChange } from "./FileTree";
 
 const PE_EXPANDED_KEY = "tenon:peExpanded";
@@ -43,8 +44,35 @@ interface Props {
   onOpenProject: (path: string, displayName?: string) => Promise<void> | void;
   onRemoveProject: (project: ProjectSummary) => Promise<void> | void;
   onSelectSession: (projectId: string, sessionId: string) => void;
+  /** 新建会话（v1.87）：worktree=true 创建受管 worktree 会话，可与主根并行。 */
+  onCreateSession: (project: ProjectSummary, worktree: boolean) => void;
+  /** 受管 worktree 合并 / 丢弃后刷新项目摘要（会话状态与文件树）。 */
+  onRefreshProjects?: () => void;
   onOpenFile: (path: string) => void;
   onFileTreeChange: (change: FileTreeChange) => void;
+}
+
+const RUNNING = RUNNING_STATES as ReadonlySet<string>;
+const ACTIVITY_FILTERS = ["all", "running", "approvals", "done"] as const;
+type ActivityFilter = (typeof ACTIVITY_FILTERS)[number];
+
+/** 状态点配色（§7.5 状态色）：全局活动行与汇总条共用。 */
+function statusDotColor(status: string): string {
+  return (
+    ({
+      sensing: "#2f6fed",
+      deciding: "#5b6b7a",
+      executing: "#d9a514",
+      verifying: "#7d4fd3",
+      fixing: "#7d4fd3",
+      awaiting_approval: "#e07b28",
+      paused: "#8a8f98",
+      error: "#d43d3d",
+      done: "#2da44e",
+      rolled_back: "#8a8f98",
+      idle: "#8a8f98",
+    } as Record<string, string>)[status] ?? "#8a8f98"
+  );
 }
 
 /** 状态文案：优先使用 state.* 翻译，缺失回退原始状态。 */
@@ -157,6 +185,8 @@ export function ProjectExplorer({
   onOpenProject,
   onRemoveProject,
   onSelectSession,
+  onCreateSession,
+  onRefreshProjects,
   onOpenFile,
   onFileTreeChange,
 }: Props) {
@@ -169,6 +199,11 @@ export function ProjectExplorer({
   /** 用户手动改过项目名后，路径变更不再覆盖名称。 */
   const [nameEdited, setNameEdited] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // 全局活动条（v1.87 §7.2）：跨项目聚合监控，审批决策仍留在各项目代理面板。
+  const [activityOpen, setActivityOpen] = useState(false);
+  const [activityFilter, setActivityFilter] = useState<ActivityFilter>("all");
+  const [stoppingId, setStoppingId] = useState<string | null>(null);
+  const [worktreeBusyId, setWorktreeBusyId] = useState<string | null>(null);
 
   const runProjectAction = async (
     project: ProjectSummary,
@@ -213,6 +248,72 @@ export function ProjectExplorer({
     setPath("");
     setName("");
     setNameEdited(false);
+  };
+
+  // 跨项目会话平铺（更新倒序）+ 会话级待审批计数（GET /projects 摘要）。
+  const approvalCounts = new Map<string, number>();
+  for (const project of projects) {
+    for (const approval of project.pending_approvals) {
+      approvalCounts.set(
+        approval.session_id,
+        (approvalCounts.get(approval.session_id) ?? 0) + 1
+      );
+    }
+  }
+  const globalRows = projects
+    .flatMap((project) =>
+      project.sessions.map((session) => ({
+        project,
+        session,
+        approvals: approvalCounts.get(session.id) ?? 0
+      }))
+    )
+    .sort((a, b) => (b.session.updated_at ?? "").localeCompare(a.session.updated_at ?? ""));
+  const runningCount = globalRows.filter((row) => RUNNING.has(row.session.status)).length;
+  const approvalsCount = [...approvalCounts.values()].reduce((sum, n) => sum + n, 0);
+  const doneCount = globalRows.filter((row) => row.session.status === "done").length;
+  const visibleRows = globalRows.filter((row) => {
+    if (activityFilter === "running") return RUNNING.has(row.session.status);
+    if (activityFilter === "approvals") return row.approvals > 0;
+    if (activityFilter === "done") return row.session.status === "done";
+    return true;
+  });
+
+  const jumpToSession = (row: (typeof globalRows)[number]) => {
+    if (row.project.id !== projectId) onSwitchProject(row.project);
+    onSelectSession(row.project.id, row.session.id);
+  };
+
+  const stopSession = async (sessionId: string) => {
+    setStoppingId(sessionId);
+    try {
+      await api.control(sessionId, "stop");
+    } finally {
+      setStoppingId(null);
+    }
+  };
+
+  const mergeWorktree = async (sessionId: string) => {
+    setWorktreeBusyId(sessionId);
+    try {
+      await api.mergeWorktreeSession(sessionId);
+      onRefreshProjects?.();
+    } catch {
+      // 409 冲突 / 失败经刷新后的项目摘要与会话状态呈现（无内联 toast 面）。
+    } finally {
+      setWorktreeBusyId(null);
+    }
+  };
+
+  const discardWorktree = async (sessionId: string) => {
+    if (!window.confirm(t("projects.worktree_discard_confirm"))) return;
+    setWorktreeBusyId(sessionId);
+    try {
+      await api.discardWorktreeSession(sessionId, true);
+      onRefreshProjects?.();
+    } finally {
+      setWorktreeBusyId(null);
+    }
   };
 
   // active 项目默认展开（v1.63：切换即见会话全貌）。
@@ -266,23 +367,46 @@ export function ProjectExplorer({
     return (
       <ul className="pe-chat-list" data-testid={`chat-list-${project.id}`}>
         {project.sessions.map((session) => (
-          <li key={session.id}>
+          <li key={session.id} className="pe-chat-item">
             <button
               type="button"
               className={
                 session.id === activeSessionId ? "pe-chat-row active" : "pe-chat-row"
               }
               onClick={() => onSelectSession(project.id, session.id)}
-              title={session.id}
+              title={session.worktree_path ? `${session.id} · ${session.worktree_path}` : session.id}
             >
               <span className="pe-chat-name">
                 {sessionDisplayName(
                   session,
                   counts.get(session.title?.trim() || session.model || session.id) ?? 1
                 )}
+                {session.worktree_path ? " ⎇" : ""}
               </span>
               <span className="pe-chat-status">{stateLabel(t, session.status)}</span>
             </button>
+            {session.worktree_path && (
+              <span className="pe-row-actions">
+                <button
+                  type="button"
+                  className="pe-action"
+                  disabled={worktreeBusyId === session.id}
+                  title={t("projects.worktree_merge")}
+                  onClick={() => void mergeWorktree(session.id)}
+                >
+                  {t("projects.worktree_merge")}
+                </button>
+                <button
+                  type="button"
+                  className="pe-action danger"
+                  disabled={worktreeBusyId === session.id}
+                  title={t("projects.worktree_discard")}
+                  onClick={() => void discardWorktree(session.id)}
+                >
+                  {t("projects.worktree_discard")}
+                </button>
+              </span>
+            )}
           </li>
         ))}
         {tasks.map((task) => {
@@ -308,12 +432,112 @@ export function ProjectExplorer({
         {project.sessions.length === 0 && tasks.length === 0 && (
           <li className="pe-empty">{t("projects.chats_empty")}</li>
         )}
+        {/* 新会话入口（v1.87 §7.3）：主根 / 受管 worktree（可与主根并行执行）。 */}
+        <li className="pe-session-actions">
+          <button
+            type="button"
+            className="pe-action"
+            data-testid={`session-new-${project.id}`}
+            onClick={() => onCreateSession(project, false)}
+          >
+            + {t("projects.new_session")}
+          </button>
+          <button
+            type="button"
+            className="pe-action"
+            data-testid={`session-new-worktree-${project.id}`}
+            title={t("projects.new_worktree_session")}
+            onClick={() => onCreateSession(project, true)}
+          >
+            + ⎇ {t("projects.new_session")}
+          </button>
+        </li>
       </ul>
     );
   };
 
   return (
     <div className="project-explorer" data-testid="project-explorer">
+      {/* 全局活动条（v1.87 §7.2，参考 Codex 侧栏线程流）：跨项目聚合监控 / 导航 /
+          就地停止；审批决策面仍唯一在各项目代理面板（v1.60 决策延续）。 */}
+      <section className="pe-section pe-activity" data-testid="global-activity">
+        <button
+          type="button"
+          className="pe-activity-bar"
+          data-testid="global-activity-bar"
+          aria-expanded={activityOpen}
+          onClick={() => setActivityOpen((open) => !open)}
+        >
+          <span
+            className="pe-dot"
+            style={{ background: runningCount ? "#d9a514" : "#8a8f98" }}
+          />
+          <span className="pe-activity-count">{t("activity.running")} {runningCount}</span>
+          <span
+            className="pe-activity-count"
+            style={approvalsCount ? { color: "#e07b28", fontWeight: 600 } : undefined}
+          >
+            {t("activity.approvals")} {approvalsCount}
+          </span>
+          <span className="pe-activity-count">{t("activity.done")} {doneCount}</span>
+          <ChevronIcon />
+        </button>
+        {activityOpen && (
+          <div className="pe-activity-panel" data-testid="global-activity-list">
+            <div className="pe-activity-filters">
+              {ACTIVITY_FILTERS.map((filter) => (
+                <button
+                  key={filter}
+                  type="button"
+                  className={activityFilter === filter ? "active" : ""}
+                  onClick={() => setActivityFilter(filter)}
+                >
+                  {t(`activity.filter.${filter}`)}
+                </button>
+              ))}
+            </div>
+            {visibleRows.length === 0 && <div className="pe-empty">{t("activity.empty")}</div>}
+            <ul className="pe-activity-list">
+              {visibleRows.map(({ project, session, approvals }) => (
+                <li key={session.id} className="pe-activity-item">
+                  <button
+                    type="button"
+                    className="pe-activity-row"
+                    onClick={() => jumpToSession({ project, session, approvals })}
+                    title={session.id}
+                  >
+                    <span
+                      className="pe-dot"
+                      style={{ background: statusDotColor(session.status) }}
+                    />
+                    <span className="pe-activity-project">{project.display_name}</span>
+                    <span className="pe-activity-title">
+                      {sessionDisplayName(session)}
+                      {session.worktree_path ? " ⎇" : ""}
+                    </span>
+                    <span className="pe-chat-status">{stateLabel(t, session.status)}</span>
+                    {approvals > 0 && (
+                      <span className="pe-activity-approvals">
+                        {t("activity.approvals")} {approvals}
+                      </span>
+                    )}
+                  </button>
+                  {RUNNING.has(session.status) && (
+                    <button
+                      type="button"
+                      className="pe-action danger"
+                      disabled={stoppingId === session.id}
+                      onClick={() => void stopSession(session.id)}
+                    >
+                      {t("activity.stop")}
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </section>
       <section className="pe-section pe-chats">
         <ul className="pe-tree" data-testid="project-list">
           {projects.map((project) => {

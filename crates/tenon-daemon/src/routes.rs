@@ -37,6 +37,11 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
         .route("/session/{id}/message", post(send_message))
         .route("/session/{id}", get(get_session))
         .route("/session/{id}/control", post(session_control))
+        .route("/session/{id}/worktree/merge", post(merge_session_worktree))
+        .route(
+            "/session/{id}/worktree/discard",
+            post(discard_session_worktree),
+        )
         .route("/approval/{id}", post(approval_decision))
         .route("/session/{id}/trace", get(session_trace))
         .route("/session/{id}/checkpoints", get(session_checkpoints))
@@ -128,11 +133,18 @@ async fn create_agent_session(
     provider: Arc<dyn tenon_models::ModelProvider>,
     mode: &str,
     working_dir: Option<String>,
+    session_id: Option<String>,
+    managed_worktree: Option<std::path::PathBuf>,
 ) -> Result<Arc<tenon_agent::session::AgentSession>, (StatusCode, String)> {
+    // v1.87 §9.7：受管 worktree 会话的快照分片 / 写边界 / 命令 cwd 均按 worktree
+    // 隔离；L4 索引、脏缓冲与事件仍按 project_id 归属（project_root 不变）。
+    let snapshot_workspace = managed_worktree
+        .as_deref()
+        .unwrap_or(std::path::Path::new(&project.path));
     let snapshots = SnapshotStore::open(
         &state.snapshots_root,
         &project.id,
-        std::path::Path::new(&project.path),
+        snapshot_workspace,
         state.config.checkpoint.max_untracked_mb,
     )
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("快照库: {e}")))?;
@@ -181,6 +193,12 @@ async fn create_agent_session(
     agent_cfg.command_timeout_s = state.config.agent.exec.command_timeout_s;
     agent_cfg.snapshots_root.clone_from(&state.snapshots_root);
     agent_cfg.working_dir = working_dir.map(std::path::PathBuf::from);
+    agent_cfg.session_id = session_id;
+    agent_cfg.managed_worktree = managed_worktree.clone();
+    agent_cfg.write_scope = managed_worktree
+        .as_deref()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "root".to_string());
     agent_cfg.dirty = Some(state.dirty_buffers_for(&project.id).await);
     agent_cfg.lsp = Some(state.lsp.clone());
     agent_cfg.team_denied_tools = team_policy.denied_tools;
@@ -219,6 +237,7 @@ async fn register_session_entry(
     session: Arc<tenon_agent::session::AgentSession>,
 ) -> String {
     let sid = session.session_id.clone();
+    let managed_worktree = session.managed_worktree().map(std::path::Path::to_path_buf);
     let mut sessions = state.sessions.lock().await;
     sessions.insert(
         sid.clone(),
@@ -226,6 +245,7 @@ async fn register_session_entry(
             session,
             project_root: std::path::PathBuf::from(&project.path),
             project_id: project.id.clone(),
+            managed_worktree,
             last_outcome: Mutex::new(None),
             last_seq: 0,
         },
@@ -450,6 +470,8 @@ async fn create_portfolio_task(
             provider.clone(),
             &request.mode,
             request.working_dir.clone(),
+            None,
+            None,
         )
         .await
         {
@@ -548,6 +570,9 @@ struct CreateSessionBody {
     /// 项目内相对 / 绝对 cwd；命令仍在项目根沙箱内（B 级边界不变）。
     #[serde(default, alias = "cwd")]
     working_dir: Option<String>,
+    /// v1.87 §9.7：`"managed"` = 会话级受管 worktree（git 仓库），可与主根会话并行。
+    #[serde(default)]
+    worktree: Option<String>,
     #[serde(default)]
     provider: String,
     /// interactive | auto
@@ -594,21 +619,61 @@ async fn create_session(
             _ => return api_err(StatusCode::BAD_REQUEST, "PATH_ESCAPE"),
         }
     }
+    // v1.87 §9.7 会话级受管 worktree：先预生成会话 id，再在
+    // `~/.tenon/worktrees/<project_id>/<session_id>/` 创建内核托管 worktree。
+    // 非 git 仓库 / git 失败 → 400，不落会话行。
+    let (managed_session_id, managed_worktree) = match body.worktree.as_deref() {
+        None | Some("") | Some("root") => (None, None),
+        Some("managed") => {
+            let sid = tenon_store::Store::new_session_id();
+            let pool = tenon_agent::subagents::WorktreePool::new(
+                state
+                    .worktrees_root
+                    .join(sanitize_worktree_component(&project.id)),
+            );
+            match pool.create(std::path::Path::new(&project.path), &sid) {
+                Ok(wt) => (Some(sid), Some(wt)),
+                Err(e) => {
+                    return api_err(
+                        StatusCode::BAD_REQUEST,
+                        format!("受管 worktree 创建失败（需 git 仓库）: {e}"),
+                    )
+                }
+            }
+        }
+        Some(other) => {
+            return api_err(
+                StatusCode::BAD_REQUEST,
+                format!("worktree 仅支持 \"managed\"，收到 {other:?}"),
+            )
+        }
+    };
     let session = match create_agent_session(
         &state,
         &project,
         provider,
         &body.mode,
         body.working_dir.clone(),
+        managed_session_id.clone(),
+        managed_worktree.clone(),
     )
     .await
     {
         Ok(s) => s,
         Err((status, message)) => return api_err(status, message),
     };
+    if let Some(wt) = &managed_worktree {
+        let mut st = state.store.lock().await;
+        let _ = st.set_session_worktree(&session.session_id, &wt.to_string_lossy());
+    }
     let sid = register_session_entry(&state, &project, session).await;
-    Json(json!({"session_id": sid, "project_id": project.id, "trusted": project.trusted}))
-        .into_response()
+    Json(json!({
+        "session_id": sid,
+        "project_id": project.id,
+        "trusted": project.trusted,
+        "worktree_path": managed_worktree.as_ref().map(|p| p.to_string_lossy()),
+    }))
+    .into_response()
 }
 
 #[derive(Deserialize)]
@@ -784,6 +849,349 @@ async fn session_control(
         other => return api_err(StatusCode::BAD_REQUEST, format!("未知 action: {other}")),
     }
     Json(json!({"ok": true})).into_response()
+}
+
+// ---------- 受管 worktree 收尾（v1.87 §9.7） ----------
+
+/// worktree 路径组件消毒（§9.5 同语义；project id / session id 为 UUID，防御性兜底）。
+fn sanitize_worktree_component(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn git_stdout(repo: &std::path::Path, args: &[&str]) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()
+        .ok()?;
+    if out.status.success() {
+        Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        None
+    }
+}
+
+/// worktree 相对改动文件集 = 工作区 status（含未跟踪）∪ merge-base..HEAD 已提交 diff。
+fn collect_worktree_changes(wt: &std::path::Path, project_root: &std::path::Path) -> Vec<String> {
+    let mut changed = std::collections::BTreeSet::new();
+    if let Some(out) = git_stdout(
+        wt,
+        &["status", "--porcelain", "-z", "--untracked-files=all"],
+    ) {
+        for entry in out.split('\0').filter(|s| !s.is_empty()) {
+            // -z 格式：`XY <path>`；rename 目标与来源各占一段，来源段无状态前缀。
+            let bytes = entry.as_bytes();
+            if bytes.len() > 3 && bytes[2] == b' ' {
+                changed.insert(entry[3..].to_string());
+            } else {
+                changed.insert(entry.to_string());
+            }
+        }
+    }
+    // 已提交改动：merge-base(HEAD, 主根分支)..HEAD（worktree 为 detached HEAD）。
+    if let Some(branch) = git_stdout(project_root, &["rev-parse", "--abbrev-ref", "HEAD"]) {
+        let branch = branch.trim();
+        if let Some(base) = git_stdout(wt, &["merge-base", "HEAD", branch]) {
+            let range = format!("{}..HEAD", base.trim());
+            if let Some(out) = git_stdout(wt, &["diff", "--name-only", "-z", &range]) {
+                for path in out.split('\0').filter(|s| !s.is_empty()) {
+                    changed.insert(path.to_string());
+                }
+            }
+        }
+    }
+    changed.into_iter().collect()
+}
+
+#[derive(Debug, serde::Serialize)]
+struct WorktreeMergeReport {
+    merged: Vec<String>,
+    skipped: Vec<Value>,
+    conflicts: Vec<Value>,
+    /// 合并前项目根 shadow 快照 tree（§10.3 回滚原语；同一分片可 restore）。
+    snapshot_tree: Option<String>,
+}
+
+/// 把受管 worktree 改动合入项目主根：project == base 直接覆写，否则三方合并；
+/// 冲突文件不落盘并随报告返回三方内容（§8.6 合并预览数据）。合并前对项目根取
+/// shadow 快照（§10.3 回滚原语）。
+fn merge_worktree_into_root(
+    snapshots_root: &std::path::Path,
+    project_id: &str,
+    max_untracked_mb: u64,
+    project_root: &std::path::Path,
+    wt: &std::path::Path,
+    dirty_paths: &std::collections::BTreeSet<String>,
+) -> Result<WorktreeMergeReport, String> {
+    let changed = collect_worktree_changes(wt, project_root);
+    let mut pending: Vec<String> = Vec::new();
+    let mut skipped = Vec::new();
+    for rel in &changed {
+        if dirty_paths.contains(rel) {
+            skipped.push(json!({"path": rel, "reason": "dirty_buffer"}));
+        } else {
+            pending.push(rel.clone());
+        }
+    }
+    let mut snapshot_tree = None;
+    if !pending.is_empty() {
+        // 先对项目根取 shadow 快照（§10.3 回滚原语），再动用户工作区。
+        let root_store =
+            SnapshotStore::open(snapshots_root, project_id, project_root, max_untracked_mb)
+                .map_err(|e| format!("快照库: {e}"))?;
+        let tree = root_store
+            .snapshot()
+            .map_err(|e| format!("合并前快照失败: {e}"))?;
+        snapshot_tree = Some(tree);
+    }
+    let head = git_stdout(wt, &["rev-parse", "HEAD"]).map(|s| s.trim().to_string());
+    // worktree 为 detached HEAD：base = merge-base(HEAD, 主根分支)，取不到回退 HEAD。
+    let base_commit = git_stdout(project_root, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .map(|b| b.trim().to_string())
+        .and_then(|b| git_stdout(wt, &["merge-base", "HEAD", &b]).map(|s| s.trim().to_string()))
+        .or_else(|| head.clone());
+    let base_ref = base_commit.as_deref().unwrap_or("HEAD").to_string();
+
+    // 阶段一：全量决策不写盘——任一冲突即整体返回（不静默部分合并）。
+    enum Plan {
+        Write(String),
+        Delete,
+        Skip(&'static str),
+    }
+    let mut plans: Vec<(String, Plan)> = Vec::new();
+    let mut conflicts = Vec::new();
+    for rel in &pending {
+        let wt_path = wt.join(rel);
+        let proj_path = project_root.join(rel);
+        let base_spec = format!("{base_ref}:{rel}");
+        let base_exists = git_stdout(wt, &["cat-file", "-e", &base_spec]).is_some();
+        let base_content = if base_exists {
+            git_stdout(wt, &["show", &base_spec])
+        } else {
+            None
+        };
+        let wt_exists = wt_path.exists();
+        let wt_content = if wt_exists {
+            std::fs::read_to_string(&wt_path).ok()
+        } else {
+            None
+        };
+        let proj_exists = proj_path.exists();
+        let proj_content = if proj_exists {
+            std::fs::read_to_string(&proj_path).ok()
+        } else {
+            None
+        };
+        // 二进制 / 不可读文件不参与自动合并（不静默覆盖）。
+        if wt_exists && wt_content.is_none() {
+            plans.push((rel.clone(), Plan::Skip("unreadable_worktree_file")));
+            continue;
+        }
+        if proj_exists && proj_content.is_none() {
+            plans.push((rel.clone(), Plan::Skip("unreadable_project_file")));
+            continue;
+        }
+        match (wt_content, proj_content) {
+            (None, None) => plans.push((rel.clone(), Plan::Skip("already_absent"))),
+            (None, Some(proj)) => {
+                // worktree 删除：主根与 base 一致才删；否则冲突（不静默覆盖）。
+                if !base_exists {
+                    plans.push((rel.clone(), Plan::Skip("already_absent")));
+                } else if proj == base_content.clone().unwrap_or_default() {
+                    plans.push((rel.clone(), Plan::Delete));
+                } else {
+                    conflicts.push(json!({
+                        "path": rel,
+                        "base": base_content.unwrap_or_default(),
+                        "project": proj,
+                        "worktree": String::new(),
+                    }));
+                }
+            }
+            (Some(wt_s), Some(proj)) => {
+                if wt_s == proj {
+                    plans.push((rel.clone(), Plan::Skip("already_applied")));
+                } else if !base_exists {
+                    // 双方各自新增同名文件：冲突交用户裁决。
+                    conflicts.push(json!({
+                        "path": rel,
+                        "base": String::new(),
+                        "project": proj,
+                        "worktree": wt_s,
+                    }));
+                } else if proj == base_content.clone().unwrap_or_default() {
+                    plans.push((rel.clone(), Plan::Write(wt_s)));
+                } else {
+                    match tenon_core::merge::merge_three_way(
+                        &base_content.unwrap_or_default(),
+                        &proj,
+                        &wt_s,
+                    ) {
+                        Ok(m) => plans.push((rel.clone(), Plan::Write(m))),
+                        Err(c) => conflicts.push(json!({
+                            "path": rel,
+                            "base": c.base,
+                            "project": c.ours,
+                            "worktree": c.theirs,
+                        })),
+                    }
+                }
+            }
+            (Some(wt_s), None) => {
+                // 主根缺失：base 也没有 → 落新文件；base 有 → 用户侧删除冲突。
+                if !base_exists {
+                    plans.push((rel.clone(), Plan::Write(wt_s)));
+                } else {
+                    conflicts.push(json!({
+                        "path": rel,
+                        "base": base_content.unwrap_or_default(),
+                        "project": String::new(),
+                        "worktree": wt_s,
+                    }));
+                }
+            }
+        }
+    }
+
+    // 阶段二：无冲突才应用写 / 删。
+    let mut merged = Vec::new();
+    if conflicts.is_empty() {
+        for (rel, plan) in plans {
+            match plan {
+                Plan::Write(content) => {
+                    if write_merged_file(&project_root.join(&rel), &content).is_ok() {
+                        merged.push(rel);
+                    } else {
+                        skipped.push(json!({"path": rel, "reason": "write_failed"}));
+                    }
+                }
+                Plan::Delete => {
+                    if std::fs::remove_file(project_root.join(&rel)).is_ok() {
+                        merged.push(rel);
+                    } else {
+                        skipped.push(json!({"path": rel, "reason": "delete_failed"}));
+                    }
+                }
+                Plan::Skip(reason) => {
+                    skipped.push(json!({"path": rel, "reason": reason}));
+                }
+            }
+        }
+    }
+    Ok(WorktreeMergeReport {
+        merged,
+        skipped,
+        conflicts,
+        snapshot_tree,
+    })
+}
+
+fn write_merged_file(path: &std::path::Path, content: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, content)
+}
+
+#[derive(Deserialize)]
+struct WorktreeDiscardBody {
+    /// 必须显式确认（设计 §9.7：丢弃不动用户根、不可默认）。
+    confirm: bool,
+}
+
+type WorktreeParts = (String, std::path::PathBuf, std::path::PathBuf);
+
+async fn managed_worktree_parts(
+    state: &Arc<DaemonState>,
+    id: &str,
+) -> Result<WorktreeParts, (StatusCode, String)> {
+    let sessions = state.sessions.lock().await;
+    let Some(entry) = sessions.get(id) else {
+        return Err((StatusCode::NOT_FOUND, "session not found".into()));
+    };
+    let Some(wt) = entry.managed_worktree.clone() else {
+        return Err((StatusCode::CONFLICT, "NOT_MANAGED_WORKTREE".into()));
+    };
+    Ok((entry.project_id.clone(), entry.project_root.clone(), wt))
+}
+
+async fn merge_session_worktree(
+    State(state): State<Arc<DaemonState>>,
+    Path(id): Path<String>,
+) -> Response {
+    let (project_id, project_root, wt) = match managed_worktree_parts(&state, &id).await {
+        Ok(parts) => parts,
+        Err((status, message)) => return api_err(status, message),
+    };
+    let dirty = state
+        .dirty_buffers_for(&project_id)
+        .await
+        .list()
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    let snapshots_root = state.snapshots_root.clone();
+    let max_untracked_mb = state.config.checkpoint.max_untracked_mb;
+    let report = tokio::task::spawn_blocking(move || {
+        merge_worktree_into_root(
+            &snapshots_root,
+            &project_id,
+            max_untracked_mb,
+            &project_root,
+            &wt,
+            &dirty,
+        )
+    })
+    .await;
+    match report {
+        Ok(Ok(report)) if report.conflicts.is_empty() => Json(json!(report)).into_response(),
+        Ok(Ok(report)) => (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "MERGE_CONFLICT", "report": report})),
+        )
+            .into_response(),
+        Ok(Err(message)) => api_err(StatusCode::CONFLICT, message),
+        Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+async fn discard_session_worktree(
+    State(state): State<Arc<DaemonState>>,
+    Path(id): Path<String>,
+    Json(body): Json<WorktreeDiscardBody>,
+) -> Response {
+    if !body.confirm {
+        return api_err(StatusCode::BAD_REQUEST, "需要 confirm=true");
+    }
+    let (project_id, project_root, wt) = match managed_worktree_parts(&state, &id).await {
+        Ok(parts) => parts,
+        Err((status, message)) => return api_err(status, message),
+    };
+    let snapshots_root = state.snapshots_root.clone();
+    let worktrees_root = state
+        .worktrees_root
+        .join(sanitize_worktree_component(&project_id));
+    let result = tokio::task::spawn_blocking(move || {
+        let pool = tenon_agent::subagents::WorktreePool::new(worktrees_root);
+        pool.remove(&project_root, &id).map_err(|e| e.to_string())?;
+        SnapshotStore::remove_worktree_shard(&snapshots_root, &project_id, &wt)
+            .map_err(|e| e.to_string())?;
+        Ok::<(), String>(())
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => Json(json!({"discarded": true})).into_response(),
+        Ok(Err(message)) => api_err(StatusCode::CONFLICT, message),
+        Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
 }
 
 #[derive(Deserialize)]
@@ -2142,6 +2550,7 @@ async fn list_projects(State(state): State<Arc<DaemonState>>) -> Response {
                     "status": s.status.as_str(),
                     "model": s.model,
                     "title": s.title,
+                    "worktree_path": s.worktree_path,
                     "updated_at": s.updated_at,
                 })).collect::<Vec<_>>(),
                 "session_runtimes": session_runtimes,

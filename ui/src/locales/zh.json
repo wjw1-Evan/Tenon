@@ -229,5 +229,19 @@
   "settings.plugins.empty": "尚未安装插件",
   "settings.plugins.no_permissions": "无权限",
   "settings.plugins.unexpected": "插件响应异常",
-  "settings.plugins.note": "插件安装是 D 级动作；批准前必须逐项检查权限。"
+  "settings.plugins.note": "插件安装是 D 级动作；批准前必须逐项检查权限。",
+  "activity.running": "运行中",
+  "activity.approvals": "待审批",
+  "activity.done": "已完成",
+  "activity.filter.all": "全部",
+  "activity.filter.running": "运行中",
+  "activity.filter.approvals": "待审批",
+  "activity.filter.done": "已完成",
+  "activity.empty": "暂无活动会话",
+  "activity.stop": "停止",
+  "projects.new_session": "会话",
+  "projects.new_worktree_session": "独立 worktree 会话（可与主根并行）",
+  "projects.worktree_merge": "合并",
+  "projects.worktree_discard": "丢弃",
+  "projects.worktree_discard_confirm": "确认丢弃该受管 worktree？未合并的改动将删除（不影响项目根）。"
 }

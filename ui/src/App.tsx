@@ -458,6 +458,22 @@ export default function App({
     setSessionsByProject((prev) => ({ ...prev, [pid]: sid }));
   }, []);
 
+  /** 新建会话（v1.87 §7.3）：主根互斥，受管 worktree 会话可与主根并行执行。 */
+  const createProjectSession = useCallback(
+    async (project: ProjectSummary, worktree: boolean) => {
+      const session = await api.createSession(
+        project.id,
+        (settings?.session?.mode as "interactive" | "auto" | "" | undefined) ?? "interactive",
+        "",
+        worktree ? "managed" : undefined
+      );
+      if (worktree) await refreshProjects();
+      if (project.id !== projectIdRef.current) await activateProject(project);
+      setSessionsByProject((prev) => ({ ...prev, [project.id]: session.session_id }));
+    },
+    [activateProject, api, refreshProjects, settings]
+  );
+
   // 打开项目 + 建会话（§7.3：v1.67 打开即静默信任，不再弹 TOFU 确认卡）
   const openProject = useCallback(async (path: string, displayName?: string) => {
     const opened = await api.openProject(path, displayName);
@@ -1035,6 +1051,11 @@ export default function App({
                       openProject(path, displayName).catch((error) => setOpenError(String(error)))}
                     onRemoveProject={(project) => removeProject(project)}
                     onSelectSession={selectSession}
+                    onCreateSession={(project, worktree) =>
+                      void createProjectSession(project, worktree).catch((error) =>
+                        setOpenError(String(error))
+                      )}
+                    onRefreshProjects={() => void refreshProjects()}
                     onOpenFile={openFile}
                     onFileTreeChange={handleFileTreeChange}
                   />

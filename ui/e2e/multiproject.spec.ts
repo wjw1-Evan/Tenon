@@ -46,6 +46,10 @@ test("concurrent projects keep writes, approvals and rollbacks isolated", async 
   await page.getByTestId("task-input").fill(taskA);
   await page.getByTestId("send").click();
   await expect(page.getByTestId("approval-card")).toBeVisible({ timeout: 20_000 });
+  // v1.87 全局活动条：审批就地决策不切换页面，跨项目计数同步（§7.2 边界不变式）。
+  await expect(page.getByTestId("global-activity-bar")).toContainText("Approvals 1", {
+    timeout: 10_000,
+  });
   await page.getByTestId("approve-once").click();
   await expect(page.getByTestId("agent-feed")).toContainText("E2E write complete", { timeout: 30_000 });
   await expect.poll(async () => readFile(path.join(runtime.projectA, "e2e-a.txt"), "utf8").catch(() => ""), {
@@ -65,6 +69,14 @@ test("concurrent projects keep writes, approvals and rollbacks isolated", async 
   await expect.poll(async () => readFile(path.join(runtime.projectA, "e2e-a.txt"), "utf8").catch(() => ""), {
     timeout: 10_000,
   }).toContain("written by project A");
+
+  // v1.87 全局活动列表：跨项目会话平铺（无需展开项目文件夹），状态点 + 项目名。
+  await page.getByTestId("global-activity-bar").click();
+  const activityList = page.getByTestId("global-activity-list");
+  await expect(activityList).toBeVisible();
+  await expect(activityList).toContainText("project-a");
+  await expect(activityList).toContainText("project-b");
+  await page.getByTestId("global-activity-bar").click();
 
   // B 执行上下文仍可操作，且磁盘未被 A 任务污染。
   await page.getByTestId("project-list").getByText("project-b", { exact: true }).click();

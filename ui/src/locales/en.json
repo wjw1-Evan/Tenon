@@ -229,5 +229,19 @@
   "settings.plugins.empty": "No plugins installed",
   "settings.plugins.no_permissions": "No permissions",
   "settings.plugins.unexpected": "Unexpected plugin response",
-  "settings.plugins.note": "Plugin installation is a D-level action. Review every permission before approval."
+  "settings.plugins.note": "Plugin installation is a D-level action. Review every permission before approval.",
+  "activity.running": "Running",
+  "activity.approvals": "Approvals",
+  "activity.done": "Done",
+  "activity.filter.all": "All",
+  "activity.filter.running": "Running",
+  "activity.filter.approvals": "Approvals",
+  "activity.filter.done": "Done",
+  "activity.empty": "No active sessions",
+  "activity.stop": "Stop",
+  "projects.new_session": "Session",
+  "projects.new_worktree_session": "Managed worktree session (parallel to main root)",
+  "projects.worktree_merge": "Merge",
+  "projects.worktree_discard": "Discard",
+  "projects.worktree_discard_confirm": "Discard this managed worktree? Unmerged changes will be deleted (project root untouched)."
 }
