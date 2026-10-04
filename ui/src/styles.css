@@ -110,3 +110,9 @@ button:disabled { opacity: 0.5; cursor: default; }
 .evals-panel th, .evals-panel td { border-bottom: 1px solid var(--border); padding: 3px 6px; text-align: left; }
 
 .trace-metrics span[data-testid="out-speed"], .trace-metrics span[data-testid="inp-speed"] { color: #2da44e; font-weight: 500; }
+
+.resize-handle { flex-shrink: 0; z-index: 5; }
+.resize-horizontal { width: 5px; cursor: col-resize; background: transparent; transition: background 0.15s; }
+.resize-horizontal:hover, .resize-horizontal:active { background: var(--accent); }
+.resize-vertical { height: 5px; cursor: row-resize; background: transparent; transition: background 0.15s; }
+.resize-vertical:hover, .resize-vertical:active { background: var(--accent); }

@@ -1,6 +1,7 @@
 // 主工作区（设计方案 §7.2 四区布局）：文件树 | 编辑器 | 代理会话 + 底部时间轴。
 // 三区可折叠；快捷键 §7.4。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ResizeHandle } from "./components/ResizeHandle";
 import { TenonApi } from "./lib/api";
 import { createTranslator, LOCALE_CHANGE, type Locale } from "./lib/i18n";
 import type { AgentStateName } from "./lib/stateColors";
@@ -45,6 +46,10 @@ export default function App({
   const [agentState, setAgentState] = useState<AgentStateName>("idle");
   const [routeNote, setRouteNote] = useState<string | null>(null);
   const [bottomTab, setBottomTab] = useState<"timeline" | "trace" | "evals">("timeline");
+  // 可调布局（§7.2：三区可折叠可调宽；localStorage 记忆）
+  const [leftWidth, setLeftWidth] = useState(() => Number(localStorage.getItem("tenon:leftWidth")) || 220);
+  const [rightWidth, setRightWidth] = useState(() => Number(localStorage.getItem("tenon:rightWidth")) || 420);
+  const [bottomHeight, setBottomHeight] = useState(() => Number(localStorage.getItem("tenon:bottomHeight")) || 180);
 
   // 打开项目 + 建会话（§7.3 打开项目流：TOFU 信任卡随 M1 全量；M0 默认交互档）
   const openProject = useCallback(async () => {
@@ -147,18 +152,35 @@ export default function App({
       )}
       <div className="workspace">
         {sidebarOpen && (
-          <aside className="zone zone-left">
-            <LanguagePackWizard
-              api={api}
-              projectId={projectId}
-              onInstalled={() => {
-                // 重新拉取文件树无必要；向导自身刷新状态
-              }}
+          <>
+            <aside className="zone zone-left" style={{ width: leftWidth, minWidth: 140, maxWidth: 480 }}>
+              <LanguagePackWizard
+                api={api}
+                projectId={projectId}
+                onInstalled={() => {
+                  // 重新拉取文件树无必要；向导自身刷新状态
+                }}
+              />
+              <FileTree api={api} t={t} projectId={projectId} onOpenFile={openFile} />
+            </aside>
+            <ResizeHandle
+              dir="horizontal"
+              testId="resize-left"
+              onResize={(d) =>
+                setLeftWidth((w) => {
+                  const v = Math.min(480, Math.max(140, w + d));
+                  localStorage.setItem("tenon:leftWidth", String(v));
+                  return v;
+                })
+              }
+              onDoubleClick={() => setLeftWidth(220)}
             />
-            <FileTree api={api} t={t} projectId={projectId} onOpenFile={openFile} />
-          </aside>
+          </>
         )}
-        <section className="zone zone-center">
+        <section
+          className="zone zone-center"
+          style={{ flex: 1, minWidth: 200 }}
+        >
           <EditorPane
             tabs={tabs}
             activePath={activePath}
@@ -188,7 +210,19 @@ export default function App({
             }}
           />
         </section>
-        <section className="zone zone-right">
+        <ResizeHandle
+          dir="horizontal"
+          testId="resize-right"
+          onResize={(d) =>
+            setRightWidth((w) => {
+              const v = Math.min(720, Math.max(260, w - d));
+              localStorage.setItem("tenon:rightWidth", String(v));
+              return v;
+            })
+          }
+          onDoubleClick={() => setRightWidth(420)}
+        />
+        <section className="zone zone-right" style={{ width: rightWidth, minWidth: 260, maxWidth: 720 }}>
           <AgentPanel
             api={api}
             t={t}
@@ -235,7 +269,14 @@ export default function App({
         </div>
       )}
       {timelineOpen && (
-        <footer className="zone-bottom">
+        <footer className="zone-bottom" style={{ height: bottomHeight }}>
+          <ResizeHandle dir="vertical" onResize={(d) =>
+            setBottomHeight((h) => {
+              const v = Math.min(480, Math.max(80, h - d));
+              localStorage.setItem("tenon:bottomHeight", String(v));
+              return v;
+            })
+          } />
           <div className="bottom-tabs">
             <button
               className={bottomTab === "timeline" ? "active" : ""}
