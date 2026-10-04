@@ -57,8 +57,13 @@ async fn run_read_only_task(laya: Option<Arc<LayaRuntime>>) -> (bool, u64) {
 }
 
 fn laya_runtime() -> Arc<LayaRuntime> {
-    // 按 §9.8：模型不进安装包——测试以「已下载」形态装到临时 models 目录
-    let dir = std::env::temp_dir().join(format!("laya-gate-{}", std::process::id()));
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static SEQ: AtomicUsize = AtomicUsize::new(0);
+    // 按 §9.8：模型不进安装包——测试以「已下载」形态装到临时 models 目录；
+    // 目录按调用唯一：套件并发跑多个 Laya 测试时共享目录会互相干扰
+    //（热加载 / 锁竞争 → intent 偶发回退，gate 偶发误报 token 不降）
+    let n = SEQ.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("laya-gate-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let bytes = include_bytes!("../../tenon-laya/models/laya-starter-v1.json");
     std::fs::write(dir.join("model.json"), bytes).unwrap();
