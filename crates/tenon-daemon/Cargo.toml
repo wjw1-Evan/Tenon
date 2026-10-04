@@ -22,6 +22,7 @@ tenon-lsp = { workspace = true }
 tenon-laya = { workspace = true }
 tenon-registry = { workspace = true }
 axum = { workspace = true }
+tower-http = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

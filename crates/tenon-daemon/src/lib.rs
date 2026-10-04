@@ -14,7 +14,9 @@ pub use pairing::PairingStore;
 pub use state::{DaemonOptions, DaemonState, SessionEntry};
 
 use axum::Router;
+use std::path::PathBuf;
 use std::sync::Arc;
+use tower_http::services::ServeDir;
 
 /// daemon 运行句柄：端口与握手 token。
 #[derive(Debug, Clone)]
@@ -40,7 +42,20 @@ pub async fn serve(options: DaemonOptions) -> std::io::Result<DaemonHandle> {
         Ok(_) => {}
         Err(e) => tracing::error!("崩溃恢复扫描失败: {e}"),
     }
-    let app: Router = routes::build_router(state.clone());
+    let mut app: Router = routes::build_router(state.clone());
+
+    // 本机浏览器访问（§12.6 / M2）：UI 构建产物存在时由 daemon 同源托管——
+    // 浏览器打开 http://127.0.0.1:{port}/ 即加载 UI 并经 /pairing 自发现握手
+    let ui_dist = std::env::var("TENON_UI_DIST")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("ui/dist"));
+    if ui_dist.join("index.html").exists() {
+        // SPA 回退：非 API 路径返回 index.html（UI 自经 /pairing 自发现握手）
+        let spa = ServeDir::new(&ui_dist)
+            .not_found_service(ServeDir::new(&ui_dist).append_index_html_on_directories(false));
+        app = app.fallback_service(spa);
+        tracing::info!("本机浏览器访问：托管 UI 静态资源（{ui_dist:?}）");
+    }
 
     // 绑定地址：默认仅本机回环（§12.6）；`--lan` 显式开启后绑全部接口
     //（局域网请求须持已配对设备令牌，见 auth_middleware）

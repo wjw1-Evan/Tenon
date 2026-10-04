@@ -1026,3 +1026,53 @@ signature: ""
         .unwrap();
     assert_eq!(list["installed"][0]["id"], "community.demo");
 }
+
+#[tokio::test]
+async fn static_ui_serving_and_pairing_self_discovery() {
+    // 本机浏览器访问最后一环（§12.6 / M2）：daemon 同源托管 ui/dist，
+    // 浏览器打开 http://127.0.0.1:{port}/ 即加载 UI；/pairing 返回自发现握手
+    let dir = tempfile::tempdir().unwrap();
+    let ui_dist = tempfile::tempdir().unwrap();
+    std::fs::write(
+        ui_dist.path().join("index.html"),
+        "<html><body>tenon-ui</body></html>",
+    )
+    .unwrap();
+    std::fs::create_dir_all(ui_dist.path().join("assets")).unwrap();
+    std::fs::write(ui_dist.path().join("assets/app.js"), "// js").unwrap();
+
+    let mut options = DaemonOptions::in_memory();
+    options.providers = vec![Arc::new(MockProvider::new(
+        "mock",
+        "mock-1",
+        vec![ScriptedReply::Text("ok".into())],
+    ))];
+    options.default_provider = "mock".into();
+    options.snapshots_root = Some(dir.path().join("snaps"));
+    // TENON_UI_DIST 注入（serve() 读此环境变量）
+    std::env::set_var("TENON_UI_DIST", ui_dist.path());
+    let handle = tenon_daemon::serve(options).await.unwrap();
+
+    // 静态资源
+    let index = reqwest::get(format!("{}/", base(handle.port)))
+        .await
+        .unwrap();
+    assert_eq!(index.status(), 200);
+    assert!(index.text().await.unwrap().contains("tenon-ui"));
+    let asset = reqwest::get(format!("{}/assets/app.js", base(handle.port)))
+        .await
+        .unwrap();
+    assert_eq!(asset.status(), 200);
+
+    // /pairing 自发现（免 token，本机）
+    let pairing: serde_json::Value = reqwest::get(format!("{}/pairing", base(handle.port)))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(pairing["self_hosted"], true);
+    assert!(pairing["ws_ticket"].as_str().is_some());
+
+    std::env::remove_var("TENON_UI_DIST");
+}

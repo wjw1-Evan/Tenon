@@ -1012,8 +1012,8 @@ async fn set_project_trust(
 }
 
 /// 本机浏览器访问配对入口（§12.6 / §15）：
-/// 仅本机回环请求可达（Host 校验由中间件保证）；返回 UI 握手所需信息。
-/// 局域网配对随 M3 显式开启（一次性配对码 + 可吊销令牌）。
+/// 仅本机回环请求可达（Host 校验由中间件保证）；
+/// 返回同源 UI 自发现握手（浏览器打开 / 即自动接入，无需 query 传参）。
 async fn pairing_info(State(state): State<Arc<DaemonState>>) -> Response {
     let ws_ticket = state.tickets.issue();
     Json(json!({
@@ -1021,6 +1021,8 @@ async fn pairing_info(State(state): State<Arc<DaemonState>>) -> Response {
         "hint": "本机浏览器访问：以 ?port=&token= 打开 UI（token 见 daemon 握手行 / Tauri 注入）",
         "ws_ticket": ws_ticket,
         "lan_enabled": false,
+        // UI 自发现：同源部署时 main.tsx 经此获取握手
+        "self_hosted": true,
     }))
     .into_response()
 }

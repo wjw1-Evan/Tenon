@@ -80,6 +80,8 @@ pub struct ToolContext {
     pub mcp_policy: tenon_mcp::McpLevelPolicy,
     /// 团队策略工具黑名单（M3：跨会话只收窄；命中即拒绝）。
     pub team_denied_tools: Vec<String>,
+    /// Laya 本地决策模型（§9.8 集成点 #2 命令风险辅助；None = 回退）。
+    pub laya: Option<std::sync::Arc<tenon_laya::LayaRuntime>>,
 }
 
 impl ToolContext {
@@ -97,6 +99,7 @@ impl ToolContext {
             mcp: None,
             mcp_policy: tenon_mcp::McpLevelPolicy::default(),
             team_denied_tools: Vec::new(),
+            laya: None,
         }
     }
 
@@ -308,6 +311,34 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
         "run_tests" | "run_build" => {
             if ctx.readonly {
                 return ToolOutput::err("只读会话禁用命令执行");
+            }
+            // §9.8 集成点 #2：命令风险辅助（本地 0 token；仅提示不改分级）
+            if let Some(laya) = &ctx.laya {
+                let cmd = args
+                    .get("command")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("(清单默认命令)")
+                    .to_string();
+                let laya = laya.clone();
+                let cmd_for_risk = cmd.clone();
+                // 风险辅助为纯提示（§9.8：仅提示不改分级）——fire-and-forget
+                // 即可，不阻塞命令执行；结果经 eprintln 提示
+                if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    handle.spawn(async move {
+                        if let tenon_laya::LayaOutcome::Success {
+                            value: risk,
+                            duration_ms,
+                            ..
+                        } = laya.risk(&cmd_for_risk).await
+                        {
+                            if risk > 0.7 {
+                                eprintln!(
+                                    "[laya-risk] {cmd_for_risk} 风险 {risk:.2}（{duration_ms}ms）——建议人工确认"
+                                );
+                            }
+                        }
+                    });
+                }
             }
             let default_cmd = if tool == "run_tests" {
                 detect_test_command(&ctx.root)

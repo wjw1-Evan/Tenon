@@ -235,6 +235,7 @@ impl AgentSession {
         tool_ctx.readonly = readonly;
         tool_ctx.dirty = config.dirty.clone();
         tool_ctx.team_denied_tools = config.team_denied_tools.clone();
+        tool_ctx.laya = config.laya.clone();
         let (control_tx, control_rx) = mpsc::unbounded_channel();
         let (events_tx, _) = broadcast::channel(1024);
         let circuit_limits = config.circuit;

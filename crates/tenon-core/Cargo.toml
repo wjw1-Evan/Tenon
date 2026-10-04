@@ -15,3 +15,7 @@ similar = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+[[bench]]
+name = "merge_bench"
+harness = false

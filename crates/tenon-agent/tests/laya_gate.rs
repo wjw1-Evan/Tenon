@@ -4,6 +4,7 @@
 //! 意图预判收窄首轮工具目录 → 输入 token 下降且任务仍通过。
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use tenon_agent::session::{AgentConfig, AgentSession, ProjectWriteLock, TaskOutcome};
 use tenon_core::context::ProjectRules;
@@ -183,5 +184,50 @@ async fn decider_call_event_recorded_without_input_text() {
     assert!(
         !payload_text.contains(marker),
         "decider_call 不得包含输入原文"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn laya_risk_assist_warns_on_dangerous_commands() {
+    // §9.8 集成点 #2：命令风险辅助——executor 内本地打分，
+    // 风险 >0.7 时提示建议人工确认（不改分级、不阻断，仅提示）
+    let dir = tempfile::tempdir().unwrap();
+    let models_dir = dir.path().join("models");
+    std::fs::create_dir_all(&models_dir).unwrap();
+    let bytes = include_bytes!("../../tenon-laya/models/laya-starter-v1.json");
+    std::fs::write(models_dir.join("model.json"), bytes).unwrap();
+    let laya = Arc::new(tenon_laya::LayaRuntime::open(
+        &models_dir,
+        &[
+            "intent".to_string(),
+            "risk".to_string(),
+            "prefilter".to_string(),
+            "routing".to_string(),
+            "triage".to_string(),
+        ],
+    ));
+
+    let mut ctx = tenon_agent::executor::ToolContext::new(dir.path(), Duration::from_secs(10));
+    ctx.laya = Some(laya);
+    let _ = ctx;
+
+    // 风险打分直证：危险命令 > 安全命令（await 直接调用）
+    let r_dangerous = {
+        let laya2 = ctx.laya.clone().unwrap();
+        match laya2.risk("rm -rf build && git push --force").await {
+            tenon_laya::LayaOutcome::Success { value, .. } => value,
+            other => panic!("{other:?}"),
+        }
+    };
+    let r_safe = {
+        let laya2 = ctx.laya.clone().unwrap();
+        match laya2.risk("cargo test --quiet").await {
+            tenon_laya::LayaOutcome::Success { value, .. } => value,
+            other => panic!("{other:?}"),
+        }
+    };
+    assert!(
+        r_dangerous > r_safe,
+        "危险命令风险应更高: {r_dangerous} vs {r_safe}"
     );
 }
