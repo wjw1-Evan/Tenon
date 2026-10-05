@@ -21,7 +21,8 @@ describe("AgentPanel event rendering", () => {
   it("renders direct_action card", async () => {
     const events = [{ id: 1, seq: 1, type: "direct_action", payload: { tool: "bash", level: "B" } }];
     render(<AgentPanel api={mockApi(events)} t={t} sessionId="s1" />);
-    await screen.findByText(/bash · B/);
+    await screen.findByText(/bash/);
+    expect(screen.getByText("B")).toBeTruthy();
   });
 
   it("renders command_run card", async () => {
@@ -50,8 +51,8 @@ describe("AgentPanel event rendering", () => {
 
   it("renders decision with first_edit flag", async () => {
     const events = [{ id: 1, seq: 1, type: "decision", payload: { intent: "writing", first_edit: true } }];
-    render(<AgentPanel api={mockApi(events)} t={t} sessionId="s1" />);
-    await screen.findByText(/state.executing/);
+    render(<AgentPanel api={mockApi(events, "executing")} t={t} sessionId="s1" />);
+    expect(await screen.findByTestId("turn-running")).toHaveTextContent("state.executing");
   });
 
   it("renders user_input card", async () => {

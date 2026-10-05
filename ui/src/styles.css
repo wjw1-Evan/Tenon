@@ -1395,33 +1395,205 @@ button:disabled { opacity: 0.45; cursor: default; }
   padding: 24px;
 }
 
-/* 事件卡：左侧语义色标 */
-.ev {
-  border: 1px solid var(--border);
-  border-left: 2px solid var(--border-strong);
-  border-radius: var(--radius-m);
-  padding: 8px 11px;
+/* 会话过程流（v1.109 Codex 形态）：回合分组 + 折叠步骤卡 + markdown 正文 */
+.turn {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 6px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.turn:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+.turn-task {
+  border-left: 3px solid var(--accent);
+  background: var(--accent-soft);
+  color: var(--fg-strong);
+  border-radius: var(--radius-s);
+  padding: 7px 10px;
   font-size: 12.5px;
   line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
-  background: var(--raised);
 }
-.ev-user {
-  border-left-color: var(--accent);
-  background: var(--accent-soft);
+.turn-body {
+  margin-left: 4px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* 助手 markdown 正文 */
+.turn-answer {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--fg);
+  word-break: break-word;
+}
+.turn-answer p {
+  margin: 0 0 6px;
+  white-space: pre-wrap;
+}
+.turn-answer p:last-child {
+  margin-bottom: 0;
+}
+.turn-answer h1,
+.turn-answer h2,
+.turn-answer h3 {
+  margin: 8px 0 4px;
+  font-size: 13px;
   color: var(--fg-strong);
 }
-.ev-decision { color: var(--fg); }
-.ev-info { color: var(--muted); }
-.ev-cmd {
+.turn-answer ul,
+.turn-answer ol {
+  margin: 0 0 6px;
+  padding-left: 18px;
+}
+.turn-answer li {
+  margin: 2px 0;
+}
+.turn-answer code {
   font-family: var(--font-mono);
   font-size: 11.5px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  padding: 0 4px;
 }
-.ev-patch { border-left-color: var(--patch-border); background: var(--patch-soft); }
-.ev-verify { border-left-color: var(--verify-border); background: var(--verify-soft); }
-.ev-verify strong { color: var(--fg-strong); }
-.ev-verify pre {
+.turn-answer pre {
+  margin: 6px 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  padding: 7px 9px;
+  overflow: auto;
+}
+.turn-answer pre code {
+  background: none;
+  border: none;
+  padding: 0;
+}
+.turn-answer a {
+  color: var(--accent-text);
+}
+
+/* 工具步骤卡：折叠标题行 + 展开明细 */
+.turn-step {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  background: var(--raised);
+  overflow: hidden;
+}
+.turn-step-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  border: none;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  padding: 6px 9px;
+  cursor: pointer;
+}
+.turn-step-head:hover {
+  background: var(--accent-soft);
+}
+.turn-step-icon {
+  flex: none;
+  color: var(--ok);
+  font-size: 11px;
+}
+.turn-step-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.step-badge {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--error-text);
+  border: 1px solid var(--error);
+  border-radius: 999px;
+  padding: 0 6px;
+  line-height: 15px;
+}
+.lvl-badge {
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--patch-border);
+  border: 1px solid var(--patch-border);
+  border-radius: var(--radius-s);
+  padding: 0 4px;
+  line-height: 14px;
+}
+.turn-step-fail {
+  border-color: var(--error);
+}
+.turn-step-fail .turn-step-icon {
+  color: var(--error);
+}
+.turn-step-risk {
+  border-left: 3px solid var(--patch-border);
+}
+.turn-step-risk .turn-step-icon {
+  color: var(--patch-border);
+}
+.turn-step-body {
+  border-top: 1px solid var(--border);
+  padding: 6px 9px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.turn-step-cap {
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.turn-step-body pre {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  padding: 7px 9px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.turn-step-more {
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+/* 验证证据 / 错误 / 信息行 / 执行中 */
+.turn-verify {
+  border: 1px solid var(--verify-border);
+  background: var(--verify-soft);
+  border-radius: var(--radius-m);
+  padding: 7px 10px;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.turn-verify strong {
+  color: var(--fg-strong);
+}
+.turn-verify pre {
   margin: 6px 0 0;
   font-size: 11px;
   line-height: 1.5;
@@ -1431,11 +1603,52 @@ button:disabled { opacity: 0.45; cursor: default; }
   border-radius: var(--radius-s);
   padding: 7px 9px;
   overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
-.ev-error {
-  border-left-color: var(--error);
+.turn-error {
+  border: 1px solid var(--error);
   background: var(--error-soft);
   color: var(--error-text);
+  border-radius: var(--radius-m);
+  padding: 7px 10px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.turn-note {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.turn-note-warn {
+  color: var(--patch-border);
+}
+.turn-running {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 0;
+}
+.turn-running::after {
+  content: "";
+  flex: 1;
+}
+.turn-spinner {
+  flex: none;
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: turn-spin 0.8s linear infinite;
+}
+@keyframes turn-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* 输入区（v1.51）：组合容器——textarea 在上，底行左模型 pill 右发送（参考 ZCode 客户端输入区） */

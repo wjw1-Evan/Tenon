@@ -1,5 +1,5 @@
-// 主工作区（设计方案 §7.2 v1.78 Codex 形态 / v1.107 源码树入右区）：
-// 项目侧栏 | 代理线程主区 | 源码区（左缘源码树 + 编辑器审查窗格）。
+// 主工作区（设计方案 §7.2 v1.110）：项目侧栏 | 代理线程主区（满宽）；
+// 编辑器为应用内浮层（单击文件弹出，✕ 返回线程）；底部 时间轴/轨迹/评估。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ResizeHandle } from "./components/ResizeHandle";
 import { TenonApi } from "./lib/api";
@@ -25,7 +25,6 @@ import type { AgentStateName } from "./lib/stateColors";
 import { useShortcuts } from "./hooks";
 import type { FileTreeChange } from "./components/FileTree";
 import { ProjectExplorer } from "./components/ProjectExplorer";
-import { SourcePanel } from "./components/SourcePanel";
 import { SearchPanel } from "./components/SearchPanel";
 import { FileFinder } from "./components/FileFinder";
 import { EditorPane, type EditorSelection, type EditorTab } from "./components/EditorPane";
@@ -49,7 +48,6 @@ import {
   effectiveBottom,
   effectiveFloatWidth,
   effectiveLeft,
-  effectiveRight,
   useViewport,
 } from "./lib/viewport";
 import { SettingsDialog, type SettingsData } from "./components/SettingsDialog";
@@ -265,63 +263,35 @@ export default function App({
     return () => saver.dispose();
   }, [api]);
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  // 源码区整体开合（v1.108）：右区（源码树 + 编辑器）一区一开关，localStorage 记忆、
-  // 默认展开；关闭态经工作区右缘细条恢复，任意打开文件入口自动唤出。
-  const [sourceTreeOpen, setSourceTreeOpen] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem("tenon:sourceTree") !== "off";
-    } catch {
-      return true;
-    }
-  });
-  const toggleSourceTree = useCallback(() => {
-    setSourceTreeOpen((v) => {
-      const next = !v;
-      try {
-        localStorage.setItem("tenon:sourceTree", next ? "on" : "off");
-      } catch {
-        // 仅当前会话生效
-      }
-      return next;
-    });
-  }, []);
-  const ensureSourceAreaOpen = useCallback(() => {
-    setSourceTreeOpen((v) => {
-      if (v) return v;
-      try {
-        localStorage.setItem("tenon:sourceTree", "on");
-      } catch {
-        // 仅当前会话生效
-      }
-      return true;
-    });
-  }, []);
+  // 编辑器应用内浮层（v1.110）：单击文件 / 模糊打开 / 搜索 / 诊断 / 跟随模式
+  // 打开文件即弹出；✕ 关闭返回线程；会话内状态不持久化（重启后不自动弹出）。
+  const [editorOpen, setEditorOpen] = useState(false);
   const [sideView, setSideView] = useState<SideView>(loadSideView);
   // 视口自适应（§7.2 v1.74）：三档布局；narrow 下侧栏 / 代理面板转互斥浮层。
   const viewport = useViewport();
   const band = viewport.band;
   const narrow = band === "narrow";
-  /** narrow 浮层开合（v1.78）：侧栏与编辑器审查窗格互斥浮层，线程恒为在流主区；
+  /** narrow 侧栏浮层（v1.78；v1.110 编辑器改应用内浮层，仅剩侧栏浮层）：
    * 仅窄屏有意义，不写持久化状态（sidebarOpen / ui-state 不被窄屏污染）。 */
-  const [floatPane, setFloatPane] = useState<"side" | "editor" | null>(null);
+  const [sideFloat, setSideFloat] = useState(false);
   // 跨档位沿：离开 narrow 清空浮层；进入 narrow 线程在流可见，无默认浮层。
   const bandRef = useRef(band);
   useEffect(() => {
     if (bandRef.current === band) return;
     bandRef.current = band;
-    setFloatPane(null);
+    setSideFloat(false);
   }, [band]);
   /** rail 点击语义：同视图再点 = 折叠侧栏；否则切换视图并展开。 */
   const toggleSideView = useCallback(
     (view: SideView) => {
       if (narrow) {
-        if (floatPane === "side" && sideView === view) {
-          setFloatPane(null);
+        if (sideFloat && sideView === view) {
+          setSideFloat(false);
           return;
         }
         setSideView(view);
         localStorage.setItem(SIDE_VIEW_KEY, view);
-        setFloatPane("side");
+        setSideFloat(true);
         return;
       }
       if (sidebarOpen && sideView === view) {
@@ -332,7 +302,7 @@ export default function App({
       localStorage.setItem(SIDE_VIEW_KEY, view);
       setSidebarOpen(true);
     },
-    [narrow, floatPane, sideView, sidebarOpen]
+    [narrow, sideFloat, sideView, sidebarOpen]
   );
   const [agentState, setAgentState] = useState<AgentStateName>("idle");
   const [routeNote, setRouteNote] = useState<string | null>(null);
@@ -340,9 +310,8 @@ export default function App({
   const [bottomTab, setBottomTab] = useState<"timeline" | "trace" | "evals">(
     "timeline"
   );
-  // 可调布局（§7.2：三区可折叠可调宽；localStorage 记忆）
+  // 可调布局（§7.2：两区可折叠可调宽；localStorage 记忆；v1.110 移除右栏）
   const [leftWidth, setLeftWidth] = useState(() => Number(localStorage.getItem("tenon:leftWidth")) || 220);
-  const [rightWidth, setRightWidth] = useState(() => Number(localStorage.getItem("tenon:rightWidth")) || 420);
   const [bottomHeight, setBottomHeight] = useState(() => Number(localStorage.getItem("tenon:bottomHeight")) || 180);
 
   const tabs = projectId ? tabsByProject[projectId] ?? [] : [];
@@ -352,17 +321,13 @@ export default function App({
 
   // 渲染期尺寸 clamp（§7.2 v1.74）：只作用渲染，记忆值与项目 ui-state 不改写。
   const effLeft = effectiveLeft(leftWidth, viewport.width);
-  const effRight = effectiveRight(rightWidth, viewport.width);
   const effBottom = effectiveBottom(bottomHeight, viewport.height);
-  // narrow 浮层互斥可见性（v1.78）：侧栏浮层；编辑器审查窗格窄屏转互斥浮层，
-  // 最后一个 tab 关闭（含 WS removed 路径）时自动收起，防遮罩悬空。
-  const sideVisible = narrow ? floatPane === "side" : sidebarOpen;
-  // v1.108：宽屏右区随源码区开关整体停靠/隐藏（无 tab 显编辑器空态）；
-  // 窄屏维持互斥浮层语义（顶栏切换钮唤出，v1.78）。
-  const editorDocked = narrow ? floatPane === "editor" : sourceTreeOpen;
+  // narrow 侧栏浮层可见性（v1.78）。
+  const sideVisible = narrow ? sideFloat : sidebarOpen;
+  // v1.110：最后一个 tab 关闭（含 WS removed 路径）时编辑器浮层随之收起。
   useEffect(() => {
-    if (narrow && floatPane === "editor" && tabs.length === 0) setFloatPane(null);
-  }, [narrow, floatPane, tabs.length]);
+    if (editorOpen && tabs.length === 0) setEditorOpen(false);
+  }, [editorOpen, tabs.length]);
 
   useEffect(() => {
     tabsByProjectRef.current = tabsByProject;
@@ -395,9 +360,6 @@ export default function App({
       const saved = await api.projectUiState(project.id);
       if (typeof saved.leftWidth === "number") {
         setLeftWidth(Math.min(480, Math.max(140, saved.leftWidth)));
-      }
-      if (typeof saved.rightWidth === "number") {
-        setRightWidth(Math.min(720, Math.max(260, saved.rightWidth)));
       }
       if (typeof saved.bottomHeight === "number") {
         setBottomHeight(Math.min(480, Math.max(80, saved.bottomHeight)));
@@ -572,9 +534,8 @@ export default function App({
 
   const openFile = useCallback(
     async (path: string, line?: number) => {
-      // 打开文件即唤出源码区（窄屏为编辑器浮层 v1.78；宽屏整体开合 v1.108）。
-      if (narrow) setFloatPane("editor");
-      else ensureSourceAreaOpen();
+      // 打开文件即弹出编辑器浮层（v1.110，与视口无关）。
+      setEditorOpen(true);
       if (tabs.some((tab) => tab.path === path)) {
         setActivePath(path);
         if (line) setGotoLine({ path, line, token: Date.now() });
@@ -586,7 +547,7 @@ export default function App({
       setActivePathByProject((prev) => ({ ...prev, [projectId]: path }));
       if (line) setGotoLine({ path, line, token: Date.now() });
     },
-    [api, projectId, tabs, narrow, ensureSourceAreaOpen]
+    [api, projectId, tabs]
   );
 
   /** 统一保存（§8.2 v1.75）：待写盘条目走 AutoSaver flush，否则未保存缓冲直接写盘。 */
@@ -746,7 +707,6 @@ export default function App({
   const commands: Command[] = useMemo(
     () => [
       { id: "toggle.bottom", label: t("panel.bottom.toggle"), run: () => setTimelineOpen((v) => !v) },
-      { id: "toggle.source", label: t("palette.toggle_source"), run: toggleSourceTree },
       { id: "open.settings", label: t("settings.open"), run: () => setSettingsOpen(true) },
       {
         id: "editor.inline_completion",

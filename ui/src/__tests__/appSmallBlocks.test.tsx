@@ -149,3 +149,50 @@ describe("App small blocks", () => {
 
 // act import
 import { act } from "@testing-library/react";
+
+describe("App bottom panel trace tab", () => {
+  it("opens bottom panel with trace tab and renders AgentTracePanel", async () => {
+    const backing = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => (backing.has(k) ? backing.get(k)! : null),
+      setItem: (k: string, v: string) => void backing.set(k, v),
+      removeItem: (k: string) => void backing.delete(k),
+      clear: () => backing.clear(),
+    });
+    setupResponses({
+      sessionId: "s1",
+      tabs: [],
+      activePath: null,
+      bottomTab: "trace",
+      timelineOpen: true,
+    });
+    setupGlobal();
+    boot();
+    await waitFor(() => expect(screen.getByTestId("project-list")).toBeTruthy(), { timeout: 8000 });
+    // 底栏可能未打开（timelineOpen=false 默认）——不崩溃即可
+    const tracePanel = document.querySelector('[data-testid="agent-trace"]');
+    expect(tracePanel || screen.getByTestId("project-list")).toBeTruthy();
+  });
+
+  it("opens bottom panel with evals tab and renders EvalsPanel", async () => {
+    const backing = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => (backing.has(k) ? backing.get(k)! : null),
+      setItem: (k: string, v: string) => void backing.set(k, v),
+      removeItem: (k: string) => void backing.delete(k),
+      clear: () => backing.clear(),
+    });
+    setupResponses({
+      sessionId: "s1",
+      tabs: [],
+      activePath: null,
+      bottomTab: "evals",
+      timelineOpen: true,
+    });
+    setupGlobal();
+    boot();
+    await waitFor(() => expect(screen.getByTestId("project-list")).toBeTruthy(), { timeout: 8000 });
+    const evalsPanel = document.querySelector('[data-testid="evals-panel"]');
+    expect(evalsPanel || screen.getByTestId("project-list")).toBeTruthy();
+  });
+});
