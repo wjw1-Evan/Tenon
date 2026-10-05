@@ -27,12 +27,14 @@ test("concurrent projects keep writes and rollbacks isolated", async ({ page }) 
   await expect(page.getByTestId("project-list").getByText("project-a", { exact: true })).toBeVisible();
 
   // 登记 B：ProjectRuntime 由 daemon 隐式激活；当前 UI 切到 B。
+  // 断言窗口 20s：共享开发机高负载（load 40+）下 daemon L4 索引 / 会话建立
+  // 可超默认 5s（健康环境满足即返回，不增加通过耗时）。
   await page.getByTestId("project-add").click();
   await page.getByTestId("project-add-path").fill(runtime.projectB);
   await page.getByTestId("project-add-form").getByRole("button", { name: "Open" }).click();
   await expect(
     page.getByTestId("project-list").getByText("project-b", { exact: true }).locator("xpath=ancestor::div[1]")
-  ).toHaveClass(/active/);
+  ).toHaveClass(/active/, { timeout: 20_000 });
 
   // 登记即用：切回 A 执行首个写入 / 回滚链路（点击文件夹行即切换并展开）。
   await page.getByTestId("project-list").getByText("project-a", { exact: true }).click();
@@ -52,8 +54,11 @@ test("concurrent projects keep writes and rollbacks isolated", async ({ page }) 
 
   // Checkpoint 回滚：磁盘恢复到任务前；unrevert 恢复写入语义。
   // v1.78 后底栏默认收起；细条入口保留稳定 testid。
+  // 点时间轴最后一个 Roll back：时间轴反序渲染（新→旧），最新节点是写入完成后的
+  // 树快照（v1.111 起 checkpoint_rollback 真按 id 恢复，恢复它=无效果）；
+  // 最旧节点 = 任务前快照，恢复它才撤销本任务的写入效果。
   await page.getByTestId("bottom-open").click();
-  const rollback = page.locator(".timeline-node").getByRole("button", { name: /Roll back|Rollback|回滚/ }).first();
+  const rollback = page.locator(".timeline-node").getByRole("button", { name: /Roll back|Rollback|回滚/ }).last();
   await expect(rollback).toBeVisible();
   await rollback.click();
   await expect.poll(async () => readFile(path.join(runtime.projectA, "e2e-a.txt"), "utf8").catch(() => ""), {

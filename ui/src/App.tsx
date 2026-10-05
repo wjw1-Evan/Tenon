@@ -543,9 +543,10 @@ export default function App({
   }, [activateProject]);
 
   const openFile = useCallback(
-    async (path: string, line?: number) => {
-      // 打开文件即弹出编辑器浮层（v1.110，与视口无关）。
-      setEditorOpen(true);
+    async (path: string, line?: number, opts?: { fromFollow?: boolean }) => {
+      // 打开文件即弹出编辑器浮层（v1.110，与视口无关）；
+      // 跟随模式不抢屏（v1.113）：代理写入只就绪数据，浮层由用户主动打开。
+      if (!opts?.fromFollow) setEditorOpen(true);
       if (tabs.some((tab) => tab.path === path)) {
         setActivePath(path);
         if (line) setGotoLine({ path, line, token: Date.now() });
@@ -1162,7 +1163,9 @@ export default function App({
               }));
               // 跟随模式（§8.5）：代理写入时自动打开/滚动到首个改动行（可关）。
               if (followModeRef.current && lines.length > 0) {
-                void openFile(path, lines[0]);
+                // 跟随模式（§8.5 / v1.113）：数据就绪（tab + AI 行 + 定位）但不弹浮层抢屏；
+                // 浮层已开时 gotoLine 照常定位到首个改动行。
+                void openFile(path, lines[0], { fromFollow: true });
               }
             }}
             onDirtyConflict={setDirtyConflict}
