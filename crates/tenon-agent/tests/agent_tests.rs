@@ -1042,7 +1042,8 @@ async fn memories_disabled_skips_extract_and_inject() {
 
 #[tokio::test]
 async fn session_switch_provider_and_current_model() {
-    let (_d, session, _store, provider) = setup(vec![ScriptedReply::Text("response".into())]).await;
+    let (_d, session, _store, provider) =
+        setup(vec![ScriptedReply::Text("response".into())]).await;
     let model_before = session.current_model().await;
     session.switch_provider(provider.clone()).await;
     let model_after = session.current_model().await;
@@ -1051,7 +1052,8 @@ async fn session_switch_provider_and_current_model() {
 
 #[tokio::test]
 async fn session_set_title_and_circuit_limits() {
-    let (_d, session, _store, _p) = setup(vec![ScriptedReply::Text("ok".into())]).await;
+    let (_d, session, _store, _p) =
+        setup(vec![ScriptedReply::Text("ok".into())]).await;
     session.set_title("My Test Session").await.unwrap();
     session
         .set_circuit_limits(tenon_core::circuit::CircuitLimits {
@@ -1065,7 +1067,8 @@ async fn session_set_title_and_circuit_limits() {
 
 #[tokio::test]
 async fn session_subscribe_receives_events() {
-    let (_d, session, _store, _p) = setup(vec![ScriptedReply::Text("subscribe test".into())]).await;
+    let (_d, session, _store, _p) =
+        setup(vec![ScriptedReply::Text("subscribe test".into())]).await;
     let mut rx = session.subscribe();
     let outcome = session.run_task("test subscription").await;
     assert!(matches!(outcome, TaskOutcome::Done(_)));
@@ -1075,13 +1078,15 @@ async fn session_subscribe_receives_events() {
 
 #[tokio::test]
 async fn session_managed_worktree_is_none_by_default() {
-    let (_d, session, _store, _p) = setup(vec![ScriptedReply::Text("no worktree".into())]).await;
+    let (_d, session, _store, _p) =
+        setup(vec![ScriptedReply::Text("no worktree".into())]).await;
     assert!(session.managed_worktree().is_none());
 }
 
 #[tokio::test]
 async fn session_interrupt_first_edit_buffer_does_not_panic() {
-    let (_d, session, _store, _p) = setup(vec![ScriptedReply::Text("quick response".into())]).await;
+    let (_d, session, _store, _p) =
+        setup(vec![ScriptedReply::Text("quick response".into())]).await;
     session.interrupt_first_edit_buffer();
     let outcome = session.run_task("quick").await;
     assert!(matches!(outcome, TaskOutcome::Done(_)));
@@ -1089,19 +1094,18 @@ async fn session_interrupt_first_edit_buffer_does_not_panic() {
 
 #[tokio::test]
 async fn session_control_pause_does_not_crash() {
-    let (_d, session, _store, _p) = setup(vec![ScriptedReply::Text("pause test".into())]).await;
+    let (_d, session, _store, _p) =
+        setup(vec![ScriptedReply::Text("pause test".into())]).await;
     session.control(ControlCommand::Pause);
     let outcome = session.run_task("paused task").await;
     // Should still complete (pause is advisory)
-    assert!(matches!(
-        outcome,
-        TaskOutcome::Done(_) | TaskOutcome::Paused { .. } | TaskOutcome::Error(_)
-    ));
+    assert!(matches!(outcome, TaskOutcome::Done(_) | TaskOutcome::Paused { .. } | TaskOutcome::Error(_)));
 }
 
 #[tokio::test]
 async fn session_control_resume_does_not_crash() {
-    let (_d, session, _store, _p) = setup(vec![ScriptedReply::Text("resume test".into())]).await;
+    let (_d, session, _store, _p) =
+        setup(vec![ScriptedReply::Text("resume test".into())]).await;
     session.control(ControlCommand::Resume);
     let outcome = session.run_task("resumed task").await;
     assert!(matches!(outcome, TaskOutcome::Done(_)));
@@ -1121,17 +1125,13 @@ async fn session_run_task_with_patch_creates_checkpoint() {
     match outcome {
         TaskOutcome::Done(card) => {
             assert!(!card.changed_files.is_empty());
-            assert!(card
-                .changed_files
-                .contains(&"checkpoint-test.txt".to_string()));
+            assert!(card.changed_files.contains(&"checkpoint-test.txt".to_string()));
         }
         _ => panic!("expected Done"),
     }
     // Verify event was recorded
     let mut st = store.lock().await;
-    let events = st
-        .events(&session.config().project_id)
-        .unwrap_or_else(|_| vec![]);
+    let events = st.events(&session.config().project_id).unwrap_or_else(|_| vec![]);
     let _ = events; // events are session-scoped, not project-scoped
 }
 
@@ -1162,8 +1162,7 @@ async fn session_readonly_config_blocks_writes() {
         st.upsert_project(dir.path().to_str().unwrap()).unwrap().id
     };
     let snapshots_root = dir.path().join(".tenon-snapshots");
-    let snapshots =
-        Arc::new(SnapshotStore::open(&snapshots_root, &project_id, dir.path(), 2).unwrap());
+    let snapshots = Arc::new(SnapshotStore::open(&snapshots_root, &project_id, dir.path(), 2).unwrap());
     let script = vec![
         ScriptedReply::Tool {
             name: "apply_patch".into(),
@@ -1177,22 +1176,13 @@ async fn session_readonly_config_blocks_writes() {
     config.policy.readonly = true;
     let rules = ProjectRules::default();
     let session = AgentSession::create(
-        store.clone(),
-        snapshots,
-        provider,
-        config,
-        ProjectWriteLock::new(),
-        rules,
-    )
-    .await
-    .unwrap();
+        store.clone(), snapshots, provider, config, ProjectWriteLock::new(), rules,
+    ).await.unwrap();
     let outcome = session.run_task("try to write").await;
     if let TaskOutcome::Done(_) = outcome {
         // Readonly should block the file write
-        assert!(
-            !dir.path().join("should-be-blocked.txt").exists(),
-            "readonly mode should prevent file creation"
-        );
+        assert!(!dir.path().join("should-be-blocked.txt").exists(),
+            "readonly mode should prevent file creation");
     }
 }
 

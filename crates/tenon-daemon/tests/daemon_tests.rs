@@ -410,27 +410,6 @@ async fn full_session_flow_over_http() {
     assert!(costs["input_tokens"].as_u64().unwrap() > 0);
 }
 
-/// v1.128 测试确定性通道：轮询后端（100ms 内容比对），避免原生 FSEvents
-/// 注册延迟受系统 fseventsd 态势影响。
-async fn start_daemon_with_poll_watcher(
-    script: Vec<ScriptedReply>,
-) -> (tempfile::TempDir, u16, String) {
-    let dir = tempfile::tempdir().unwrap();
-    let mut options = DaemonOptions::in_memory();
-    options.providers = vec![Arc::new(MockProvider::new("mock", "mock-1", script))];
-    options.default_provider = "mock".into();
-    options.snapshots_root = Some(dir.path().join("snapshots"));
-    options.worktrees_root = Some(dir.path().join("worktrees"));
-    options.endpoint_path = Some(dir.path().join("daemon.endpoint"));
-    options.settings_path = Some(dir.path().join("settings.json"));
-    options.policy_path = Some(dir.path().join("policy.toml"));
-    options.updates_staging_dir = Some(dir.path().join("updates/staged"));
-    options.laya_models_dir = Some(dir.path().join("models/laya"));
-    options.watch_poll_interval = Some(Duration::from_millis(100));
-    let handle = serve(options).await.unwrap();
-    (dir, handle.port, handle.token)
-}
-
 #[tokio::test]
 async fn b_level_write_executes_directly_over_http() {
     let dir = tempfile::tempdir().unwrap();
@@ -1789,10 +1768,7 @@ async fn project_runtime_streams_scoped_file_changes() {
     let project = dir.path().join("watched");
     std::fs::create_dir_all(&project).unwrap();
 
-    // v1.128：本用例的对象是「作用域文件事件经 WS 流转」，监听源用轮询后端
-    //（测试确定性通道）——原生 FSEvents 注册在 fseventsd 高负载机器上可达
-    // 数秒且需后台补注册，不应让本用例依赖系统态势。
-    let (_tmp, port, token) = start_daemon_with_poll_watcher(vec![]).await;
+    let (_tmp, port, token) = start_daemon(vec![]).await;
     let client = client_with_token(&token);
     let opened: serde_json::Value = client
         .post(format!("{}/projects/open", base(port)))
@@ -4425,10 +4401,7 @@ async fn memories_endpoints_crud() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
 
     // POST create memory
     let r = client
@@ -4487,11 +4460,7 @@ async fn settings_persist_and_reload() {
     assert!(r.status().is_success());
 
     // GET settings reflects change
-    let r = client
-        .get(format!("{}/settings", base(port)))
-        .send()
-        .await
-        .unwrap();
+    let r = client.get(format!("{}/settings", base(port))).send().await.unwrap();
     assert_eq!(r.status(), 200);
 }
 
@@ -4524,10 +4493,7 @@ async fn git_view_endpoint_with_git_repo() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
 
     let r = client
         .get(format!("{}/project/{}/git/view", base(port), pid))
@@ -4547,9 +4513,7 @@ async fn multi_project_open_and_list() {
 
     let r_a = client
         .post(format!("{}/projects/open", base(port)))
-        .json(
-            &serde_json::json!({ "path": tmp_a.path().to_str().unwrap(), "display_name": "Alpha" }),
-        )
+        .json(&serde_json::json!({ "path": tmp_a.path().to_str().unwrap(), "display_name": "Alpha" }))
         .send()
         .await
         .unwrap();
@@ -4557,26 +4521,16 @@ async fn multi_project_open_and_list() {
 
     let r_b = client
         .post(format!("{}/projects/open", base(port)))
-        .json(
-            &serde_json::json!({ "path": tmp_b.path().to_str().unwrap(), "display_name": "Beta" }),
-        )
+        .json(&serde_json::json!({ "path": tmp_b.path().to_str().unwrap(), "display_name": "Beta" }))
         .send()
         .await
         .unwrap();
     assert_eq!(r_b.status(), 200);
 
-    let r = client
-        .get(format!("{}/projects", base(port)))
-        .send()
-        .await
-        .unwrap();
+    let r = client.get(format!("{}/projects", base(port))).send().await.unwrap();
     let body: serde_json::Value = r.json().await.unwrap();
-    let names: Vec<&str> = body["projects"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|p| p["display_name"].as_str())
-        .collect();
+    let names: Vec<&str> = body["projects"].as_array().unwrap()
+        .iter().filter_map(|p| p["display_name"].as_str()).collect();
     assert!(names.contains(&"Alpha"));
     assert!(names.contains(&"Beta"));
 }
@@ -4597,10 +4551,7 @@ async fn session_trace_events_after_send() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
 
     let r = client
         .post(format!("{}/session", base(port)))
@@ -4608,10 +4559,7 @@ async fn session_trace_events_after_send() {
         .send()
         .await
         .unwrap();
-    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
 
     // 发送消息
     let r = client
@@ -4658,10 +4606,7 @@ async fn checkpoint_rollback_after_write() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
 
     let r = client
         .post(format!("{}/session", base(port)))
@@ -4669,10 +4614,7 @@ async fn checkpoint_rollback_after_write() {
         .send()
         .await
         .unwrap();
-    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
 
     // 发送带工具调用的消息
     client
@@ -4713,22 +4655,14 @@ async fn evals_listing_and_plugins_registry() {
     let client = client_with_token(&token);
 
     // GET evals returns task list
-    let r = client
-        .get(format!("{}/evals", base(port)))
-        .send()
-        .await
-        .unwrap();
+    let r = client.get(format!("{}/evals", base(port))).send().await.unwrap();
     assert_eq!(r.status(), 200);
     let body: serde_json::Value = r.json().await.unwrap();
     // evals 可能有 tasks 数组或空
     assert!(body.is_object());
 
     // GET plugins
-    let r = client
-        .get(format!("{}/plugins", base(port)))
-        .send()
-        .await
-        .unwrap();
+    let r = client.get(format!("{}/plugins", base(port))).send().await.unwrap();
     assert_eq!(r.status(), 200);
     let body: serde_json::Value = r.json().await.unwrap();
     assert!(body.is_object() || body.is_array());
@@ -4749,10 +4683,7 @@ async fn project_rename_via_display_name() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
 
     // 重新打开并更新 display_name
     let r = client
@@ -4767,16 +4698,9 @@ async fn project_rename_via_display_name() {
     assert_eq!(r.status(), 200);
 
     // 列表中显示更新后的名称
-    let r = client
-        .get(format!("{}/projects", base(port)))
-        .send()
-        .await
-        .unwrap();
+    let r = client.get(format!("{}/projects", base(port))).send().await.unwrap();
     let body: serde_json::Value = r.json().await.unwrap();
-    let project = body["projects"]
-        .as_array()
-        .unwrap()
-        .iter()
+    let project = body["projects"].as_array().unwrap().iter()
         .find(|p| p["id"].as_str() == Some(pid.as_str()))
         .unwrap();
     assert_eq!(project["display_name"], "Renamed");
@@ -4795,10 +4719,7 @@ async fn session_control_stop_and_status() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
 
     let r = client
         .post(format!("{}/session", base(port)))
@@ -4806,10 +4727,7 @@ async fn session_control_stop_and_status() {
         .send()
         .await
         .unwrap();
-    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
 
     // Send a message to start execution
     client
@@ -4851,10 +4769,7 @@ async fn file_highlight_returns_syntax_tokens() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
 
     client
         .put(format!("{}/project/{}/file", base(port), pid))
@@ -4864,11 +4779,7 @@ async fn file_highlight_returns_syntax_tokens() {
         .unwrap();
 
     let r = client
-        .get(format!(
-            "{}/project/{}/highlight?path=syntax.rs",
-            base(port),
-            pid
-        ))
+        .get(format!("{}/project/{}/highlight?path=syntax.rs", base(port), pid))
         .send()
         .await
         .unwrap();
@@ -4934,10 +4845,7 @@ async fn session_created_returns_project_id() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
 
     let r = client
         .post(format!("{}/session", base(port)))
@@ -4961,24 +4869,13 @@ async fn set_trust_updates_project() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
 
     // Verify untrusted by default
-    let r = client
-        .get(format!("{}/projects", base(port)))
-        .send()
-        .await
-        .unwrap();
+    let r = client.get(format!("{}/projects", base(port))).send().await.unwrap();
     let body: serde_json::Value = r.json().await.unwrap();
-    let proj = body["projects"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|p| p["id"].as_str() == Some(pid.as_str()))
-        .unwrap();
+    let proj = body["projects"].as_array().unwrap().iter()
+        .find(|p| p["id"].as_str() == Some(pid.as_str())).unwrap();
     assert_eq!(proj["trusted"], false);
 
     // Set trusted
@@ -4991,18 +4888,10 @@ async fn set_trust_updates_project() {
     assert_eq!(r.status(), 200);
 
     // Verify trusted
-    let r = client
-        .get(format!("{}/projects", base(port)))
-        .send()
-        .await
-        .unwrap();
+    let r = client.get(format!("{}/projects", base(port))).send().await.unwrap();
     let body: serde_json::Value = r.json().await.unwrap();
-    let proj = body["projects"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|p| p["id"].as_str() == Some(pid.as_str()))
-        .unwrap();
+    let proj = body["projects"].as_array().unwrap().iter()
+        .find(|p| p["id"].as_str() == Some(pid.as_str())).unwrap();
     assert_eq!(proj["trusted"], true);
 }
 
@@ -5018,10 +4907,7 @@ async fn file_search_with_regex_special_chars() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
 
     client
         .put(format!("{}/project/{}/file", base(port), pid))
@@ -5054,11 +4940,7 @@ async fn ui_prefs_set_and_get() {
     assert_eq!(r.status(), 200);
 
     // GET ui-prefs
-    let r = client
-        .get(format!("{}/ui-prefs", base(port)))
-        .send()
-        .await
-        .unwrap();
+    let r = client.get(format!("{}/ui-prefs", base(port))).send().await.unwrap();
     assert_eq!(r.status(), 200);
 }
 
@@ -5086,10 +4968,7 @@ async fn read_file_with_url_encoded_path() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
 
     client
         .put(format!("{}/project/{}/file", base(port), pid))
@@ -5099,12 +4978,7 @@ async fn read_file_with_url_encoded_path() {
         .unwrap();
 
     let r = client
-        .get(format!(
-            "{}/project/{}/file?path={}",
-            base(port),
-            pid,
-            "src%2Fnested%20file.txt"
-        ))
+        .get(format!("{}/project/{}/file?path={}", base(port), pid, "src%2Fnested%20file.txt"))
         .send()
         .await
         .unwrap();
@@ -5122,17 +4996,10 @@ async fn project_delete_then_404() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
 
     // Delete
-    client
-        .delete(format!("{}/projects/{}", base(port), pid))
-        .send()
-        .await
-        .unwrap();
+    client.delete(format!("{}/projects/{}", base(port), pid)).send().await.unwrap();
 
     // Try to get tree for deleted project
     let r = client
@@ -5155,10 +5022,7 @@ async fn session_model_switch_returns_updated_model() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
 
     let r = client
         .post(format!("{}/session", base(port)))
@@ -5166,10 +5030,7 @@ async fn session_model_switch_returns_updated_model() {
         .send()
         .await
         .unwrap();
-    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
 
     let r = client
         .post(format!("{}/session/{}/model", base(port), sid))
@@ -5193,10 +5054,7 @@ async fn create_session_empty_provider_uses_default() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
 
     // Create with empty provider (uses default)
     let r = client
@@ -5273,11 +5131,7 @@ async fn open_project_and_get_pairing() {
         .send()
         .await
         .unwrap();
-    let r = client
-        .get(format!("{}/pairing", base(port)))
-        .send()
-        .await
-        .unwrap();
+    let r = client.get(format!("{}/pairing", base(port))).send().await.unwrap();
     let body: serde_json::Value = r.json().await.unwrap();
     assert!(body["port"].as_u64().unwrap() > 0);
     assert!(!body["token"].as_str().unwrap().is_empty());
@@ -5301,20 +5155,14 @@ async fn session_checkpoints_after_patch() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
     let r = client
         .post(format!("{}/session", base(port)))
         .json(&serde_json::json!({ "project_id": pid, "provider": "mock" }))
         .send()
         .await
         .unwrap();
-    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
 
     client
         .post(format!("{}/session/{}/message", base(port), sid))
@@ -5346,10 +5194,7 @@ async fn multiple_sessions_same_project() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
 
     // Create two sessions for the same project
     let r1 = client
@@ -5358,10 +5203,7 @@ async fn multiple_sessions_same_project() {
         .send()
         .await
         .unwrap();
-    let s1 = r1.json::<serde_json::Value>().await.unwrap()["session_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let s1 = r1.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
 
     let r2 = client
         .post(format!("{}/session", base(port)))
@@ -5369,25 +5211,14 @@ async fn multiple_sessions_same_project() {
         .send()
         .await
         .unwrap();
-    let s2 = r2.json::<serde_json::Value>().await.unwrap()["session_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let s2 = r2.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
 
     assert_ne!(s1, s2, "两个会话应有不同 ID");
 
     // Both sessions should be queryable
-    let r1 = client
-        .get(format!("{}/session/{}", base(port), s1))
-        .send()
-        .await
-        .unwrap();
+    let r1 = client.get(format!("{}/session/{}", base(port), s1)).send().await.unwrap();
     assert_eq!(r1.status(), 200);
-    let r2 = client
-        .get(format!("{}/session/{}", base(port), s2))
-        .send()
-        .await
-        .unwrap();
+    let r2 = client.get(format!("{}/session/{}", base(port), s2)).send().await.unwrap();
     assert_eq!(r2.status(), 200);
 }
 
@@ -5417,10 +5248,7 @@ async fn file_write_read_roundtrip_with_unicode_path() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
 
     let content = "中文文档内容\\n第二行";
     let r = client
@@ -5432,12 +5260,7 @@ async fn file_write_read_roundtrip_with_unicode_path() {
     assert_eq!(r.status(), 200);
 
     let r = client
-        .get(format!(
-            "{}/project/{}/file?path={}",
-            base(port),
-            pid,
-            "docs%2F%E4%B8%AD%E6%96%87%E6%96%87%E6%A1%A3.md"
-        ))
+        .get(format!("{}/project/{}/file?path={}", base(port), pid, "docs%2F%E4%B8%AD%E6%96%87%E6%96%87%E6%A1%A3.md"))
         .send()
         .await
         .unwrap();
@@ -5475,10 +5298,7 @@ async fn create_session_returns_worktree_path_for_managed() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
 
     // Create managed worktree session
     let r = client
@@ -5508,10 +5328,7 @@ async fn language_pack_detect_returns_pack_list() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
     let r = client
         .get(format!("{}/project/{}/language-packs", base(port), pid))
         .send()
@@ -5519,6 +5336,7 @@ async fn language_pack_detect_returns_pack_list() {
         .unwrap();
     assert_eq!(r.status(), 200);
 }
+
 
 #[tokio::test]
 async fn open_project_returns_trusted_false_by_default() {
@@ -5546,20 +5364,14 @@ async fn session_model_switch_and_get_session_reflects() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
     let r = client
         .post(format!("{}/session", base(port)))
         .json(&serde_json::json!({ "project_id": pid, "provider": "mock" }))
         .send()
         .await
         .unwrap();
-    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
 
     // Switch model
     let r = client
@@ -5600,10 +5412,7 @@ async fn multiple_sessions_send_messages_independently() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
 
     let r1 = client
         .post(format!("{}/session", base(port)))
@@ -5611,10 +5420,7 @@ async fn multiple_sessions_send_messages_independently() {
         .send()
         .await
         .unwrap();
-    let s1 = r1.json::<serde_json::Value>().await.unwrap()["session_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let s1 = r1.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
 
     let r2 = client
         .post(format!("{}/session", base(port)))
@@ -5622,10 +5428,7 @@ async fn multiple_sessions_send_messages_independently() {
         .send()
         .await
         .unwrap();
-    let s2 = r2.json::<serde_json::Value>().await.unwrap()["session_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let s2 = r2.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
 
     // Send messages to both sessions
     let msg1 = client
@@ -5645,17 +5448,9 @@ async fn multiple_sessions_send_messages_independently() {
     let _ = msg2.status();
 
     // Both sessions are queryable
-    let r = client
-        .get(format!("{}/session/{}", base(port), s1))
-        .send()
-        .await
-        .unwrap();
+    let r = client.get(format!("{}/session/{}", base(port), s1)).send().await.unwrap();
     assert_eq!(r.status(), 200);
-    let r = client
-        .get(format!("{}/session/{}", base(port), s2))
-        .send()
-        .await
-        .unwrap();
+    let r = client.get(format!("{}/session/{}", base(port), s2)).send().await.unwrap();
     assert_eq!(r.status(), 200);
 }
 
@@ -5681,10 +5476,7 @@ async fn team_policy_denied_tools_effect_on_session() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
 
     let r = client
         .post(format!("{}/session", base(port)))
@@ -5706,10 +5498,7 @@ async fn project_file_write_delete_write_cycle() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
 
     // Write
     let r = client
@@ -5751,10 +5540,7 @@ async fn l4_stats_and_rebuild_flow() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
 
     // GET stats (initial)
     let r = client
@@ -5786,10 +5572,7 @@ async fn search_with_empty_query_returns_ok_or_error() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
     let r = client
         .get(format!("{}/project/{}/search?q=", base(port), pid))
         .send()
@@ -5817,20 +5600,14 @@ async fn checkpoint_rollback_after_file_write() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
     let r = client
         .post(format!("{}/session", base(port)))
         .json(&serde_json::json!({ "project_id": pid, "provider": "mock" }))
         .send()
         .await
         .unwrap();
-    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
 
     client
         .post(format!("{}/session/{}/message", base(port), sid))
@@ -5880,10 +5657,7 @@ async fn l4_stats_after_rebuild_shows_chunks() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
 
     // Rebuild index
     let r = client
@@ -5919,17 +5693,10 @@ async fn project_delete_then_open_again_creates_new_id() {
         .send()
         .await
         .unwrap();
-    let id1 = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let id1 = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
 
     // Delete
-    client
-        .delete(format!("{}/projects/{}", base(port), id1))
-        .send()
-        .await
-        .unwrap();
+    client.delete(format!("{}/projects/{}", base(port), id1)).send().await.unwrap();
 
     // Re-open → new ID
     let r = client
@@ -5938,10 +5705,7 @@ async fn project_delete_then_open_again_creates_new_id() {
         .send()
         .await
         .unwrap();
-    let id2 = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let id2 = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
 
     assert_ne!(id1, id2, "删除后重新打开应生成新 ID");
 }
@@ -5957,10 +5721,7 @@ async fn search_replace_verify_content_changed() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
 
     client
         .put(format!("{}/project/{}/file", base(port), pid))
@@ -5971,11 +5732,7 @@ async fn search_replace_verify_content_changed() {
 
     // Search preview
     let r = client
-        .get(format!(
-            "{}/project/{}/search?q=before&replace=after",
-            base(port),
-            pid
-        ))
+        .get(format!("{}/project/{}/search?q=before&replace=after", base(port), pid))
         .send()
         .await
         .unwrap();
@@ -5993,10 +5750,7 @@ async fn create_session_multiple_times_same_project_different_ids() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
 
     let mut ids = Vec::new();
     for _ in 0..3 {
@@ -6006,10 +5760,7 @@ async fn create_session_multiple_times_same_project_different_ids() {
             .send()
             .await
             .unwrap();
-        let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"]
-            .as_str()
-            .unwrap()
-            .to_string();
+        let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
         ids.push(sid);
     }
 
@@ -6034,10 +5785,7 @@ async fn language_pack_detect_and_install_typescript() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
 
     let r = client
         .get(format!("{}/project/{}/language-packs", base(port), pid))
@@ -6086,20 +5834,14 @@ async fn session_lifecycle_create_send_trace_checkpoints() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
     let r = client
         .post(format!("{}/session", base(port)))
         .json(&serde_json::json!({ "project_id": pid, "provider": "mock" }))
         .send()
         .await
         .unwrap();
-    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
 
     // Send message
     let msg = client
@@ -6143,11 +5885,7 @@ async fn session_lifecycle_create_send_trace_checkpoints() {
 async fn models_list_returns_mock_provider() {
     let (_dir, port, token) = start_daemon(vec![]).await;
     let client = client_with_token(&token);
-    let r = client
-        .get(format!("{}/models", base(port)))
-        .send()
-        .await
-        .unwrap();
+    let r = client.get(format!("{}/models", base(port))).send().await.unwrap();
     let body: serde_json::Value = r.json().await.unwrap();
     let models = body["models"].as_array().unwrap();
     assert!(!models.is_empty());
@@ -6159,11 +5897,7 @@ async fn models_list_returns_mock_provider() {
 async fn evals_endpoint_returns_tasks_array() {
     let (_dir, port, token) = start_daemon(vec![]).await;
     let client = client_with_token(&token);
-    let r = client
-        .get(format!("{}/evals", base(port)))
-        .send()
-        .await
-        .unwrap();
+    let r = client.get(format!("{}/evals", base(port))).send().await.unwrap();
     assert_eq!(r.status(), 200);
     let body: serde_json::Value = r.json().await.unwrap();
     // Response should have tasks or runs
@@ -6182,20 +5916,14 @@ async fn session_message_sends_and_trace_updates() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
     let r = client
         .post(format!("{}/session", base(port)))
         .json(&serde_json::json!({ "project_id": pid, "provider": "mock" }))
         .send()
         .await
         .unwrap();
-    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
 
     // Send
     let msg = client
@@ -6226,10 +5954,7 @@ async fn file_write_and_verify_on_disk() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
 
     client
         .put(format!("{}/project/{}/file", base(port), pid))
@@ -6278,11 +6003,7 @@ async fn settings_roundtrip_full_config() {
         .unwrap();
     assert!(r.status().is_success());
 
-    let r = client
-        .get(format!("{}/settings", base(port)))
-        .send()
-        .await
-        .unwrap();
+    let r = client.get(format!("{}/settings", base(port))).send().await.unwrap();
     assert_eq!(r.status(), 200);
     let body: serde_json::Value = r.json().await.unwrap();
     assert!(body.is_object());
@@ -6335,10 +6056,7 @@ async fn project_file_and_session_integration() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
 
     // 2. Write a file
     let r = client
@@ -6356,10 +6074,7 @@ async fn project_file_and_session_integration() {
         .send()
         .await
         .unwrap();
-    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
 
     // 4. Send message about the file
     let msg = client
@@ -6388,11 +6103,7 @@ async fn settings_get_after_put_session_config() {
         .unwrap();
 
     // GET and verify
-    let r = client
-        .get(format!("{}/settings", base(port)))
-        .send()
-        .await
-        .unwrap();
+    let r = client.get(format!("{}/settings", base(port))).send().await.unwrap();
     assert_eq!(r.status(), 200);
 }
 
@@ -6412,11 +6123,7 @@ async fn ui_prefs_theme_and_locale_roundtrip() {
     let _ = r.status();
 
     // GET prefs
-    let r = client
-        .get(format!("{}/ui-prefs", base(port)))
-        .send()
-        .await
-        .unwrap();
+    let r = client.get(format!("{}/ui-prefs", base(port))).send().await.unwrap();
     assert_eq!(r.status(), 200);
     let body: serde_json::Value = r.json().await.unwrap();
     assert!(body.is_object() || body.is_array());
@@ -6426,11 +6133,7 @@ async fn ui_prefs_theme_and_locale_roundtrip() {
 async fn models_endpoint_structure_check() {
     let (_dir, port, token) = start_daemon(vec![]).await;
     let client = client_with_token(&token);
-    let r = client
-        .get(format!("{}/models", base(port)))
-        .send()
-        .await
-        .unwrap();
+    let r = client.get(format!("{}/models", base(port))).send().await.unwrap();
     let body: serde_json::Value = r.json().await.unwrap();
     // Check expected structure
     assert!(body["models"].is_array());
@@ -6441,11 +6144,7 @@ async fn models_endpoint_structure_check() {
 async fn pair_info_returns_port_and_token() {
     let (_dir, port, token) = start_daemon(vec![]).await;
     let client = client_with_token(&token);
-    let r = client
-        .get(format!("{}/pairing", base(port)))
-        .send()
-        .await
-        .unwrap();
+    let r = client.get(format!("{}/pairing", base(port))).send().await.unwrap();
     assert_eq!(r.status(), 200);
     let body: serde_json::Value = r.json().await.unwrap();
     assert_eq!(body["port"].as_u64().unwrap(), port as u64);
@@ -6480,20 +6179,14 @@ async fn session_send_message_returns_accepted() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
     let r = client
         .post(format!("{}/session", base(port)))
         .json(&serde_json::json!({ "project_id": pid, "provider": "mock" }))
         .send()
         .await
         .unwrap();
-    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
 
     let r = client
         .post(format!("{}/session/{}/message", base(port), sid))
@@ -6526,10 +6219,7 @@ async fn git_source_view_after_git_init() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
 
     let r = client
         .get(format!("{}/project/{}/git/view", base(port), pid))
@@ -6550,10 +6240,7 @@ async fn file_tree_after_multiple_writes() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
 
     // Write multiple files in different dirs
     for (path, content) in [
