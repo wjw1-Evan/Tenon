@@ -23,6 +23,8 @@ pub enum StoreError {
     Json(#[from] serde_json::Error),
     #[error("IO 错误: {0}")]
     Io(#[from] std::io::Error),
+    #[error("记忆记录不合法: {0}")]
+    InvalidMemory(String),
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;
@@ -120,6 +122,11 @@ pub enum EventKind {
     Error,
     /// 对话标题生成完成（v1.58，payload {title}）。
     SessionTitle,
+    /// 上下文历史压缩（§10.2 v1.105，payload {before_est_tokens, after_est_tokens,
+    /// elided_tool_results}）。v1.93 曾以死代码移除，v1.105 压缩接线后重引入。
+    Compaction,
+    /// L5 跨会话记忆提取入库完成（§10.1 v1.104，payload {count, ids}，不含原文）。
+    MemorySaved,
 }
 
 impl EventKind {
@@ -140,6 +147,8 @@ impl EventKind {
             EventKind::DeciderCall => "decider_call",
             EventKind::Error => "error",
             EventKind::SessionTitle => "session_title",
+            EventKind::Compaction => "compaction",
+            EventKind::MemorySaved => "memory_saved",
         }
     }
 
@@ -160,6 +169,8 @@ impl EventKind {
             "decider_call" => EventKind::DeciderCall,
             "error" => EventKind::Error,
             "session_title" => EventKind::SessionTitle,
+            "compaction" => EventKind::Compaction,
+            "memory_saved" => EventKind::MemorySaved,
             _ => return None,
         })
     }
@@ -189,6 +200,9 @@ pub struct Session {
     /// 会话级受管 worktree 路径（v1.87 §9.7）；空串 = 绑定项目主根。
     #[serde(default)]
     pub worktree_path: String,
+    /// 手动归档时间（v1.103 §14.2）；空串 = 未归档，侧栏默认隐藏。
+    #[serde(default)]
+    pub archived_at: String,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -286,7 +300,7 @@ pub struct Plugin {
     pub installed_at: String,
 }
 
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 9;
 
 const DDL: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -312,6 +326,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     status TEXT NOT NULL DEFAULT 'idle',
     title TEXT NOT NULL DEFAULT '',
     worktree_path TEXT NOT NULL DEFAULT '',
+    archived_at TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -421,6 +436,23 @@ CREATE TABLE IF NOT EXISTS project_ui_state (
     state_json TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+-- L5 跨会话对话记忆（§10.1 v1.104）：project 层按 project_id 隔离；
+-- global 层仅 kind=preference（§9.7 跨项目不共享上下文的显式例外，永不承载仓库内容）
+CREATE TABLE IF NOT EXISTS memories (
+    id TEXT PRIMARY KEY,
+    scope TEXT NOT NULL DEFAULT 'project',
+    project_id TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'fact',
+    content TEXT NOT NULL,
+    importance INTEGER NOT NULL DEFAULT 3,
+    embedding BLOB,
+    source_session TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project_id, kind);
 "#;
 
 /// 入库用 L4 切片记录。
@@ -443,6 +475,57 @@ pub struct L4SearchHit {
     pub end_line: usize,
     pub text: String,
     pub score: f32,
+}
+
+/// L5 跨会话对话记忆（§10.1 v1.104）。不含 embedding（仅内部去重使用）。
+#[derive(Debug, Clone, Serialize)]
+pub struct Memory {
+    pub id: String,
+    /// project | global（global 仅 kind=preference，永不承载仓库内容）。
+    pub scope: String,
+    /// project 层归属项目；global 层为空串。
+    pub project_id: String,
+    /// preference | fact | decision | workflow。
+    pub kind: String,
+    pub content: String,
+    /// 1-5；注入排序权重。
+    pub importance: i64,
+    pub source_session: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub last_seen_at: String,
+}
+
+/// 入库用记忆记录（写入前经 upsert_memory 校验与去重）。
+#[derive(Debug, Clone)]
+pub struct MemoryRecord {
+    pub scope: String,
+    pub project_id: String,
+    pub kind: String,
+    pub content: String,
+    pub importance: i64,
+    pub embedding: Vec<f32>,
+    pub source_session: String,
+}
+
+impl MemoryRecord {
+    pub fn validate_scope(scope: &str) -> std::result::Result<String, StoreError> {
+        match scope {
+            "project" | "global" => Ok(scope.to_string()),
+            other => Err(StoreError::InvalidMemory(format!(
+                "未知 scope: {other}（仅 project / global）"
+            ))),
+        }
+    }
+
+    pub fn validate_kind(kind: &str) -> std::result::Result<String, StoreError> {
+        match kind {
+            "preference" | "fact" | "decision" | "workflow" => Ok(kind.to_string()),
+            other => Err(StoreError::InvalidMemory(format!(
+                "未知 kind: {other}（仅 preference / fact / decision / workflow）"
+            ))),
+        }
+    }
 }
 
 /// 存储门面。内部连接由调用方保证单线程访问（daemon 侧以互斥锁包裹）。
@@ -550,6 +633,13 @@ impl Store {
                      CREATE INDEX IF NOT EXISTS idx_approvals_project ON approvals(project_id, created_at);
                      CREATE INDEX IF NOT EXISTS idx_model_usage_project ON model_usage(project_id, id);",
                 )?;
+                // v7 → v8：会话手动归档（v1.103 §14.2）；空 = 未归档。
+                if !Self::column_exists(&conn, "sessions", "archived_at")? {
+                    conn.execute(
+                        "ALTER TABLE sessions ADD COLUMN archived_at TEXT NOT NULL DEFAULT ''",
+                        [],
+                    )?;
+                }
                 conn.execute("UPDATE schema_version SET version = ?1", [SCHEMA_VERSION])?;
             }
             Some(_) => {}
@@ -695,6 +785,7 @@ impl Store {
             status: SessionStatus::Idle,
             title: String::new(),
             worktree_path: String::new(),
+            archived_at: String::new(),
             created_at: now.clone(),
             updated_at: now,
         };
@@ -726,30 +817,71 @@ impl Store {
 
     pub fn session(&mut self, id: &str) -> Result<Option<Session>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, model, status, title, worktree_path, created_at, updated_at
+            "SELECT id, project_id, model, status, title, worktree_path, created_at, updated_at, archived_at
              FROM sessions WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map([id], row_to_session)?;
         Ok(rows.next().transpose()?)
     }
 
-    /// 全部会话（崩溃恢复扫描用）。
+    /// 全部会话（崩溃恢复扫描用；含已归档，恢复语义不因归档改变）。
     pub fn list_all_sessions(&mut self) -> Result<Vec<Session>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, model, status, title, worktree_path, created_at, updated_at
+            "SELECT id, project_id, model, status, title, worktree_path, created_at, updated_at, archived_at
              FROM sessions ORDER BY created_at ASC",
         )?;
         let rows = stmt.query_map([], row_to_session)?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
+    /// 项目未归档会话（v1.103：手动归档在侧栏默认隐藏）。
     pub fn list_sessions(&mut self, project_id: &str) -> Result<Vec<Session>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, model, status, title, worktree_path, created_at, updated_at
-             FROM sessions WHERE project_id = ?1 ORDER BY created_at DESC",
+            "SELECT id, project_id, model, status, title, worktree_path, created_at, updated_at, archived_at
+             FROM sessions WHERE project_id = ?1 AND archived_at = '' ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([project_id], row_to_session)?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// 项目已归档会话（v1.103：侧栏「已归档」折叠组数据源）。
+    pub fn list_archived_sessions(&mut self, project_id: &str) -> Result<Vec<Session>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, project_id, model, status, title, worktree_path, created_at, updated_at, archived_at
+             FROM sessions WHERE project_id = ?1 AND archived_at != '' ORDER BY updated_at DESC",
+        )?;
+        let rows = stmt.query_map([project_id], row_to_session)?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// 手动归档（v1.103 §14.2）：侧栏隐藏、可还原，数据不出库。
+    pub fn archive_session(&mut self, id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET archived_at = ?2 WHERE id = ?1",
+            params![id, Self::now()],
+        )?;
+        Ok(())
+    }
+
+    /// 取消归档（v1.103）：恢复侧栏列表。
+    pub fn unarchive_session(&mut self, id: &str) -> Result<()> {
+        self.conn
+            .execute("UPDATE sessions SET archived_at = '' WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// 手动删除会话（v1.103 §14.2）：事务级联删事件 / 工具调用 / checkpoint / 用量 / 审批 / 会话行；
+    /// 项目 shadow 快照不随删（由 checkpoint.keep_days gc 老化）。
+    pub fn delete_session(&mut self, id: &str) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM events WHERE session_id = ?1", [id])?;
+        tx.execute("DELETE FROM tool_calls WHERE session_id = ?1", [id])?;
+        tx.execute("DELETE FROM checkpoints WHERE session_id = ?1", [id])?;
+        tx.execute("DELETE FROM model_usage WHERE session_id = ?1", [id])?;
+        tx.execute("DELETE FROM approvals WHERE session_id = ?1", [id])?;
+        tx.execute("DELETE FROM sessions WHERE id = ?1", [id])?;
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn set_session_status(&mut self, id: &str, status: SessionStatus) -> Result<()> {
@@ -906,6 +1038,221 @@ impl Store {
             params![project_id, state_json, Self::now()],
         )?;
         Ok(())
+    }
+
+    // ---------- memories（L5 跨会话对话记忆 §10.1 v1.104） ----------
+
+    /// 写入一条记忆；与既有 active 记忆做本地 embedding 余弦去重，
+    /// ≥`threshold` 视为同条——刷新 content / importance / last_seen_at /
+    /// source_session 并返回 (刷新后的记忆, true)；否则新增行并返回 (新记忆, false)。
+    pub fn upsert_memory(&mut self, rec: &MemoryRecord, threshold: f32) -> Result<(Memory, bool)> {
+        let scope = MemoryRecord::validate_scope(&rec.scope)?;
+        let kind = MemoryRecord::validate_kind(&rec.kind)?;
+        if scope == "global" && kind != "preference" {
+            return Err(StoreError::InvalidMemory(
+                "global 作用域仅接受 kind=preference（§10.1 v1.104）".into(),
+            ));
+        }
+        if rec.content.trim().is_empty() {
+            return Err(StoreError::InvalidMemory("记忆内容不能为空".into()));
+        }
+        if let Some(existing) =
+            self.find_similar_memory(&rec.embedding, &rec.project_id, threshold)?
+        {
+            self.conn.execute(
+                "UPDATE memories
+                 SET content = ?2, importance = MAX(importance, ?3), updated_at = ?4,
+                     last_seen_at = ?4, source_session = ?5
+                 WHERE id = ?1",
+                params![
+                    existing.id,
+                    rec.content.trim(),
+                    rec.importance.clamp(1, 5),
+                    Self::now(),
+                    rec.source_session,
+                ],
+            )?;
+            let updated = self
+                .memory(&existing.id)?
+                .ok_or_else(|| StoreError::InvalidMemory("记忆刷新后读取失败".into()))?;
+            return Ok((updated, true));
+        }
+        let now = Self::now();
+        let mem = Memory {
+            id: Uuid::now_v7().to_string(),
+            scope,
+            project_id: rec.project_id.clone(),
+            kind,
+            content: rec.content.trim().to_string(),
+            importance: rec.importance.clamp(1, 5),
+            source_session: rec.source_session.clone(),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            last_seen_at: now,
+        };
+        self.conn.execute(
+            "INSERT INTO memories(id, scope, project_id, kind, content, importance,
+                                  embedding, source_session, created_at, updated_at, last_seen_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                mem.id,
+                mem.scope,
+                mem.project_id,
+                mem.kind,
+                mem.content,
+                mem.importance,
+                f32_slice_to_blob(&rec.embedding),
+                mem.source_session,
+                mem.created_at,
+                mem.updated_at,
+                mem.last_seen_at,
+            ],
+        )?;
+        Ok((mem, false))
+    }
+
+    /// 与候选记忆（同项目 project 层 + 全部 global preference 层）做余弦相似度，
+    /// 返回最高分且达阈值的一条。
+    fn find_similar_memory(
+        &mut self,
+        embedding: &[f32],
+        project_id: &str,
+        threshold: f32,
+    ) -> Result<Option<Memory>> {
+        let ids: Vec<String> = self.conn.prepare(
+            "SELECT id FROM memories
+             WHERE (scope = 'global' AND kind = 'preference')
+                OR (scope = 'project' AND project_id = ?1)",
+        ).and_then(|mut stmt| {
+            stmt.query_map([project_id], |r| r.get::<_, String>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()
+        })?;
+        let mut best: Option<(f32, String)> = None;
+        for id in ids {
+            let stored: Option<Vec<u8>> = self
+                .conn
+                .query_row("SELECT embedding FROM memories WHERE id = ?1", [&id], |r| {
+                    r.get(0)
+                })
+                .optional()?;
+            let Some(blob) = stored else { continue };
+            let score = cosine(embedding, &blob_to_f32_slice(&blob));
+            if score >= threshold && best.as_ref().map(|(s, _)| score > *s).unwrap_or(true) {
+                best = Some((score, id));
+            }
+        }
+        let found_id = best.map(|(_, id)| id);
+        match found_id {
+            Some(id) => self.memory(&id),
+            None => Ok(None),
+        }
+    }
+
+    /// 读一条记忆；None = 不存在。
+    pub fn memory(&mut self, id: &str) -> Result<Option<Memory>> {
+        self.conn
+            .query_row(
+                "SELECT id, scope, project_id, kind, content, importance,
+                        source_session, created_at, updated_at, last_seen_at
+                 FROM memories WHERE id = ?1",
+                [id],
+                |r| {
+                    Ok(Memory {
+                        id: r.get(0)?,
+                        scope: r.get(1)?,
+                        project_id: r.get(2)?,
+                        kind: r.get(3)?,
+                        content: r.get(4)?,
+                        importance: r.get(5)?,
+                        source_session: r.get(6)?,
+                        created_at: r.get(7)?,
+                        updated_at: r.get(8)?,
+                        last_seen_at: r.get(9)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// 列出对某项目可见的记忆：项目层全部 + global 层 preference。
+    /// 按 importance 降序 + last_seen_at 降序；`query` 非空时按 content 子串过滤。
+    pub fn list_memories(
+        &mut self,
+        project_id: &str,
+        query: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<Memory>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, scope, project_id, kind, content, importance,
+                    source_session, created_at, updated_at, last_seen_at
+             FROM memories
+             WHERE (scope = 'project' AND project_id = ?1)
+                OR (scope = 'global' AND kind = 'preference')
+             ORDER BY importance DESC, last_seen_at DESC
+             LIMIT ?2",
+        )?;
+        let rows = stmt
+            .query_map(params![project_id, limit as i64], |r| {
+                Ok(Memory {
+                    id: r.get(0)?,
+                    scope: r.get(1)?,
+                    project_id: r.get(2)?,
+                    kind: r.get(3)?,
+                    content: r.get(4)?,
+                    importance: r.get(5)?,
+                    source_session: r.get(6)?,
+                    created_at: r.get(7)?,
+                    updated_at: r.get(8)?,
+                    last_seen_at: r.get(9)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        match query {
+            Some(q) if !q.is_empty() => {
+                let q = q.to_lowercase();
+                Ok(rows
+                    .into_iter()
+                    .filter(|m| m.content.to_lowercase().contains(&q))
+                    .collect())
+            }
+            _ => Ok(rows),
+        }
+    }
+
+    /// 删除一条记忆；返回是否存在。
+    pub fn delete_memory(&mut self, id: &str) -> Result<bool> {
+        let n = self
+            .conn
+            .execute("DELETE FROM memories WHERE id = ?1", [id])?;
+        Ok(n > 0)
+    }
+
+    /// 每项目 active 记忆上限治理（§10.1 v1.104）：超出 `cap` 时按
+    /// importance 升序 + last_seen_at 最旧淘汰，返回删除条数。
+    pub fn prune_memories(&mut self, project_id: &str, cap: usize) -> Result<usize> {
+        let total: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM memories WHERE scope = 'project' AND project_id = ?1",
+            [project_id],
+            |r| r.get(0),
+        )?;
+        let excess = (total as usize).saturating_sub(cap);
+        if excess == 0 {
+            return Ok(0);
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT id FROM memories
+             WHERE scope = 'project' AND project_id = ?1
+             ORDER BY importance ASC, last_seen_at ASC LIMIT ?2",
+        )?;
+        let ids = stmt
+            .query_map(params![project_id, excess as i64], |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut removed = 0;
+        for id in &ids {
+            removed += self.conn.execute("DELETE FROM memories WHERE id = ?1", [id])?;
+        }
+        Ok(removed)
     }
 
     // ---------- checkpoints ----------
@@ -1351,6 +1698,7 @@ fn row_to_session(r: &rusqlite::Row<'_>) -> rusqlite::Result<Session> {
         status: SessionStatus::parse(&r.get::<_, String>(3)?).unwrap_or(SessionStatus::Idle),
         title: r.get(4)?,
         worktree_path: r.get(5)?,
+        archived_at: r.get(8)?,
         created_at: r.get(6)?,
         updated_at: r.get(7)?,
     })
@@ -2044,6 +2392,58 @@ mod managed_worktree_tests {
         s.set_session_worktree(&sid, "/tmp/wt/test").unwrap();
         let session = s.session(&sid).unwrap().unwrap();
         assert_eq!(session.worktree_path, "/tmp/wt/test");
+    }
+
+    // v1.103：手动归档 / 还原（§14.2）——侧栏过滤语义。
+    #[test]
+    fn archive_hides_session_until_unarchived() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let a = s.create_session(&p.id, "mock").unwrap().id;
+        let b = s.create_session(&p.id, "mock").unwrap().id;
+        s.archive_session(&a).unwrap();
+        assert!(!s.session(&a).unwrap().unwrap().archived_at.is_empty());
+        assert_eq!(s.list_sessions(&p.id).unwrap().len(), 1);
+        assert_eq!(s.list_archived_sessions(&p.id).unwrap().len(), 1);
+        s.unarchive_session(&a).unwrap();
+        assert_eq!(s.list_sessions(&p.id).unwrap().len(), 2);
+        assert!(s.list_archived_sessions(&p.id).unwrap().is_empty());
+        assert_eq!(s.session(&b).unwrap().unwrap().archived_at, "");
+    }
+
+    // v1.103：手动删除——事务级联清依赖行，其余会话不受影响。
+    #[test]
+    fn delete_session_removes_rows_and_dependencies() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let sid = s.create_session(&p.id, "mock").unwrap().id;
+        s.append_event(&sid, EventKind::UserInput, &serde_json::json!({"text": "hi"}))
+            .unwrap();
+        s.archive_session(&sid).unwrap();
+        s.delete_session(&sid).unwrap();
+        assert!(s.session(&sid).unwrap().is_none());
+        assert!(s.events(&sid).unwrap().is_empty());
+        let other = s.create_session(&p.id, "mock").unwrap().id;
+        assert_eq!(s.list_sessions(&p.id).unwrap()[0].id, other);
+    }
+
+    // v1.103：v7 旧库迁移补 sessions.archived_at 列。
+    #[test]
+    fn migrates_v7_sessions_adds_archived_at() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER NOT NULL);
+             INSERT INTO schema_version VALUES (7);
+             CREATE TABLE projects (id TEXT PRIMARY KEY, path TEXT NOT NULL, display_name TEXT NOT NULL DEFAULT '', trusted INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
+             CREATE TABLE sessions (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, model TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'idle', title TEXT NOT NULL DEFAULT '', worktree_path TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+             INSERT INTO sessions (id, project_id, created_at, updated_at) VALUES ('s1', 'p1', 't', 't');",
+        )
+        .unwrap();
+        let mut store = Store::init(conn).unwrap();
+        assert_eq!(store.list_archived_sessions("p1").unwrap().len(), 1);
+        assert!(store.list_sessions("p1").unwrap().is_empty());
     }
 
 
