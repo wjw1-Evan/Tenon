@@ -22,6 +22,7 @@ import {
   type ThemePreference,
 } from "./lib/theme";
 import type { AgentStateName } from "./lib/stateColors";
+import { playDoneChime, shouldChimeOnTransition } from "./lib/notifySound";
 import { useShortcuts } from "./hooks";
 import type { FileTreeChange } from "./components/FileTree";
 import { ProjectExplorer } from "./components/ProjectExplorer";
@@ -246,6 +247,22 @@ export default function App({
     (mode: "auto" | "manual") => {
       setSaveMode(mode);
       api.setUiPrefs({ "editor.saveMode": mode });
+    },
+    [api]
+  );
+  // 任务完成提示音（§7.5 v1.122）：偏好存 daemon ui_prefs（§7.5 权威，键 sound.done，
+  // 默认开），即时切换；非视觉偏好不入 localStorage（无闪烁问题，与保存方式同法）。
+  const [soundDone, setSoundDone] = useState(true);
+  useEffect(() => {
+    void api.getUiPrefs().then((prefs) => {
+      if (prefs["sound.done"] === "off") setSoundDone(false);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const changeSoundDone = useCallback(
+    (on: boolean) => {
+      setSoundDone(on);
+      api.setUiPrefs({ "sound.done": on ? "on" : "off" });
     },
     [api]
   );
@@ -738,7 +755,22 @@ export default function App({
     []
   );
 
-  const onStateChange = useCallback((s: AgentStateName) => setAgentState(s), []);
+  // 任务完成提示音触发（§7.5 v1.122）：AgentPanel 每 500ms 轮询上报状态，
+  // prev→done 转迁即响。偏好与上一态经 ref 读取，回调保持空依赖——身份变化
+  // 会重启 AgentPanel 的轮询 effect。会话切换时重置上一态：新会话的既有
+  // 状态不算「刚完成」，防止切到已完成会话误响。
+  const prevAgentStateRef = useRef<AgentStateName>("idle");
+  const soundDoneRef = useRef(soundDone);
+  soundDoneRef.current = soundDone;
+  useEffect(() => {
+    prevAgentStateRef.current = "idle";
+  }, [sessionId]);
+  const onStateChange = useCallback((s: AgentStateName) => {
+    setAgentState(s);
+    const prev = prevAgentStateRef.current;
+    prevAgentStateRef.current = s;
+    if (soundDoneRef.current && shouldChimeOnTransition(prev, s)) void playDoneChime();
+  }, []);
   const handlers = useMemo(
     () => ({
       onPalette: () => setPaletteOpen((v) => !v),
@@ -787,6 +819,12 @@ export default function App({
       { id: "toggle.sidebar", label: t("palette.toggle_sidebar"), run: () => setSidebarOpen((v) => !v) },
       // v1.110：toggle.source = 编辑器浮层开合（源码区=侧栏源码视图 + 浮层编辑器）。
       { id: "toggle.source", label: t("palette.toggle_source"), run: () => setEditorOpen((v) => !v) },
+      // v1.122：任务完成提示音开合（ui_prefs sound.done）；标签显动作语义（与 inline_completion 同法）。
+      {
+        id: "toggle.sound_done",
+        label: soundDone ? t("palette.sound_done_off") : t("palette.sound_done_on"),
+        run: () => changeSoundDone(!soundDone),
+      },
       ...(agentState === "paused"
         ? [
             {
@@ -828,7 +866,7 @@ export default function App({
         run: () => sessionId && api.control(sessionId, "unrollback"),
       },
     ],
-    [t, api, sessionId, agentState, inlineCompletionEnabled, toggleInlineCompletion]
+    [t, api, sessionId, agentState, inlineCompletionEnabled, toggleInlineCompletion, soundDone, changeSoundDone]
   );
 
   // 底部面板开合（v1.61）：展开态 tabs 行右端收起、收起态细条展开；标签与 tab 按钮共用一份

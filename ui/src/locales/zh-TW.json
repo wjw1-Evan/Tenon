@@ -280,6 +280,8 @@
   "message.resume": "繼續",
   "palette.toggle_sidebar": "切換側欄",
   "palette.toggle_source": "切換原始碼區",
+  "palette.sound_done_on": "開啟任務完成提示音",
+  "palette.sound_done_off": "關閉任務完成提示音",
   "panel.patch_diff": "最新修補 Diff",
   "palette.readonly_on": "唯讀模式：開（拒絕寫入操作）",
   "palette.readonly_off": "唯讀模式：關（允許寫入操作）",

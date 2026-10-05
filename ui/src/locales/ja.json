@@ -280,6 +280,8 @@
   "message.resume": "再開",
   "palette.toggle_sidebar": "サイドバーの切り替え",
   "palette.toggle_source": "ソースエリアの切り替え",
+  "palette.sound_done_on": "タスク完了通知音をオン",
+  "palette.sound_done_off": "タスク完了通知音をオフ",
   "panel.patch_diff": "最新パッチ Diff",
   "palette.readonly_on": "読み取り専用モード：オン（書き込み拒否）",
   "palette.readonly_off": "読み取り専用モード：オフ（書き込み許可）",
