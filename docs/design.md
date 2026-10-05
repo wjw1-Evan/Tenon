@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v1.101** |
-| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.101） |
+| 版本 | **v1.105** |
+| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.105） |
 | 状态 | 定稿（v1.10 决策闭环），M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 | 历史评审 | v0.1 / v0.3 两轮共 41 项、v1.0 复审 21 项问题的结论已全部并入本方案（过程文档已清理） |
@@ -135,6 +135,7 @@
 | **v1.99** | **i18n 硬编码清扫三批（用户令「检查遗漏的硬编码」；扫描法 = 中文剥全注释 + 英文 JSX 文本节点 / 属性值 / `??` fallback 三路正则，中英双向）：① main.tsx 启动屏 5 处接入双语（boot.connecting / connect_failed / failed_title / hint / root_missing）——React 挂载前直用 createTranslator 纯函数，偏好源与 App 同一 localStorage `tenon:locale`；② Evals 列头 target / tokens / steps 与 Trace 列头 seq 接 t()（同表其余列头 v1.94 已双语，此 4 处漏网）；③ FileTree 空目录 aria-label 与 file/ops 失败 fallback（tree.empty_dir / tree.op_failed）；④ 顶栏语言选择器 Auto 项与 language / theme aria-label 双语化（language.auto / topbar.language / topbar.theme；语言名 English / 中文按 i18n 惯例以母语显示豁免）；⑤ AgentPanel 证据 error fallback 与 EditorPane LSP 写操作无会话守卫（agent.error_fallback / editor.needs_session）；⑥ 豁免留档——键盘键名（Enter / Escape / Arrow*）、git HEAD、品牌名 Tenon、L4 状态 token（经 `t(l4.state.*)` 键名插值）、DiffPanel 标题 `?? "diff"` 源语言默认（与 emptyText 同模式，App 恒传双语标题）、api.ts HTTP 错误包装与 merge.ts 哨兵串属技术层非文案** |
 | **v1.100** | **多语言支持落地（用户令「开发中英文以外的语言包，实现全站多语言，优化多语言支持」；§4.2 i18n 行改写为多语言规格）：① 社区语言包首发三件——繁體中文（zh-TW，台灣用語：專案 / 檔案 / 設定 / 儲存庫 / 套用）、日本語（ja）、한국어（ko），288 键全量翻译且与 en 键集对齐（五语言键对齐测试门禁，新增语言 = `locales/<tag>.json` + `LOCALES` 注册表一行）；② i18n 内核重构——`LOCALES` 注册表驱动顶栏选择器（语言名母语显示）、en + zh-CN 静态随包（首屏即需）、其余语言 `import()` 懒加载为独立分块（各 ~5KB gzip，主包零增量），`loadLocaleResource` 幂等 + `useLocaleTranslator` 就绪后重渲染（未载入时优雅回退英文）；③ resolveLocale 升级 BCP-47 前缀匹配——zh-Hant / TW / HK / MO → zh-TW，其余 zh → zh-CN，ja / ko 前缀直达；④ 语言偏好双写（§7.5 同外观档法）——localStorage 快路径 + `PUT /ui-prefs` `locale` 键跨启动权威，boot 握手后对齐并预载语言包再渲染启动屏（启动屏首绘即目标语言）；⑤ `<html lang>` 随语言切换（屏幕阅读器发音）；⑥ 测试：五语言键对齐 / 前缀匹配 / 懒加载幂等与回退 / 偏好读写共 +16 例；E2E 冷启动 P50 226ms 不受懒加载影响。范围注记：Monaco 编辑器 chrome（查找 / 菜单等内建 UI）本地化需 nls 语言包注入，属独立特性另行评审，本版不含** |
 | **v1.101** | **左栏「项目」视图排版紧凑化（用户选定 Codex 紧凑索引形态；目检问题：孤行「+」按钮 / 列头与会话行右列语义错位 / 大量无标题回退会话同权重平铺 / 脏标题直达）：① 孤行「添加」按钮并入视图标题行右端（`pe-head` = 视图名 + 「+」，projects 视图不再渲染通用 `side-head` 标题）；② 移除「Name / Updated」列头（信息密度低且语义错位）；③ 会话行状态由灰色文字改为 §7.5 状态色圆点（`STATE_COLORS` 单一来源，状态文字转 hover title），行高压缩；④ 已回滚 / 无标题回退（显示模型名）会话整行灰显降噪（hover / active 恢复）；⑤ 显示层标题清洗——剥离截断 prompt 引導前缀（`The user's message is:` 等）与首尾引号，不改库，清空回退模型名；⑥ 空状态摘要不渲染空 `meta` span；`projects.column.*` 五语言键删除** |
+| **v1.105** | **§10.2 对话 token 消耗优化：历史压缩落地（用户令「优化对话 token 消耗」；原语在而接线缺——`TokenBudget::needs_compaction` / `SessionMemory::compact` 无人调用，工具输出全文永久驻留任务内历史逐回合重发，L2 goals 跨任务只增不减）：① 任务内输入预算压缩——每回合请求前估算输入 token（正文 + tool_calls 参数，字符近似），估算或上一回合 provider 权威 usage 超阈值（24k）即压缩：保留最近 4 条工具输出原文，更早的 tool 消息替换为存根（`[工具输出已省略：{tool} 原约 N 字符——需要时重新调用该工具获取]`），只替换内容不增删消息、tool_call_id 配对不变，首条 user（任务 + L1 工作集）与 assistant 意图文本永不省略，存根幂等不重写；② L2 有界——goals 压缩至最近 8 条（`MAX_L2_GOALS`），系统提示不随会话长度线性膨胀；③ 压缩事件 `compaction` 入 Trace（before / after 估算 token、省略条数；重引入 v1.93 清理的 EventKind，当时无消费方），UI 时间轴 default 分支容忍不渲染（文案后补）；④ 「压缩后自检问答」修订为确定性校验（tool_call_id 配对完整性，失败即本回合放弃压缩）——省略式压缩只丢弃模型已消费过的历史输出、不产生摘要失真，替代模型自检省一次调用** |
 
 
 
@@ -701,7 +702,17 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 
 ### 10.2 Token 预算与压缩
 
-每步计算预算（窗口 − 输出预留 − 安全余量）；L2 超限触发 compaction（保留目标 / 决策 / 未完成步骤）；压缩后自检问答通过才继续；压缩事件入 Trace 可查。
+**输入预算（v1.105 实装）**：每回合请求前按字符近似估算输入 token（正文 + tool_calls 参数，约 3 字符/token）；估算或上一回合 provider 权威 usage（`input_tokens`）超过压缩阈值（24k）即触发历史压缩。真实计数由 provider usage 回填，估算是无 usage provider 的兜底信号。
+
+**历史压缩（任务内，确定性省略）**：工具输出是任务内历史的主要膨胀源（read_file / grep / 命令输出全文驻留并逐回合重发）。压缩保留**最近 4 条工具输出原文**，更早的 tool 消息替换为存根（`[工具输出已省略：{tool} 原约 N 字符——需要时重新调用该工具获取]`）：
+
+- 只省略模型已消费过的历史工具输出；被省略内容如需再用，重新调用工具获取；
+- **消息序列与 tool_call_id 配对不变**（只替换内容、不增删消息），对 provider 协议零风险；存根幂等——重复触发不重写、不重复计数；
+- 首条 user 消息（任务文本 + L1 工作集）与 assistant 意图文本永不省略；
+- **压缩后自检（v1.105 修订）**：校验 tool 消息与前置 assistant `tool_calls` 的 id 配对完整（确定性、无模型参与），失败则本回合放弃压缩——原「自检问答通过才继续」针对摘要式压缩的失真风险，省略式压缩不产生摘要失真，以确定性校验替代并省一次模型调用；
+- 压缩事件 `compaction` 入 Trace（before / after 估算 token、省略条数），可查可审计。
+
+**L2 有界（跨任务）**：会话记忆 goals 只保留最近 8 条（`MAX_L2_GOALS`，超限即压缩），系统提示的 L2 段不随会话长度线性膨胀；decisions / pending_steps 由主循环显式维护。
 
 ### 10.3 会话恢复与 checkpoint（独立 shadow git 快照库，v1.9 参考 opencode 重构）
 
