@@ -1307,17 +1307,15 @@ button:disabled { opacity: 0.45; cursor: default; }
 }
 /* 用户气泡下功能按钮组（v1.123）：复制 / 撤销 / 重做——撤销 hover 用错误色提示破坏性 */
 .turn-actions { display: flex; align-items: center; gap: 4px; margin-top: 2px; }
-/* 回合模型标注（v1.131）：热切换 / fallback 后各回合如实展示所用模型 */
+/* 回合模型标注（v1.131）：热切换 / fallback 后各回合如实展示所用模型；
+ * v1.134：模型名完整显示不截断（用户令「模型名称要显示完整」） */
 .turn-model {
   flex-shrink: 0;
   margin-left: auto;
   color: var(--muted);
   font-size: 10.5px;
   opacity: 0.85;
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 40%;
 }
 .turn-action {
   border: none;
