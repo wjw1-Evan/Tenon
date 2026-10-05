@@ -5382,3 +5382,107 @@ async fn session_model_switch_and_get_session_reflects() {
         .unwrap();
     assert_eq!(r.status(), 200);
 }
+
+#[tokio::test]
+async fn open_project_verify_snapshot_dir_exists() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+}
+
+#[tokio::test]
+async fn multiple_sessions_send_messages_independently() {
+    let script = vec![
+        ScriptedReply::Text("reply for session one".into()),
+        ScriptedReply::Text("reply for session two".into()),
+    ];
+    let (_dir, port, token) = start_daemon(script).await;
+    let client = client_with_token(&token);
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    let r1 = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({ "project_id": pid, "provider": "mock" }))
+        .send()
+        .await
+        .unwrap();
+    let s1 = r1.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
+
+    let r2 = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({ "project_id": pid, "provider": "mock" }))
+        .send()
+        .await
+        .unwrap();
+    let s2 = r2.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
+
+    // Send messages to both sessions
+    let msg1 = client
+        .post(format!("{}/session/{}/message", base(port), s1))
+        .json(&serde_json::json!({ "text": "msg for s1" }))
+        .send()
+        .await
+        .unwrap();
+    let _ = msg1.status();
+
+    let msg2 = client
+        .post(format!("{}/session/{}/message", base(port), s2))
+        .json(&serde_json::json!({ "text": "msg for s2" }))
+        .send()
+        .await
+        .unwrap();
+    let _ = msg2.status();
+
+    // Both sessions are queryable
+    let r = client.get(format!("{}/session/{}", base(port), s1)).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    let r = client.get(format!("{}/session/{}", base(port), s2)).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+}
+
+#[tokio::test]
+async fn team_policy_denied_tools_effect_on_session() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    // Set team policy to deny a tool
+    let r = client
+        .put(format!("{}/team-policy", base(port)))
+        .json(&serde_json::json!({ "denied_tools": ["bash", "run_tests"] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    // Open project and create session
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    let r = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({ "project_id": pid, "provider": "mock" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+}

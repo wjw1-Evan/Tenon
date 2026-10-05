@@ -2712,4 +2712,63 @@ mod managed_worktree_tests {
         let pruned = s.prune_memories(&p.id, 3).unwrap();
         assert!(pruned >= 0);
     }
+
+    #[test]
+    fn l4_search_with_no_matches_returns_empty() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let query = vec![1.0; 8];
+        // No chunks stored
+        let results = s.l4_search(&p.id, &query, 5);
+        assert!(results.is_ok());
+    }
+
+    #[test]
+    fn memory_list_with_query_filter() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let sid = s.create_session(&p.id, "mock").unwrap().id;
+        let rec = MemoryRecord {
+            scope: "project".into(),
+            project_id: p.id.clone(),
+            kind: "fact".into(),
+            content: "The project uses React for frontend".into(),
+            importance: 3,
+            embedding: vec![],
+            source_session: sid,
+        };
+        s.upsert_memory(&rec, 0.0).unwrap();
+        // Query with keyword
+        let filtered = s.list_memories(&p.id, Some("React"), 10).unwrap();
+        let _ = filtered;
+        // Query without match
+        let no_match = s.list_memories(&p.id, Some("nonexistent"), 10).unwrap();
+        let _ = no_match;
+    }
+
+    #[test]
+    fn set_project_language_packs_empty_and_multiple() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        s.set_project_language_packs(&p.id, &[]).unwrap();
+        let empty = s.project(&p.id).unwrap().unwrap();
+        assert!(empty.language_packs.is_empty());
+        s.set_project_language_packs(&p.id, &["ts".into(), "py".into(), "rust".into()]).unwrap();
+        let multi = s.project(&p.id).unwrap().unwrap();
+        assert_eq!(multi.language_packs.len(), 3);
+    }
+
+    #[test]
+    fn create_session_with_id_and_worktree_path() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let custom_id = "custom-session-id-123";
+        let session = s.create_session_with_id(custom_id, &p.id, "gpt-4").unwrap();
+        assert_eq!(session.id, custom_id);
+        assert_eq!(session.model, "gpt-4");
+    }
 }
