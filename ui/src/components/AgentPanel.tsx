@@ -401,11 +401,34 @@ export function AgentPanel({
 
   function copyTurn(turn: Turn) {
     if (copiedTurnId === turn.id) return;
-    void navigator.clipboard?.writeText(turn.task ?? "").then(() => {
+    const text = turn.task ?? "";
+    const markCopied = () => {
       setCopiedTurnId(turn.id);
       if (copyTimer.current !== null) window.clearTimeout(copyTimer.current);
       copyTimer.current = window.setTimeout(() => setCopiedTurnId(null), 1500);
-    });
+    };
+    // 剪贴板 API 不可用（局域网 http 非安全上下文）或被拒（WebView 未授权）时降级
+    // execCommand——同步路径，点击手势内基本总能成功。
+    const fallbackCopy = () => {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        if (document.execCommand("copy")) markCopied();
+      } catch {
+        // 两种通道都不可用：静默放弃（不留误导性「已复制」）
+      } finally {
+        ta.remove();
+      }
+    };
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(markCopied, fallbackCopy);
+    } else {
+      fallbackCopy();
+    }
   }
 
   const running = RUNNING_STATES.has(status);
