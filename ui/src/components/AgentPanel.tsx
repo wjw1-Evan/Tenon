@@ -50,6 +50,8 @@ interface Turn {
   id: number;
   task: string | null;
   items: EventItem[];
+  /** v1.111 消息级撤销：回合内首个 patch_applied 事件 seq（对应该步写前 checkpoint）。 */
+  firstPatchSeq: number | null;
 }
 
 /** §9.2 内置工具协议集合：已知工具走动作短语，外部 / 未知工具原样显示名。 */
@@ -293,6 +295,23 @@ export function AgentPanel({
     await api.control(sessionId, "resume");
   }
 
+  // v1.111 消息级撤销：恢复到该消息（回合）首个改动写入前状态；unrevert 可撤销本次回滚。
+  async function undoTurn(turn: Turn) {
+    if (!sessionId || turn.firstPatchSeq === null || running) return;
+    if (!window.confirm(t("thread.undo_confirm"))) return;
+    try {
+      const { checkpoints } = await api.checkpoints(sessionId);
+      const cp = checkpoints.find((c) => c.event_seq === turn.firstPatchSeq);
+      if (!cp) {
+        window.alert(t("thread.undo_failed"));
+        return;
+      }
+      await api.rollbackCheckpoint(cp.id);
+    } catch {
+      window.alert(t("thread.undo_failed"));
+    }
+  }
+
   const running = RUNNING_STATES.has(status);
   const paused = status === "paused";
 
@@ -302,19 +321,32 @@ export function AgentPanel({
     let cur: Turn | null = null;
     for (const ev of events) {
       if (ev.type === "user_input") {
-        cur = { id: ev.id, task: String(ev.payload.text ?? ""), items: [] };
+        cur = { id: ev.id, task: String(ev.payload.text ?? ""), items: [], firstPatchSeq: null };
         list.push(cur);
         continue;
       }
       if (ev.type === "model_delta") continue;
       if (!cur) {
-        cur = { id: 0, task: null, items: [] };
+        cur = { id: 0, task: null, items: [], firstPatchSeq: null };
         list.push(cur);
+      }
+      // 消息级撤销锚点：回合内首个 patch_applied 的 checkpoint 记录该回合写入前状态。
+      if (ev.type === "patch_applied" && cur.firstPatchSeq === null) {
+        cur.firstPatchSeq = ev.seq;
       }
       cur.items.push(ev);
     }
     return list;
   }, [events]);
+
+  // v1.111：仅最后一个含改动的回合提供撤销——恢复是树级快照，撤销更早回合会连带丢弃后续回合改动
+  //（时间旅行场景由 checkpoint 时间轴覆盖）。
+  const undoableTurnId = useMemo(() => {
+    for (let i = turns.length - 1; i >= 0; i -= 1) {
+      if (turns[i].firstPatchSeq !== null) return turns[i].id;
+    }
+    return null;
+  }, [turns]);
 
   // 运行态「正在做什么」：取最后一个 decision 的意图；first_edit 无意图则显示执行中态。
   const runningLabel = useMemo(() => {
@@ -365,8 +397,26 @@ export function AgentPanel({
           const active = idx === turns.length - 1;
           return (
             <section className="turn" key={turn.id} data-testid="turn">
-              {turn.task !== null && <div className="turn-task">{turn.task}</div>}
+              {turn.task !== null && (
+                <div className="turn-user" data-testid="turn-user">
+                  <div className="turn-task">{turn.task}</div>
+                  {turn.id === undoableTurnId && (
+                    <button
+                      type="button"
+                      className="turn-undo"
+                      data-testid="turn-undo"
+                      disabled={running}
+                      title={t("thread.undo_confirm")}
+                      aria-label={t("thread.undo")}
+                      onClick={() => void undoTurn(turn)}
+                    >
+                      ↩ {t("thread.undo")}
+                    </button>
+                  )}
+                </div>
+              )}
               <div className="turn-body">
+                <ReadOnlySummary items={turn.items} t={t} />
                 {turn.items.map((ev) => (
                   <EventNode key={ev.id} ev={ev} t={t} />
                 ))}
@@ -448,6 +498,32 @@ export function AgentPanel({
   );
 }
 
+/** §9.2 A 级只读工具：不落步骤卡，按回合聚合为单行摘要（v1.112 降噪；明细见「轨迹」tab）。 */
+const READ_ONLY_TOOLS = new Set(["read_file", "list_dir", "grep", "git_read", "lsp_query"]);
+
+function isReadOnlyStep(ev: EventItem): boolean {
+  if (ev.type !== "patch_applied" && ev.type !== "command_run") return false;
+  return READ_ONLY_TOOLS.has(String(ev.payload.tool ?? ""));
+}
+
+/** v1.112 降噪：回合内成功只读步骤聚合为单行动词计数（读取 2 · 搜索 1），详情见「轨迹」面板。 */
+function ReadOnlySummary({ items, t }: { items: EventItem[]; t: Translate }) {
+  const counts = new Map<string, number>();
+  for (const ev of items) {
+    if (!isReadOnlyStep(ev)) continue;
+    if ((ev.payload.output as { ok?: boolean } | undefined)?.ok === false) continue;
+    const tool = String(ev.payload.tool ?? "");
+    counts.set(tool, (counts.get(tool) ?? 0) + 1);
+  }
+  if (counts.size === 0) return null;
+  const label = [...counts.entries()].map(([tool, n]) => `${toolLabel(tool, t)} ${n}`).join(" · ");
+  return (
+    <div className="turn-readonly" data-testid="turn-readonly" title={t("thread.readonly_more")}>
+      ⌕ {label}
+    </div>
+  );
+}
+
 /** 事件 → 会话流节点；只渲染面向用户的子集，完整事件表由底部「轨迹」tab 承载。 */
 function EventNode({ ev, t }: { ev: EventItem; t: Translate }) {
   switch (ev.type) {
@@ -464,17 +540,26 @@ function EventNode({ ev, t }: { ev: EventItem; t: Translate }) {
       );
     case "patch_applied":
     case "command_run":
+      // v1.112：成功的只读步骤聚合为单行（回合渲染层），失败的仍单独红显。
+      if (isReadOnlyStep(ev) && (ev.payload.output as { ok?: boolean } | undefined)?.ok !== false) {
+        return null;
+      }
       return <StepCard ev={ev} t={t} risk={false} />;
     case "direct_action":
       return <StepCard ev={ev} t={t} risk={true} />;
-    case "diagnostics":
+    case "diagnostics": {
       if ((ev.payload as { dirty_conflict?: boolean }).dirty_conflict) return null;
+      const verification = String(
+        (ev.payload as { verification?: string }).verification ?? "",
+      ).trim();
+      if (!verification) return null;
       return (
         <div className="turn-verify">
           <strong>{t("evidence.title")}</strong>
-          <pre>{String((ev.payload as { verification?: string }).verification ?? "")}</pre>
+          <pre>{verification}</pre>
         </div>
       );
+    }
     case "error": {
       const denied = (ev.payload as { denied?: string }).denied;
       if (denied) {
@@ -495,19 +580,8 @@ function EventNode({ ev, t }: { ev: EventItem; t: Translate }) {
       return <div className="turn-note">↩ {t("thread.rollback")}</div>;
     case "unrollback":
       return <div className="turn-note">↪ {t("thread.unrollback")}</div>;
-    case "model_fallback":
-      return (
-        <div className="turn-note turn-note-warn">
-          ⚠ {t("thread.model_fallback")}
-          {ev.payload.reason !== undefined ? ` · ${String(ev.payload.reason)}` : ""}
-        </div>
-      );
-    case "compaction":
-      return <div className="turn-note">⧉ {t("thread.compaction")}</div>;
-    case "memory_saved":
-      return <div className="turn-note">✦ {t("thread.memory_saved")}</div>;
     default:
-      // sensing / decider_call / checkpoint / session_title / 未知类型不渲染
+      // sensing / decider_call / checkpoint / session_title / 降级 / 压缩 / 记忆 / 未知：不渲染
       return null;
   }
 }
