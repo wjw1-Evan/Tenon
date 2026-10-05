@@ -493,7 +493,6 @@ button:disabled { opacity: 0.45; cursor: default; }
   padding: 6px 0 6px 6px;
   border: none;
   background: transparent;
-  font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.02em;
   text-align: left;
@@ -645,7 +644,6 @@ button:disabled { opacity: 0.45; cursor: default; }
   border: none;
   background: transparent;
   border-radius: 6px;
-  font-size: 12px;
   text-align: left;
   color: var(--fg);
   cursor: pointer;
