@@ -1,13 +1,15 @@
 // 项目浏览器（左侧栏「项目」视图，v1.88 对齐 Codex projects sidebar 内容布局）：
 // 视图标题行右端常驻添加入口（v1.101 移除孤行工具行与 Name / Updated 列头）；
-// 每项目一行可折叠文件夹（点击行即隐式激活并展开），默认内嵌最近 10 条会话；
-// v1.107 移除行尾「源码」内嵌文件树——文件浏览收敛到右区源码树（§7.2）。
+// 每项目一行可折叠文件夹（点击行即隐式激活并展开），展开区顶部「任务 | 源码」
+// 行内切换（v1.110）：任务=会话列表，源码=该项目文件树（单击文件开编辑器浮层）。
 import { useEffect, useState } from "react";
 import type { ProjectSummary, TenonApi } from "../lib/api";
 import { useResolvedLocale, type Translate } from "../lib/i18n";
 import { RUNNING_STATES, STATE_COLORS, type AgentStateName } from "../lib/stateColors";
+import { FileTree, type FileTreeChange } from "./FileTree";
 
 const PE_EXPANDED_KEY = "tenon:peExpanded";
+const PE_VIEW_KEY = "tenon:peView";
 /** Codex 项目行展开后默认只物化最近会话，长列表显式展开。 */
 const RECENT_SESSION_LIMIT = 10;
 
@@ -28,6 +30,18 @@ function persistSet(key: string, value: Set<string>) {
   }
 }
 
+/** 展开区视图（v1.110）：per-project「任务 | 源码」，默认任务。 */
+type PeView = "tasks" | "files";
+
+function loadPeView(): Record<string, PeView> {
+  try {
+    const raw = localStorage.getItem(PE_VIEW_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, PeView>) : {};
+  } catch {
+    return {};
+  }
+}
+
 interface Props {
   api: TenonApi;
   t: Translate;
@@ -36,6 +50,8 @@ interface Props {
   /** 各项目当前激活会话（§7.5 项目级 UI 状态）。 */
   sessionsByProject: Record<string, string>;
   openError: string | null;
+  /** ProjectRuntime 文件事件版本；源码视图文件树增量刷新（§6.4 / §8.1）。 */
+  refreshToken: number;
   onSwitchProject: (project: ProjectSummary) => void;
   /** displayName 提供时落库为项目显示名；空 / 缺省回退路径末段（§6.4）。 */
   onOpenProject: (path: string, displayName?: string) => Promise<void> | void;
@@ -49,6 +65,9 @@ interface Props {
   onCollapseSidebar?: () => void;
   /** 会话被归档 / 删除后回调（v1.103）：App 清理激活选择并刷新摘要。 */
   onSessionRemoved?: (projectId: string, sessionId: string) => void;
+  /** 源码视图打开文件（v1.110）：经 App openFile 弹出编辑器浮层。 */
+  onOpenFile: (path: string) => void;
+  onFileTreeChange: (change: FileTreeChange) => void;
 }
 
 /** 状态文案：优先使用 state.* 翻译，缺失回退原始状态。 */
@@ -193,6 +212,7 @@ export function ProjectExplorer({
   projectId,
   sessionsByProject,
   openError,
+  refreshToken,
   onSwitchProject,
   onOpenProject,
   onRemoveProject,
@@ -201,9 +221,24 @@ export function ProjectExplorer({
   onRefreshProjects,
   onSessionRemoved,
   onCollapseSidebar,
+  onOpenFile,
+  onFileTreeChange,
 }: Props) {
   const localeTag = useResolvedLocale();
   const [expanded, setExpanded] = useState<Set<string>>(() => loadSet(PE_EXPANDED_KEY));
+  // 展开区「任务 | 源码」行内切换（v1.110）：per-project 记忆，默认任务。
+  const [peView, setPeViewState] = useState<Record<string, PeView>>(loadPeView);
+  const setPeView = (pid: string, view: PeView) => {
+    setPeViewState((prev) => {
+      const next = { ...prev, [pid]: view };
+      try {
+        localStorage.setItem(PE_VIEW_KEY, JSON.stringify(next));
+      } catch {
+        // 存储不可用时仅当次会话内生效
+      }
+      return next;
+    });
+  };
   const [adding, setAdding] = useState(false);
   const [path, setPath] = useState("");
   const [name, setName] = useState("");
@@ -631,7 +666,42 @@ export function ProjectExplorer({
                     </button>
                   </div>
                 </div>
-                {isOpen && renderSessions(project)}
+                {isOpen && (
+                  <div className="pe-detail">
+                    <div className="pe-view-toggle" data-testid={`pe-view-${project.id}`}>
+                      <button
+                        type="button"
+                        className={(peView[project.id] ?? "tasks") === "tasks" ? "active" : ""}
+                        aria-pressed={(peView[project.id] ?? "tasks") === "tasks"}
+                        onClick={() => setPeView(project.id, "tasks")}
+                      >
+                        {t("projects.tab_tasks")}
+                      </button>
+                      <button
+                        type="button"
+                        className={(peView[project.id] ?? "tasks") === "files" ? "active" : ""}
+                        aria-pressed={(peView[project.id] ?? "tasks") === "files"}
+                        onClick={() => setPeView(project.id, "files")}
+                      >
+                        {t("projects.tab_source")}
+                      </button>
+                    </div>
+                    {(peView[project.id] ?? "tasks") === "tasks" ? (
+                      renderSessions(project)
+                    ) : (
+                      <div className="pe-files">
+                        <FileTree
+                          api={api}
+                          t={t}
+                          projectId={project.id}
+                          refreshToken={refreshToken}
+                          onOpenFile={onOpenFile}
+                          onOperation={onFileTreeChange}
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
               </li>
             );
           })}

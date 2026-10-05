@@ -1,13 +1,12 @@
 // 视口自适应（v1.74 §7.2）：三档判定 / 渲染期 clamp / narrow 浮层互斥与遮罩收起 / 跨档恢复
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import App from "../App";
 import {
   bandOf,
   effectiveBottom,
   effectiveFloatWidth,
   effectiveLeft,
-  effectiveRight,
 } from "../lib/viewport";
 
 beforeEach(() => {
@@ -67,11 +66,7 @@ describe("档位与 clamp 纯函数（lib/viewport）", () => {
     expect(effectiveLeft(220, 1280)).toBe(220);
     expect(effectiveLeft(400, 1000)).toBe(240);
     expect(effectiveLeft(400, 600)).toBe(160);
-    // 右栏 ≤34vw、下限 280
-    expect(effectiveRight(420, 1280)).toBe(420);
-    expect(effectiveRight(420, 1000)).toBe(340);
-    expect(effectiveRight(300, 700)).toBe(280);
-    // 底栏 ≤40vh、下限 100
+    // 底栏 ≤40vh、下限 100（v1.110 移除右栏）
     expect(effectiveBottom(180, 800)).toBe(180);
     expect(effectiveBottom(300, 600)).toBe(240);
     expect(effectiveBottom(80, 400)).toBe(80);
@@ -82,29 +77,24 @@ describe("档位与 clamp 纯函数（lib/viewport）", () => {
   });
 });
 
-describe("三档布局（§7.2 v1.78）", () => {
-  it("宽屏：线程是主区，源码区整体停靠右区（v1.108），关闭即隐藏", async () => {
+describe("三档布局（§7.2 v1.110）", () => {
+  it("宽屏：线程满宽主区，右区退场，编辑器浮层默认关闭", async () => {
     render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/nope" />);
     await waitFor(() => expect(screen.getByTestId("task-input-box")).toBeTruthy());
     const workspace = screen.getByTestId("workspace");
     expect(workspace.getAttribute("data-band")).toBe("wide");
     expect(workspace.className).not.toContain("compact");
     expect(screen.queryByTestId("float-backdrop")).toBeNull();
-    expect(screen.queryByTestId("editor-float-toggle")).toBeNull();
+    // v1.110：右区（源码树 / 审查窗格）与顶栏编辑器切换钮全部退场。
     expect(document.querySelector(".zone-thread")).not.toBeNull();
-    // v1.108：源码区默认开启 → 右区停靠（源码树 + 空编辑器），无需先开 tab。
-    expect(document.querySelector(".source-dock")).not.toBeNull();
-    expect(document.querySelector(".zone-center")).not.toBeNull();
-
-    // 关闭源码区 → 右区整体隐藏，右缘细条常驻恢复。
-    fireEvent.click(screen.getByTestId("source-collapse"));
-    await waitFor(() => expect(document.querySelector(".zone-center")).toBeNull());
-    fireEvent.click(screen.getByTestId("source-open"));
-    await waitFor(() => expect(document.querySelector(".source-dock")).not.toBeNull());
+    expect(document.querySelector(".zone-center")).toBeNull();
+    expect(document.querySelector(".source-dock")).toBeNull();
+    expect(screen.queryByTestId("editor-float-toggle")).toBeNull();
+    expect(screen.queryByTestId("editor-overlay")).toBeNull();
   });
 
-  it("宽屏源码区整体开关（v1.108）：有打开 tab 也整体隐藏，重开即恢复 tab", async () => {
-    // 项目打开成功 + ui-state 恢复一个 tab：完整链路。
+  it("侧栏「任务 | 源码」切换 + 单击文件弹编辑器浮层（v1.110）", async () => {
+    // 项目打开成功 + 文件树含 a.txt：源码视图 → 单击文件 → 浮层。
     vi.stubGlobal(
       "fetch",
       vi.fn().mockImplementation((input: RequestInfo | URL) => {
@@ -132,11 +122,13 @@ describe("三档布局（§7.2 v1.78）", () => {
             ],
           };
         } else if (url.includes("/ui-state")) {
-          body = { tabs: ["a.txt"], activePath: "a.txt" };
+          body = {};
         } else if (url.includes("/file?")) {
           body = { path: "a.txt", content: "hello", total_bytes: 5 };
         } else if (url.includes("/tree")) {
-          body = { entries: [] };
+          body = {
+            entries: [{ path: "a.txt", name: "a.txt", kind: "file", git_status: "" }],
+          };
         } else if (url.includes("/session")) {
           body = { session_id: "s1", project_id: "p1" };
         }
@@ -145,17 +137,22 @@ describe("三档布局（§7.2 v1.78）", () => {
     );
     render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/repo" />);
     await waitFor(() => expect(screen.getByTestId("task-input-box")).toBeTruthy());
-    // ui-state 恢复的 tab 使编辑器有内容，源码区停靠。
-    await waitFor(() => expect(screen.getByTestId("editor-pane")).toBeTruthy());
+    // 默认任务视图：会话列表可见、无文件树、无浮层。
+    await waitFor(() => expect(screen.getByTestId("chat-list-p1")).toBeTruthy());
+    expect(screen.queryByTestId("file-tree")).toBeNull();
+    expect(screen.queryByTestId("editor-overlay")).toBeNull();
 
-    // 关闭源码区：已打开 tab 不阻止整体隐藏，右缘细条常驻。
-    fireEvent.click(screen.getByTestId("source-collapse"));
-    await waitFor(() => expect(document.querySelector(".zone-center")).toBeNull());
-    expect(screen.getByTestId("source-open")).toBeTruthy();
+    // 切「源码」：文件树出现；单击文件 → 编辑器浮层弹出。
+    fireEvent.click(within(screen.getByTestId("pe-view-p1")).getByText("Source"));
+    await waitFor(() => expect(screen.getByTestId("file-tree")).toBeTruthy());
+    fireEvent.click(within(screen.getByTestId("file-tree")).getByText("a.txt"));
+    await waitFor(() => expect(screen.getByTestId("editor-overlay")).toBeTruthy());
+    expect(screen.getByTestId("editor-pane")).toBeTruthy();
 
-    // 细条重开：tab 状态保留、编辑器恢复。
-    fireEvent.click(screen.getByTestId("source-open"));
-    await waitFor(() => expect(screen.getByTestId("editor-pane")).toBeTruthy());
+    // ✕ 关闭浮层 → 返回线程；文件树仍在侧栏。
+    fireEvent.click(screen.getByTestId("editor-overlay-close"));
+    await waitFor(() => expect(screen.queryByTestId("editor-overlay")).toBeNull());
+    expect(screen.getByTestId("file-tree")).toBeTruthy();
   });
 
   it("窄屏无线程浮层：线程留在文档流，侧栏按需唤出", async () => {
@@ -187,7 +184,6 @@ describe("三档布局（§7.2 v1.78）", () => {
   it("中屏渲染期 clamp：侧栏收敛且不改写记忆值，线程保持弹性", async () => {
     const backing = localStorage as unknown as { setItem: (k: string, v: string) => void };
     backing.setItem("tenon:leftWidth", "400");
-    backing.setItem("tenon:rightWidth", "500");
     render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/nope" />);
     await waitFor(() => expect(screen.getByTestId("task-input-box")).toBeTruthy());
     expect(screen.getByTestId("workspace").getAttribute("data-band")).toBe("wide");
@@ -198,11 +194,10 @@ describe("三档布局（§7.2 v1.78）", () => {
     await waitFor(() => {
       const left = document.querySelector<HTMLElement>(".zone-left");
       const thread = document.querySelector<HTMLElement>(".zone-thread");
-      const center = document.querySelector<HTMLElement>(".zone-center");
       expect(left?.style.width).toBe("240px");
       expect(thread?.style.flex).toBe("1 1 0%");
-      // v1.107：源码树停靠右区，中屏按 clamp 收敛（500 → 34vw=340）。
-      expect(center?.style.width).toBe("340px");
+      // v1.110：右区退场，线程满宽（无 zone-center）。
+      expect(document.querySelector(".zone-center")).toBeNull();
     });
     setViewport(1280);
     await waitFor(() => {
@@ -210,11 +205,10 @@ describe("三档布局（§7.2 v1.78）", () => {
       expect(left?.style.width).toBe("400px");
     });
     expect(localStorage.getItem("tenon:leftWidth")).toBe("400");
-    expect(localStorage.getItem("tenon:rightWidth")).toBe("500");
   });
 
-  it("窄屏编辑器审查窗格浮层（v1.78）：有 tab 时顶栏钮唤出，遮罩收起", async () => {
-    // 项目打开成功 + ui-state 恢复一个 tab：编辑器浮层链路完整。
+  it("窄屏：侧栏浮层内源码视图单击文件，编辑器浮层唤出（v1.110）", async () => {
+    // 项目打开成功 + 文件树含 a.txt：与宽屏同一浮层链路（与视口无关）。
     vi.stubGlobal(
       "fetch",
       vi.fn().mockImplementation((input: RequestInfo | URL) => {
@@ -242,11 +236,13 @@ describe("三档布局（§7.2 v1.78）", () => {
             ],
           };
         } else if (url.includes("/ui-state")) {
-          body = { tabs: ["a.txt"], activePath: "a.txt" };
+          body = {};
         } else if (url.includes("/file?")) {
           body = { path: "a.txt", content: "hello", total_bytes: 5 };
         } else if (url.includes("/tree")) {
-          body = { entries: [] };
+          body = {
+            entries: [{ path: "a.txt", name: "a.txt", kind: "file", git_status: "" }],
+          };
         } else if (url.includes("/session")) {
           body = { session_id: "s1", project_id: "p1" };
         }
@@ -260,18 +256,18 @@ describe("三档布局（§7.2 v1.78）", () => {
       expect(screen.getByTestId("workspace").getAttribute("data-band")).toBe("narrow")
     );
 
-    // 有打开 tab：切换钮渲染；点击唤出编辑器浮层 + 遮罩；线程仍在流主区。
-    const toggle = await screen.findByTestId("editor-float-toggle");
-    fireEvent.click(toggle);
-    await waitFor(() =>
-      expect(document.querySelector(".zone-center")?.className).toContain("zone-float")
-    );
-    expect(screen.getByTestId("float-backdrop")).toBeTruthy();
+    // 侧栏浮层唤出 → 源码视图 → 单击文件 → 编辑器浮层（线程仍在流主区）。
+    fireEvent.click(screen.getByTestId("rail-projects"));
+    await waitFor(() => expect(screen.getByTestId("float-backdrop")).toBeTruthy());
+    fireEvent.click(within(screen.getByTestId("pe-view-p1")).getByText("Source"));
+    await waitFor(() => expect(screen.getByTestId("file-tree")).toBeTruthy());
+    fireEvent.click(within(screen.getByTestId("file-tree")).getByText("a.txt"));
+    await waitFor(() => expect(screen.getByTestId("editor-overlay")).toBeTruthy());
     expect(screen.getByTestId("task-input-box")).toBeTruthy();
 
-    // 遮罩点击收起。
-    fireEvent.click(screen.getByTestId("float-backdrop"));
-    await waitFor(() => expect(document.querySelector(".zone-center")).toBeNull());
-    await waitFor(() => expect(screen.queryByTestId("float-backdrop")).toBeNull());
+    // ✕ 关闭编辑器浮层 → 返回线程；侧栏浮层与遮罩不受影响。
+    fireEvent.click(screen.getByTestId("editor-overlay-close"));
+    await waitFor(() => expect(screen.queryByTestId("editor-overlay")).toBeNull());
+    expect(screen.getByTestId("float-backdrop")).toBeTruthy();
   });
 });

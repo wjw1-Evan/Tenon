@@ -1,5 +1,5 @@
 // 多项目控制面 UI（v1.63 项目文件夹树 + v1.60 登记即用）：切换 / 移除 / 添加均在显式 project_id 上执行。
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ProjectExplorer } from "../components/ProjectExplorer";
 import type { ProjectSummary, TenonApi } from "../lib/api";
@@ -42,6 +42,7 @@ function renderExplorer(
       projectId={projects[0]?.id ?? null}
       sessionsByProject={projects[0] ? { [projects[0].id]: "session-1" } : {}}
       openError={null}
+      refreshToken={1}
       onSwitchProject={onSwitchProject}
       onOpenProject={onOpenProject}
       onRemoveProject={onRemoveProject}
@@ -49,6 +50,8 @@ function renderExplorer(
       onCreateSession={onCreateSession}
       onRefreshProjects={callbacks.onRefreshProjects}
       onSessionRemoved={callbacks.onSessionRemoved}
+      onOpenFile={vi.fn()}
+      onFileTreeChange={() => {}}
     />
   );
   return { onSwitchProject, onOpenProject, onRemoveProject, onSelectSession, onCreateSession, api: apiMock };
@@ -176,6 +179,24 @@ describe("ProjectExplorer multi-project control surface", () => {
   });
 
   // v1.107：「源码」内嵌文件树已迁右区源码树，项目行仅存「移除」操作。
+
+  // v1.110：展开区「任务 | 源码」行内切换——默认任务，切源码显文件树，per-project 记忆。
+  it("toggles per-project task/source views and renders the file tree", async () => {
+    renderExplorer([project("open-a")]);
+    // 默认任务视图：会话列表可见，无文件树。
+    await waitFor(() => expect(screen.getByTestId("chat-list-open-a")).toBeInTheDocument());
+    expect(screen.queryByTestId("file-tree")).not.toBeInTheDocument();
+    // 切「源码」：文件树出现，选择记忆于 tenon:peView。
+    fireEvent.click(within(screen.getByTestId("pe-view-open-a")).getByText("projects.tab_source"));
+    await waitFor(() => expect(screen.getByTestId("file-tree")).toBeInTheDocument());
+    expect(JSON.parse(localStorage.getItem("tenon:peView") ?? "{}")).toEqual({
+      "open-a": "files",
+    });
+    // 切回「任务」：文件树收起，会话列表回归。
+    fireEvent.click(within(screen.getByTestId("pe-view-open-a")).getByText("projects.tab_tasks"));
+    await waitFor(() => expect(screen.queryByTestId("file-tree")).not.toBeInTheDocument());
+    expect(screen.getByTestId("chat-list-open-a")).toBeInTheDocument();
+  });
 
   // v1.58 对话标题：对话行标题优先，无标题回退模型名。
   it("chat rows prefer generated titles and fall back to model names", () => {

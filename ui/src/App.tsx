@@ -324,9 +324,19 @@ export default function App({
   const effBottom = effectiveBottom(bottomHeight, viewport.height);
   // narrow 侧栏浮层可见性（v1.78）。
   const sideVisible = narrow ? sideFloat : sidebarOpen;
-  // v1.110：最后一个 tab 关闭（含 WS removed 路径）时编辑器浮层随之收起。
+  // v1.110：浮层内最后一个 tab 关闭（关闭按钮 / WS removed / 文件树删除）时随之收起；
+  // 打开瞬间的空 tab 窗口（readFile 未返回）不算关闭，防止浮层刚弹即被收。
+  const editorHadTabRef = useRef(false);
   useEffect(() => {
-    if (editorOpen && tabs.length === 0) setEditorOpen(false);
+    if (!editorOpen) {
+      editorHadTabRef.current = false;
+      return;
+    }
+    if (tabs.length > 0) {
+      editorHadTabRef.current = true;
+    } else if (editorHadTabRef.current) {
+      setEditorOpen(false);
+    }
   }, [editorOpen, tabs.length]);
 
   useEffect(() => {
@@ -726,6 +736,8 @@ export default function App({
         run: () => editorApiRef.current?.redo(),
       },
       { id: "toggle.sidebar", label: t("palette.toggle_sidebar"), run: () => setSidebarOpen((v) => !v) },
+      // v1.110：toggle.source = 编辑器浮层开合（源码区=侧栏源码视图 + 浮层编辑器）。
+      { id: "toggle.source", label: t("palette.toggle_source"), run: () => setEditorOpen((v) => !v) },
       ...(agentState === "paused"
         ? [
             {
@@ -767,7 +779,7 @@ export default function App({
         run: () => sessionId && api.control(sessionId, "unrollback"),
       },
     ],
-    [t, api, sessionId, agentState, inlineCompletionEnabled, toggleInlineCompletion, toggleSourceTree]
+    [t, api, sessionId, agentState, inlineCompletionEnabled, toggleInlineCompletion]
   );
 
   // 底部面板开合（v1.61）：展开态 tabs 行右端收起、收起态细条展开；标签与 tab 按钮共用一份
@@ -805,7 +817,6 @@ export default function App({
         activePath: activePathByProject[projectId] ?? null,
         splitPath: splitPathByProject[projectId] ?? null,
         leftWidth,
-        rightWidth,
         bottomHeight,
         sidebarOpen,
         timelineOpen,
@@ -821,7 +832,6 @@ export default function App({
     activePathByProject,
     splitPathByProject,
     leftWidth,
-    rightWidth,
     bottomHeight,
     sidebarOpen,
     timelineOpen,
@@ -930,34 +940,6 @@ export default function App({
         <span className="spacer" data-tauri-drag-region />
         <ThemePicker api={api} t={t} />
         <LanguagePicker value={localePref} t={t} />
-        {narrow && tabs.length > 0 && (
-          <button
-            type="button"
-            className="editor-float-toggle"
-            data-testid="editor-float-toggle"
-            title={t("panel.editor")}
-            aria-label={t("panel.editor")}
-            aria-pressed={floatPane === "editor"}
-            onClick={() =>
-              setFloatPane((p) => (p === "editor" ? null : "editor"))
-            }
-          >
-            <svg
-              width={17}
-              height={17}
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={1.8}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden
-            >
-              <polyline points="16 18 22 12 16 6" />
-              <polyline points="8 6 2 12 8 18" />
-            </svg>
-          </button>
-        )}
       </header>
       {routeNote && (
         <div className="route-note" data-testid="route-note">

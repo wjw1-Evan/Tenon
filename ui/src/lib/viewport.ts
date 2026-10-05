@@ -20,13 +20,7 @@ export function effectiveLeft(width: number, vw: number): number {
   return Math.min(width, Math.max(160, Math.round(vw * 0.24)));
 }
 
-/** 编辑器审查窗格渲染宽（v1.78）：middle/narrow 收敛至 ≤34vw，宽屏原样。 */
-export function effectiveRight(width: number, vw: number): number {
-  if (vw >= MIDDLE_MIN) return width;
-  return Math.min(width, Math.max(280, Math.round(vw * 0.34)));
-}
-
-/** 底栏渲染高：middle/narrow 收敛至 ≤40vh，宽屏原样。 */
+/** 底栏渲染高：middle/narrow 收敛至 ≤40vh，宽屏原样（v1.110 移除右栏）。 */
 export function effectiveBottom(height: number, vh: number): number {
   if (vh >= MIDDLE_MIN) return height;
   return Math.min(height, Math.max(100, Math.round(vh * 0.4)));

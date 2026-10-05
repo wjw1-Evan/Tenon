@@ -152,6 +152,9 @@ export function AgentPanel({
   const [streamText, setStreamText] = useState("");
   const [status, setStatus] = useState<AgentStateName>("idle");
   const [input, setInput] = useState("");
+  // 文件拖入对话框（v1.110）：dragover 高亮 + 落下插入 @path 引用。
+  const [inputDrop, setInputDrop] = useState(false);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const [busy, setBusy] = useState(false);
   const [stopRequested, setStopRequested] = useState(false);
   const [latestDiff, setLatestDiff] = useState<string | null>(null);
@@ -386,8 +389,30 @@ export function AgentPanel({
         })}
       </div>
 
-      <div className="agent-input" data-testid="task-input-box">
+      <div
+        className={inputDrop ? "agent-input drop-target" : "agent-input"}
+        data-testid="task-input-box"
+        onDragOver={(e) => {
+          // 文件拖入对话框（v1.110）：接受文件树行的私有 MIME 拖拽。
+          if (e.dataTransfer.types.includes("application/x-tenon-path")) {
+            e.preventDefault();
+            setInputDrop(true);
+          }
+        }}
+        onDragLeave={(e) => {
+          if (e.currentTarget === e.target) setInputDrop(false);
+        }}
+        onDrop={(e) => {
+          const path = e.dataTransfer.getData("application/x-tenon-path");
+          setInputDrop(false);
+          if (!path) return;
+          e.preventDefault();
+          setInput((prev) => (prev.trimEnd() ? `${prev.trimEnd()} @${path} ` : `@${path} `));
+          inputRef.current?.focus();
+        }}
+      >
         <textarea
+          ref={inputRef}
           value={input}
           placeholder={t("message.placeholder")}
           onChange={(e) => setInput(e.target.value)}
