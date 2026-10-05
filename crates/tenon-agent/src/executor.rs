@@ -2265,4 +2265,51 @@ mod tests {
             assert!(read.content.contains(v), "expected {} in {}", v, read.content);
         }
     }
+
+    #[test]
+    fn apply_patch_read_list_full_integration() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+
+        // Create nested structure
+        execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "src/utils/helpers.ts", "range": null,
+            "content": "export function formatDate(d: Date): string {\n  return d.toISOString();\n}\n"
+        }));
+        execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "src/utils/constants.ts", "range": null,
+            "content": "export const MAX_RETRY = 3;\n"
+        }));
+
+        // List src/utils
+        let list = execute_tool(&c, "list_dir", &serde_json::json!({"path": "src/utils"}));
+        assert!(list.ok);
+        assert!(list.content.contains("helpers.ts"));
+        assert!(list.content.contains("constants.ts"));
+
+        // Grep for formatDate
+        let grep = execute_tool(&c, "grep", &serde_json::json!({"pattern": "formatDate"}));
+        assert!(grep.ok);
+        assert!(grep.content.contains("helpers.ts"));
+
+        // Read constants
+        let read = execute_tool(&c, "read_file", &serde_json::json!({"path": "src/utils/constants.ts"}));
+        assert!(read.ok);
+        assert!(read.content.contains("MAX_RETRY"));
+    }
+
+    #[test]
+    fn readonly_apply_patch_and_list_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        c.readonly.store(true, Ordering::Relaxed);
+        // apply_patch blocked in readonly
+        let patch = execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "blocked.txt", "range": null, "content": "no"
+        }));
+        assert!(!patch.ok);
+        // list_dir still works
+        let list = execute_tool(&c, "list_dir", &serde_json::json!({}));
+        assert!(list.ok);
+    }
 }
