@@ -345,6 +345,9 @@ pub struct DaemonOptions {
     pub laya_public_key: Option<String>,
     /// Laya 模型目录覆盖（§9.8；None = ~/.tenon/models/laya；测试注入临时目录）。
     pub laya_models_dir: Option<std::path::PathBuf>,
+    /// 文件监听轮询后端间隔（v1.128 测试确定性通道）；None = 原生后端
+    ///（FSEvents/inotify，注册握手 2s 就绪预算 + 后台补注册）。
+    pub watch_poll_interval: Option<std::time::Duration>,
 }
 
 impl DaemonOptions {
@@ -373,6 +376,7 @@ impl DaemonOptions {
             laya_registry_url: None,
             laya_public_key: None,
             laya_models_dir: None,
+            watch_poll_interval: None,
         }
     }
 }
@@ -411,6 +415,57 @@ impl WatchHandle {
     }
 }
 
+/// 注册 watcher 并启动事件泵线程（v1.128）：`ready_budget` 默认 2s 快速降级，
+/// 补注册路径传宽预算。注册失败 / 超时返回 None，不阻塞 async 上下文。
+fn spawn_watcher(
+    project_id: &str,
+    root: &std::path::Path,
+    events: &tokio::sync::broadcast::Sender<ProjectFileEvent>,
+    global_events: &tokio::sync::broadcast::Sender<ProjectFileEvent>,
+    ready_budget: Option<std::time::Duration>,
+    poll_interval: Option<std::time::Duration>,
+) -> Option<WatchHandle> {
+    let watched = match poll_interval {
+        // 测试确定性通道（v1.128）：PollWatcher 内容比对，小目录同步注册即达。
+        Some(interval) => tenon_fs::FileWatcher::watch_with_poll_interval(root, interval).ok()?,
+        None => match ready_budget {
+            Some(budget) => tenon_fs::FileWatcher::watch_with_budget(root, budget).ok()?,
+            None => tenon_fs::FileWatcher::watch(root).ok()?,
+        },
+    };
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let project_id = project_id.to_string();
+    let sender = events.clone();
+    let global_sender = global_events.clone();
+    let stop_for_thread = stop.clone();
+    let handle = std::thread::Builder::new()
+        .name(format!("tenon-watch-{project_id}"))
+        .spawn(move || {
+            while !stop_for_thread.load(std::sync::atomic::Ordering::SeqCst) {
+                for change in watched.next_batch(std::time::Duration::from_millis(250)) {
+                    let kind = match change.kind {
+                        tenon_fs::watcher::ChangeKind::Created => "created",
+                        tenon_fs::watcher::ChangeKind::Modified => "modified",
+                        tenon_fs::watcher::ChangeKind::Removed => "removed",
+                    };
+                    let event = ProjectFileEvent {
+                        project_id: project_id.clone(),
+                        path: change.path,
+                        kind: kind.into(),
+                        created_at: chrono::Utc::now().to_rfc3339(),
+                    };
+                    let _ = sender.send(event.clone());
+                    let _ = global_sender.send(event);
+                }
+            }
+        })
+        .expect("spawn project watcher");
+    Some(WatchHandle {
+        stop,
+        handle: std::sync::Mutex::new(Some(handle)),
+    })
+}
+
 /// 一个已打开项目的轻量 runtime：watcher 生命周期 + 活跃度追踪。
 pub struct ProjectRuntime {
     pub root: std::path::PathBuf,
@@ -424,47 +479,73 @@ impl ProjectRuntime {
         project_id: &str,
         root: std::path::PathBuf,
         global_events: tokio::sync::broadcast::Sender<ProjectFileEvent>,
+        poll_interval: Option<std::time::Duration>,
     ) -> Arc<Self> {
         let (events, _) = tokio::sync::broadcast::channel(1024);
-        let watcher = tenon_fs::FileWatcher::watch(&root).ok().map(|watcher| {
-            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let project_id = project_id.to_string();
-            let sender = events.clone();
-            let global_sender = global_events.clone();
-            let stop_for_thread = stop.clone();
-            let handle = std::thread::Builder::new()
-                .name(format!("tenon-watch-{project_id}"))
-                .spawn(move || {
-                    while !stop_for_thread.load(std::sync::atomic::Ordering::SeqCst) {
-                        for change in watcher.next_batch(std::time::Duration::from_millis(250)) {
-                            let kind = match change.kind {
-                                tenon_fs::watcher::ChangeKind::Created => "created",
-                                tenon_fs::watcher::ChangeKind::Modified => "modified",
-                                tenon_fs::watcher::ChangeKind::Removed => "removed",
-                            };
-                            let event = ProjectFileEvent {
-                                project_id: project_id.clone(),
-                                path: change.path,
-                                kind: kind.into(),
-                                created_at: chrono::Utc::now().to_rfc3339(),
-                            };
-                            let _ = sender.send(event.clone());
-                            let _ = global_sender.send(event);
-                        }
-                    }
-                })
-                .expect("spawn project watcher");
-            WatchHandle {
-                stop,
-                handle: std::sync::Mutex::new(Some(handle)),
-            }
-        });
-        Arc::new(Self {
-            root,
-            events,
-            watcher: std::sync::Mutex::new(watcher),
+        let runtime = Arc::new(Self {
+            root: root.clone(),
+            events: events.clone(),
+            watcher: std::sync::Mutex::new(None),
             last_accessed: std::sync::Mutex::new(std::time::Instant::now()),
-        })
+        });
+        // 轮询后端（测试确定性通道）同步接回、无需补注册；原生后端按预算握手。
+        if poll_interval.is_some() {
+            if let Some(handle) = spawn_watcher(
+                project_id,
+                &root,
+                &events,
+                &global_events,
+                None,
+                poll_interval,
+            ) {
+                *runtime.watcher.lock().expect("watcher slot lock") = Some(handle);
+            }
+            return runtime;
+        }
+        match spawn_watcher(project_id, &root, &events, &global_events, None, None) {
+            Some(handle) => {
+                *runtime.watcher.lock().expect("watcher slot lock") = Some(handle);
+            }
+            None => {
+                // 注册预算（2s）内未就绪：fseventsd 高负载时 FSEventStreamStart
+                // 可达数秒——激活链路已按「无 watcher」快速降级返回，这里后台
+                // 以宽预算补注册，成功即热接回（v1.128）。runtime 被回收或已被
+                // 其他路径接回时自然退出；最多补试 5 次，仍失败则保持降级。
+                let weak = Arc::downgrade(&runtime);
+                let retry_id = project_id.to_string();
+                let retry_events = events.clone();
+                let retry_root = root.clone();
+                std::thread::Builder::new()
+                    .name(format!("tenon-watch-retry-{retry_id}"))
+                    .spawn(move || {
+                        let mut backoff_ms = 250u64;
+                        for _ in 0..5 {
+                            std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
+                            let Some(rt) = weak.upgrade() else { return };
+                            if rt.watcher.lock().expect("watcher slot lock").is_some() {
+                                return;
+                            }
+                            if let Some(handle) = spawn_watcher(
+                                &retry_id,
+                                &retry_root,
+                                &retry_events,
+                                &global_events,
+                                Some(std::time::Duration::from_secs(10)),
+                                None,
+                            ) {
+                                let mut slot = rt.watcher.lock().expect("watcher slot lock");
+                                if slot.is_none() {
+                                    *slot = Some(handle);
+                                }
+                                return;
+                            }
+                            backoff_ms = (backoff_ms * 2).min(2_000);
+                        }
+                    })
+                    .ok();
+            }
+        }
+        runtime
     }
 
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<ProjectFileEvent> {
@@ -476,6 +557,18 @@ impl ProjectRuntime {
     }
 
     async fn stop(&self) {
+        if let Some(handle) = self.watcher.lock().expect("runtime watcher lock").take() {
+            handle.stop();
+        }
+    }
+}
+
+impl Drop for ProjectRuntime {
+    fn drop(&mut self) {
+        // 兜底回收（v1.128）：未经 close_project_runtime 的释放（如测试
+        // teardown 直接丢 DaemonState）也必须停 watcher——FSEvents 流与事件
+        // 泵线程跨 daemon 生命周期累积，会把系统 fseventsd 拖垮、拖慢后续
+        // 所有注册。显式关闭路径已先 take，这里通常是空操作。
         if let Some(handle) = self.watcher.lock().expect("runtime watcher lock").take() {
             handle.stop();
         }
@@ -509,6 +602,8 @@ pub struct DaemonState {
     pub laya: Arc<LayaRuntime>,
     /// Laya 清单验签公钥覆盖（§9.8 v1.71；None = 官方解析链；测试注入）。
     pub(crate) laya_public_key: Option<String>,
+    /// 文件监听轮询间隔覆盖（v1.128 测试确定性通道）；None = 原生后端。
+    pub(crate) watch_poll_interval: Option<std::time::Duration>,
     /// 脏缓冲注册表按项目隔离（§6.4 / §8.6）；key = project_id，value 是该项目相对路径表。
     pub dirty_buffers: Mutex<HashMap<String, Arc<tenon_fs::DirtyBufferRegistry>>>,
     /// 局域网配对（M3 §12.6：显式开启 + 一次性码 + 可吊销令牌；默认关闭）。
@@ -726,6 +821,7 @@ impl DaemonState {
                 &options.config.models.laya.features,
             )),
             laya_public_key: options.laya_public_key.clone(),
+            watch_poll_interval: options.watch_poll_interval,
             config: options.config,
             token: options
                 .fixed_token
@@ -831,7 +927,17 @@ impl DaemonState {
             runtime.touch().await;
             return runtime.clone();
         }
-        let runtime = ProjectRuntime::open(project_id, root.clone(), self.file_events.clone());
+        // watcher 注册握手含同步等待（就绪预算 2s，超时按「无 watcher」降级），
+        // 不能占住 async runtime 线程；锁内 await 保持并发激活去重语义。
+        let events = self.file_events.clone();
+        let opened_id = project_id.to_string();
+        let opened_root = root.clone();
+        let poll_interval = self.watch_poll_interval;
+        let runtime = tokio::task::spawn_blocking(move || {
+            ProjectRuntime::open(&opened_id, opened_root, events, poll_interval)
+        })
+        .await
+        .expect("project runtime open");
         open.insert(project_id.to_string(), runtime.clone());
         drop(open);
         self.set_l4_status(project_id, "queued", None);

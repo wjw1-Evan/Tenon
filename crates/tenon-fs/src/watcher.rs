@@ -37,7 +37,17 @@ pub struct FileWatcher {
 
 impl FileWatcher {
     /// 监听目录（递归）。`.git` / target / node_modules / dist 忽略。
+    /// 就绪预算 2s（v1.128）：超时显式失败，调用方按「无 watcher」降级
+    /// 或以更长预算经 [`FileWatcher::watch_with_budget`] 补注册。
     pub fn watch(root: &Path) -> notify::Result<Self> {
+        Self::watch_with_budget(root, Duration::from_secs(2))
+    }
+
+    /// 带就绪预算的监听：平台注册握手（FSEvents 流启动等）交给 setup 线程，
+    /// `ready_budget` 内未就绪即显式失败——fseventsd 高负载时注册可达数秒，
+    /// 调用方（如 daemon 激活链路）须以短预算快速降级、后台以长预算重试，
+    /// 不允许在 async 上下文同步等待长预算。
+    pub fn watch_with_budget(root: &Path, ready_budget: Duration) -> notify::Result<Self> {
         let (tx, rx) = std::sync::mpsc::channel();
         let root_owned: PathBuf = root.to_path_buf();
         let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
@@ -71,7 +81,9 @@ impl FileWatcher {
             }
         };
         // 平台后端注册必须不能阻塞 API：FSEvents / inotify 初始化交给 setup
-        // 线程，2s 内未 ready 就显式失败，调用方可按“无 watcher”降级。
+        // 线程，预算内未 ready 就显式失败，调用方可按“无 watcher”降级或稍后
+        // 以更长预算补注册（fseventsd 高负载时 FSEventStreamStart 可达数秒，
+        // 激活链路用 2s 快速降级，不在 async 上下文同步等长预算）。
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let setup_root = root_owned.clone();
         std::thread::Builder::new()
@@ -87,7 +99,7 @@ impl FileWatcher {
                 let _ = ready_tx.send(result);
             })?;
 
-        match ready_rx.recv_timeout(Duration::from_secs(10)) {
+        match ready_rx.recv_timeout(ready_budget) {
             Ok(Ok(watcher)) => Ok(Self {
                 _watcher: Box::new(watcher),
                 rx,
@@ -252,8 +264,12 @@ mod tests {
     #[test]
     fn native_backend_delivers_events() {
         // 默认路径（v1.80 原生事件后端）：注册即返回、写入即有事件。
+        // 就绪预算放宽到 10s：本用例对象是「原生事件可达」而非激活链路的
+        // 2s 快速降级（后者由 daemon 集成测试覆盖），fseventsd 高负载机器
+        // 上注册可达数秒（v1.128）。
         let dir = tempfile::tempdir().unwrap();
-        let watcher = FileWatcher::watch(dir.path()).expect("native watcher");
+        let watcher = FileWatcher::watch_with_budget(dir.path(), Duration::from_secs(10))
+            .expect("native watcher");
         std::fs::write(dir.path().join("native.txt"), "hi").unwrap();
         let events = watcher.next_batch(Duration::from_secs(10));
         assert!(
@@ -264,8 +280,11 @@ mod tests {
 
     #[test]
     fn timeout_returns_empty_batch() {
+        // 主体是 next_batch 超时语义（与后端无关），走轮询确定性通道，
+        // 不受原生注册延迟影响（v1.128）。
         let dir = tempfile::tempdir().unwrap();
-        let watcher = FileWatcher::watch(dir.path()).unwrap();
+        let watcher =
+            FileWatcher::watch_with_poll_interval(dir.path(), Duration::from_millis(100)).unwrap();
         let events = watcher.next_batch(Duration::from_millis(200));
         assert!(events.is_empty());
     }
