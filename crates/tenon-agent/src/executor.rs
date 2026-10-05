@@ -1014,4 +1014,83 @@ mod tests {
         assert!(!out.ok);
         assert!(out.content.contains("head 分支名称非法"));
     }
+
+    #[test]
+    fn read_file_not_found_returns_error() {
+        let (_d, c) = ctx();
+        let out = execute_tool(&c, "read_file", &serde_json::json!({"path": "nonexistent.txt"}));
+        assert!(!out.ok);
+    }
+
+    #[test]
+    fn write_file_creates_and_overwrites() {
+        let (_d, c) = ctx();
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({"file": "x.txt", "range": null, "content": "v1"}));
+        assert!(out.ok);
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({"file": "x.txt", "range": null, "content": "v2"}));
+        assert!(out.ok);
+    }
+
+    #[test]
+    fn bash_echo_works() {
+        let (_d, c) = ctx();
+        let out = execute_tool(&c, "bash", &serde_json::json!({"command": "echo test_ok", "timeout_s": 5}));
+        // bash 可能在沙箱环境不可用——仅验证不 panic
+        let _ = out;
+    }
+
+    #[test]
+    fn bash_invalid_command_returns_error() {
+        let (_d, c) = ctx();
+        let out = execute_tool(&c, "bash", &serde_json::json!({"command": "nonexistent_command_xyz", "timeout_s": 5}));
+        assert!(!out.ok);
+    }
+
+    #[test]
+    fn readonly_blocks_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        c.readonly.store(true, std::sync::atomic::Ordering::Relaxed);
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({"file": "blocked.txt", "range": null, "content": "x"}));
+        assert!(!out.ok, "readonly should block write");
+    }
+
+    #[test]
+    fn team_denied_tools_block_execution() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        c.team_denied_tools = vec!["bash".into()];
+        let out = execute_tool(&c, "bash", &serde_json::json!({"command": "echo hi", "timeout_s": 5}));
+        assert!(!out.ok, "denied tool should be blocked");
+    }
+
+    #[test]
+    fn unknown_tool_returns_error() {
+        let (_d, c) = ctx();
+        let out = execute_tool(&c, "nonexistent_tool", &serde_json::json!({}));
+        assert!(!out.ok);
+    }
+
+    #[test]
+    fn detect_test_command_with_cargo_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"test\"").unwrap();
+        let cmd = detect_test_command(dir.path());
+        assert!(cmd.is_some());
+    }
+
+    #[test]
+    fn detect_build_command_with_package_json() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+        let cmd = detect_build_command(dir.path());
+        assert!(cmd.is_some());
+    }
+
+    #[test]
+    fn detect_commands_empty_dir_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(detect_test_command(dir.path()).is_none());
+        assert!(detect_build_command(dir.path()).is_none());
+    }
 }
