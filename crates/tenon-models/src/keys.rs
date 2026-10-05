@@ -391,4 +391,23 @@ mod tests {
         chain.delete("CHAIN_KEY");
         assert!(chain.get("CHAIN_KEY").is_none());
     }
+
+    #[test]
+    fn chain_keystore_delete_propagates_to_all_layers() {
+        let ks1 = MemoryKeyStore::new();
+        ks1.set("KEY", "layer1");
+        let ks2 = MemoryKeyStore::new();
+        ks2.set("KEY", "layer2");
+        let chain = ChainKeyStore::with_stores(vec![Box::new(ks1), Box::new(ks2)]);
+        assert_eq!(chain.get("KEY").as_deref(), Some("layer1"));
+        chain.delete("KEY");
+        assert!(chain.get("KEY").is_none());
+    }
+
+    #[test]
+    fn env_keystore_set_and_delete_do_not_panic() {
+        let ks = EnvKeyStore;
+        ks.set("TENON_NOOP", "v");
+        ks.delete("TENON_NOOP");
+    }
 }
