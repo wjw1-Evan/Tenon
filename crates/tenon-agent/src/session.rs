@@ -1,12 +1,12 @@
 //! Agent 会话（设计方案 §9.1 / §9.3 / §9.4 / §9.7 / §10.3）：
-//! 状态机驱动任务循环，联动权限、审批、快照、熔断与事件流。
+//! 状态机驱动任务循环，联动权限、快照、熔断与事件流；v1.89 无审批。
 //!
 //! 转移规则由 `tenon_core::machine::StateMachine` 单测覆盖；运行态经
 //! `force_state` 对齐并保留计数（拒绝改案 ≤2、模型重试 ≤2、修复轮次）。
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc as StdArc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -26,7 +26,7 @@ use tenon_models::{
     ChatMessage, ChatRequest, ChatStreamEvent, ModelProvider, ToolSpec, Usage, TITLE_MARKER,
 };
 use tenon_snapshot::SnapshotStore;
-use tenon_store::{ApprovalDecision, Event, EventKind, Level as StoreLevel, SessionStatus, Store};
+use tenon_store::{Event, EventKind, Level as StoreLevel, SessionStatus, Store};
 
 use crate::executor::{execute_tool, ToolContext};
 
@@ -38,8 +38,6 @@ pub struct AgentConfig {
     pub policy: Policy,
     /// 首改缓冲毫秒（§9.3）。
     pub first_edit_buffer_ms: u64,
-    /// 审批超时秒（§9.1）。
-    pub approval_timeout_s: u64,
     pub circuit: CircuitLimits,
     /// 修复循环轮次上限（§9.4；无测试仓库降为 1）。
     pub fix_rounds: u32,
@@ -77,7 +75,6 @@ impl AgentConfig {
                 ..Policy::default()
             },
             first_edit_buffer_ms: 2000,
-            approval_timeout_s: 300,
             circuit: CircuitLimits::default(),
             fix_rounds: 3,
             command_timeout_s: 120,
@@ -130,8 +127,6 @@ pub enum AgentError {
     Snapshot(String),
     #[error("模型错误: {0}")]
     Model(String),
-    #[error("审批不存在或已决策")]
-    ApprovalInvalid,
 }
 
 /// 项目写锁（§9.7 v1.87 并行写锁：按 `(project_id, worktree_scope)` 计——
@@ -174,15 +169,9 @@ pub struct AgentSession {
     managed_worktree: Option<PathBuf>,
     control_tx: mpsc::UnboundedSender<ControlCommand>,
     control_rx: Mutex<mpsc::UnboundedReceiver<ControlCommand>>,
-    approvals: Mutex<std::collections::HashMap<String, mpsc::Sender<ApprovalDecision>>>,
-    /// 审批 id → 工具名（decide_approval 时恢复「本会话记住」的正确键）。
-    approval_tools: Mutex<std::collections::HashMap<String, String>>,
-    /// 「本会话记住」的审批动作（§7.3 允许一次 / 本会话记住）。
-    session_approved: Mutex<BTreeSet<String>>,
     events_tx: broadcast::Sender<Event>,
     first_edit_done: AtomicBool,
     touched_files: Mutex<BTreeSet<String>>,
-    deny_count: AtomicU32,
     /// 最近一次回滚前的安全快照（unrevert 恢复点，§10.3）。
     pre_rollback_tree: Mutex<Option<String>>,
     interrupt: Notify,
@@ -220,13 +209,13 @@ fn tool_specs() -> Vec<ToolSpec> {
         ("install_deps", "安装依赖（沙箱镜像代理，如 npm install）", serde_json::json!({
             "type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]
         })),
-        ("http_fetch", "抓取 URL（C 级审批）", serde_json::json!({
+        ("http_fetch", "抓取 URL（C 级直执并审计）", serde_json::json!({
             "type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]
         })),
-        ("git_commit", "git 提交（D 级恒审批）", serde_json::json!({
+        ("git_commit", "git 提交（D 级直执并审计）", serde_json::json!({
             "type": "object", "properties": {"message": {"type": "string"}}, "required": ["message"]
         })),
-        ("git_push", "推送当前分支到已配置远端（D 级恒审批；不支持 force）", serde_json::json!({
+        ("git_push", "推送当前分支到已配置远端（D 级直执并审计；不支持 force）", serde_json::json!({
             "type": "object",
             "properties": {
                 "remote": {"type": "string", "default": "origin"},
@@ -234,7 +223,7 @@ fn tool_specs() -> Vec<ToolSpec> {
                 "upstream": {"type": "boolean"}
             }
         })),
-        ("create_pr", "创建 Pull Request（C+D 复合恒审批；使用本机 gh CLI 凭据）", serde_json::json!({
+        ("create_pr", "创建 Pull Request（C+D 复合直执并审计；使用本机 gh CLI 凭据）", serde_json::json!({
             "type": "object",
             "properties": {
                 "title": {"type": "string"},
@@ -325,7 +314,6 @@ impl AgentSession {
         let write_scope = config.write_scope.clone();
         let managed_worktree = config.managed_worktree.clone();
         let machine = StateMachine::with_limits(MachineLimits {
-            deny_retries: 2,
             model_retries: 2,
             fix_rounds: config.fix_rounds,
         });
@@ -345,13 +333,9 @@ impl AgentSession {
             managed_worktree,
             control_tx,
             control_rx: Mutex::new(control_rx),
-            approvals: Mutex::new(std::collections::HashMap::new()),
-            approval_tools: Mutex::new(std::collections::HashMap::new()),
-            session_approved: Mutex::new(BTreeSet::new()),
             events_tx,
             first_edit_done: AtomicBool::new(false),
             touched_files: Mutex::new(BTreeSet::new()),
-            deny_count: AtomicU32::new(0),
             pre_rollback_tree: Mutex::new(None),
             interrupt: Notify::new(),
         }))
@@ -532,45 +516,6 @@ impl AgentSession {
         );
     }
 
-    /// 提交审批决策（§15 `POST /approval/:id`）。
-    pub async fn decide_approval(
-        &self,
-        approval_id: &str,
-        decision: ApprovalDecision,
-        action: &str,
-    ) -> Result<(), AgentError> {
-        {
-            let mut st = self.store.lock().await;
-            let decided = st
-                .decide_approval(approval_id, decision)
-                .map_err(|e| AgentError::Store(e.to_string()))?;
-            if decided.is_none() {
-                return Err(AgentError::ApprovalInvalid);
-            }
-        }
-        if decision == ApprovalDecision::Session {
-            // 路由回传的 action 是库中摘要（summarize_action 产物）；
-            // 会话级记忆须以工具名为键（与执行循环 contains(call.name) 匹配）
-            let tool = self
-                .approval_tools
-                .lock()
-                .await
-                .get(approval_id)
-                .cloned()
-                .unwrap_or_else(|| action.to_string());
-            self.session_approved.lock().await.insert(tool);
-        }
-        self.emit(
-            EventKind::ApprovalDecision,
-            &serde_json::json!({"approval_id": approval_id, "decision": decision}),
-        )
-        .await;
-        if let Some(tx) = self.approvals.lock().await.remove(approval_id) {
-            let _ = tx.send(decision).await;
-        }
-        Ok(())
-    }
-
     /// 流式调用当前模型；权威 usage / tool calls 只取流末尾 Final。
     /// 小增量按 64 字符 / 120ms 合并，避免 SQLite 事件溯源被 token 级写入淹没。
     async fn stream_model_turn(
@@ -672,7 +617,6 @@ impl AgentSession {
         let _guard = scope_lock.lock().await;
         self.first_edit_done.store(false, Ordering::SeqCst);
         self.touched_files.lock().await.clear();
-        self.deny_count.store(0, Ordering::SeqCst);
         self.memory.lock().await.goals.push(user_text.to_string());
 
         // ---- IDLE → SENSING ----
@@ -875,7 +819,6 @@ impl AgentSession {
             let mut assistant = ChatMessage::assistant(resp.content.clone());
             assistant.tool_calls = resp.tool_calls.clone();
             let mut tool_messages: Vec<ChatMessage> = Vec::new();
-            let mut denied_any = false;
 
             for call in &resp.tool_calls {
                 // Esc / 熔断暂停检查点
@@ -894,13 +837,7 @@ impl AgentSession {
                 let tool = Tool::from_name(&call.name);
                 let level = tool.and_then(|t| t.level()).unwrap_or(Level::C);
 
-                // 「本会话记住」的审批动作直通（§7.3）：B/C 级按动作类别记忆；
-                // D 级永不记忆（不可逆 / 外部副作用，逐次审批）
-                let session_ok = matches!(level, Level::B | Level::C)
-                    && self.session_approved.lock().await.contains(&call.name);
-                let decision = if session_ok {
-                    Decision::Auto
-                } else if self.tool_ctx.readonly && level != Level::A {
+                let decision = if self.tool_ctx.readonly && level != Level::A {
                     Decision::Denied("readonly")
                 } else {
                     self.config.policy.decide(Action { level })
@@ -919,36 +856,21 @@ impl AgentSession {
                         ));
                         continue;
                     }
-                    Decision::NeedsApproval => {
-                        self.force_state(State::AwaitingApproval).await;
-                        self.set_status(SessionStatus::AwaitingApproval).await;
-                        match self
-                            .request_approval(&call.name, level, &call.arguments)
-                            .await
-                        {
-                            ApprovalFlow::Approved(host) => {
-                                if let Some(h) = host {
-                                    self.tool_ctx.allow_host(&h);
-                                }
-                                self.force_state(State::Executing).await;
-                                self.set_status(SessionStatus::Executing).await;
-                            }
-                            ApprovalFlow::Denied => {
-                                denied_any = true;
-                                tool_messages.push(ChatMessage::tool_result(
-                                    call.id.clone(),
-                                    "用户拒绝了该操作。请调整方案（改案最多重试 2 次）。",
-                                ));
-                                continue;
-                            }
-                            ApprovalFlow::Timeout => {
-                                paused_reason = Some("审批超时".into());
-                                self.set_status(SessionStatus::Paused).await;
-                                break 'rounds;
-                            }
+                    Decision::Auto => {
+                        // v1.89：C / D 直接执行；目标域等关键参数进入风险审计。
+                        if matches!(level, Level::C | Level::D | Level::Composite) {
+                            self.emit(
+                                EventKind::DirectAction,
+                                &serde_json::json!({
+                                    "direct_action": true,
+                                    "tool": call.name,
+                                    "level": level.as_str(),
+                                    "args": call.arguments,
+                                }),
+                            )
+                            .await;
                         }
                     }
-                    Decision::Auto => {}
                 }
 
                 // ---- 首改缓冲（§9.3：首个 B 级前，Esc 可断）----
@@ -1224,19 +1146,6 @@ impl AgentSession {
                 ));
             }
 
-            // 审批拒绝 → 改案（AWAITING_APPROVAL --Deny--> DECIDING，≤2 次）
-            if denied_any {
-                let prev = self.deny_count.fetch_add(1, Ordering::SeqCst);
-                if prev + 1 > 2 {
-                    self.force_state(State::Paused).await;
-                    self.set_status(SessionStatus::Paused).await;
-                    paused_reason = Some("审批多次被拒，暂停待新指令".into());
-                    break 'rounds;
-                }
-            } else if !tool_messages.is_empty() {
-                self.deny_count.store(0, Ordering::SeqCst);
-            }
-
             if !tool_messages.is_empty() {
                 messages.push(assistant);
                 messages.extend(tool_messages);
@@ -1335,72 +1244,6 @@ impl AgentSession {
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(ms)) => false,
             _ = fut => true,
-        }
-    }
-
-    /// 审批流程：创建审批行 + 事件，等待决策或超时。
-    async fn request_approval(
-        &self,
-        tool: &str,
-        level: Level,
-        args: &serde_json::Value,
-    ) -> ApprovalFlow {
-        let summary = summarize_action(tool, args);
-        let approval = {
-            let mut st = self.store.lock().await;
-            st.insert_approval(
-                &self.session_id,
-                &summary,
-                match level {
-                    Level::A => StoreLevel::A,
-                    Level::B => StoreLevel::B,
-                    Level::C => StoreLevel::C,
-                    Level::D => StoreLevel::D,
-                    Level::Composite => StoreLevel::Composite,
-                },
-            )
-            .expect("insert approval")
-        };
-        // 库中 action 列存摘要；此处记住 id → 工具名，供会话级记忆用
-        self.approval_tools
-            .lock()
-            .await
-            .insert(approval.id.clone(), tool.to_string());
-        self.emit(
-            EventKind::ApprovalRequest,
-            &serde_json::json!({
-                "approval_id": approval.id,
-                "tool": tool,
-                "level": level.as_str(),
-                "summary": summary,
-                "args": args,
-            }),
-        )
-        .await;
-
-        let (tx, mut rx) = mpsc::channel(1);
-        self.approvals.lock().await.insert(approval.id.clone(), tx);
-        match tokio::time::timeout(
-            Duration::from_secs(self.config.approval_timeout_s),
-            rx.recv(),
-        )
-        .await
-        {
-            Ok(Some(ApprovalDecision::Once)) => {
-                let host = extract_host(tool, args);
-                ApprovalFlow::Approved(host)
-            }
-            Ok(Some(ApprovalDecision::Session)) => ApprovalFlow::Approved(extract_host(tool, args)),
-            Ok(Some(ApprovalDecision::Deny)) | Ok(None) => ApprovalFlow::Denied,
-            Err(_) => {
-                self.emit(
-                    EventKind::ApprovalTimeout,
-                    &serde_json::json!({"approval_id": approval.id}),
-                )
-                .await;
-                self.approvals.lock().await.remove(&approval.id);
-                ApprovalFlow::Timeout
-            }
         }
     }
 
@@ -1567,12 +1410,6 @@ impl AgentSession {
     }
 }
 
-enum ApprovalFlow {
-    Approved(Option<String>),
-    Denied,
-    Timeout,
-}
-
 /// 模型标题常见的元文本前缀（实测 GLM 会输出 "The user says: …" /
 /// "The user wants …" 类英文套壳，违反 v1.58「只输出标题本身」）：剥掉后取正文。
 const TITLE_META_PREFIXES: &[&str] = &[
@@ -1622,59 +1459,6 @@ pub fn sanitize_title(input: &str, max_chars: usize) -> String {
         .unwrap_or(unwrapped)
         .trim();
     unwrapped.chars().take(max_chars).collect()
-}
-
-fn extract_host(tool: &str, args: &serde_json::Value) -> Option<String> {
-    if tool != "http_fetch" {
-        return None;
-    }
-    args.get("url")
-        .and_then(|u| u.as_str())
-        .and_then(|u| u.split("//").nth(1))
-        .and_then(|rest| rest.split('/').next())
-        .map(String::from)
-}
-
-fn summarize_action(tool: &str, args: &serde_json::Value) -> String {
-    match tool {
-        "http_fetch" => format!(
-            "出网抓取 {}",
-            args.get("url").and_then(|u| u.as_str()).unwrap_or("?")
-        ),
-        "git_commit" => format!(
-            "git 提交：{}",
-            args.get("message").and_then(|m| m.as_str()).unwrap_or("")
-        ),
-        "git_push" => {
-            let remote = args
-                .get("remote")
-                .and_then(|r| r.as_str())
-                .unwrap_or("origin");
-            match args.get("branch").and_then(|b| b.as_str()) {
-                Some(branch) => format!("git 推送 {branch} 到远端 {remote}"),
-                None => format!("git 推送当前分支到远端 {remote}"),
-            }
-        }
-        "create_pr" => {
-            let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("");
-            match (
-                args.get("base").and_then(|v| v.as_str()),
-                args.get("head").and_then(|v| v.as_str()),
-            ) {
-                (Some(base), Some(head)) => format!("创建 PR {head} → {base}：{title}（C+D 复合）"),
-                _ => format!("创建 Pull Request：{title}（C+D 复合）"),
-            }
-        }
-        "install_deps" => format!(
-            "安装依赖：{}",
-            args.get("command").and_then(|c| c.as_str()).unwrap_or("?")
-        ),
-        "apply_patch" => format!(
-            "写入 {}",
-            args.get("file").and_then(|f| f.as_str()).unwrap_or("?")
-        ),
-        other => format!("执行 {other}"),
-    }
 }
 
 #[cfg(test)]

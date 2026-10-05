@@ -51,9 +51,6 @@ pub struct SessionConfig {
     /// 首改缓冲毫秒（§9.3）
     #[serde(rename = "first_edit_buffer")]
     pub first_edit_buffer_ms: u64,
-    /// 审批超时秒（§9.1）
-    #[serde(rename = "approval_timeout")]
-    pub approval_timeout_s: u64,
     /// 会话只读开关
     pub readonly: bool,
 }
@@ -63,7 +60,6 @@ impl Default for SessionConfig {
         Self {
             mode: SessionMode::Interactive,
             first_edit_buffer_ms: 2000,
-            approval_timeout_s: 300,
             readonly: false,
         }
     }
@@ -460,7 +456,6 @@ update.channel  = "manual"
 [session]
 mode              = "auto"
 first_edit_buffer = 1500
-approval_timeout  = 60
 readonly          = false
 
 [agent.circuit]
@@ -557,7 +552,6 @@ features      = ["intent", "risk"]
         assert_eq!(cfg.update.channel, UpdateChannel::Manual);
         assert_eq!(cfg.session.mode, SessionMode::Interactive);
         assert_eq!(cfg.session.first_edit_buffer_ms, 2000);
-        assert_eq!(cfg.session.approval_timeout_s, 300);
         assert!(!cfg.session.readonly);
         assert_eq!(cfg.agent.circuit.max_files, 15);
         assert_eq!(cfg.agent.circuit.max_lines, 1500);

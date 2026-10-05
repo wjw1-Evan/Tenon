@@ -17,7 +17,7 @@ use tenon_agent::session::{sanitize_title, AgentConfig, AgentSession, ControlCom
 use tenon_core::context::ProjectRules;
 use tenon_core::policy::Mode;
 use tenon_snapshot::SnapshotStore;
-use tenon_store::{ApprovalDecision, EventKind, SessionStatus};
+use tenon_store::{EventKind, SessionStatus};
 
 use crate::auth::auth_middleware;
 use crate::state::{
@@ -32,7 +32,7 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
         .route("/health", get(|| async { "ok" }))
         .route("/ws-ticket", post(ws_ticket))
         .route("/ws", get(ws_upgrade))
-        // ---------- 会话与审批（§15） ----------
+        // ---------- 会话与回滚（§15） ----------
         .route("/session", post(create_session))
         .route("/session/{id}/message", post(send_message))
         .route("/session/{id}", get(get_session))
@@ -42,7 +42,6 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
             "/session/{id}/worktree/discard",
             post(discard_session_worktree),
         )
-        .route("/approval/{id}", post(approval_decision))
         .route("/session/{id}/trace", get(session_trace))
         .route("/session/{id}/checkpoints", get(session_checkpoints))
         .route("/checkpoint/{id}/rollback", post(checkpoint_rollback))
@@ -172,14 +171,10 @@ async fn create_agent_session(
         mode,
     );
     agent_cfg.first_edit_buffer_ms = state.config.session.first_edit_buffer_ms;
-    agent_cfg.approval_timeout_s = state.config.session.approval_timeout_s;
     {
         let ov = state.settings_overrides.lock().unwrap().clone();
         if let Some(v) = ov.first_edit_buffer_ms {
             agent_cfg.first_edit_buffer_ms = v;
-        }
-        if let Some(v) = ov.approval_timeout_s {
-            agent_cfg.approval_timeout_s = v;
         }
         if let Some(v) = ov.command_timeout_s {
             agent_cfg.command_timeout_s = v;
@@ -557,7 +552,7 @@ async fn create_portfolio_task(
     Json(json!(tasks.get(&task_id))).into_response()
 }
 
-// ---------- 会话与审批 ----------
+// ---------- 会话与回滚 ----------
 
 #[derive(Deserialize)]
 struct CreateSessionBody {
@@ -1191,55 +1186,6 @@ async fn discard_session_worktree(
         Ok(Ok(())) => Json(json!({"discarded": true})).into_response(),
         Ok(Err(message)) => api_err(StatusCode::CONFLICT, message),
         Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
-}
-
-#[derive(Deserialize)]
-struct ApprovalBody {
-    /// once | session | deny
-    decision: String,
-}
-
-async fn approval_decision(
-    State(state): State<Arc<DaemonState>>,
-    Path(approval_id): Path<String>,
-    Json(body): Json<ApprovalBody>,
-) -> Response {
-    let decision = match body.decision.as_str() {
-        "once" => ApprovalDecision::Once,
-        "session" => ApprovalDecision::Session,
-        "deny" => ApprovalDecision::Deny,
-        other => return api_err(StatusCode::BAD_REQUEST, format!("未知 decision: {other}")),
-    };
-    let (sid, action) = {
-        let mut store = state.store.lock().await;
-        match store.approval(&approval_id) {
-            Ok(Some(a)) => (a.session_id, a.action),
-            _ => return api_err(StatusCode::NOT_FOUND, "approval not found"),
-        }
-    };
-    // 会话审批（交互卡）：委派会话（事件 + 唤醒等待者）；
-    // 系统级审批（system:*，如插件安装 / Laya 下载）：直接落库
-    if let Some(session) = state
-        .sessions
-        .lock()
-        .await
-        .get(&sid)
-        .map(|e| e.session.clone())
-    {
-        return match session
-            .decide_approval(&approval_id, decision, &action)
-            .await
-        {
-            Ok(()) => Json(json!({"ok": true})).into_response(),
-            Err(e) => api_err(StatusCode::CONFLICT, e.to_string()),
-        };
-    }
-    let mut store = state.store.lock().await;
-    match store.decide_approval(&approval_id, decision) {
-        Ok(Some(_)) => Json(json!({"ok": true})).into_response(),
-        Ok(None) => api_err(StatusCode::NOT_FOUND, "approval not found"),
-        Err(e) => api_err(StatusCode::CONFLICT, e.to_string()),
     }
 }
 
@@ -2191,9 +2137,6 @@ async fn search_registry(
 struct InstallPluginBody {
     /// registry 条目（客户端从检索结果取得）；或直接给 manifest YAML
     entry: tenon_registry::RegistryEntry,
-    /// 两阶段：省略 approval_id → 返回权限 diff + D 级卡；带已批准 id → 安装
-    #[serde(default)]
-    approval_id: Option<String>,
     /// 已装版本权限（客户端从 GET /plugins 取；用于权限 diff 展示）
     #[serde(default)]
     installed_permissions: Vec<String>,
@@ -2246,46 +2189,6 @@ async fn install_plugin(
     // 权限 diff（§13.2：新增权限高亮）
     let diff = treg::permission_diff(&body.installed_permissions, &manifest.permissions);
 
-    // 两阶段 D 级审批：第一调（无 approval_id）→ 返回 diff + 审批卡
-    let Some(approval_id) = body.approval_id else {
-        let approval = {
-            let mut st = state.store.lock().await;
-            st.insert_approval(
-                "system:plugin",
-                &format!(
-                    "安装插件 {} v{}（新增权限: {}）",
-                    manifest.id,
-                    manifest.version,
-                    if diff.added.is_empty() {
-                        "无".into()
-                    } else {
-                        diff.added.join(", ")
-                    }
-                ),
-                tenon_store::Level::D,
-            )
-            .expect("insert approval")
-        };
-        return Json(json!({
-            "approval_id": approval.id,
-            "level": "d",
-            "permission_diff": diff,
-            "manifest": manifest,
-        }))
-        .into_response();
-    };
-    // 第二调：校验审批已「允许」
-    let approved = {
-        let mut st = state.store.lock().await;
-        st.approval(&approval_id)
-            .ok()
-            .flatten()
-            .map(|a| matches!(a.decision, Some(tenon_store::ApprovalDecision::Once)))
-            .unwrap_or(false)
-    };
-    if !approved {
-        return api_err(StatusCode::FORBIDDEN, "D 级审批未通过（§13.2）");
-    }
     // 版本锁定 + 入库（安装到 ~/.tenon/plugins/，§14.1）
     let dir = tenon_config::Config::data_dir().join("plugins");
     std::fs::create_dir_all(&dir).ok();
@@ -2380,9 +2283,9 @@ async fn detect_language_packs(
                 .any(|f| project_root.join(f).exists());
             let server_installed = tenon_lsp::manager::command_on_path(&p.command);
             let runtime_hint = if p.language == "typescript" && !server_installed {
-                Some("官方指引：npm install -g typescript-language-server typescript@5.8.3（或一键安装，走 D 级审批）")
+                Some("官方指引：npm install -g typescript-language-server typescript@5.8.3（或一键安装）")
             } else if p.language == "python" && !server_installed {
-                Some("官方指引：npm install -g pyright（或一键安装，走 D 级审批）")
+                Some("官方指引：npm install -g pyright（或一键安装）")
             } else {
                 None
             };
@@ -2403,9 +2306,6 @@ async fn detect_language_packs(
 struct InstallPackBody {
     /// typescript | python
     pack: String,
-    /// 两阶段 D 级审批（§8.4 一键安装走审批，同 §9.8 下载）
-    #[serde(default)]
-    approval_id: Option<String>,
 }
 
 async fn install_language_pack(
@@ -2416,47 +2316,16 @@ async fn install_language_pack(
     let Some(_project_root) = project_root_by_id(&state, &id).await else {
         return api_err(StatusCode::NOT_FOUND, "project not found");
     };
-    let (command, summary) = match body.pack.as_str() {
-        "typescript" => (
-            "npm install -g typescript-language-server typescript@5.8.3",
-            "安装 TypeScript 语言包（typescript-language-server + 锁定版 TypeScript 5.8.3）",
-        ),
-        "python" => ("npm install -g pyright", "安装 Python 语言包（pyright）"),
+    let command = match body.pack.as_str() {
+        "typescript" => "npm install -g typescript-language-server typescript@5.8.3",
+        "python" => "npm install -g pyright",
         other => return api_err(StatusCode::BAD_REQUEST, format!("未知语言包: {other}")),
     };
-    // 两阶段 D 级审批
-    let Some(approval_id) = body.approval_id else {
-        let approval = {
-            let mut st = state.store.lock().await;
-            st.insert_approval("system:language-pack", summary, tenon_store::Level::D)
-                .expect("insert approval")
-        };
-        return Json(json!({
-            "approval_id": approval.id,
-            "level": "d",
-            "command": command,
-        }))
-        .into_response();
-    };
-    let approved = {
-        let mut st = state.store.lock().await;
-        st.approval(&approval_id)
-            .ok()
-            .flatten()
-            .map(|a| matches!(a.decision, Some(tenon_store::ApprovalDecision::Once)))
-            .unwrap_or(false)
-    };
-    if !approved {
-        return api_err(
-            StatusCode::FORBIDDEN,
-            "D 级审批未通过（§8.4 一键安装走审批）",
-        );
-    }
     let out = tenon_sandbox::exec_command(
         command,
         &std::env::temp_dir(),
         std::time::Duration::from_secs(300),
-        &tenon_sandbox::SandboxSpec::None, // 全局安装：写系统目录（已过 D 级审批）
+        &tenon_sandbox::SandboxSpec::None, // 全局安装：v1.89 直执，安装路径固定
     );
     match out {
         Ok(o) if o.success() => Json(json!({"installed": true, "pack": body.pack})).into_response(),
@@ -2481,9 +2350,6 @@ async fn list_projects(State(state): State<Arc<DaemonState>>) -> Response {
                 with_sessions.push((
                     project.clone(),
                     store.list_sessions(&project.id).unwrap_or_default(),
-                    store
-                        .pending_project_approvals(&project.id)
-                        .unwrap_or_default(),
                     store.project_usage_totals(&project.id).unwrap_or_default(),
                 ));
             }
@@ -2499,16 +2365,13 @@ async fn list_projects(State(state): State<Arc<DaemonState>>) -> Response {
     let session_runtimes: Vec<String> = state.sessions.lock().await.keys().cloned().collect();
     let summaries: Vec<Value> = projects
         .into_iter()
-        .map(|(project, sessions, pending_approvals, usage)| {
+        .map(|(project, sessions, usage)| {
             let active = sessions
                 .iter()
                 .filter(|s| {
                     matches!(
                         s.status,
-                        SessionStatus::Executing
-                            | SessionStatus::Verifying
-                            | SessionStatus::Fixing
-                            | SessionStatus::AwaitingApproval
+                        SessionStatus::Executing | SessionStatus::Verifying | SessionStatus::Fixing
                     )
                 })
                 .count();
@@ -2528,18 +2391,6 @@ async fn list_projects(State(state): State<Arc<DaemonState>>) -> Response {
                             .unwrap_or(0)
                     })
                     .unwrap_or(0),
-                "pending_approvals": pending_approvals
-                    .iter()
-                    .map(|approval| {
-                        json!({
-                            "id": approval.id,
-                            "session_id": approval.session_id,
-                            "action": approval.action,
-                            "level": approval.level.as_str(),
-                            "created_at": approval.created_at,
-                        })
-                    })
-                    .collect::<Vec<_>>(),
                 "usage": {
                     "input_tokens": usage.0,
                     "output_tokens": usage.1,
@@ -2911,12 +2762,6 @@ async fn get_settings(State(state): State<Arc<DaemonState>>) -> Response {
         if let Some(v) = ov.first_edit_buffer_ms {
             obj.insert("first_edit_buffer_ms".into(), serde_json::json!(v));
         }
-        if let Some(v) = ov.approval_timeout_s {
-            obj.insert("approval_timeout_s".into(), serde_json::json!(v));
-        }
-    }
-    let mut exec = serde_json::to_value(&state.config.agent.exec).unwrap_or_default();
-    if let Some(obj) = exec.as_object_mut() {
         if let Some(v) = ov.command_timeout_s {
             obj.insert("command_timeout_s".into(), serde_json::json!(v));
         }
@@ -2950,6 +2795,12 @@ async fn get_settings(State(state): State<Arc<DaemonState>>) -> Response {
                 let overridden = ov.models_providers.contains_key(name);
                 e.insert("overridden".into(), serde_json::Value::Bool(overridden));
             }
+        }
+    }
+    let mut exec = serde_json::to_value(&state.config.agent.exec).unwrap_or_default();
+    if let Some(obj) = exec.as_object_mut() {
+        if let Some(v) = ov.command_timeout_s {
+            obj.insert("command_timeout_s".into(), serde_json::json!(v));
         }
     }
     Json(json!({

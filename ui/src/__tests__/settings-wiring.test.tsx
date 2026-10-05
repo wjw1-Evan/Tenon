@@ -26,7 +26,7 @@ beforeEach(() => {
           session: {
             mode: "interactive",
             first_edit_buffer_ms: 2000,
-            approval_timeout_s: 120,
+
           },
           exec: { command_timeout_s: 120 },
         };
@@ -52,8 +52,6 @@ describe("app settings wiring probe", () => {
     // 回填：boot 拉取的设置
     const buffer = document.getElementById("set-buffer") as HTMLInputElement;
     expect(buffer.value).toBe("2000");
-    const mode = document.getElementById("set-mode") as HTMLSelectElement;
-    expect(mode.value).toBe("interactive");
   });
 
   it("活动栏底部齿轮 → 面板渲染（v1.62 可见入口）", async () => {

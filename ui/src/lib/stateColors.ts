@@ -6,7 +6,6 @@ export type AgentStateName =
   | "executing"
   | "verifying"
   | "fixing"
-  | "awaiting_approval"
   | "paused"
   | "error"
   | "done"
@@ -18,7 +17,6 @@ export const STATE_COLORS: Record<AgentStateName, string> = {
   executing: "#d9a514", // 执行（黄）
   verifying: "#7d4fd3", // 验证（紫）
   fixing: "#7d4fd3",
-  awaiting_approval: "#e07b28", // 等待审批（橙）
   paused: "#8a8f98",
   error: "#d43d3d", // 失败（红）
   done: "#2da44e", // 完成（绿）

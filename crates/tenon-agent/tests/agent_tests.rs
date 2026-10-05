@@ -10,7 +10,7 @@ use tenon_core::policy::Mode;
 use tenon_fs::l4;
 use tenon_models::{MockProvider, Role, ScriptedReply};
 use tenon_snapshot::SnapshotStore;
-use tenon_store::{ApprovalDecision, EventKind, Store};
+use tenon_store::{EventKind, Store};
 use tokio::sync::Mutex;
 
 type StdStore = Arc<Mutex<Store>>;
@@ -37,7 +37,6 @@ async fn setup(
     let provider = Arc::new(MockProvider::new("mock", "mock-1", script));
     let mut config = AgentConfig::for_project(dir.path().to_path_buf(), &project_id, trusted, mode);
     config.first_edit_buffer_ms = 20; // 测试加速
-    config.approval_timeout_s = 5;
     let rules = ProjectRules::default();
     let session = AgentSession::create(
         store.clone(),
@@ -199,109 +198,37 @@ async fn consecutive_truncations_error_out() {
 }
 
 #[tokio::test]
-async fn session_approval_remembers_b_level_for_session() {
-    // §7.3「本会话记住」：B 级（apply_patch）首次审批选 Session，
-    // 同会话后续 B 级直通——不再出现第二张审批卡
-    let (_dir, session, _store, _p) = setup(
+async fn interactive_mode_executes_b_level_writes_directly() {
+    // v1.89：档位只是兼容元数据；B 级修改不再等待审批。
+    let (dir, session, store, _p) = setup(
         vec![
             ScriptedReply::Tool {
                 name: "apply_patch".into(),
                 args: serde_json::json!({"file": "a.txt", "range": null, "content": "one\n"}),
             },
-            ScriptedReply::Tool {
-                name: "apply_patch".into(),
-                args: serde_json::json!({"file": "b.txt", "range": null, "content": "two\n"}),
-            },
-            ScriptedReply::Text("两个文件都已写入。".into()),
+            ScriptedReply::Text("已写入。".into()),
         ],
         false,
         Mode::Interactive,
     )
     .await;
-    let mut rx = session.subscribe();
-    let session2 = session.clone();
-    let approver = tokio::spawn(async move {
-        let mut approvals = 0;
-        while let Ok(ev) = rx.recv().await {
-            if ev.kind == EventKind::ApprovalRequest {
-                approvals += 1;
-                assert!(approvals <= 1, "Session 决策后同类别 B 级不得再次请求审批");
-                let id = ev.payload["approval_id"].as_str().unwrap().to_string();
-                // 路由语义：decide_approval 收到的是库中 action 列（摘要），
-                // 会话记忆须仍以工具名生效
-                session2
-                    .decide_approval(&id, ApprovalDecision::Session, "写入 a.txt")
-                    .await
-                    .unwrap();
-            }
-        }
-    });
-    let outcome = session.run_task("写两个文件").await;
-    approver.abort();
+    let outcome = session.run_task("写一个文件").await;
     match outcome {
-        TaskOutcome::Done(card) => {
-            assert_eq!(card.changed_files.len(), 2, "两个补丁都应落盘");
-        }
+        TaskOutcome::Done(card) => assert_eq!(card.changed_files, vec!["a.txt"]),
         other => panic!("期望 Done，实际 {other:?}"),
     }
     assert_eq!(
-        std::fs::read_to_string(_dir.path().join("a.txt")).unwrap(),
+        std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
         "one\n"
     );
-    assert_eq!(
-        std::fs::read_to_string(_dir.path().join("b.txt")).unwrap(),
-        "two\n"
-    );
+    let mut st = store.lock().await;
+    let events = st.events(&session.session_id).unwrap();
+    assert!(!events.iter().any(|e| e.kind == EventKind::ApprovalRequest));
 }
 
 #[tokio::test]
-async fn interactive_mode_requires_approval_for_b_and_deny_replans() {
-    // 交互档：B 级需审批 → 拒绝 → 改案（改用只读回答）
-    let (_dir, session, _store, _p) = setup(
-        vec![
-            ScriptedReply::Tool {
-                name: "apply_patch".into(),
-                args: serde_json::json!({"file": "a.txt", "range": null, "content": "x\n"}),
-            },
-            ScriptedReply::Text("好的，我不改了。".into()),
-        ],
-        false,
-        Mode::Interactive,
-    )
-    .await;
-    // 审批到达时拒绝
-    let mut rx = session.subscribe();
-    let session2 = session.clone();
-    let denier = tokio::spawn(async move {
-        loop {
-            match rx.recv().await {
-                Ok(ev) if ev.kind == EventKind::ApprovalRequest => {
-                    let id = ev.payload["approval_id"].as_str().unwrap().to_string();
-                    session2
-                        .decide_approval(&id, ApprovalDecision::Deny, "apply_patch")
-                        .await
-                        .unwrap();
-                    break;
-                }
-                Ok(_) => continue,
-                Err(_) => break,
-            }
-        }
-    });
-    let outcome = session.run_task("改一下").await;
-    denier.await.unwrap();
-    match outcome {
-        TaskOutcome::Done(card) => {
-            assert!(card.changed_files.is_empty(), "拒绝后不应有改动");
-            assert!(card.answer.contains("不改了"));
-        }
-        other => panic!("期望 Done，实际 {other:?}"),
-    }
-}
-
-#[tokio::test]
-async fn approval_once_executes_d_level_git_commit() {
-    let (dir, session, _store, _p) = setup(
+async fn d_level_git_commit_executes_and_audits_directly() {
+    let (dir, session, store, _p) = setup(
         vec![
             ScriptedReply::Tool {
                 name: "git_commit".into(),
@@ -313,7 +240,6 @@ async fn approval_once_executes_d_level_git_commit() {
         Mode::Auto,
     )
     .await;
-    // 建 git 仓库（含一个用户文件，否则 nothing to commit）
     let root = dir.path();
     std::fs::write(root.join("code.txt"), "fn main() {}\n").unwrap();
     for cmd in [
@@ -328,28 +254,7 @@ async fn approval_once_executes_d_level_git_commit() {
             .output()
             .unwrap();
     }
-
-    let mut rx = session.subscribe();
-    let session2 = session.clone();
-    let approver = tokio::spawn(async move {
-        loop {
-            match rx.recv().await {
-                Ok(ev) if ev.kind == EventKind::ApprovalRequest => {
-                    assert_eq!(ev.payload["level"], "d", "git_commit 是 D 级");
-                    let id = ev.payload["approval_id"].as_str().unwrap().to_string();
-                    session2
-                        .decide_approval(&id, ApprovalDecision::Once, "git_commit")
-                        .await
-                        .unwrap();
-                    break;
-                }
-                Ok(_) => continue,
-                Err(_) => break,
-            }
-        }
-    });
     let outcome = session.run_task("提交代码").await;
-    approver.await.unwrap();
     assert!(matches!(outcome, TaskOutcome::Done(_)), "{outcome:?}");
     let log = std::process::Command::new("git")
         .arg("-C")
@@ -358,6 +263,14 @@ async fn approval_once_executes_d_level_git_commit() {
         .output()
         .unwrap();
     assert!(String::from_utf8_lossy(&log.stdout).contains("test commit"));
+    let mut st = store.lock().await;
+    let events = st.events(&session.session_id).unwrap();
+    let risk = events
+        .iter()
+        .find(|e| e.kind == EventKind::DirectAction)
+        .expect("D 级动作应有直执审计");
+    assert_eq!(risk.payload["level"], "d");
+    assert_eq!(risk.payload["tool"], "git_commit");
 }
 
 #[tokio::test]

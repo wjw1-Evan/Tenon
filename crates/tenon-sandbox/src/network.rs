@@ -11,7 +11,7 @@ pub enum NetworkState {
     /// 镜像代理：仅预授权 registry（npm / pypi / nuget / crates…，B 级；
     /// install_deps）
     MirrorProxy { registries: BTreeSet<String> },
-    /// 域名代理：审批后白名单（C 级；http_fetch）
+    /// 域名代理：直执请求并审计目标（C 级；http_fetch）
     DomainProxy { hosts: BTreeSet<String> },
 }
 
@@ -78,7 +78,7 @@ mod tests {
     }
 
     #[test]
-    fn domain_proxy_only_approved_hosts() {
+    fn domain_proxy_metadata_preserved() {
         let n = NetworkState::DomainProxy {
             hosts: ["docs.rs".to_string()].into_iter().collect(),
         };

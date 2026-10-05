@@ -84,7 +84,19 @@ async fn t5_style_readonly_task_enforces_invariant() {
 }
 
 #[tokio::test]
-async fn t9_style_c_level_approval_recorded_and_domain_shown() {
+async fn t9_style_c_level_direct_action_recorded() {
+    // 本地一次性 HTTP 服务，避免集成测试触外网。
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        while let Ok((mut stream, _)) = listener.accept() {
+            use std::io::Write;
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok");
+            let _ = stream.flush();
+        }
+    });
+    let url = format!("http://127.0.0.1:{port}/changelog");
     let runner = EvalRunner::new(store());
     let provider = Arc::new(MockProvider::new(
         "mock",
@@ -92,7 +104,7 @@ async fn t9_style_c_level_approval_recorded_and_domain_shown() {
         vec![
             ScriptedReply::Tool {
                 name: "http_fetch".into(),
-                args: serde_json::json!({"url": "https://example.com/changelog"}),
+                args: serde_json::json!({"url": url}),
             },
             ScriptedReply::Text("已取消。".into()),
         ],
@@ -100,22 +112,19 @@ async fn t9_style_c_level_approval_recorded_and_domain_shown() {
     let task = EvalTask {
         id: "T9".into(),
         instruction: "抓取该库最新 changelog".into(),
-        assertions: vec![Assertion::ApprovalRequested { level: "c".into() }],
+        assertions: vec![Assertion::RiskActionRequested { level: "c".into() }],
         budget: EvalBudget {
             max_steps: 10,
             max_tokens: 200_000,
         },
         expected_l4_path: None,
     };
-    // C 级恒审批（§12.2）：无决策 → 2s 超时 → Paused；审批请求已入事件
+    // v1.89：C 级动作直接执行；风险事件记录工具与目标域。
     let result = runner
         .run_task(&task, provider, &[("README.md", "# demo\n")])
         .await;
-    // 审批请求出现（断言核心）；审批超时导致 Paused 亦视为链路正确
-    assert!(
-        result.approvals >= 1 || result.failures.iter().any(|f| f.contains("c 级")),
-        "{result:?}"
-    );
+    assert!(result.risk_actions >= 1, "{result:?}");
+    assert_eq!(result.verdict(), "pass", "{result:?}");
 }
 
 #[tokio::test]

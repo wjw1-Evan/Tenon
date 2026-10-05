@@ -19,7 +19,7 @@ describe("i18n（Q5：英文源 / 中文一级翻译）", () => {
 
   it("翻译回退：缺失键回英文再回键名", () => {
     const t = createTranslator("zh-CN");
-    expect(t("approval.deny")).toBe("拒绝");
+    expect(t("timeline.rollback")).toBe("回滚到此对话节点");
     expect(t("nonexistent.key")).toBe("nonexistent.key");
   });
 

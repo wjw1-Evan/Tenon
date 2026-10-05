@@ -7,7 +7,7 @@ import type { TenonApi } from "../lib/api";
 vi.mock("@monaco-editor/react", () => ({ default: () => null }));
 
 const settings: SettingsData = {
-  session: { mode: "interactive", first_edit_buffer_ms: 2000, approval_timeout_s: 120 },
+  session: { mode: "interactive", first_edit_buffer_ms: 2000 },
   exec: { command_timeout_s: 120 },
 };
 
@@ -46,10 +46,9 @@ describe("SettingsDialog", () => {
     render(
       <SettingsDialog api={makeApi()} t={t} settings={settings} saveMode="auto" onSaveModeChange={() => {}} onClose={() => {}} onSaved={() => {}} />
     );
-    const mode = screen.getByLabelText("settings.mode") as HTMLSelectElement;
-    expect(mode.value).toBe("interactive");
     const buffer = screen.getByLabelText("settings.buffer") as HTMLInputElement;
     expect(buffer.value).toBe("2000");
+    expect(screen.queryByLabelText("settings.mode")).toBeNull();
   });
 
   it("保存：载荷含会话与代理参数，成功后回调并关闭", async () => {
@@ -59,14 +58,11 @@ describe("SettingsDialog", () => {
     render(
       <SettingsDialog api={makeApi(put)} t={t} settings={settings} saveMode="auto" onSaveModeChange={() => {}} onClose={onClose} onSaved={onSaved} />
     );
-    fireEvent.change(screen.getByLabelText("settings.mode"), {
-        target: { value: "auto" },
-      });
     fireEvent.click(screen.getByTestId("settings-save"));
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
     expect(put).toHaveBeenCalledWith(
       expect.objectContaining({
-        session: expect.objectContaining({ mode: "auto" }),
+        session: expect.objectContaining({ first_edit_buffer_ms: 2000 }),
         exec: expect.objectContaining({ command_timeout_s: 120 }),
       })
     );
@@ -225,15 +221,12 @@ describe("SettingsDialog", () => {
     render(
       <SettingsDialog api={api} t={t} settings={withPolicy} saveMode="auto" onSaveModeChange={() => {}} onClose={() => {}} onSaved={() => {}} />
     );
-    expect((screen.getByTestId("settings-force-interactive") as HTMLSelectElement).value).toBe("on");
+    expect(screen.queryByTestId("settings-force-interactive")).toBeNull();
     expect((screen.getByTestId("settings-denied-tools") as HTMLInputElement).value).toBe(
       "git_push, create_pr"
     );
     expect((screen.getByTestId("settings-policy-cost") as HTMLInputElement).value).toBe("1.5");
 
-    fireEvent.change(screen.getByTestId("settings-force-interactive"), {
-      target: { value: "off" },
-    });
     fireEvent.change(screen.getByTestId("settings-denied-tools"), {
       target: { value: " git_push , mcp:* , " },
     });

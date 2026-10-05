@@ -1,4 +1,4 @@
-// 真 daemon 多项目 E2E（§18.1 / §18.2）：A 任务审批/回滚，B 并行隔离。
+// 真 daemon 多项目 E2E（§18.1 / §18.2）：A 任务直执/回滚，B 并行隔离。
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,7 +19,7 @@ test.beforeAll(async () => {
   runtime = JSON.parse(await readFile(runtimeFile, "utf8")) as Runtime;
 });
 
-test("concurrent projects keep writes, approvals and rollbacks isolated", async ({ page }) => {
+test("concurrent projects keep writes and rollbacks isolated", async ({ page }) => {
   test.setTimeout(90_000);
   page.on("dialog", (dialog) => void dialog.accept());
   await page.goto(runtime.baseUrl);
@@ -37,7 +37,7 @@ test("concurrent projects keep writes, approvals and rollbacks isolated", async 
   // 登记即用：切回 A 执行首个写入 / 回滚链路（点击文件夹行即切换并展开）。
   await page.getByTestId("project-list").getByText("project-a", { exact: true }).click();
 
-  // A 写入任务：interactive 模式先出 B 级审批，人工允许后落盘。
+  // A 写入任务：v1.89 直接执行并落盘。
   const taskA = [
     "E2E_WRITE",
     "e2e-a.txt",
@@ -45,12 +45,6 @@ test("concurrent projects keep writes, approvals and rollbacks isolated", async 
   ].join("\n");
   await page.getByTestId("task-input").fill(taskA);
   await page.getByTestId("send").click();
-  await expect(page.getByTestId("approval-card")).toBeVisible({ timeout: 20_000 });
-  // v1.87 全局活动条：审批就地决策不切换页面，跨项目计数同步（§7.2 边界不变式）。
-  await expect(page.getByTestId("global-activity-bar")).toContainText("Approvals 1", {
-    timeout: 10_000,
-  });
-  await page.getByTestId("approve-once").click();
   await expect(page.getByTestId("agent-feed")).toContainText("E2E write complete", { timeout: 30_000 });
   await expect.poll(async () => readFile(path.join(runtime.projectA, "e2e-a.txt"), "utf8").catch(() => ""), {
     timeout: 10_000,
@@ -59,7 +53,7 @@ test("concurrent projects keep writes, approvals and rollbacks isolated", async 
   // Checkpoint 回滚：磁盘恢复到任务前；unrevert 恢复写入语义。
   // v1.78 后底栏默认收起；细条入口保留稳定 testid。
   await page.getByTestId("bottom-open").click();
-  const rollback = page.locator(".timeline-node").getByRole("button", { name: /Rollback|回滚/ }).first();
+  const rollback = page.locator(".timeline-node").getByRole("button", { name: /Roll back|Rollback|回滚/ }).first();
   await expect(rollback).toBeVisible();
   await rollback.click();
   await expect.poll(async () => readFile(path.join(runtime.projectA, "e2e-a.txt"), "utf8").catch(() => ""), {

@@ -2,8 +2,8 @@
 //! stdio JSON-RPC（换行分帧）——initialize 握手 → tools/list → tools/call。
 //!
 //! 分级映射（§13.3：MCP 默认 C/D；§12.2 铁律三不可放宽）：
-//! - 默认 **D**（恒审批：外部进程能力面未知，保守处理）；
-//! - manifest `permissions` 含 `net:*` 的工具可降为 C（仍恒审批）；
+//! - 默认 **D**（外部进程能力面未知，保守处理）；
+//! - manifest `permissions` 含 `net:*` 的工具可降为 C；
 //! - 任何映射都不低于 C——MCP 工具永不自动执行。
 
 use serde::{Deserialize, Serialize};
@@ -170,7 +170,7 @@ impl McpConnection {
         serde_json::from_value(tools).map_err(|e| McpError::Json(e.to_string()))
     }
 
-    /// tools/call：执行外部工具（调用方须已完成 D/C 级审批）。
+    /// tools/call：执行外部工具（调用方负责黑名单与只读边界）。
     pub fn call_tool(&self, name: &str, arguments: Value) -> Result<String> {
         let result = self.request(
             "tools/call",

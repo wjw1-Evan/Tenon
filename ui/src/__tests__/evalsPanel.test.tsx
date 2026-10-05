@@ -18,7 +18,7 @@ describe("EvalsPanel", () => {
               pass_rate: 0.9,
               total_tokens: 1234,
               total_steps: 22,
-              total_approvals: 1,
+              total_risk_actions: 1,
               security_violations: 0,
               l4_recall_hit_rate: 0.8,
               l4_average_score: 0.821,

@@ -3,7 +3,6 @@
 //!   `~/.tenon/worktrees/<task-id>/`，§9.5；不触碰用户工作区）；
 //! - **文件集不相交调度**：静态检查任务文件集——相交 → 拒绝 / 转串行；
 //! - **并发 ≤3 × 单代理 token 预算硬上限**；冲突 = 失败回传用户处置；
-//! - **复合 D 卡（§12.2）**：批量任务多个 commit 合并为一张 D 级审批卡
 //!   （逐条列明、一次批准）。
 
 use std::path::{Path, PathBuf};
@@ -22,8 +21,6 @@ pub enum SubAgentError {
     Worktree(String),
     #[error("目标不是 git 仓库（worktree 隔离要求 git）")]
     NotGitRepo,
-    #[error("审批校验失败: {0}")]
-    Approval(String),
 }
 
 pub type Result<T> = std::result::Result<T, SubAgentError>;
@@ -150,10 +147,9 @@ impl WorktreePool {
     }
 }
 
-/// 复合 D 卡（§12.2）：批量任务的多个 commit 合并为一张 D 级审批卡
-/// （逐条列明、一次批准）。生成审批摘要文本（一次 `Once` 覆盖全部提交）。
+/// 批量任务提交摘要：逐条列明，用于共享日志展示。
 pub fn composite_commit_summary(messages: &[String]) -> String {
-    let mut s = String::from("复合提交（一次批准，共 N 个 commit）：");
+    let mut s = String::from("批量提交（直执审计，共 N 个 commit）：");
     for (i, m) in messages.iter().enumerate() {
         s.push_str(&format!("\n  {}. {m}", i + 1));
     }

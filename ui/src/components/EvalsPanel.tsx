@@ -1,5 +1,5 @@
 // AI Evals 报告可视化（设计方案 §18.3 / M3）：
-// 五指标（通过率 / 成本 / 步数 / 审批数 / 安全违规）+ L4 上下文质量。
+// 基线指标（通过率 / 成本 / 步数 / 风险动作数 / 安全违规）+ L4 上下文质量。
 import { useEffect, useState } from "react";
 import type { TenonApi } from "../lib/api";
 
@@ -31,7 +31,7 @@ export function EvalsPanel({ api }: { api: TenonApi }) {
             <th>通过率</th>
             <th>tokens</th>
             <th>steps</th>
-            <th>审批</th>
+            <th>风险动作</th>
             <th>违规</th>
             <th>L4 命中</th>
             <th>L4 均分</th>
@@ -45,7 +45,7 @@ export function EvalsPanel({ api }: { api: TenonApi }) {
               pass_rate?: number;
               total_tokens?: number;
               total_steps?: number;
-              total_approvals?: number;
+              total_risk_actions?: number;
               security_violations?: number;
               l4_recall_hit_rate?: number;
               l4_average_score?: number;
@@ -59,7 +59,7 @@ export function EvalsPanel({ api }: { api: TenonApi }) {
                 <td>{fm ? `${Math.round((fm.pass_rate ?? 0) * 100)}%` : "—"}</td>
                 <td>{fm?.total_tokens ?? "—"}</td>
                 <td>{fm?.total_steps ?? "—"}</td>
-                <td>{fm?.total_approvals ?? "—"}</td>
+                <td>{fm?.total_risk_actions ?? "—"}</td>
                 <td>{fm?.security_violations ?? "—"}</td>
                 <td data-testid={`evals-l4-hit-${r.id}`}>
                   {typeof fm?.l4_recall_hit_rate === "number"

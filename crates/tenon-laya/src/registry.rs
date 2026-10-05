@@ -20,7 +20,7 @@ pub struct RegistryManifest {
 pub struct ModelEntry {
     /// 版本锁定（§12.5）。
     pub version: u32,
-    /// 模型文件 SHA-256（hex，审批卡展示，§9.8）。
+    /// 模型文件 SHA-256（hex，安装审计展示，§9.8）。
     pub sha256: String,
     /// ed25519 签名（对 sha256 hex 字节签名，hex）。
     pub signature: String,
@@ -28,7 +28,7 @@ pub struct ModelEntry {
     pub url: String,
 }
 
-/// 安装计划（D 级审批卡内容，§9.8：与 §8.4 运行时下载同款）。
+/// 安装计划（D 级审计内容，§9.8：与 §8.4 运行时下载同款）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstallPlan {
     pub version: u32,

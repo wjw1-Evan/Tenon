@@ -44,7 +44,6 @@ pub async fn recover_stale_sessions(
                         | SessionStatus::Executing
                         | SessionStatus::Verifying
                         | SessionStatus::Fixing
-                        | SessionStatus::AwaitingApproval
                 )
             })
             .map(|s| (s.id, s.project_id))

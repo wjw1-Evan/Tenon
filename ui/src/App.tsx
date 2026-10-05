@@ -477,8 +477,7 @@ export default function App({
   // 打开项目 + 建会话（§7.3：v1.67 打开即静默信任，不再弹 TOFU 确认卡）
   const openProject = useCallback(async (path: string, displayName?: string) => {
     const opened = await api.openProject(path, displayName);
-    // TOFU（§12.7）：信任只放宽 B 级档位，C/D 恒审批；置信任须在激活建会话前，
-    // 否则默认档 auto 会被未信任回退成交互档。
+    // TOFU（§12.7）：打开即登记信任元数据；v1.89 不再设置执行门槛。
     if (!opened.trusted) await api.setTrust(opened.id, true);
     const refreshed = await refreshProjects();
     const summary =
@@ -488,7 +487,6 @@ export default function App({
         sessions: [],
         active_sessions: 0,
         dirty_buffers: 0,
-        pending_approvals: [],
         usage: { input_tokens: 0, output_tokens: 0, cost_usd: 0 },
       } satisfies ProjectSummary);
     await activateProject(summary);
@@ -1103,7 +1101,7 @@ export default function App({
             onClick={() => setFloatPane(null)}
           />
         )}
-        {/* v1.78 复刻 Codex 形态（§7.2）：线程（代理会话 / 审批）恒为弹性主区。 */}
+        {/* v1.78 复刻 Codex 形态（§7.2）：线程（代理会话）恒为弹性主区。 */}
         <section className="zone zone-thread" style={{ flex: 1, minWidth: 260 }}>
           <AgentPanel
             api={api}

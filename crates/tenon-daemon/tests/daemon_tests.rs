@@ -411,7 +411,7 @@ async fn full_session_flow_over_http() {
 }
 
 #[tokio::test]
-async fn approval_flow_over_http() {
+async fn b_level_write_executes_directly_over_http() {
     let dir = tempfile::tempdir().unwrap();
     let project = dir.path().join("proj");
     std::fs::create_dir_all(&project).unwrap();
@@ -419,20 +419,19 @@ async fn approval_flow_over_http() {
 
     let (_tmp, port, token) = start_daemon(vec![
         ScriptedReply::Tool {
-            name: "http_fetch".into(),
-            args: serde_json::json!({"url": "https://example.com/changelog"}),
+            name: "apply_patch".into(),
+            args: serde_json::json!({"file": "f.txt", "range": null, "content": "written\n"}),
         },
-        ScriptedReply::Text("已拒绝，不再重试".into()),
+        ScriptedReply::Text("写入完成".into()),
     ])
     .await;
     let client = client_with_token(&token);
-
     let created: serde_json::Value = client
         .post(format!("{}/session", base(port)))
         .json(&serde_json::json!({
             "project_path": project.to_string_lossy(),
             "provider": "mock",
-            "mode": "auto",
+            "mode": "interactive",
         }))
         .send()
         .await
@@ -441,53 +440,12 @@ async fn approval_flow_over_http() {
         .await
         .unwrap();
     let sid = created["session_id"].as_str().unwrap().to_string();
-
     client
         .post(format!("{}/session/{sid}/message", base(port)))
-        .json(&serde_json::json!({"text": "抓取 changelog"}))
+        .json(&serde_json::json!({"text": "写入 f.txt"}))
         .send()
         .await
         .unwrap();
-
-    // 等待审批卡出现（C 级恒审批，域名明示）
-    let mut approval_id = None;
-    for _ in 0..100 {
-        let trace: serde_json::Value = client
-            .get(format!("{}/session/{sid}/trace", base(port)))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        for ev in trace["events"].as_array().unwrap() {
-            if ev["type"] == "approval_request" {
-                assert_eq!(ev["payload"]["level"], "c");
-                assert!(
-                    ev["payload"]["summary"]
-                        .as_str()
-                        .unwrap()
-                        .contains("example.com"),
-                    "C 级卡必须明示域名（§12.2）"
-                );
-                approval_id = Some(ev["payload"]["approval_id"].as_str().unwrap().to_string());
-            }
-        }
-        if approval_id.is_some() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    let approval_id = approval_id.expect("应出现 C 级审批卡");
-
-    // 拒绝 → 任务以回答收尾
-    client
-        .post(format!("{}/approval/{approval_id}", base(port)))
-        .json(&serde_json::json!({"decision": "deny"}))
-        .send()
-        .await
-        .unwrap();
-
     for _ in 0..100 {
         let status: serde_json::Value = client
             .get(format!("{}/session/{sid}", base(port)))
@@ -497,18 +455,29 @@ async fn approval_flow_over_http() {
             .json()
             .await
             .unwrap();
-        if status["status"] == "done" && status["outcome"].is_object() {
-            assert!(status["outcome"]["Done"]["answer"]
-                .as_str()
-                .unwrap()
-                .contains("已拒绝"));
-            return;
+        if status["status"] == "done" {
+            break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    panic!("任务应在拒绝后完成");
+    let trace: serde_json::Value = client
+        .get(format!("{}/session/{sid}/trace", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(!trace["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| e["type"] == "approval_request"));
+    assert_eq!(
+        std::fs::read_to_string(project.join("f.txt")).unwrap(),
+        "x\nwritten\n"
+    );
 }
-
 #[tokio::test]
 async fn file_api_endpoints() {
     let dir = tempfile::tempdir().unwrap();
@@ -1599,35 +1568,6 @@ async fn language_pack_detect_and_wizard_flow() {
         ts["runtime_hint"].as_str().unwrap().contains("npm install"),
         "应给出官方指引自装: {ts}"
     );
-
-    // 两阶段 D 级审批：第一调出卡
-    let first: serde_json::Value = client
-        .post(format!(
-            "{}/project/{pid}/language-packs/install",
-            base(port)
-        ))
-        .json(&serde_json::json!({"pack": "typescript"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    eprintln!("PLUGIN first: {first}");
-    assert_eq!(first["level"], "d");
-    let approval_id = first["approval_id"].as_str().unwrap().to_string();
-
-    // 未批准直接复调 → 403
-    let denied = client
-        .post(format!(
-            "{}/project/{pid}/language-packs/install",
-            base(port)
-        ))
-        .json(&serde_json::json!({"pack": "typescript", "approval_id": approval_id}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(denied.status(), 403, "D 级审批未通过不得安装");
 }
 
 #[tokio::test]
@@ -1868,8 +1808,8 @@ signature: ""
         .unwrap();
     assert_eq!(search["hits"][0]["id"], "community.demo");
 
-    // 2. 安装第一调：权限 diff + D 级卡（新增 net:registry:npm 高亮）
-    let first: serde_json::Value = local
+    // 2. 校验通过后直执安装；响应保留权限 diff 供审计展示
+    let installed: serde_json::Value = local
         .post(format!("{}/plugins/install", base(handle.port)))
         .json(&serde_json::json!({
             "entry": search["hits"][0],
@@ -1883,48 +1823,8 @@ signature: ""
         .json()
         .await
         .unwrap();
-    eprintln!("PLUGIN first: {first}");
-    assert_eq!(first["level"], "d");
-    assert_eq!(
-        first["permission_diff"]["added"][0], "net:registry:npm",
-        "新增权限高亮（§13.2）: {first}"
-    );
-    let approval_id = first["approval_id"].as_str().unwrap().to_string();
-
-    // 3. 未批准复调 → 403
-    let denied = local
-        .post(format!("{}/plugins/install", base(handle.port)))
-        .json(&serde_json::json!({
-            "entry": search["hits"][0],
-            "approval_id": approval_id,
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(denied.status(), 403);
-
-    // 4. 批准 → 安装 + 入库
-    local
-        .post(format!("{}/approval/{approval_id}", base(handle.port)))
-        .json(&serde_json::json!({"decision": "once"}))
-        .send()
-        .await
-        .unwrap();
-    let installed: serde_json::Value = local
-        .post(format!("{}/plugins/install", base(handle.port)))
-        .json(&serde_json::json!({
-            "entry": search["hits"][0],
-            "approval_id": approval_id,
-            "installed_permissions": ["fs.read:project"],
-            "public_key": "0".repeat(64),
-        }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
     assert_eq!(installed["installed"], true);
+    assert_eq!(installed["permission_diff"]["added"][0], "net:registry:npm");
     let list: serde_json::Value = local
         .get(format!("{}/plugins", base(handle.port)))
         .send()
@@ -2199,7 +2099,7 @@ async fn settings_panel_roundtrip_validation_and_persistence() {
     };
 
     let r = put(serde_json::json!({
-        "session": {"mode": "auto", "first_edit_buffer_ms": 1500, "approval_timeout_s": 60},
+        "session": {"mode": "auto", "first_edit_buffer_ms": 1500},
         "exec": {"command_timeout_s": 90},
         "privacy": {"telemetry": true, "crash_reports": "opt_in"},
         "update": {"channel": "auto"}
@@ -2227,7 +2127,6 @@ async fn settings_panel_roundtrip_validation_and_persistence() {
     for bad in [
         serde_json::json!({"session": {"mode": "yolo"}}),
         serde_json::json!({"session": {"first_edit_buffer_ms": -1}}),
-        serde_json::json!({"session": {"approval_timeout_s": 1}}),
         serde_json::json!({"exec": {"command_timeout_s": 99999}}),
         serde_json::json!({"privacy": {"crash_reports": "always"}}),
         serde_json::json!({"update": {"channel": "daily"}}),

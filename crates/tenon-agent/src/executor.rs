@@ -71,8 +71,6 @@ pub struct ToolContext {
     pub guard: WriteGuard,
     /// 单命令超时（附录 E `[agent.exec].command_timeout_s`）。
     pub command_timeout: Duration,
-    /// 已批准的出网域名（C 级审批结果）。
-    pub allowed_hosts: std::sync::Mutex<Vec<String>>,
     /// 只读开关（A 级可用、其余拒绝）。
     pub readonly: bool,
     /// 脏缓冲注册表（§8.6 人机共编；None = daemon 未接入）。
@@ -99,7 +97,6 @@ impl ToolContext {
             root: root.clone(),
             command_cwd: root.clone(),
             command_timeout,
-            allowed_hosts: std::sync::Mutex::new(Vec::new()),
             readonly: false,
             dirty: None,
             mcp: None,
@@ -108,13 +105,6 @@ impl ToolContext {
             laya: None,
             lsp: None,
         }
-    }
-
-    pub fn allow_host(&self, host: &str) {
-        self.allowed_hosts
-            .lock()
-            .expect("hosts lock")
-            .push(host.to_string());
     }
 }
 
@@ -165,7 +155,7 @@ fn safe_git_branch(branch: &str) -> bool {
         })
 }
 
-/// 执行单个工具调用（已过权限审批；本函数只做执行与边界检查）。
+/// 执行单个工具调用（权限已判定；本函数只做执行与边界检查）。
 /// Err 变体含三栏冲突预览（§8.6）——尺寸可接受（clippy result_large_err 白名单）。
 #[allow(clippy::result_large_err)]
 pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> ToolOutput {
@@ -444,7 +434,7 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                 return ToolOutput::err("缺少 command 参数");
             };
             // 镜像代理态（§12.3 B 级）：registry 域白名单过滤在代理进程（M2）；
-            // 当前沙箱放行网络，代理进程落地前由审批+镜像配置约束
+            // 当前沙箱放行网络，代理进程落地前由直执审计+镜像配置约束
             let spec = tenon_sandbox::SandboxSpec::MirrorProxy {
                 project_root: ctx.root.clone(),
             };
@@ -473,21 +463,15 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
             let Some(url) = args.get("url").and_then(|u| u.as_str()) else {
                 return ToolOutput::err("缺少 url 参数");
             };
-            let host = url
-                .strip_prefix("https://")
-                .or_else(|| url.strip_prefix("http://"))
-                .and_then(|rest| rest.split('/').next())
-                .unwrap_or("");
-            let allowed = ctx.allowed_hosts.lock().expect("hosts lock").clone();
-            if !allowed.iter().any(|h| h == host) {
-                return ToolOutput::err(format!("域名 {host} 未获审批（C 级恒审批，§12.2）"));
-            }
             // 复用会话的 tokio 运行时（executor 在 async 上下文中被调用）；
             // 经独立线程 block_on——worker 线程上直接 block_on 必 panic
             //（"Cannot start a runtime from within a runtime"）
             let url = url.to_string();
             let fetched = run_async(async move {
-                match reqwest::Client::new()
+                match reqwest::Client::builder()
+                    .no_proxy()
+                    .build()
+                    .expect("http client")
                     .get(&url)
                     .timeout(Duration::from_secs(30))
                     .send()
@@ -551,7 +535,7 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
             }
         }
 
-        // ---------- D 级（执行前已审批） ----------
+        // ---------- D 级（直执并审计） ----------
         "git_commit" => {
             if ctx.readonly {
                 return ToolOutput::err("只读会话禁用 git 提交");
@@ -643,7 +627,7 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
             } else {
                 ""
             };
-            // D 级审批已在 session 层完成；远程名 / 分支经白名单校验后仍用
+            // D 级动作已在 session 层记录审计；远程名 / 分支经白名单校验后仍用
             // 直接参数拼接（无 shell 注入面），并禁用交互式凭据提示。
             let command = format!("git push --porcelain{upstream} {remote} {branch}");
             let spec = tenon_sandbox::SandboxSpec::None;
@@ -669,7 +653,7 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
     }
 }
 
-/// 创建 Pull Request（C+D 复合审批）：通过本机 `gh` CLI 使用用户已配置凭据。
+/// 创建 Pull Request（C+D 复合直执）：通过本机 `gh` CLI 使用用户已配置凭据。
 /// argv 直执不经 shell；`gh` 自身负责目标主机 / token 认证，输出仍统一脱敏。
 fn create_pull_request(ctx: &ToolContext, args: &serde_json::Value) -> ToolOutput {
     if ctx.readonly {
@@ -750,10 +734,16 @@ where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
-    let handle = tokio::runtime::Handle::try_current().map_err(|e| e.to_string())?;
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(handle.block_on(fut));
+        // 独立 current_thread runtime：不依赖调用方 runtime worker，避免测试的
+        // current_thread runtime 因同步等待而饿死。
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| e.to_string())?;
+        let _ = tx.send(runtime.block_on(fut));
+        Ok::<(), String>(())
     });
     rx.recv().map_err(|e| e.to_string())
 }
@@ -897,18 +887,6 @@ mod tests {
         let out = execute_tool(&c, "grep", &serde_json::json!({"pattern": "find_me"}));
         assert!(out.ok);
         assert!(out.content.contains("code.rs"));
-    }
-
-    #[test]
-    fn http_fetch_requires_approved_host() {
-        let (_d, c) = ctx();
-        let out = execute_tool(
-            &c,
-            "http_fetch",
-            &serde_json::json!({"url": "https://example.com/x"}),
-        );
-        assert!(!out.ok);
-        assert!(out.content.contains("未获审批"));
     }
 
     #[test]

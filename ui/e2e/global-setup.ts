@@ -69,7 +69,6 @@ export default async function setup() {
   await writeFile(configPath, `
 [session]
 first_edit_buffer = 5
-approval_timeout = 15
 
 [projects]
 max_open = 12

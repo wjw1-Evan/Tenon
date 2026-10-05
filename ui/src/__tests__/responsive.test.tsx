@@ -36,7 +36,7 @@ beforeEach(() => {
           session: {
             mode: "interactive",
             first_edit_buffer_ms: 2000,
-            approval_timeout_s: 120,
+
           },
           exec: { command_timeout_s: 120 },
         };
@@ -172,7 +172,6 @@ describe("三档布局（§7.2 v1.78）", () => {
                 sessions: [],
                 active_sessions: 0,
                 dirty_buffers: 0,
-                pending_approvals: [],
                 usage: { input_tokens: 0, output_tokens: 0, cost_usd: 0 },
               },
             ],

@@ -132,7 +132,6 @@ pub struct SettingsOverrides {
     /// interactive | auto
     pub mode: Option<String>,
     pub first_edit_buffer_ms: Option<u64>,
-    pub approval_timeout_s: Option<u64>,
     pub command_timeout_s: Option<u64>,
     /// v1.83 隐私分区：遥测默认关；崩溃报告 off | opt_in。
     pub privacy_telemetry: Option<bool>,
@@ -163,15 +162,6 @@ impl SettingsOverrides {
                     return Err("session.first_edit_buffer_ms 上限 10000ms".into());
                 }
                 self.first_edit_buffer_ms = Some(v);
-            }
-            if let Some(v) = session.get("approval_timeout_s") {
-                let v = v
-                    .as_u64()
-                    .ok_or("session.approval_timeout_s 须为非负整数")?;
-                if !(5..=3600).contains(&v) {
-                    return Err("session.approval_timeout_s 取值 5-3600s".into());
-                }
-                self.approval_timeout_s = Some(v);
             }
         }
         if let Some(exec) = body.get("exec") {
@@ -249,9 +239,6 @@ impl SettingsOverrides {
         }
         if let Some(v) = self.first_edit_buffer_ms {
             session.insert("first_edit_buffer_ms".into(), serde_json::json!(v));
-        }
-        if let Some(v) = self.approval_timeout_s {
-            session.insert("approval_timeout_s".into(), serde_json::json!(v));
         }
         let mut exec = serde_json::Map::new();
         if let Some(v) = self.command_timeout_s {
@@ -426,7 +413,7 @@ pub struct PortfolioChild {
     pub status: String,
 }
 
-/// 跨项目编排容器：只聚合状态 / 审批 / 成本，不共享代码上下文。
+/// 跨项目编排容器：只聚合状态 / 成本，不共享代码上下文。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PortfolioTask {
     pub id: String,
@@ -960,7 +947,7 @@ impl DaemonState {
         closed
     }
 
-    /// 活跃代理会话所属的项目集合（Executing / Verifying / Fixing / AwaitingApproval）。
+    /// 活跃代理会话所属的项目集合（Executing / Verifying / Fixing）。
     async fn active_session_project_ids(&self) -> HashSet<String> {
         let mut active_ids = HashSet::new();
         let sessions = self.sessions.lock().await;
@@ -970,7 +957,6 @@ impl DaemonState {
                 tenon_core::machine::State::Executing
                     | tenon_core::machine::State::Verifying
                     | tenon_core::machine::State::Fixing
-                    | tenon_core::machine::State::AwaitingApproval
             ) {
                 active_ids.insert(entry.project_id.clone());
             }
@@ -1055,7 +1041,7 @@ impl DaemonState {
     }
 
     /// Laya 自动下载并启用（§9.8 v1.71）：`enabled` + `auto_download` 时后台拉取
-    /// 官方静态 registry 签名清单，版本新于已装即下载安装热装载；全程无审批卡
+    /// 官方静态 registry 签名清单，版本新于已装即下载安装热装载；全程无确认卡
     /// （产品自管签名资产、推理不出网，非代理动作）。失败静默回退：仅日志，
     /// 下次启动重试；未启用 / 已是最新即跳过。
     pub fn spawn_laya_auto_download(self: &Arc<Self>, registry_url: Option<String>) {

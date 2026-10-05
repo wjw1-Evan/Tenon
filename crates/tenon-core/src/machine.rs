@@ -1,10 +1,9 @@
 //! 自主决策状态机（设计方案 §9.1）。
 //!
 //! 转移表覆盖：正常路径（SENSING→DECIDING→[首改缓冲]→EXECUTING→VERIFYING→
-//! SUMMARIZING→DONE / ANSWERING→DONE）、审批路径（C/D → AWAITING_APPROVAL，
-//! 允许→继续执行 / 拒绝→改案重试 ≤2 / 超时→PAUSED）、修复循环（VERIFYING ⇄
-//! FIXING，轮次收敛 ≤max_rounds）、侧向出口（任意 →PAUSED / →ERROR，ERROR
-//! 重试 ≤2 或切模型上下文随迁，中止→ROLLED_BACK）。
+//! SUMMARIZING→DONE / ANSWERING→DONE）、修复循环（VERIFYING ⇄ FIXING，轮次
+//! 收敛 ≤max_rounds）、侧向出口（任意 →PAUSED / →ERROR，ERROR 重试 ≤2 或
+//! 切模型上下文随迁，中止→ROLLED_BACK）。v1.89 无审批状态。
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -20,7 +19,6 @@ pub enum State {
     Executing,
     Verifying,
     Fixing,
-    AwaitingApproval,
     /// 无需改动的纯回答路径（§9.1 图：ANSWERING）
     Answering,
     /// 证据卡汇总
@@ -41,7 +39,6 @@ impl fmt::Display for State {
             State::Executing => "executing",
             State::Verifying => "verifying",
             State::Fixing => "fixing",
-            State::AwaitingApproval => "awaiting_approval",
             State::Answering => "answering",
             State::Summarizing => "summarizing",
             State::Paused => "paused",
@@ -68,14 +65,6 @@ pub enum Event {
     BufferElapsed,
     /// 首改缓冲期间 Esc 打断。
     BufferInterrupt,
-    /// EXECUTING 中遇到 C/D 级动作。
-    EncounterApproval,
-    /// 审批允许（once / session）→ 继续执行剩余步骤。
-    Approve,
-    /// 审批拒绝 → 改案重试。
-    Deny,
-    /// 审批超时（默认 5 分钟，§9.1）。
-    ApprovalTimeout,
     /// 执行完毕，进入验证。
     ExecutionDone,
     /// 验证失败且满足收敛条件（§9.4）。
@@ -104,8 +93,6 @@ pub enum Event {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Limits {
-    /// 审批拒绝后的改案重试上限（§9.1：≤2）。
-    pub deny_retries: u32,
     /// 模型失败重试上限（§9.1：重试 ≤2；含切模型）。
     pub model_retries: u32,
     /// 修复循环轮次上限（§9.4：≤3；无测试仓库降级为 1）。
@@ -115,7 +102,6 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            deny_retries: 2,
             model_retries: 2,
             fix_rounds: 3,
         }
@@ -136,7 +122,6 @@ pub struct StateMachine {
     limits: Limits,
     /// PAUSED / ERROR 的断点状态。
     resume_state: Option<State>,
-    deny_retries_used: u32,
     model_retries_used: u32,
     fix_rounds_used: u32,
 }
@@ -151,7 +136,6 @@ impl StateMachine {
             state: State::Idle,
             limits,
             resume_state: None,
-            deny_retries_used: 0,
             model_retries_used: 0,
             fix_rounds_used: 0,
         }
@@ -184,7 +168,6 @@ impl StateMachine {
                 | State::Executing
                 | State::Verifying
                 | State::Fixing
-                | State::AwaitingApproval
                 | State::Answering
                 | State::Summarizing
         )
@@ -204,24 +187,7 @@ impl StateMachine {
                 State::Paused
             }
             (State::Answering, Event::SummaryDone) => State::Done,
-            (State::Executing, Event::EncounterApproval) => State::AwaitingApproval,
             (State::Executing, Event::ExecutionDone) => State::Verifying,
-
-            // ---------- 审批 ----------
-            (State::AwaitingApproval, Event::Approve) => State::Executing,
-            (State::AwaitingApproval, Event::Deny) => {
-                if self.deny_retries_used >= self.limits.deny_retries {
-                    self.resume_state = Some(State::Paused);
-                    State::Paused
-                } else {
-                    self.deny_retries_used += 1;
-                    State::Deciding
-                }
-            }
-            (State::AwaitingApproval, Event::ApprovalTimeout) => {
-                self.resume_state = Some(State::AwaitingApproval);
-                State::Paused
-            }
 
             // ---------- 验证与修复循环 ----------
             (State::Verifying, Event::VerificationPassed) => State::Summarizing,
@@ -249,7 +215,7 @@ impl StateMachine {
             (State::Paused, Event::Abort) => State::RolledBack,
 
             // ---------- 侧向出口：模型失败 ----------
-            (s, Event::ModelError) if Self::is_working(*s) && *s != State::AwaitingApproval => {
+            (s, Event::ModelError) if Self::is_working(*s) => {
                 self.resume_state = Some(*s);
                 State::Error
             }
@@ -264,7 +230,6 @@ impl StateMachine {
 
             // ---------- 终态 ----------
             (State::Done, Event::Reset) => {
-                self.deny_retries_used = 0;
                 self.model_retries_used = 0;
                 self.fix_rounds_used = 0;
                 self.resume_state = None;
@@ -344,7 +309,7 @@ mod tests {
     }
 
     #[test]
-    fn approval_allow_continues_execution_then_verifies() {
+    fn executing_has_no_approval_detour() {
         let mut m = StateMachine::new();
         drive(
             &mut m,
@@ -353,76 +318,13 @@ mod tests {
                 Event::SensingDone,
                 Event::NeedChange,
                 Event::BufferElapsed,
-                Event::EncounterApproval,
             ],
         );
-        assert_eq!(m.state(), State::AwaitingApproval);
-        // 允许 → 回 EXECUTING 继续剩余步骤（不直接跳 SUMMARIZING，§9.1）
-        assert_eq!(m.transition(Event::Approve).unwrap(), State::Executing);
+        // v1.89：C/D 只记录风险级别，不产生审批状态或等待事件。
+        assert_eq!(m.state(), State::Executing);
         assert_eq!(
             m.transition(Event::ExecutionDone).unwrap(),
             State::Verifying
-        );
-    }
-
-    #[test]
-    fn approval_deny_retries_at_most_twice_then_pauses() {
-        let mut m = StateMachine::new();
-        drive(
-            &mut m,
-            &[
-                Event::Start,
-                Event::SensingDone,
-                Event::NeedChange,
-                Event::BufferElapsed,
-                Event::EncounterApproval,
-            ],
-        );
-        m.transition(Event::Deny).unwrap();
-        assert_eq!(m.state(), State::Deciding, "第 1 次拒绝 → 改案");
-        drive(
-            &mut m,
-            &[
-                Event::NeedChange,
-                Event::BufferElapsed,
-                Event::EncounterApproval,
-            ],
-        );
-        m.transition(Event::Deny).unwrap();
-        assert_eq!(m.state(), State::Deciding, "第 2 次拒绝 → 改案");
-        drive(
-            &mut m,
-            &[
-                Event::NeedChange,
-                Event::BufferElapsed,
-                Event::EncounterApproval,
-            ],
-        );
-        m.transition(Event::Deny).unwrap();
-        assert_eq!(
-            m.state(),
-            State::Paused,
-            "第 3 次拒绝超出 ≤2 → PAUSED 待新指令"
-        );
-    }
-
-    #[test]
-    fn approval_timeout_pauses_with_resume_point() {
-        let mut m = StateMachine::new();
-        drive(
-            &mut m,
-            &[
-                Event::Start,
-                Event::SensingDone,
-                Event::NeedChange,
-                Event::BufferElapsed,
-                Event::EncounterApproval,
-            ],
-        );
-        assert_eq!(m.transition(Event::ApprovalTimeout).unwrap(), State::Paused);
-        assert_eq!(
-            m.transition(Event::Resume).unwrap(),
-            State::AwaitingApproval
         );
     }
 
@@ -547,7 +449,6 @@ mod tests {
     #[test]
     fn invalid_transitions_rejected() {
         let mut m = StateMachine::new();
-        assert!(m.transition(Event::Approve).is_err(), "IDLE 无审批可允许");
         assert!(
             m.transition(Event::SensingDone).is_err(),
             "IDLE 不能跳过 Start"

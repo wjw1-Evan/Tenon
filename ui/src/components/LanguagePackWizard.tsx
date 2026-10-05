@@ -1,5 +1,4 @@
-// 语言包安装向导（设计方案 §8.4）：项目感知推荐 + 运行时检测 + 两条路径
-//（一键安装走 D 级审批 / 官方指引自装）。
+// 语言包安装向导（设计方案 §8.4）：项目感知推荐 + 运行时检测 + 一键直执。
 import { useEffect, useState } from "react";
 import type { TenonApi } from "../lib/api";
 
@@ -27,15 +26,10 @@ export function LanguagePackWizard({ api, projectId, onInstalled }: Props) {
   }, [api, projectId]);
 
   async function install(language: string) {
-    // 两阶段 D 级审批：先取卡，再批准执行
-    const first = await api.installLanguagePack(projectId!, language);
-    if (first.approval_id) {
-      await api.decideApproval(first.approval_id, "once");
-      const second = await api.installLanguagePack(projectId!, language, first.approval_id);
-      if (second.installed) {
-        setPhase((p) => ({ ...p, [language]: "installed" }));
-        onInstalled?.(language);
-      }
+    const result = await api.installLanguagePack(projectId!, language);
+    if (result.installed) {
+      setPhase((p) => ({ ...p, [language]: "installed" }));
+      onInstalled?.(language);
     }
   }
 
@@ -60,7 +54,7 @@ export function LanguagePackWizard({ api, projectId, onInstalled }: Props) {
                   data-testid={`lp-install-${p.language}`}
                   onClick={() => install(p.language)}
                 >
-                  一键安装（D 级审批）
+                  一键安装
                 </button>
               </span>
             )}

@@ -1,11 +1,10 @@
-// 代理会话面板（设计方案 §7.2 右区）：会话流 / 状态色 / 审批卡 / 证据卡。
+// 代理会话面板（设计方案 §7.2 右区）：会话流 / 状态色 / 证据卡；v1.89 无审批。
 // §8.6 人机共编：dirty_conflict 事件 → 三栏合并预览；补丁 → 行级 AI 角标。
 // v1.51：模型选择入口内嵌任务输入框底行（参考 ZCode 客户端输入区）。
 import { useEffect, useRef, useState } from "react";
 import type { TenonApi } from "../lib/api";
 import type { Translate } from "../lib/i18n";
 import { RUNNING_STATES, STATE_COLORS, type AgentStateName } from "../lib/stateColors";
-import { ApprovalCard, pendingApprovalFromEvents } from "./ApprovalCard";
 import { diffFromPatchEvent } from "./DiffPanel";
 import { aiLinesFromDiff } from "../lib/aiLines";
 import { ModelRoutingPanel } from "./ModelRoutingPanel";
@@ -191,7 +190,6 @@ export function AgentPanel({
     await api.control(sessionId, "stop");
   }
 
-  const approval = pendingApprovalFromEvents(events);
   const running = RUNNING_STATES.has(status);
 
   return (
@@ -231,24 +229,6 @@ export function AgentPanel({
           <div className="ev ev-decision" data-testid="model-stream">
             {streamText}
           </div>
-        )}
-        {approval && (
-          <ApprovalCard
-            api={api}
-            t={t}
-            approval={approval}
-            onDecided={() =>
-              setEvents((prev) => [
-                ...prev,
-                {
-                  id: Date.now(),
-                  seq: Number.MAX_SAFE_INTEGER,
-                  type: "approval_decision_local",
-                  payload: {},
-                },
-              ])
-            }
-          />
         )}
       </div>
 
@@ -305,6 +285,12 @@ function EventCard({ ev, t }: { ev: EventItem; t: Translate }) {
     }
     case "patch_applied":
       return <div className="ev ev-patch">✎ {String(ev.payload.tool ?? "")}</div>;
+    case "direct_action":
+      return (
+        <div className="ev ev-cmd">
+          ⚡ {String(ev.payload.tool ?? "")} · {String(ev.payload.level ?? "")}
+        </div>
+      );
     case "command_run":
       return <div className="ev ev-cmd">▶ {String(ev.payload.tool ?? "")}</div>;
     case "diagnostics":
@@ -314,8 +300,6 @@ function EventCard({ ev, t }: { ev: EventItem; t: Translate }) {
           <pre>{String((ev.payload as { verification?: string }).verification ?? "")}</pre>
         </div>
       );
-    case "approval_request":
-      return null; // 由 ApprovalCard 呈现
     case "error":
       return (
         <div className="ev ev-error">

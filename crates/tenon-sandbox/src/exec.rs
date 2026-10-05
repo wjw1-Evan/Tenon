@@ -38,7 +38,7 @@ pub enum SandboxSpec {
     Offline { project_root: PathBuf },
     /// 镜像代理：依赖安装（域白名单过滤在代理进程，随 M2 落地；当前放行网络）。
     MirrorProxy { project_root: PathBuf },
-    /// 域名代理：C 级审批后的白名单域名（同上，代理进程随 M2）。
+    /// 域名代理：C 级直执审计域名（同上，代理进程随 M2）。
     DomainProxy {
         project_root: PathBuf,
         hosts: Vec<String>,

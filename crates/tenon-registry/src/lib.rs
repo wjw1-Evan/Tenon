@@ -284,7 +284,7 @@ pub fn load_public_key() -> Option<String> {
     None
 }
 
-/// 下载条目并校验 SHA-256（须已过 D 级审批）。
+/// 下载条目并校验 SHA-256。
 pub async fn download_entry(plan: &InstallPlan) -> Result<Vec<u8>> {
     let resp = reqwest::Client::new()
         .get(&plan.url)

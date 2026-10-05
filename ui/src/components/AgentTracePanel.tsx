@@ -1,5 +1,5 @@
 // AgentTrace 面板（设计方案 §14.2 / M2 交付）：
-// 工具调用明细 / token 与成本 / 审批记录 / token 速度——本地生成、全可查。
+// 工具调用明细 / token 与成本 / 风险动作 / token 速度——本地生成、全可查。
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { TenonApi } from "../lib/api";
 
@@ -83,7 +83,7 @@ export function AgentTracePanel({ api, sessionId }: Props) {
         })),
     [events]
   );
-  const approvals = events.filter((e) => e.type === "approval_request");
+  const riskActions = events.filter((e) => e.type === "direct_action");
 
   return (
     <div className="trace-panel" data-testid="agent-trace">
@@ -98,7 +98,7 @@ export function AgentTracePanel({ api, sessionId }: Props) {
           <span data-testid="out-speed">{outSpeed} tok/s ↓</span>
         )}
         <span>成本 ${tokens.cost.toFixed(4)}</span>
-        <span>审批 {approvals.length} 次</span>
+        <span>风险动作 {riskActions.length} 次</span>
       </div>
       <table className="trace-table">
         <thead>

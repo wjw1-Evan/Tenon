@@ -36,13 +36,6 @@ export interface ProjectSummary {
   session_runtimes?: string[];
   active_sessions: number;
   dirty_buffers: number;
-  pending_approvals: Array<{
-    id: string;
-    session_id: string;
-    action: string;
-    level: string;
-    created_at: string;
-  }>;
   usage: { input_tokens: number; output_tokens: number; cost_usd: number };
 }
 
@@ -133,7 +126,7 @@ export interface ProviderSettings {
   [k: string]: unknown;
 }
 
-/** 权限高级策略（v1.85）：只提供收窄能力，C/D 固定恒审批。 */
+/** 权限高级策略（v1.89）：工具黑名单与成本上限收窄；无审批。 */
 export interface TeamPolicySettings {
   force_interactive?: boolean;
   denied_tools?: string[];
@@ -161,7 +154,6 @@ export interface SettingsData {
   session: {
     mode?: string;
     first_edit_buffer_ms?: number;
-    approval_timeout_s?: number;
     [k: string]: unknown;
   };
   exec?: { command_timeout_s?: number; [k: string]: unknown };
@@ -370,13 +362,6 @@ export class TenonApi {
     return this.request<{ discarded: boolean }>(`/session/${sessionId}/worktree/discard`, {
       method: "POST",
       json: { confirm },
-    });
-  }
-
-  decideApproval(approvalId: string, decision: "once" | "session" | "deny") {
-    return this.request<{ ok: boolean }>(`/approval/${approvalId}`, {
-      method: "POST",
-      json: { decision },
     });
   }
 
@@ -697,16 +682,14 @@ export class TenonApi {
     }>(`/project/${projectId}/language-packs`);
   }
 
-  /** 语言包一键安装（两阶段 D 级审批）。 */
-  installLanguagePack(projectId: string, pack: string, approvalId?: string) {
+  /** 语言包一键安装（v1.89 直执；失败返回错误）。 */
+  installLanguagePack(projectId: string, pack: string) {
     return this.request<{
-      approval_id?: string;
-      level?: string;
       command?: string;
       installed?: boolean;
     }>(`/project/${projectId}/language-packs/install`, {
       method: "POST",
-      json: { pack, approval_id: approvalId },
+      json: { pack },
     });
   }
 
@@ -777,7 +760,7 @@ export class TenonApi {
     }>("/plugins", { method: "PUT", json: { query } });
   }
 
-  /** 插件安装：首次返回 D 级审批与权限 diff，批准后携 approval_id 安装。 */
+  /** 插件安装：签名 / 哈希 / 保留字校验后直执，返回权限 diff。 */
   installPlugin(
     entry: {
       id: string;
@@ -787,12 +770,9 @@ export class TenonApi {
       url: string;
       description?: string;
     },
-    installedPermissions: string[],
-    approvalId?: string
+    installedPermissions: string[]
   ) {
     return this.request<{
-      approval_id?: string;
-      level?: string;
       permission_diff?: {
         added: string[];
         removed: string[];
@@ -806,7 +786,6 @@ export class TenonApi {
       json: {
         entry,
         installed_permissions: installedPermissions,
-        approval_id: approvalId,
       },
     });
   }

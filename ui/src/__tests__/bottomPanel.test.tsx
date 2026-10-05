@@ -25,7 +25,7 @@ beforeEach(() => {
           session: {
             mode: "interactive",
             first_edit_buffer_ms: 2000,
-            approval_timeout_s: 120,
+
           },
           exec: { command_timeout_s: 120 },
         };
@@ -53,7 +53,7 @@ describe("底部面板开合（§7.2 v1.78）", () => {
 
     fireEvent.click(screen.getByTestId("bottom-close"));
     const open = screen.getByTestId("bottom-open");
-    expect(open.textContent).toContain("Checkpoint Timeline");
+    expect(open.textContent).toContain("Conversation node timeline");
     expect(screen.queryByTestId("tab-source")).toBeNull();
   });
 

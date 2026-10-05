@@ -70,11 +70,8 @@ interface Props {
 export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, onClose, onSaved }: Props) {
   const [theme, setTheme] = useState<ThemePreference>(() => loadThemePreference());
   const [locale, setLocale] = useState<Locale>("auto");
-  const [mode, setMode] = useState("interactive");
   const [bufferMs, setBufferMs] = useState(2000);
-  const [approvalTimeout, setApprovalTimeout] = useState(120);
   const [commandTimeout, setCommandTimeout] = useState(120);
-  const [forceInteractive, setForceInteractive] = useState(false);
   const [deniedTools, setDeniedTools] = useState("");
   const [maxCost, setMaxCost] = useState("");
   const [telemetry, setTelemetry] = useState(false);
@@ -92,12 +89,9 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, o
   // 从已拉取的全局设置回填（外观 / 语言为本地即时项，不入 daemon）
   useEffect(() => {
     if (!settings) return;
-    setMode(String(settings.session?.mode ?? "interactive"));
     setBufferMs(Number(settings.session?.first_edit_buffer_ms ?? 2000));
-    setApprovalTimeout(Number(settings.session?.approval_timeout_s ?? 120));
     setCommandTimeout(Number(settings.exec?.command_timeout_s ?? 120));
     const policy = settings.team_policy ?? {};
-    setForceInteractive(Boolean(policy.force_interactive));
     setDeniedTools((policy.denied_tools ?? []).join(", "));
     setMaxCost(policy.max_cost_usd == null ? "" : String(policy.max_cost_usd));
     setTelemetry(Boolean(settings.privacy?.telemetry));
@@ -199,7 +193,7 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, o
         }
       }
       await api.putTeamPolicy({
-        force_interactive: forceInteractive,
+        force_interactive: false,
         denied_tools: deniedTools
           .split(",")
           .map((name) => name.trim())
@@ -215,9 +209,7 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, o
       }
       const next = await api.putSettings({
         session: {
-          mode,
           first_edit_buffer_ms: bufferMs,
-          approval_timeout_s: approvalTimeout,
         },
         exec: { command_timeout_s: commandTimeout },
         privacy: { telemetry, crash_reports: crashReports },
@@ -279,12 +271,6 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, o
             <option value="manual">{t("settings.saveMode_manual")}</option>
           </select>
 
-          <label htmlFor="set-mode">{t("settings.mode")}</label>
-          <select id="set-mode" value={mode} onChange={(e) => setMode(e.target.value)}>
-            <option value="interactive">{t("settings.mode_interactive")}</option>
-            <option value="auto">{t("settings.mode_auto")}</option>
-          </select>
-
           <label htmlFor="set-buffer">{t("settings.buffer")}</label>
           <input
             id="set-buffer"
@@ -293,16 +279,6 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, o
             max={10000}
             value={bufferMs}
             onChange={(e) => setBufferMs(Number(e.target.value))}
-          />
-
-          <label htmlFor="set-approval">{t("settings.approval_timeout")}</label>
-          <input
-            id="set-approval"
-            type="number"
-            min={5}
-            max={3600}
-            value={approvalTimeout}
-            onChange={(e) => setApprovalTimeout(Number(e.target.value))}
           />
 
           <label htmlFor="set-cmd-timeout">{t("settings.command_timeout")}</label>
@@ -392,17 +368,6 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, o
         <div className="settings-section" data-testid="settings-policy-section">
           <div className="settings-section-title">{t("settings.policy")}</div>
           <div className="settings-grid">
-            <label htmlFor="set-force-interactive">{t("settings.policy.force_interactive")}</label>
-            <select
-              id="set-force-interactive"
-              data-testid="settings-force-interactive"
-              value={forceInteractive ? "on" : "off"}
-              onChange={(e) => setForceInteractive(e.target.value === "on")}
-            >
-              <option value="off">{t("settings.policy.off")}</option>
-              <option value="on">{t("settings.policy.on")}</option>
-            </select>
-
             <label htmlFor="set-denied-tools">{t("settings.policy.denied_tools")}</label>
             <input
               id="set-denied-tools"

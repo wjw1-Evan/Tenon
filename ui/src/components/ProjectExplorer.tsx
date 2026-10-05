@@ -55,7 +55,7 @@ interface Props {
 }
 
 const RUNNING = RUNNING_STATES as ReadonlySet<string>;
-const ACTIVITY_FILTERS = ["all", "running", "approvals", "done"] as const;
+const ACTIVITY_FILTERS = ["all", "running", "done"] as const;
 type ActivityFilter = (typeof ACTIVITY_FILTERS)[number];
 
 /** 状态点配色（§7.5 状态色）：全局活动行与汇总条共用。 */
@@ -67,7 +67,6 @@ function statusDotColor(status: string): string {
       executing: "#d9a514",
       verifying: "#7d4fd3",
       fixing: "#7d4fd3",
-      awaiting_approval: "#e07b28",
       paused: "#8a8f98",
       error: "#d43d3d",
       done: "#2da44e",
@@ -84,13 +83,10 @@ function stateLabel(t: Translate, status: string) {
   return label === key ? status : label;
 }
 
-/** 文件夹行紧凑徽标：运行中会话 / 待审批 / 脏缓冲（成本不入行，见 §7.1）。 */
+/** 文件夹行紧凑徽标：运行中会话 / 脏缓冲（成本不入行，见 §7.1）。 */
 function folderBadges(t: Translate, project: ProjectSummary) {
   return [
     project.active_sessions ? `${project.active_sessions} ${t("projects.active")}` : null,
-    project.pending_approvals.length
-      ? `${project.pending_approvals.length} ${t("projects.approvals")}`
-      : null,
     project.dirty_buffers ? `${project.dirty_buffers} ${t("projects.dirty")}` : null,
   ]
     .filter(Boolean)
@@ -235,7 +231,7 @@ export function ProjectExplorer({
   /** 用户手动改过项目名后，路径变更不再覆盖名称。 */
   const [nameEdited, setNameEdited] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
-  // 全局活动条（v1.87 §7.2）：跨项目聚合监控，审批决策仍留在各项目代理面板。
+  // 全局活动条（v1.87 §7.2）：跨项目聚合监控。
   const [activityOpen, setActivityOpen] = useState(false);
   const [activityFilter, setActivityFilter] = useState<ActivityFilter>("all");
   const [stoppingId, setStoppingId] = useState<string | null>(null);
@@ -290,31 +286,18 @@ export function ProjectExplorer({
     setNameEdited(false);
   };
 
-  // 跨项目会话平铺（更新倒序）+ 会话级待审批计数（GET /projects 摘要）。
-  const approvalCounts = new Map<string, number>();
-  for (const project of projects) {
-    for (const approval of project.pending_approvals) {
-      approvalCounts.set(
-        approval.session_id,
-        (approvalCounts.get(approval.session_id) ?? 0) + 1
-      );
-    }
-  }
   const globalRows = projects
     .flatMap((project) =>
       project.sessions.map((session) => ({
         project,
-        session,
-        approvals: approvalCounts.get(session.id) ?? 0
+        session
       }))
     )
     .sort((a, b) => (b.session.updated_at ?? "").localeCompare(a.session.updated_at ?? ""));
   const runningCount = globalRows.filter((row) => RUNNING.has(row.session.status)).length;
-  const approvalsCount = [...approvalCounts.values()].reduce((sum, n) => sum + n, 0);
   const doneCount = globalRows.filter((row) => row.session.status === "done").length;
   const visibleRows = globalRows.filter((row) => {
     if (activityFilter === "running") return RUNNING.has(row.session.status);
-    if (activityFilter === "approvals") return row.approvals > 0;
     if (activityFilter === "done") return row.session.status === "done";
     return true;
   });
@@ -589,12 +572,6 @@ export function ProjectExplorer({
                 <span className="pe-activity-label">{t("activity.title")}</span>
                 <span className="pe-activity-counts">
                   <span className="pe-activity-count">{t("activity.running")} {runningCount}</span>
-                <span
-                  className="pe-activity-count"
-                  style={approvalsCount ? { color: "#e07b28", fontWeight: 600 } : undefined}
-                >
-                  {t("activity.approvals")} {approvalsCount}
-                </span>
                   <span className="pe-activity-count">{t("activity.done")} {doneCount}</span>
                 </span>
                 <ChevronIcon />
@@ -615,12 +592,12 @@ export function ProjectExplorer({
                   </div>
                   {visibleRows.length === 0 && <div className="pe-empty">{t("activity.empty")}</div>}
                   <ul className="pe-activity-list">
-                    {visibleRows.map(({ project, session, approvals }) => (
+                    {visibleRows.map(({ project, session }) => (
                       <li key={session.id} className="pe-activity-item">
                         <button
                           type="button"
                           className="pe-activity-row"
-                          onClick={() => jumpToSession({ project, session, approvals })}
+                          onClick={() => jumpToSession({ project, session })}
                           title={session.id}
                         >
                           <span
@@ -633,11 +610,6 @@ export function ProjectExplorer({
                             {session.worktree_path ? " ⎇" : ""}
                           </span>
                           <span className="pe-chat-status">{stateLabel(t, session.status)}</span>
-                          {approvals > 0 && (
-                            <span className="pe-activity-approvals">
-                              {t("activity.approvals")} {approvals}
-                            </span>
-                          )}
                         </button>
                         {RUNNING.has(session.status) && (
                           <button

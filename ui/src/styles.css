@@ -39,11 +39,6 @@
   --error-soft: rgba(229, 83, 75, 0.1);
   --taskbar-bg: rgba(20, 23, 31, 0.72);
 
-  /* 审批（D 级警示橙） */
-  --approval-border: #e0823d;
-  --approval-bg: rgba(224, 130, 61, 0.08);
-  --approval-tool: #eec28e;
-
   /* AI 角标（§8.6） */
   --ai-line-bg: rgba(92, 138, 245, 0.1);
 
@@ -92,10 +87,6 @@
   --error-text: #a82020;
   --error-soft: rgba(201, 48, 48, 0.08);
   --taskbar-bg: rgba(245, 246, 248, 0.72);
-
-  --approval-border: #c96a1d;
-  --approval-bg: rgba(201, 106, 29, 0.07);
-  --approval-tool: #8a5a14;
 
   --ai-line-bg: rgba(47, 107, 236, 0.08);
 
@@ -635,7 +626,14 @@ button:disabled { opacity: 0.45; cursor: default; }
   max-height: 42vh;
   overflow-y: auto;
 }
-.pe-activity-filters { display: flex; gap: 4px; flex-wrap: wrap; }
+.pe-activity-filters {
+  display: flex;
+  gap: 4px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.pe-activity-filters::-webkit-scrollbar { display: none; }
 .pe-activity-filters button {
   border: 1px solid var(--border);
   background: transparent;
@@ -644,6 +642,8 @@ button:disabled { opacity: 0.45; cursor: default; }
   padding: 2px 10px;
   font-size: 11px;
   cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .pe-activity-filters button.active {
   background: var(--accent-soft);
@@ -682,7 +682,6 @@ button:disabled { opacity: 0.45; cursor: default; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.pe-activity-approvals { color: #e07b28; font-weight: 600; white-space: nowrap; }
 .pe-activity-bar .pe-caret {
   margin-left: auto;
   color: var(--muted);
@@ -1374,7 +1373,7 @@ button:disabled { opacity: 0.45; cursor: default; }
 .state-dot[data-state="executing"],
 .state-dot[data-state="verifying"],
 .state-dot[data-state="fixing"],
-.state-dot[data-state="awaiting_approval"] {
+.state-dot[data-state="fixing"] {
   animation: state-pulse 2.2s ease-out infinite;
 }
 @keyframes state-pulse {
@@ -1452,46 +1451,6 @@ button:disabled { opacity: 0.45; cursor: default; }
   border-left-color: var(--error);
   background: var(--error-soft);
   color: var(--error-text);
-}
-
-/* 审批卡 */
-.approval-card {
-  border: 1px solid var(--approval-border);
-  border-radius: var(--radius-m);
-  padding: 11px 12px;
-  background: var(--approval-bg);
-}
-.approval-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 8px;
-  margin-bottom: 7px;
-}
-.approval-head strong { font-size: 12.5px; color: var(--fg-strong); }
-.approval-level {
-  color: var(--approval-border);
-  font-size: 11px;
-  font-weight: 550;
-  background: var(--approval-bg);
-  border: 1px solid var(--approval-border);
-  border-radius: 999px;
-  padding: 1px 8px;
-}
-.approval-tool {
-  display: inline-block;
-  margin-right: 8px;
-  color: var(--approval-tool);
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-}
-.approval-summary { color: var(--fg); }
-.approval-body { color: var(--muted); font-size: 12px; }
-.approval-actions { display: flex; gap: 7px; margin-top: 10px; }
-.approval-actions button:last-child:not(:disabled):hover {
-  border-color: var(--error);
-  color: var(--error-text);
-  background: var(--error-soft);
 }
 
 /* 输入区（v1.51）：组合容器——textarea 在上，底行左模型 pill 右发送（参考 ZCode 客户端输入区） */
@@ -1934,7 +1893,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   max-height: 88vh;
   overflow: auto;
   background: var(--overlay);
-  border: 1px solid var(--approval-border);
+  border: 1px solid var(--patch-border);
   border-radius: var(--radius-l);
   padding: 16px;
   box-shadow: var(--shadow-pop);

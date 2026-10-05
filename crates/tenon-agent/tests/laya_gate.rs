@@ -240,7 +240,7 @@ async fn laya_risk_assist_warns_on_dangerous_commands() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn risk_assist_rule_hit_records_decider_call_and_hint() {
     // §9.8 集成点 #2：规则命中 → decider_call（feature=risk, rule=true）
-    // + 工具输出注入「建议人工确认」提示；分级与审批不受影响
+    // + 工具输出注入「建议人工确认」提示；分级与硬拒绝边界不受影响
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(Mutex::new(Store::open_in_memory().unwrap()));
     let project_id = {

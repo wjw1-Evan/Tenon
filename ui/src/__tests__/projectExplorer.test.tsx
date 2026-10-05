@@ -15,7 +15,6 @@ function project(id: string): ProjectSummary {
     sessions: [],
     active_sessions: 0,
     dirty_buffers: 0,
-    pending_approvals: [],
     usage: { input_tokens: 0, output_tokens: 0, cost_usd: 0 },
   };
 }
@@ -275,8 +274,7 @@ describe("ProjectExplorer multi-project control surface", () => {
 
 function projectWithSessions(
   id: string,
-  sessions: Array<Partial<ProjectSummary["sessions"][number]> & { id: string }>,
-  approvals: ProjectSummary["pending_approvals"] = []
+  sessions: Array<Partial<ProjectSummary["sessions"][number]> & { id: string }>
 ): ProjectSummary {
   return {
     ...project(id),
@@ -286,7 +284,6 @@ function projectWithSessions(
       updated_at: "2026-10-05T00:00:00Z",
       ...session,
     })),
-    pending_approvals: approvals,
   };
 }
 
@@ -312,13 +309,10 @@ describe("Global activity strip (v1.87 multi-project monitoring)", () => {
     ]);
     const b = projectWithSessions("proj-b", [
       { id: "s-b1", status: "idle" },
-    ], [
-      { id: "ap-1", session_id: "s-b1", action: "apply_patch", level: "b", created_at: "t" },
     ]);
     renderExplorer([a, b]);
     const bar = screen.getByTestId("global-activity-bar");
     expect(bar).toHaveTextContent("activity.running 1");
-    expect(bar).toHaveTextContent("activity.approvals 1");
     expect(bar).toHaveTextContent("activity.done 1");
     fireEvent.click(bar);
     const list = screen.getByTestId("global-activity-list");
@@ -339,16 +333,13 @@ describe("Global activity strip (v1.87 multi-project monitoring)", () => {
     expect(onSelectSession).toHaveBeenCalledWith("proj-b", "s-b1");
   });
 
-  it("filters rows by approvals and exposes in-place stop for running sessions", async () => {
+  it("filters running rows and exposes in-place stop", async () => {
     const a = projectWithSessions("proj-a", [
       { id: "s-run", status: "executing" },
       { id: "s-idle", status: "idle" },
     ]);
     const { api: apiMock } = renderExplorer([a]);
     fireEvent.click(screen.getByTestId("global-activity-bar"));
-    fireEvent.click(screen.getByRole("button", { name: "activity.filter.approvals" }));
-    // 无待审批 → 空态
-    expect(screen.getByText("activity.empty")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "activity.filter.running" }));
     const stop = screen.getAllByRole("button", { name: "activity.stop" })[0];
     fireEvent.click(stop);
