@@ -449,11 +449,7 @@ async fn rollback_to_checkpoint_restores_target_step_tree() {
     assert!(dir.path().join("second.txt").exists());
 
     // 消息级撤销锚点 = 回合内首个 patch_applied 的写前 checkpoint（event_seq 最小的事件级快照）。
-    let mut cps = store
-        .lock()
-        .await
-        .checkpoints(&sid)
-        .unwrap();
+    let mut cps = store.lock().await.checkpoints(&sid).unwrap();
     cps.retain(|c| c.event_seq.is_some() && !c.files.is_empty());
     cps.sort_by_key(|c| c.event_seq.unwrap());
     let first = cps.first().unwrap().clone();

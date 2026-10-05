@@ -1728,7 +1728,10 @@ impl AgentSession {
 
     /// 回滚到指定 checkpoint（v1.111 消息级撤销 / §10.3 快照恢复）：
     /// restore 目标快照树（= 该步写入前状态），unrevert 快照先行（§10.3）。
-    pub async fn rollback_to_checkpoint(&self, target: &Checkpoint) -> Result<Vec<String>, AgentError> {
+    pub async fn rollback_to_checkpoint(
+        &self,
+        target: &Checkpoint,
+    ) -> Result<Vec<String>, AgentError> {
         let safety = self
             .snapshots
             .snapshot()
