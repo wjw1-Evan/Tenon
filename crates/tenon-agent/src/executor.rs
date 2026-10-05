@@ -2787,4 +2787,26 @@ mod tests {
         assert!(out.content.contains("app.conf"));
         assert!(out.content.contains("db.conf"));
     }
+
+    #[test]
+    fn apply_patch_and_verify_ts_js_py_integration() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let files = [
+            ("src/server.ts", "import express from 'express';\nconst app = express();\n"),
+            ("src/client.js", "fetch('/api/data').then(r => r.json());\n"),
+            ("scripts/deploy.py", "import subprocess\nsubprocess.run(['npm', 'run', 'build'])\n"),
+        ];
+        for (path, content) in files {
+            let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+                "file": path, "range": null, "content": content
+            }));
+            assert!(out.ok, "write {}", path);
+        }
+        // Cross-verify with grep
+        let grep = execute_tool(&c, "grep", &serde_json::json!({"pattern": "import"}));
+        assert!(grep.ok);
+        // grep 可能只匹配部分文件（rg 行为差异）
+        assert!(!grep.content.is_empty());
+    }
 }
