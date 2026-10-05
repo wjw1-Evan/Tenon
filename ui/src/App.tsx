@@ -1104,6 +1104,7 @@ export default function App({
                     projectId={projectId}
                     sessionsByProject={sessionsByProject}
                     openError={openError}
+                    refreshToken={fileTreeVersion}
                     onSwitchProject={(project) => void switchProject(project)}
                     onOpenProject={(path, displayName) =>
                       openProject(path, displayName).catch((error) => setOpenError(String(error)))}
@@ -1123,6 +1124,8 @@ export default function App({
                         return next;
                       });
                     }}
+                    onOpenFile={openFile}
+                    onFileTreeChange={handleFileTreeChange}
                   />
                 )}
                 {sideView === "search" && (
@@ -1155,11 +1158,11 @@ export default function App({
             )}
           </>
         )}
-        {narrow && floatPane && (
+        {narrow && sideFloat && (
           <div
             className="float-backdrop"
             data-testid="float-backdrop"
-            onClick={() => setFloatPane(null)}
+            onClick={() => setSideFloat(false)}
           />
         )}
         {/* v1.78 复刻 Codex 形态（§7.2）：线程（代理会话）恒为弹性主区。 */}
@@ -1191,43 +1194,27 @@ export default function App({
             }}
           />
         </section>
-        {/* v1.78：编辑器转线程右侧「审查窗格」；v1.107 窗格左缘为单列合并源码树；
-            v1.108 右区随源码区开关整体停靠/隐藏；窄屏转互斥浮层（§7.2 视口自适应）。 */}
-        {editorDocked && (<>
-        {!narrow && (
-          <ResizeHandle
-            dir="horizontal"
-            testId="resize-right"
-            onResize={(d) =>
-              setRightWidth((w) => {
-                const v = Math.min(720, Math.max(260, w - d));
-                localStorage.setItem("tenon:rightWidth", String(v));
-                return v;
-              })
-            }
-            onDoubleClick={() => setRightWidth(420)}
-          />
-        )}
-        <section
-          className={`zone zone-center${narrow ? " zone-float" : ""}`}
-          style={
-            narrow
-              ? { width: effectiveFloatWidth(rightWidth, viewport.width) }
-              : { width: effRight, minWidth: 260, maxWidth: 720 }
-          }
-        >
-          <div className="editor-dock">
-            <SourcePanel
-              api={api}
-              t={t}
-              projectId={projectId}
-              refreshToken={fileTreeVersion}
-              activePath={activePath}
-              onOpenFile={(path, line) => void openFile(path, line)}
-              onFileTreeChange={handleFileTreeChange}
-              onCollapse={toggleSourceTree}
-            />
-            <div className="editor-dock-main">
+        {/* v1.110：编辑器应用内浮层——单击文件 / 模糊打开 / 搜索 / 诊断 / 跟随模式
+            打开文件即弹出，✕ 关闭返回线程；EditorPane 多标签 / 分栏语义整体迁入。 */}
+        {editorOpen && (
+        <div className="editor-overlay" data-testid="editor-overlay">
+          <div className="editor-overlay-head">
+            <span className="side-title">{t("panel.editor")}</span>
+            <button
+              type="button"
+              className="pe-collapse"
+              data-testid="editor-overlay-close"
+              title={t("editor.close")}
+              aria-label={t("editor.close")}
+              onClick={() => setEditorOpen(false)}
+            >
+              <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M18 6 6 18" />
+                <path d="m6 6 12 12" />
+              </svg>
+            </button>
+          </div>
+          <div className="editor-overlay-body">
               <EditorPane
             t={t}
             api={api}
@@ -1238,7 +1225,7 @@ export default function App({
             refreshToken={fileTreeVersion}
             tabs={tabs}
             activePath={activePath}
-            splitPath={narrow ? null : splitPath}
+            splitPath={splitPath}
             onSelectSplit={setSplitPath}
             aiModifiedLines={aiLines}
             unsavedPaths={unsaved}
@@ -1289,23 +1276,8 @@ export default function App({
               editorApiRef.current = editorApi;
             }}
           />
-            </div>
           </div>
-        </section>
-        </>)}
-        {/* v1.108：源码区关闭态的常驻恢复入口——工作区右缘细条（宽屏）。 */}
-        {!narrow && !sourceTreeOpen && (
-          <button
-            type="button"
-            className="source-strip source-strip-solo"
-            data-testid="source-open"
-            title={t("source.expand")}
-            aria-label={t("source.expand")}
-            onClick={toggleSourceTree}
-          >
-            <span aria-hidden="true">»</span>
-            <span className="source-strip-label">{t("source.title")}</span>
-          </button>
+        </div>
         )}
       </div>
       {dirtyConflict && (
