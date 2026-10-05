@@ -2206,4 +2206,63 @@ mod tests {
         let out = execute_tool(&c, "grep", &serde_json::json!({"pattern": "searchable"}));
         assert!(out.ok);
     }
+
+    #[test]
+    fn apply_patch_read_grep_integration_three_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+
+        // Write three files with different content
+        let files = [
+            ("auth.rs", "pub fn authenticate(token: &str) {}"),
+            ("db.rs", "pub fn connect(url: &str) {}"),
+            ("api.rs", "pub fn handle_request() {}"),
+        ];
+        for (name, content) in files {
+            execute_tool(&c, "apply_patch", &serde_json::json!({
+                "file": name, "range": null, "content": format!("{}\n", content)
+            }));
+        }
+
+        // Grep for each
+        for (name, keyword) in [("auth.rs", "authenticate"), ("db.rs", "connect"), ("api.rs", "handle_request")] {
+            let out = execute_tool(&c, "grep", &serde_json::json!({"pattern": keyword}));
+            assert!(out.ok, "grep for {}", keyword);
+            assert!(out.content.contains(name), "{} should contain {}", keyword, name);
+        }
+    }
+
+    #[test]
+    fn readonly_and_team_denied_combined() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        c.readonly.store(true, Ordering::Relaxed);
+        c.team_denied_tools = vec!["bash".into(), "read_file".into()];
+        // readonly + denied bash → denied by team policy first
+        let out = execute_tool(&c, "bash", &serde_json::json!({"command": "echo", "timeout_s": 5}));
+        assert!(!out.ok);
+        // readonly + denied read_file → denied by team policy
+        let out = execute_tool(&c, "read_file", &serde_json::json!({"path": "any.txt"}));
+        assert!(!out.ok);
+        // readonly + NOT denied list_dir → readonly OK
+        let out = execute_tool(&c, "list_dir", &serde_json::json!({}));
+        assert!(out.ok);
+    }
+
+    #[test]
+    fn apply_patch_overwrite_read_overwrite_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+
+        let versions = ["alpha", "beta", "gamma"];
+        for v in versions {
+            let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+                "file": "versions.txt", "range": null, "content": v
+            }));
+            assert!(out.ok);
+            let read = execute_tool(&c, "read_file", &serde_json::json!({"path": "versions.txt"}));
+            assert!(read.ok);
+            assert!(read.content.contains(v), "expected {} in {}", v, read.content);
+        }
+    }
 }
