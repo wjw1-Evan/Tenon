@@ -136,6 +136,8 @@
 | **v1.100** | **多语言支持落地（用户令「开发中英文以外的语言包，实现全站多语言，优化多语言支持」；§4.2 i18n 行改写为多语言规格）：① 社区语言包首发三件——繁體中文（zh-TW，台灣用語：專案 / 檔案 / 設定 / 儲存庫 / 套用）、日本語（ja）、한국어（ko），288 键全量翻译且与 en 键集对齐（五语言键对齐测试门禁，新增语言 = `locales/<tag>.json` + `LOCALES` 注册表一行）；② i18n 内核重构——`LOCALES` 注册表驱动顶栏选择器（语言名母语显示）、en + zh-CN 静态随包（首屏即需）、其余语言 `import()` 懒加载为独立分块（各 ~5KB gzip，主包零增量），`loadLocaleResource` 幂等 + `useLocaleTranslator` 就绪后重渲染（未载入时优雅回退英文）；③ resolveLocale 升级 BCP-47 前缀匹配——zh-Hant / TW / HK / MO → zh-TW，其余 zh → zh-CN，ja / ko 前缀直达；④ 语言偏好双写（§7.5 同外观档法）——localStorage 快路径 + `PUT /ui-prefs` `locale` 键跨启动权威，boot 握手后对齐并预载语言包再渲染启动屏（启动屏首绘即目标语言）；⑤ `<html lang>` 随语言切换（屏幕阅读器发音）；⑥ 测试：五语言键对齐 / 前缀匹配 / 懒加载幂等与回退 / 偏好读写共 +16 例；E2E 冷启动 P50 226ms 不受懒加载影响。范围注记：Monaco 编辑器 chrome（查找 / 菜单等内建 UI）本地化需 nls 语言包注入，属独立特性另行评审，本版不含** |
 | **v1.101** | **左栏「项目」视图排版紧凑化（用户选定 Codex 紧凑索引形态；目检问题：孤行「+」按钮 / 列头与会话行右列语义错位 / 大量无标题回退会话同权重平铺 / 脏标题直达）：① 孤行「添加」按钮并入视图标题行右端（`pe-head` = 视图名 + 「+」，projects 视图不再渲染通用 `side-head` 标题）；② 移除「Name / Updated」列头（信息密度低且语义错位）；③ 会话行状态由灰色文字改为 §7.5 状态色圆点（`STATE_COLORS` 单一来源，状态文字转 hover title），行高压缩；④ 已回滚 / 无标题回退（显示模型名）会话整行灰显降噪（hover / active 恢复）；⑤ 显示层标题清洗——剥离截断 prompt 引導前缀（`The user's message is:` 等）与首尾引号，不改库，清空回退模型名；⑥ 空状态摘要不渲染空 `meta` span；`projects.column.*` 五语言键删除** |
 | **v1.102** | **Laya 分发多镜像 + 内置 starter 兜底（用户令「多添加几个下载地址保证模型可用」；实证：默认 registry `tenonide.dev` 尚未解析，自动下载必失败静默回退，模型永不可用）：① registry 清单多镜像链——`DEFAULT_REGISTRY_URLS`（官方域名 → GitHub Pages 静态托管 → jsDelivr CDN），顺序尝试任一可达且解析成功即用，全部失败才判不可达；`DaemonOptions.laya_registry_url` 测试注入语义不变（显式覆盖 = 单地址）；② 清单 `ModelEntry.urls` 模型文件镜像列表（可选字段，serde default 兼容旧清单；SHA-256 钉扎保证任一镜像字节一致，顺序尝试）——`url` 保留为主镜像；③ 内置 starter 兜底（保证可用）——所有 registry 镜像与模型镜像均失败且本地未装载时，安装编译期内嵌 starter 模型（`tenon-laya/models/laya-starter-v1.json`，~9KB JSON 线性分类器，与二进制同分发同完整性、版本锁定 1）并热装载，registry 日后可达时按版本比较正常升级覆盖；**§9.8「模型文件不进安装包」修订为「完整模型不进安装包，starter 兜底内嵌」**（保包体初衷是体积，KB 级 JSON 不违背）；失败仍静默回退不阻塞，`InstallPlan.size_bytes` 死字段移除（恒 None 无消费方），§16 风险行与附录 E 注释同步** |
+| **v1.103** | **会话手动归档与删除（用户令「项目下的任务可以归档或删除」；侧栏会话此前只能切换，历史噪声只能灰显）：① store schema v8——`sessions.archived_at`（TEXT 默认空 = 未归档），`archive_session` / `unarchive_session` / `delete_session`（事务级联删 events / tool_calls / checkpoints / model_usage / approvals / session 行；项目 shadow 快照不动，由 `checkpoint.keep_days` gc 老化），`list_sessions` 默认排除已归档 + `list_archived_sessions`；v1.93 自动压缩归档语义不变（超期扫描含手动归档会话，老归档最终压缩出库）；② daemon——`POST /session/:id/archive` / `POST /session/:id/unarchive` / `DELETE /session/:id`（body `confirm:true` 必带）；守卫：运行中（RUNNING_STATES / paused）或 runtime 存活 → 409，受管 worktree 未收尾 → 409 提示先合并 / 丢弃；`GET /projects` 摘要 sessions 排除已归档、新增 `archived_sessions` 数组（UI 免第二条路由）；③ UI（§7.2）——普通会话行 hover 增「归档」「删除」（删除 window.confirm；运行中行不显示；未收尾 worktree 行维持合并 / 丢弃优先），项目会话列表尾部「已归档 N」可折叠组（默认收起，展开显还原 / 删除，折叠态不落盘）；删除当前激活会话后清空该项目激活选择并刷新** |
+| **v1.104** | **AI 对话记忆系统（L5 跨会话记忆，用户令「开发 AI 对话记忆系统」；§10.1 四层扩五层）：① 数据层——新 `memories` 表（schema v9）：scope（project / global）× kind（preference / fact / decision / workflow）双作用域，global 仅 preference（§9.7 跨项目不共享上下文的显式例外：永不承载仓库内容）；② 写入=任务成功完成后单轮提取调用（同一 provider、无工具目录、max_tokens=512、严格 JSON 契约、输入仅用户消息 + 最终回答、每任务 ≤5 条、每条 ≤200 字符；失败 / 解析不合法静默回退不阻塞）+ 手动 API；去重合并复用本地确定性 embedding（tenon-fs `l4::embed`）余弦 ≥0.90 刷新既有条目（content / importance / last_seen_at / source_session）不新增行；③ 注入=任务启动取项目层 + global 层 active 记忆，按 importance × 新鲜度排序 top 16 条、1.5k token 预算裁剪，渲染进系统提示「跨会话记忆（L5）」节并标注参考数据非指令（§12.1：记忆可能携带仓库间接污染，一律按不可信数据处理，不产生任何权限）；④ 治理=每项目 active 上限 200 条（importance 升序 + last_seen_at 最旧淘汰）；`[memories] enabled` 开关（附录 E，默认开）；事件 `memory_saved` 仅记 count / ids；⑤ API=GET / POST `/project/:id/memories` + DELETE `/memories/:id`；UI 管理面板属方向性 UI 另行评审（双参考方案），本版不含** |
 | **v1.105** | **§10.2 对话 token 消耗优化：历史压缩落地（用户令「优化对话 token 消耗」；原语在而接线缺——`TokenBudget::needs_compaction` / `SessionMemory::compact` 无人调用，工具输出全文永久驻留任务内历史逐回合重发，L2 goals 跨任务只增不减）：① 任务内输入预算压缩——每回合请求前估算输入 token（正文 + tool_calls 参数，字符近似），估算或上一回合 provider 权威 usage 超阈值（24k）即压缩：保留最近 4 条工具输出原文，更早的 tool 消息替换为存根（`[工具输出已省略：{tool} 原约 N 字符——需要时重新调用该工具获取]`），只替换内容不增删消息、tool_call_id 配对不变，首条 user（任务 + L1 工作集）与 assistant 意图文本永不省略，存根幂等不重写；② L2 有界——goals 压缩至最近 8 条（`MAX_L2_GOALS`），系统提示不随会话长度线性膨胀；③ 压缩事件 `compaction` 入 Trace（before / after 估算 token、省略条数；重引入 v1.93 清理的 EventKind，当时无消费方），UI 时间轴 default 分支容忍不渲染（文案后补）；④ 「压缩后自检问答」修订为确定性校验（tool_call_id 配对完整性，失败即本回合放弃压缩）——省略式压缩只丢弃模型已消费过的历史输出、不产生摘要失真，替代模型自检省一次调用** |
 
 
@@ -438,7 +440,7 @@ GlobalScheduler（全局并发 / 成本 / 通知）
 
 **Activity rail（v1.27）**：最左侧 46px 图标栏承载侧栏三视图——项目 / 全局搜索 / 语言包向导（v1.87 校正：文件树自 v1.70 起内嵌于「项目」视图「源码」展开，不再是独立 rail 视图），**单视图显示**（不再纵向堆叠）；点击图标切换视图并展开侧栏，再次点击 active 视图折叠侧栏；当前视图记忆于 `localStorage("tenon:sideView")`。侧栏顶部显示当前视图名（小写字距标签）。顶栏保持单行精简：品牌印记、spacer 拖拽区、外观档、语言；模型路由已移入右区代理面板的任务输入框（v1.51：输入区为组合容器，底行左下当前模型 pill → 模型选择对话框，右下发送按钮；参考 ZCode 客户端输入区）；「打开路径」输入与 Open 按钮已移除（v1.44）——打开项目统一经项目中心（登记列表点开，或 v1.43 添加模态）。「项目」视图（v1.55 重排、v1.60 收敛、v1.63 文件夹化、v1.70 移除视图 tab，参考 ZCode 客户端侧栏）：主体为全部登记项目的文件夹树，单一树整栏滚动（v1.63 移除 v1.55 顶部切换器与下拉，v1.70 移除「对话 | 文件」tab，项目全貌常驻可见）：每项目一行——折叠箭头 + 文件夹图标 + 项目名 + 运行中会话 / 脏缓冲徽标，行尾 hover 显现「源码」与「移除」（v1.70：「源码」点击切换该行下内嵌的该项目文件树，缩进对齐会话列表、限高内部滚动，project_id 作用域任意登记项目可看、不限 active，展开集合记忆于 `localStorage("tenon:peFiles")`；「移除」存在持久会话禁用）；点击行即激活该项目（隐式激活，v1.60）并展开，已展开再点仅收起；展开后行下缩进内嵌该项目会话列表，对话行优先显示自动生成的会话标题（v1.58，无标题回退模型名 / 短 id，同名多会话仍附短 id 后缀），点击会话行切换会话；多项目可同时展开，active 项目默认展开，展开集合记忆于 `localStorage("tenon:peExpanded")`；列表底部常驻「添加项目」行（v1.43 模态不变）。
 
-**项目视图内容布局（v1.88，对齐 Codex projects sidebar；v1.96 移除顶部搜索框；v1.101 排版紧凑化）**：视图标题行（视图名 + 右端「+」添加入口，v1.96 撤销 v1.88 顶部搜索框：登记项目数量级小，即时过滤无实用价值；v1.101 撤销孤行工具行与「Name / Updated」列头——列头与会话行右列语义错位）。项目行 = 项目标记 + 项目名 + 状态摘要（活跃 / 脏缓冲，空则不渲染），右列显示该项目最近会话更新时间；行尾 hover 显现「源码」与「移除」（v1.70 语义不变）。展开后内嵌最近 10 条会话，超过 10 条显式「显示全部 / 收起」；文件树内嵌、展开集合与隐式激活语义不变。**会话行排版（v1.101）**：单行 = 状态圆点（§7.5 状态色 `STATE_COLORS` 单一来源，状态文字转 hover title）+ 会话标题 + 行尾 worktree ⎇ 标记；已回滚 / 无标题回退（显示模型名）会话整行灰显（hover / active 恢复）；显示层标题清洗——剥离截断 prompt 引導前缀（`The user's message is:` 等）与首尾引号，不改库，清空回退模型名。**跨项目监控（v1.98 收敛）**：v1.87 引入、v1.88 降为同构列表组的「All activity」全局活动条已移除——项目行徽标（运行中会话 / 脏缓冲）与展开后的行内会话列表承载全部活动可见性；运行中 / 完成态经 WS 全项目订阅增量刷新徽标（既有 `GET /projects` + WS 链路，不新增端点）；**边界不变式保留**：不做系统级推送通知，attention 一律以 UI 徽标为准。
+**项目视图内容布局（v1.88，对齐 Codex projects sidebar；v1.96 移除顶部搜索框；v1.101 排版紧凑化）**：视图标题行（视图名 + 右端「+」添加入口，v1.96 撤销 v1.88 顶部搜索框：登记项目数量级小，即时过滤无实用价值；v1.101 撤销孤行工具行与「Name / Updated」列头——列头与会话行右列语义错位）。项目行 = 项目标记 + 项目名 + 状态摘要（活跃 / 脏缓冲，空则不渲染），右列显示该项目最近会话更新时间；行尾 hover 显现「源码」与「移除」（v1.70 语义不变）。展开后内嵌最近 10 条会话，超过 10 条显式「显示全部 / 收起」；文件树内嵌、展开集合与隐式激活语义不变。**会话行排版（v1.101）**：单行 = 状态圆点（§7.5 状态色 `STATE_COLORS` 单一来源，状态文字转 hover title）+ 会话标题 + 行尾 worktree ⎇ 标记；已回滚 / 无标题回退（显示模型名）会话整行灰显（hover / active 恢复）；显示层标题清洗——剥离截断 prompt 引導前缀（`The user's message is:` 等）与首尾引号，不改库，清空回退模型名。**会话归档 / 删除（v1.103）**：普通会话行 hover 操作区增「归档」「删除」（删除 window.confirm 确认；运行中行不渲染这两键；未收尾受管 worktree 行维持「合并 / 丢弃」优先，收尾后才可归档 / 删除）；项目会话列表尾部「已归档 N」可折叠组（默认收起、不落盘），展开后归档行 hover 显「还原」「删除」；删除当前激活会话后清空该项目激活选择并刷新；数据语义见 §14.2 / §15。**跨项目监控（v1.98 收敛）**：v1.87 引入、v1.88 降为同构列表组的「All activity」全局活动条已移除——项目行徽标（运行中会话 / 脏缓冲）与展开后的行内会话列表承载全部活动可见性；运行中 / 完成态经 WS 全项目订阅增量刷新徽标（既有 `GET /projects` + WS 链路，不新增端点）；**边界不变式保留**：不做系统级推送通知，attention 一律以 UI 徽标为准。
 
 三区均可全屏 / 折叠 / 左右互换；布局按项目记忆。**线程主视图 + 编辑器审查窗格（v1.78，复刻 Codex app 三区形态：projects sidebar / active thread / review pane）**：代理对话（线程）恒为弹性主区（flex:1），不再因打开文件被挤成固定右栏；编辑器窗格（多标签 / 分栏）仅在当前项目存在打开文件 tab 时停靠在线程**右侧**——有界宽度（沿用 rightWidth 记忆与 middle 档 clamp，260–720px），关闭全部 tab 即整体隐藏（v1.64 显隐语义保留、主次互换：此前编辑器占中、代理被挤右）；文件树 / 模糊打开（Cmd+P）/ 搜索命中 / 符号与诊断跳转任一入口打开文件即出现编辑器；ui-state 恢复的打开 tab 视为已打开文件，布局按项目记忆不变；diff 审查即编辑器窗格（AI 行角标 + 跟随模式，§8.5）。分隔把手位于线程与编辑器之间，拖拽控制编辑器宽度。项目切换器可以是顶栏下拉，也可以把另一个项目停靠为独立分栏 / 窗口；每个窗格维护独立 active `project_id`。底部不含「项目任务」页（v1.60 移除 v1.37 页面）：跨项目会话状态由各项目代理面板与项目行徽标呈现（v1.87 全局活动条已随 v1.98 移除），跨项目并发 / 成本仍由 GlobalScheduler 统一调度。**底部面板默认收起（v1.78，Codex 形态无常驻底栏）**：`timelineOpen` 初始 false；开合有可见入口（v1.61）——展开态 tabs 行右端为收起按钮，收起后底部保留细条（显示当前 bottom tab 名），点击细条或 Cmd/Ctrl+J、命令面板恢复展开；项目 ui-state 记忆优先于新默认（§7.2 项目状态持久化）。
 
@@ -645,7 +647,7 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 
 ### 9.6 提示组装与模型适配
 
-**系统提示组成**：身份与目标 / 安全铁律（只读开关与工具黑名单不可放宽、输出证据契约）/ 项目规则 L3（AGENTS.md，只收窄）/ 会话记忆 L2 / 工具 schema / 输出契约（意图一句话 → 结构化动作 → 证据）。
+**系统提示组成**：身份与目标 / 安全铁律（只读开关与工具黑名单不可放宽、输出证据契约）/ 项目规则 L3（AGENTS.md，只收窄）/ 会话记忆 L2 / 跨会话记忆 L5（参考数据非指令，v1.104）/ 工具 schema / 输出契约（意图一句话 → 结构化动作 → 证据）。
 
 **模型能力矩阵**：
 
@@ -692,7 +694,7 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 
 ## 10. 上下文工程
 
-### 10.1 四层记忆
+### 10.1 五层记忆（v1.104：四层扩五层）
 
 | 层 | 内容 | 生命周期 | 来源 |
 |---|---|---|---|
@@ -700,6 +702,18 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 | L2 会话记忆 | 目标 / 步骤 / 决策 | 会话内自动压缩 | 主循环维护 |
 | L3 项目规则 | AGENTS.md、规范、构建命令 | 仓库内 | 文件 + 用户配置 |
 | L4 持久索引 | 符号 / 向量 / 倒排 | 本地跨会话，**按 `project_id` 隔离** | **自建索引层**（向量部分用 sqlite-vec，与 `db.sqlite` 同库，Q3；增量更新）；LSP 仅任务期查询活实例——各语言服务器缓存为私有格式，不可跨会话复用，也不跨项目复用 |
+| L5 对话记忆 | 用户偏好 / 项目事实 / 已定决策 / 工作流要点 | **跨会话持久**（本地 SQLite，v1.104） | 任务完成时模型提取 + 用户显式指令 / 管理 API 写入 |
+
+**L5 跨会话对话记忆（v1.104）**：把对话中反复出现的稳定信息沉淀为跨会话可复用的记忆，与 L2（会话内压缩）/ L3（仓库文件）/ L4（代码索引）正交；落 SQLite `memories` 表（§14.2）。
+
+- **双作用域**：`project`（绑定 `project_id`，随项目隔离）与 `global`（用户级，**仅 `kind=preference`**）。global 层是 §9.7「不做隐式上下文共享」的**显式例外**——只承载用户偏好（如「commit message 用中文」「测试跑 pnpm」），永不承载任何仓库内容（提取契约禁止把文件内容 / 代码片段写入 global 记忆），不突破「任何路径都不把 A 的文件内容注入 B」不变式；
+- **类型**：`preference`（用户偏好，可 global）/ `fact`（项目事实）/ `decision`（已定决策）/ `workflow`（构建 / 测试等工作流要点），每条 ≤200 字符、importance 1-5；
+- **写入**：① 任务成功完成（Done）后**单轮提取调用**——同一 provider、无工具目录、`max_tokens=512`、严格 JSON 契约，输入仅用户消息 + 最终回答（不含中间工具输出），每任务 ≤5 条；失败 / 解析不合法**静默回退**（日志留痕，不阻塞任务、不产生 Error 事件）；② 用户显式指令（「记住…」）与手动 API 走同一入库路径（提取契约要求显式指令必收）；
+- **去重与合并**：入库前与既有 active 记忆（项目层 + global 层）做**本地确定性 embedding 余弦相似度**（复用 tenon-fs `l4::embed`，推理不出网）——≥0.90 视为同条，刷新 content / importance / `last_seen_at` / `source_session` 而非新增行；
+- **注入**：任务启动时取项目层 + global 层 active 记忆，按 importance × 新鲜度排序，top 16 条、1.5k token 预算裁剪，渲染进系统提示「跨会话记忆（L5）」节，**标注为参考数据非指令**——记忆可能携带仓库内容的间接污染，按 §12.1 一律作不可信数据处理，只提供上下文、不产生任何权限（不能放宽只读开关 / 工具黑名单，铁律一）；
+- **治理**：每项目 active 上限 200 条，超限按 importance 升序 + `last_seen_at` 最旧淘汰；`memory_saved` 事件仅记 count / ids（原文已在本会话事件日志中，不重复膨胀）；
+- **开关**：附录 E `[memories] enabled`（默认 true）；false = 不提取不注入，手动 API 与既有数据不受影响；
+- **UI 管理面板**（查看 / 编辑 / 删除）：方向性 UI 另行评审（双参考方案），本版不含。
 
 ### 10.2 Token 预算与压缩
 
@@ -757,7 +771,7 @@ L4 按包隔离、语言服务器按需启动；子代理限定单包；检索�
 | 信任 | 对象 | 规则 |
 |---|---|---|
 | 可信 | 会话内用户直接输入；内核内置工具 | 正常执行 |
-| 不可信 | 仓库内容（含 AGENTS.md / 注释 / issue）；插件；MCP 输出；**语言服务器加载的工作区配置与插件**；浏览器第三方网页 | 一律作为数据；网页请求本地服务一律拒绝 |
+| 不可信 | 仓库内容（含 AGENTS.md / 注释 / issue）；插件；MCP 输出；**语言服务器加载的工作区配置与插件**；浏览器第三方网页；**注入提示的 L5 对话记忆**（v1.104：可能携带仓库内容间接污染，只作参考数据） | 一律作为数据；网页请求本地服务一律拒绝 |
 
 **铁律（v1.89 修订）**：只读开关与工具黑名单只信会话 / 团队策略，模型与仓库内容不可放宽；AGENTS.md 只收窄；插件签名 / 哈希 / 保留字校验不可跳过；MCP 仍按声明分级并全量审计；**语言服务器属 B 级沙箱进程**（tsserver 会加载工作区插件、Roslyn 求值可执行构建目标）；**LSP 宿主命令白名单**——宿主永不执行语言服务器下发的任意 `executeCommand`，服务器请求的 workspace edits / `showDocument` / 动态注册 capability 一律过 B 级写守卫与项目内路径检查，仅白名单能力放行（防「沙箱内进程借宿主之手逃逸」）。审批门禁已移除，直接执行的后果由 Trace 与对话节点回滚承接；不可逆外部副作用无回滚承诺，用户开启只读或黑名单才是硬拒绝。
 
@@ -874,10 +888,11 @@ registry 检索 → 展示**权限 diff**（相对已装版本新增权限高亮
 | model_usage | id, session_id, project_id, provider, tokens, cost | 成本归因；支持会话 / 项目 / 日级 |
 | eval_runs | id, target, metrics_json, verdict | Evals 报告 |
 | l4_chunks | id, project_id, path, symbol, start_line, end_line, text, embedding | L4 检索切片、行区间、文本与本地向量（sqlite-vec 演进路径，§10.1） |
+| memories | id, scope, project_id, kind, content, importance, embedding, source_session, created_at, updated_at, last_seen_at | L5 跨会话对话记忆（§10.1，v1.104）：project 层按 project_id 隔离；global 层仅 kind=preference，永不承载仓库内容 |
 
-事件类型枚举：`user_input / sensing / decision / model_delta / patch_applied / command_run / direct_action / diagnostics / checkpoint / compaction / rollback / unrollback / model_fallback / decider_call / error / session_title`（direct_action 是 v1.89 C/D 直执审计：工具 / 级别 / 关键参数；rollback / unrollback 对应 §10.3 回滚与撤销回滚；model_delta 为 §9.6 合并后的模型增量（Final 的 usage / tool calls 仍只按权威 Final 入账）；decider_call 为 §9.8 Laya 本地判定：类型 / 结果 / 耗时，不含输入原文；session_title 为 v1.59 对话标题生成完成（payload `{title}`，UI 据此即时刷新对话列表）；均入 Trace 可审计）。旧库中的 `approval_request / approval_decision / approval_timeout` 只读回放兼容，新运行不再产生。
+事件类型枚举：`user_input / sensing / decision / model_delta / patch_applied / command_run / direct_action / diagnostics / checkpoint / compaction / rollback / unrollback / model_fallback / decider_call / error / session_title / memory_saved`（direct_action 是 v1.89 C/D 直执审计：工具 / 级别 / 关键参数；rollback / unrollback 对应 §10.3 回滚与撤销回滚；model_delta 为 §9.6 合并后的模型增量（Final 的 usage / tool calls 仍只按权威 Final 入账）；decider_call 为 §9.8 Laya 本地判定：类型 / 结果 / 耗时，不含输入原文；session_title 为 v1.59 对话标题生成完成（payload `{title}`，UI 据此即时刷新对话列表）；memory_saved 为 v1.104 L5 记忆提取入库完成（payload `{count, ids}`，不含记忆原文）；均入 Trace 可审计）。旧库中的 `approval_request / approval_decision / approval_timeout` 只读回放兼容，新运行不再产生。
 
-**增长治理**（v1.93 接线）：events / tool_calls 冷热分层——热数据留 SQLite，关闭超 `archive.events_days`（默认 90 天，daemon 每日定时执行）的会话压缩归档至 `~/.tenon/archive/`（仍全本地、可检索回载）；model_usage 明细随会话归档，项目 / 会话聚合经 `project_usage_totals` / `session_usage_totals` 即时查询（按月 / 按日聚合表无消费方，已删）；approvals 表仅作 v1.89 前旧库兼容。
+**增长治理**（v1.93 接线）：events / tool_calls 冷热分层——热数据留 SQLite，关闭超 `archive.events_days`（默认 90 天，daemon 每日定时执行）的会话压缩归档至 `~/.tenon/archive/`（仍全本地、可检索回载）；model_usage 明细随会话归档，项目 / 会话聚合经 `project_usage_totals` / `session_usage_totals` 即时查询（按月 / 按日聚合表无消费方，已删）；approvals 表仅作 v1.89 前旧库兼容。**手动归档（v1.103）**：`sessions.archived_at` 非空即在侧栏隐藏、可随时还原，数据不出库；自动压缩归档扫描含已手动归档会话（老归档按 `events_days` 最终压缩出库）；手动删除为事务级联硬删（events / tool_calls / checkpoints / model_usage / approvals / session 行），shadow 快照不随删（gc 老化）。
 
 ---
 
@@ -903,6 +918,9 @@ registry 检索 → 展示**权限 diff**（相对已装版本新增权限高亮
 | POST | `/session/:id/control` | pause（挂起任务）/ resume（继续原任务，v1.93 实装）/ stop / rollback（快捷回滚至最近 checkpoint，等价于 `/checkpoint/:id/rollback` 最近点，勿单独实现第二条路径）/ unrollback（撤销最近回滚，§10.3）/ set_readonly（v1.93 实装，工具步间即时生效） |
 | POST | `/session/:id/worktree/merge` | 受管 worktree 会话收尾·合并（v1.87）：先 checkpoint 项目根，再按会话改动文件集三方合入；冲突返回 §8.6 合并预览，不静默覆盖（B 级，可回滚） |
 | POST | `/session/:id/worktree/discard` | 受管 worktree 会话收尾·丢弃（v1.87）：显式确认后删除受管 worktree 与其快照分片，不动用户根 |
+| POST | `/session/:id/archive` | 归档会话（v1.103）：侧栏默认隐藏、可还原；运行中或 runtime 存活 409，受管 worktree 未收尾 409 |
+| POST | `/session/:id/unarchive` | 取消归档（v1.103）：恢复侧栏列表 |
+| DELETE | `/session/:id` | 删除会话（v1.103）：body `confirm:true` 必带，事务级联删事件 / 工具调用 / checkpoint 记录 / 用量 / 会话行；运行中或 runtime 存活 409，受管 worktree 未收尾 409；shadow 快照不随删 |
 | GET | `/session/:id/trace` | Trace 查询 |
 | GET | `/session/:id/checkpoints` | checkpoint 时间轴（事件列表 + 快照点） |
 | PUT | `/team-policy` | 权限高级策略校验持久化（v1.85）；PUT 后新会话生效（读取经 GET /settings 的 team_policy 字段回填，独立 GET 端点已随 v1.92 移除） |
@@ -920,6 +938,14 @@ registry 检索 → 展示**权限 diff**（相对已装版本新增权限高亮
 | POST | `/project/:id/file/ops` | 重命名 / 移动 / 删除（v1.72 移除新建，创建由会话大模型决策） |
 | GET | `/project/:id/search` | ripgrep 搜索（流式；多文件替换前返回 diff 预览） |
 | POST | `/project/:id/lsp` | LSP 代理（补全 / hover / 定义 / 引用 / 重命名 / code action / 格式化） |
+
+**对话记忆（L5，v1.104）**：
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| GET | `/project/:id/memories` | L5 记忆列表：项目层全部 + global 层 preference；`?q=` 关键词过滤、`?limit=` 默认 100 |
+| POST | `/project/:id/memories` | 手动写入 `{content, kind, scope}`；scope=global 仅接受 kind=preference；经同一去重合并路径 |
+| DELETE | `/memories/:id` | 删除一条记忆 |
 
 **管理**：
 
@@ -1070,6 +1096,7 @@ WS 事件与会话 events 表一一对应，均含 `project_id`；断线重连�
 | 项目组合任务 | 跨项目的编排容器：只聚合多条 project-scoped 子会话的状态 / 成本，不共享代码上下文（§6.4 / §9.7） |
 | 受管 worktree | daemon 在 `~/.tenon/worktrees/` 托管的会话级独立工作树：写边界 / 沙箱 / 快照按 worktree 隔离，支持同项目并行会话，收尾为合并或丢弃（§9.7，v1.87） |
 | Laya | 产品自管本地决策模型：分类 / 打分 / 布尔三原语，CPU ~30ms 级、零 token，承接代理循环结构化判定（§9.8） |
+| 对话记忆（L5） | 跨会话持久化的对话沉淀：用户偏好 / 项目事实 / 决策 / 工作流要点；project 层按 project_id 隔离，global 层仅用户偏好，注入提示按不可信数据对待（§10.1，v1.104） |
 
 ### 附录 B · 关键决策记录（ADR 摘要）
 
@@ -1189,4 +1216,7 @@ price_out_per_mtok = 0.0          # 可选：美元 / 百万输出 token
 enabled       = true              # 本地决策模型总开关（§9.8；false = 各集成点回退现状）
 auto_download = true              # daemon 启动自动下载并热装载（v1.71：无审批卡；v1.102：registry 多镜像 + 内置 starter 兜底，失败静默回退）；false = 不自动下载
 features      = ["intent", "risk", "routing"]  # 集成点逐项开关（§9.8 表 #1-3，v1.92 收敛）
+
+[memories]                        # L5 跨会话对话记忆（§10.1，v1.104）
+enabled = true                    # false = 不提取不注入（手动 API 与既有数据不受影响）
 ```

@@ -1119,14 +1119,17 @@ impl Store {
         project_id: &str,
         threshold: f32,
     ) -> Result<Option<Memory>> {
-        let ids: Vec<String> = self.conn.prepare(
-            "SELECT id FROM memories
+        let ids: Vec<String> = self
+            .conn
+            .prepare(
+                "SELECT id FROM memories
              WHERE (scope = 'global' AND kind = 'preference')
                 OR (scope = 'project' AND project_id = ?1)",
-        ).and_then(|mut stmt| {
-            stmt.query_map([project_id], |r| r.get::<_, String>(0))?
-                .collect::<std::result::Result<Vec<_>, _>>()
-        })?;
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map([project_id], |r| r.get::<_, String>(0))?
+                    .collect::<std::result::Result<Vec<_>, _>>()
+            })?;
         let mut best: Option<(f32, String)> = None;
         for id in ids {
             let stored: Option<Vec<u8>> = self
@@ -1246,11 +1249,15 @@ impl Store {
              ORDER BY importance ASC, last_seen_at ASC LIMIT ?2",
         )?;
         let ids = stmt
-            .query_map(params![project_id, excess as i64], |r| r.get::<_, String>(0))?
+            .query_map(params![project_id, excess as i64], |r| {
+                r.get::<_, String>(0)
+            })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let mut removed = 0;
         for id in &ids {
-            removed += self.conn.execute("DELETE FROM memories WHERE id = ?1", [id])?;
+            removed += self
+                .conn
+                .execute("DELETE FROM memories WHERE id = ?1", [id])?;
         }
         Ok(removed)
     }
@@ -2187,6 +2194,25 @@ mod managed_worktree_tests {
         Store::open_in_memory().expect("store")
     }
 
+    // v1.103：旧库迁移补 sessions.archived_at 列（守卫对任意 v<9 幂等）。
+    #[test]
+    fn migrates_v7_sessions_adds_archived_at() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER NOT NULL);
+             INSERT INTO schema_version VALUES (7);
+             CREATE TABLE projects (id TEXT PRIMARY KEY, path TEXT NOT NULL, display_name TEXT NOT NULL DEFAULT '', trusted INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
+             CREATE TABLE sessions (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, model TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'idle', title TEXT NOT NULL DEFAULT '', worktree_path TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+             INSERT INTO sessions (id, project_id, created_at, updated_at) VALUES ('s1', 'p1', 't', 't');",
+        )
+        .unwrap();
+        let mut store = Store::init(conn).unwrap();
+        // 迁移后的存量行 = 未归档：回到侧栏列表，不在归档组。
+        assert_eq!(store.list_sessions("p1").unwrap().len(), 1);
+        assert!(store.list_archived_sessions("p1").unwrap().is_empty());
+        assert_eq!(store.session("s1").unwrap().unwrap().archived_at, "");
+    }
+
     #[test]
     fn managed_worktree_session_fields_roundtrip() {
         // v1.87 §9.7：sessions.worktree_path（schema v7）+ 预生成 id 创建。
@@ -2222,7 +2248,8 @@ mod managed_worktree_tests {
         let dir = tempfile::tempdir().unwrap();
         let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
         assert!(s.project_ui_state(&p.id).unwrap().is_none());
-        s.set_project_ui_state(&p.id, r#"{"tabs":["a.ts"]}"#).unwrap();
+        s.set_project_ui_state(&p.id, r#"{"tabs":["a.ts"]}"#)
+            .unwrap();
         let state = s.project_ui_state(&p.id).unwrap().unwrap();
         assert!(state.contains("a.ts"));
     }
@@ -2233,7 +2260,8 @@ mod managed_worktree_tests {
         let dir = tempfile::tempdir().unwrap();
         let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
         let sid = s.create_session(&p.id, "mock").unwrap().id;
-        s.record_model_usage(&sid, "mock", "mock-1", 100, 200, 0.05).unwrap();
+        s.record_model_usage(&sid, "mock", "mock-1", 100, 200, 0.05)
+            .unwrap();
         let (inp, out, cost) = s.project_usage_totals(&p.id).unwrap();
         assert_eq!(inp, 100);
         assert_eq!(out, 200);
@@ -2246,7 +2274,8 @@ mod managed_worktree_tests {
         let dir = tempfile::tempdir().unwrap();
         let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
         let sid = s.create_session(&p.id, "mock").unwrap().id;
-        s.insert_checkpoint(&sid, "tree-abc", &["a.ts".into()], None).unwrap();
+        s.insert_checkpoint(&sid, "tree-abc", &["a.ts".into()], None)
+            .unwrap();
         let cps = s.checkpoints(&sid).unwrap();
         assert_eq!(cps.len(), 1);
         assert_eq!(cps[0].tree, "tree-abc");
@@ -2260,7 +2289,8 @@ mod managed_worktree_tests {
         let dir = tempfile::tempdir().unwrap();
         let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
         let sid = s.create_session(&p.id, "mock").unwrap().id;
-        s.insert_tool_call(&sid, 1, "apply_patch", Level::C, 10).unwrap();
+        s.insert_tool_call(&sid, 1, "apply_patch", Level::C, 10)
+            .unwrap();
         let calls = s.tool_calls(&sid).unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].tool, "apply_patch");
@@ -2269,7 +2299,8 @@ mod managed_worktree_tests {
     #[test]
     fn plugin_insert_and_list() {
         let mut s = mem();
-        s.insert_plugin("lsp-1", "1.0.0", &["fs.read".into()], "sig").unwrap();
+        s.insert_plugin("lsp-1", "1.0.0", &["fs.read".into()], "sig")
+            .unwrap();
         let plugins = s.list_plugins().unwrap();
         assert_eq!(plugins.len(), 1);
         assert_eq!(plugins[0].id, "lsp-1");
@@ -2278,7 +2309,9 @@ mod managed_worktree_tests {
     #[test]
     fn eval_run_insert_and_list() {
         let mut s = mem();
-        let run = s.insert_eval_run("mock", &serde_json::json!({"pass": true}), "pass").unwrap();
+        let run = s
+            .insert_eval_run("mock", &serde_json::json!({"pass": true}), "pass")
+            .unwrap();
         assert_eq!(run.verdict, "pass");
         let runs = s.eval_runs().unwrap();
         assert_eq!(runs.len(), 1);
@@ -2311,7 +2344,6 @@ mod managed_worktree_tests {
         assert_eq!(session.model, "gpt-4");
     }
 
-
     #[test]
     fn list_all_sessions_across_projects() {
         let mut s = mem();
@@ -2332,8 +2364,20 @@ mod managed_worktree_tests {
         let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
         let sid = s.create_session(&p.id, "mock").unwrap().id;
 
-        let e1 = s.append_event(&sid, EventKind::UserInput, &serde_json::json!({"text": "hello"})).unwrap();
-        let e2 = s.append_event(&sid, EventKind::ModelDelta, &serde_json::json!({"text": "world"})).unwrap();
+        let e1 = s
+            .append_event(
+                &sid,
+                EventKind::UserInput,
+                &serde_json::json!({"text": "hello"}),
+            )
+            .unwrap();
+        let e2 = s
+            .append_event(
+                &sid,
+                EventKind::ModelDelta,
+                &serde_json::json!({"text": "world"}),
+            )
+            .unwrap();
         assert_eq!(e1.seq, 1);
         assert_eq!(e2.seq, 2);
 
@@ -2354,7 +2398,10 @@ mod managed_worktree_tests {
         assert_eq!(s.latest_seq(&sid).unwrap(), 2);
 
         // count_events_of_kind
-        assert_eq!(s.count_events_of_kind(&sid, EventKind::UserInput).unwrap(), 1);
+        assert_eq!(
+            s.count_events_of_kind(&sid, EventKind::UserInput).unwrap(),
+            1
+        );
     }
 
     #[test]
@@ -2364,7 +2411,8 @@ mod managed_worktree_tests {
         let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
         let sid = s.create_session(&p.id, "mock").unwrap().id;
 
-        s.set_session_status(&sid, SessionStatus::Executing).unwrap();
+        s.set_session_status(&sid, SessionStatus::Executing)
+            .unwrap();
         let session = s.session(&sid).unwrap().unwrap();
         assert_eq!(session.status, SessionStatus::Executing);
 
@@ -2378,7 +2426,8 @@ mod managed_worktree_tests {
         let mut s = mem();
         let dir = tempfile::tempdir().unwrap();
         let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
-        s.set_project_language_packs(&p.id, &["typescript".into(), "python".into()]).unwrap();
+        s.set_project_language_packs(&p.id, &["typescript".into(), "python".into()])
+            .unwrap();
         let updated = s.project(&p.id).unwrap().unwrap();
         assert_eq!(updated.language_packs.len(), 2);
     }
@@ -2419,8 +2468,12 @@ mod managed_worktree_tests {
         let dir = tempfile::tempdir().unwrap();
         let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
         let sid = s.create_session(&p.id, "mock").unwrap().id;
-        s.append_event(&sid, EventKind::UserInput, &serde_json::json!({"text": "hi"}))
-            .unwrap();
+        s.append_event(
+            &sid,
+            EventKind::UserInput,
+            &serde_json::json!({"text": "hi"}),
+        )
+        .unwrap();
         s.archive_session(&sid).unwrap();
         s.delete_session(&sid).unwrap();
         assert!(s.session(&sid).unwrap().is_none());
@@ -2430,7 +2483,6 @@ mod managed_worktree_tests {
     }
 
     // v1.103：v7 旧库迁移补 sessions.archived_at 列。
-
 
     #[test]
     fn session_worktree_path_roundtrip() {

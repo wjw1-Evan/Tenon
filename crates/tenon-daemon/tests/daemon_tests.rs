@@ -3079,7 +3079,11 @@ async fn settings_roundtrip_and_team_policy() {
     let client = client_with_token(&token);
 
     // GET settings
-    let r = client.get(format!("{}/settings", base(port))).send().await.unwrap();
+    let r = client
+        .get(format!("{}/settings", base(port)))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status(), 200);
 
     // PUT settings
@@ -3107,7 +3111,11 @@ async fn settings_roundtrip_and_team_policy() {
     assert_eq!(r.status(), 200);
 
     // GET ui-prefs
-    let r = client.get(format!("{}/ui-prefs", base(port))).send().await.unwrap();
+    let r = client
+        .get(format!("{}/ui-prefs", base(port)))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status(), 200);
 
     // PUT ui-prefs
@@ -3126,13 +3134,21 @@ async fn pairing_lan_and_costs_endpoints() {
     let client = client_with_token(&token);
 
     // GET pairing
-    let r = client.get(format!("{}/pairing", base(port))).send().await.unwrap();
+    let r = client
+        .get(format!("{}/pairing", base(port)))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status(), 200);
     let pairing_body: serde_json::Value = r.json().await.unwrap();
     assert!(pairing_body["port"].is_number());
 
     // GET costs（不带 session 可能 200 或 400——v1.93 变更容忍）
-    let r = client.get(format!("{}/costs", base(port))).send().await.unwrap();
+    let r = client
+        .get(format!("{}/costs", base(port)))
+        .send()
+        .await
+        .unwrap();
     assert_ne!(r.status(), 401);
 
     // GET costs with session filter
@@ -3150,11 +3166,19 @@ async fn evals_and_plugins_endpoints() {
     let client = client_with_token(&token);
 
     // GET evals
-    let r = client.get(format!("{}/evals", base(port))).send().await.unwrap();
+    let r = client
+        .get(format!("{}/evals", base(port)))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status(), 200);
 
     // GET plugins
-    let r = client.get(format!("{}/plugins", base(port))).send().await.unwrap();
+    let r = client
+        .get(format!("{}/plugins", base(port)))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status(), 200);
 
     // PUT plugins (search registry)
@@ -3174,15 +3198,27 @@ async fn updates_endpoints() {
     let client = client_with_token(&token);
 
     // GET updates
-    let r = client.get(format!("{}/updates", base(port))).send().await.unwrap();
+    let r = client
+        .get(format!("{}/updates", base(port)))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status(), 200);
 
     // POST updates/check（可能因无网络 500——仅验证端点可达）
-    let r = client.post(format!("{}/updates/check", base(port))).send().await.unwrap();
+    let r = client
+        .post(format!("{}/updates/check", base(port)))
+        .send()
+        .await
+        .unwrap();
     assert_ne!(r.status(), 401);
 
     // POST updates/apply（可能因无 staged 更新 500）
-    let r = client.post(format!("{}/updates/apply", base(port))).send().await.unwrap();
+    let r = client
+        .post(format!("{}/updates/apply", base(port)))
+        .send()
+        .await
+        .unwrap();
     assert_ne!(r.status(), 401);
 }
 
@@ -3192,7 +3228,11 @@ async fn lan_endpoints() {
     let client = client_with_token(&token);
 
     // POST lan/enable
-    let r = client.post(format!("{}/lan/enable", base(port))).send().await.unwrap();
+    let r = client
+        .post(format!("{}/lan/enable", base(port)))
+        .send()
+        .await
+        .unwrap();
     assert_ne!(r.status(), 401);
     let body: serde_json::Value = r.json().await.unwrap();
 
@@ -3270,7 +3310,11 @@ async fn file_operations_crud() {
 
     // GET file (read)
     let r = client
-        .get(format!("{}/project/{}/file?path=test-coverage.rs", base(port), pid))
+        .get(format!(
+            "{}/project/{}/file?path=test-coverage.rs",
+            base(port),
+            pid
+        ))
         .send()
         .await
         .unwrap();
@@ -3353,7 +3397,11 @@ async fn language_packs_and_l4_endpoints() {
 
 #[tokio::test]
 async fn session_lifecycle_full() {
-    let script = vec![ScriptedReply::Text("done".into()), ScriptedReply::Text("ok".into()), ScriptedReply::Text("ok2".into())];
+    let script = vec![
+        ScriptedReply::Text("done".into()),
+        ScriptedReply::Text("ok".into()),
+        ScriptedReply::Text("ok2".into()),
+    ];
     let (_dir, port, token) = start_daemon(script).await;
     let client = client_with_token(&token);
 
@@ -3439,7 +3487,11 @@ async fn session_lifecycle_full() {
     assert_eq!(r.status(), 200);
 
     // POST ws-ticket
-    let r = client.post(format!("{}/ws-ticket", base(port))).send().await.unwrap();
+    let r = client
+        .post(format!("{}/ws-ticket", base(port)))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status(), 200);
 }
 
@@ -3449,11 +3501,19 @@ async fn error_paths_unauthorized_and_not_found() {
     let client = client_with_token(&token);
 
     // 404 不存在的路由
-    let r = client.get(format!("{}/nonexistent", base(port))).send().await.unwrap();
+    let r = client
+        .get(format!("{}/nonexistent", base(port)))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status(), 404);
 
     // GET 不存在的 session
-    let r = client.get(format!("{}/session/nonexistent", base(port))).send().await.unwrap();
+    let r = client
+        .get(format!("{}/session/nonexistent", base(port)))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status(), 404);
 
     // GET 不存在的项目树
@@ -3480,7 +3540,11 @@ async fn error_paths_unauthorized_and_not_found() {
 async fn ws_ticket_post() {
     let (_dir, port, token) = start_daemon(vec![]).await;
     let client = client_with_token(&token);
-    let r = client.post(format!("{}/ws-ticket", base(port))).send().await.unwrap();
+    let r = client
+        .post(format!("{}/ws-ticket", base(port)))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status(), 200);
     let body: serde_json::Value = r.json().await.unwrap();
     assert!(body["ticket"].is_string());
@@ -3499,7 +3563,10 @@ async fn inline_complete_endpoint() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let r = client
         .post(format!("{}/project/{}/inline-complete", base(port), pid))
@@ -3522,7 +3589,10 @@ async fn file_ops_endpoint() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // POST file/ops (create/rename/delete)
     let r = client
@@ -3547,7 +3617,10 @@ async fn search_replace_endpoint() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // 先写一个文件
     client
@@ -3578,7 +3651,10 @@ async fn syntax_highlight_endpoint() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     client
         .put(format!("{}/project/{}/file", base(port), pid))
@@ -3588,7 +3664,11 @@ async fn syntax_highlight_endpoint() {
         .unwrap();
 
     let r = client
-        .get(format!("{}/project/{}/highlight?path=hl.ts", base(port), pid))
+        .get(format!(
+            "{}/project/{}/highlight?path=hl.ts",
+            base(port),
+            pid
+        ))
         .send()
         .await
         .unwrap();
@@ -3606,7 +3686,10 @@ async fn git_source_view_endpoint() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let r = client
         .get(format!("{}/project/{}/git/view", base(port), pid))
@@ -3628,7 +3711,10 @@ async fn project_lsp_proxy_endpoint() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let r = client
         .post(format!("{}/project/{}/lsp", base(port), pid))
@@ -3666,10 +3752,18 @@ async fn delete_project_removes_from_list() {
     assert_eq!(r.status(), 200);
 
     // 列表中不再出现
-    let r = client.get(format!("{}/projects", base(port))).send().await.unwrap();
+    let r = client
+        .get(format!("{}/projects", base(port)))
+        .send()
+        .await
+        .unwrap();
     let list: serde_json::Value = r.json().await.unwrap();
-    let ids: Vec<&str> = list["projects"].as_array().unwrap()
-        .iter().filter_map(|p| p["id"].as_str()).collect();
+    let ids: Vec<&str> = list["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|p| p["id"].as_str())
+        .collect();
     assert!(!ids.contains(&pid));
 }
 
@@ -3697,7 +3791,10 @@ async fn create_session_with_worktree() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // 带 worktree 参数创建会话
     let r = client
@@ -3722,7 +3819,10 @@ async fn checkpoint_rollback_endpoint() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // 创建会话 + 发消息产生 checkpoint
     let r = client
@@ -3731,7 +3831,10 @@ async fn checkpoint_rollback_endpoint() {
         .send()
         .await
         .unwrap();
-    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
+    let _sid = r.json::<serde_json::Value>().await.unwrap()["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // POST checkpoint rollback（不存在的 id → 404 或 400）
     let r = client
@@ -3758,7 +3861,10 @@ async fn merge_and_discard_worktree_endpoints() {
 
     // POST discard
     let r = client
-        .post(format!("{}/session/nonexistent/worktree/discard", base(port)))
+        .post(format!(
+            "{}/session/nonexistent/worktree/discard",
+            base(port)
+        ))
         .json(&serde_json::json!({ "confirm": true }))
         .send()
         .await
@@ -3797,7 +3903,10 @@ async fn open_project_same_path_returns_same_id() {
         .send()
         .await
         .unwrap();
-    let id1 = r1.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+    let id1 = r1.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let r2 = client
         .post(format!("{}/projects/open", base(port)))
@@ -3805,7 +3914,10 @@ async fn open_project_same_path_returns_same_id() {
         .send()
         .await
         .unwrap();
-    let id2 = r2.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+    let id2 = r2.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     assert_eq!(id1, id2, "同路径项目应返回同一 ID");
 }
@@ -3842,7 +3954,10 @@ async fn file_write_creates_and_overwrites_content() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // 写入
     let r = client
@@ -3892,10 +4007,17 @@ async fn file_not_found_returns_error() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let r = client
-        .get(format!("{}/project/{}/file?path=nonexistent.txt", base(port), pid))
+        .get(format!(
+            "{}/project/{}/file?path=nonexistent.txt",
+            base(port),
+            pid
+        ))
         .send()
         .await
         .unwrap();
@@ -3914,24 +4036,36 @@ async fn search_finds_content_in_files() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // 写入可搜索内容
     client
         .put(format!("{}/project/{}/file", base(port), pid))
-        .json(&serde_json::json!({ "path": "searchable.ts", "content": "const unique_marker = 42;" }))
+        .json(
+            &serde_json::json!({ "path": "searchable.ts", "content": "const unique_marker = 42;" }),
+        )
         .send()
         .await
         .unwrap();
 
     let r = client
-        .get(format!("{}/project/{}/search?q=unique_marker", base(port), pid))
+        .get(format!(
+            "{}/project/{}/search?q=unique_marker",
+            base(port),
+            pid
+        ))
         .send()
         .await
         .unwrap();
     assert_eq!(r.status(), 200);
     let body: serde_json::Value = r.json().await.unwrap();
-    assert!(body["hits"].as_array().map(|h| !h.is_empty()).unwrap_or(false));
+    assert!(body["hits"]
+        .as_array()
+        .map(|h| !h.is_empty())
+        .unwrap_or(false));
 }
 
 #[tokio::test]
@@ -3946,7 +4080,10 @@ async fn fuzzy_files_finds_matching_names() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     client
         .put(format!("{}/project/{}/file", base(port), pid))
@@ -3956,20 +4093,31 @@ async fn fuzzy_files_finds_matching_names() {
         .unwrap();
 
     let r = client
-        .get(format!("{}/project/{}/files/fuzzy?q=unique_comp", base(port), pid))
+        .get(format!(
+            "{}/project/{}/files/fuzzy?q=unique_comp",
+            base(port),
+            pid
+        ))
         .send()
         .await
         .unwrap();
     assert_eq!(r.status(), 200);
     let body: serde_json::Value = r.json().await.unwrap();
-    assert!(body["hits"].as_array().map(|h| !h.is_empty()).unwrap_or(false));
+    assert!(body["hits"]
+        .as_array()
+        .map(|h| !h.is_empty())
+        .unwrap_or(false));
 }
 
 #[tokio::test]
 async fn ws_ticket_returns_token_and_expiry() {
     let (_dir, port, token) = start_daemon(vec![]).await;
     let client = client_with_token(&token);
-    let r = client.post(format!("{}/ws-ticket", base(port))).send().await.unwrap();
+    let r = client
+        .post(format!("{}/ws-ticket", base(port)))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status(), 200);
     let body: serde_json::Value = r.json().await.unwrap();
     let ticket = body["ticket"].as_str().unwrap();
@@ -3980,7 +4128,9 @@ async fn ws_ticket_returns_token_and_expiry() {
 #[tokio::test]
 async fn health_endpoint_no_auth_needed() {
     let (_dir, port, _token) = start_daemon(vec![]).await;
-    let r = reqwest::get(format!("{}/health", base(port))).await.unwrap();
+    let r = reqwest::get(format!("{}/health", base(port)))
+        .await
+        .unwrap();
     assert_eq!(r.status(), 200);
     assert_eq!(r.text().await.unwrap(), "ok");
 }
@@ -3989,7 +4139,11 @@ async fn health_endpoint_no_auth_needed() {
 async fn models_endpoint_lists_providers() {
     let (_dir, port, token) = start_daemon(vec![]).await;
     let client = client_with_token(&token);
-    let r = client.get(format!("{}/models", base(port))).send().await.unwrap();
+    let r = client
+        .get(format!("{}/models", base(port)))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status(), 200);
     let body: serde_json::Value = r.json().await.unwrap();
     assert!(body["models"].is_array());
@@ -4020,7 +4174,10 @@ async fn tree_returns_file_entries() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     client
         .put(format!("{}/project/{}/file", base(port), pid))
@@ -4051,7 +4208,10 @@ async fn language_packs_endpoint_returns_detection() {
         .send()
         .await
         .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let r = client
         .get(format!("{}/project/{}/language-packs", base(port), pid))
@@ -4069,8 +4229,26 @@ async fn session_archive_unarchive_and_delete_over_http() {
     let dir = tempfile::tempdir().unwrap();
     let project = dir.path().join("proj");
     std::fs::create_dir_all(&project).unwrap();
+    // 受管 worktree 会话要求 git 仓库（§9.5）：init + 初始提交。
+    git(&project, &["init", "-q"]);
+    git(
+        &project,
+        &["config", "user.email", "tenon-test@example.com"],
+    );
+    git(&project, &["config", "user.name", "tenon-test"]);
+    git(&project, &["commit", "-qm", "init", "--allow-empty"]);
     let (_tmp, port, token) = start_daemon(vec![]).await;
-    let client = client_with_token(&token);
+    // 共享机器高负载（并行会话构建）下 10s 默认超时会轮转超时，本测试用 60s 客户端。
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        "X-Tenon-Token",
+        reqwest::header::HeaderValue::from_str(&token).unwrap(),
+    );
+    let client = reqwest::Client::builder()
+        .default_headers(headers)
+        .timeout(Duration::from_secs(60))
+        .build()
+        .unwrap();
 
     let registered: serde_json::Value = client
         .post(format!("{}/projects/open", base(port)))
@@ -4094,10 +4272,11 @@ async fn session_archive_unarchive_and_delete_over_http() {
                 .send()
                 .await
                 .unwrap();
-            assert_eq!(r.status(), 200);
-            r.json::<serde_json::Value>()
-                .await
-                .unwrap()["id"]
+            let status = r.status();
+            let text = r.text().await.unwrap();
+            assert!(status.is_success(), "create_session 失败: {text}");
+            serde_json::from_str::<serde_json::Value>(&text).expect("create_session 响应非 JSON")
+                ["session_id"]
                 .as_str()
                 .unwrap()
                 .to_string()
@@ -4115,7 +4294,7 @@ async fn session_archive_unarchive_and_delete_over_http() {
         .json()
         .await
         .unwrap();
-    let wt_id = worktree["id"].as_str().unwrap().to_string();
+    let wt_id = worktree["session_id"].as_str().unwrap().to_string();
 
     let summary = || {
         let url = format!("{}/projects", base(port));
@@ -4154,7 +4333,10 @@ async fn session_archive_unarchive_and_delete_over_http() {
     let s = summary().await;
     assert_eq!(s["sessions"].as_array().unwrap().len(), 2);
     assert_eq!(s["archived_sessions"].as_array().unwrap().len(), 1);
-    assert_eq!(s["archived_sessions"][0]["id"], serde_json::Value::String(a.clone()));
+    assert_eq!(
+        s["archived_sessions"][0]["id"],
+        serde_json::Value::String(a.clone())
+    );
 
     // 未收尾受管 worktree：归档 409。
     let r = client
@@ -4175,10 +4357,17 @@ async fn session_archive_unarchive_and_delete_over_http() {
     assert_eq!(s["sessions"].as_array().unwrap().len(), 3);
     assert_eq!(s["archived_sessions"].as_array().unwrap().len(), 0);
 
-    // 删除门：无 confirm 400；confirm 后 404 且摘要移除。
+    // 删除门：缺 confirm 字段 422（提取器拒收）、confirm:false 400；confirm:true 后 404 且摘要移除。
     let r = client
         .delete(format!("{}/session/{}", base(port), b))
         .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 422);
+    let r = client
+        .delete(format!("{}/session/{}", base(port), b))
+        .json(&serde_json::json!({"confirm": false}))
         .send()
         .await
         .unwrap();
