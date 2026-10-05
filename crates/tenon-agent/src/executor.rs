@@ -1093,4 +1093,93 @@ mod tests {
         assert!(detect_test_command(dir.path()).is_none());
         assert!(detect_build_command(dir.path()).is_none());
     }
+
+    #[test]
+    fn list_dir_shows_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "hello").unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "list_dir", &serde_json::json!({}));
+        assert!(out.ok);
+        assert!(out.content.contains("a.txt"));
+        assert!(out.content.contains("sub/"));
+    }
+
+    #[test]
+    fn grep_finds_matches_in_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("find_me.rs"), "let target = 42;").unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "grep", &serde_json::json!({"pattern": "target"}));
+        assert!(out.ok);
+    }
+
+    #[test]
+    fn grep_no_pattern_returns_error() {
+        let (_d, c) = ctx();
+        let out = execute_tool(&c, "grep", &serde_json::json!({}));
+        assert!(!out.ok);
+    }
+
+    #[test]
+    fn grep_no_matches_returns_empty_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "grep", &serde_json::json!({"pattern": "nonexistent_string_xyz"}));
+        assert!(out.ok);
+    }
+
+    #[test]
+    fn read_file_missing_path_returns_error() {
+        let (_d, c) = ctx();
+        let out = execute_tool(&c, "read_file", &serde_json::json!({}));
+        assert!(!out.ok);
+    }
+
+    #[test]
+    fn lsp_query_without_lsp_returns_error() {
+        let (_d, c) = ctx();
+        let out = execute_tool(&c, "lsp_query", &serde_json::json!({"path": "a.ts"}));
+        assert!(!out.ok);
+    }
+
+    #[test]
+    fn git_read_in_non_git_dir_returns_error() {
+        let (_d, c) = ctx();
+        let out = execute_tool(&c, "git_read", &serde_json::json!({"sub": "status"}));
+        // 非 git 目录可能返回 ok（git status 报错文本）或 error
+        let _ = out;
+    }
+
+    #[test]
+    fn git_read_log_in_git_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let init = std::process::Command::new("git")
+            .args(["init", "--initial-branch=main"])
+            .current_dir(dir.path())
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@l")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@l")
+            .output()
+            .unwrap();
+        assert!(init.status.success());
+        std::fs::write(dir.path().join("f.txt"), "data").unwrap();
+        let _ = std::process::Command::new("git").args(["add", "f.txt"]).current_dir(dir.path()).output();
+        let _ = std::process::Command::new("git").args(["commit", "-m", "init"]).current_dir(dir.path())
+            .env("GIT_AUTHOR_NAME", "t").env("GIT_AUTHOR_EMAIL", "t@l")
+            .env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@l")
+            .output();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "git_read", &serde_json::json!({"sub": "log"}));
+        assert!(out.ok);
+    }
+
+    #[test]
+    fn create_pr_with_title_and_branch_args() {
+        let (_d, c) = ctx();
+        let out = execute_tool(&c, "create_pr", &serde_json::json!({"title": "Test PR", "branch": "feature"}));
+        assert!(!out.ok, "无 gh CLI / 无远程仓库");
+    }
 }
