@@ -1397,6 +1397,7 @@ impl Store {
 
     // ---------- model_usage（成本归因 §11） ----------
 
+    #[allow(clippy::too_many_arguments)] // 在途 v1.129+ 工作落库；参数收敛归后续重构
     pub fn record_model_usage(
         &mut self,
         session_id: &str,
