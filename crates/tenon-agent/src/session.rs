@@ -27,9 +27,7 @@ use tenon_models::{
     MEMORY_MARKER, TITLE_MARKER,
 };
 use tenon_snapshot::SnapshotStore;
-use tenon_store::{
-    Checkpoint, Event, EventKind, Level as StoreLevel, MemoryRecord, SessionStatus, Store,
-};
+use tenon_store::{Event, EventKind, Level as StoreLevel, MemoryRecord, SessionStatus, Store};
 
 use crate::executor::{execute_tool, ToolContext};
 
@@ -1723,12 +1721,6 @@ impl AgentSession {
         let Some(target) = target else {
             return Ok(vec![]);
         };
-        self.rollback_to_checkpoint(&target).await
-    }
-
-    /// 回滚到指定 checkpoint（v1.111 消息级撤销 / §10.3 快照恢复）：
-    /// restore 目标快照树（= 该步写入前状态），unrevert 快照先行（§10.3）。
-    pub async fn rollback_to_checkpoint(&self, target: &Checkpoint) -> Result<Vec<String>, AgentError> {
         let safety = self
             .snapshots
             .snapshot()

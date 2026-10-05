@@ -5313,3 +5313,72 @@ async fn create_session_returns_worktree_path_for_managed() {
         assert!(!wt_path.is_empty());
     }
 }
+
+#[tokio::test]
+async fn language_pack_detect_returns_pack_list() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let tmp = tempfile::tempdir().unwrap();
+    // Create files for language detection
+    std::fs::write(tmp.path().join("app.py"), "print(1)").unwrap();
+    std::fs::write(tmp.path().join("package.json"), "{}").unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+    let r = client
+        .get(format!("{}/project/{}/language-packs", base(port), pid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+}
+
+
+#[tokio::test]
+async fn open_project_returns_trusted_false_by_default() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body["trusted"], false, "TOFU 默认未信任");
+}
+
+#[tokio::test]
+async fn session_model_switch_and_get_session_reflects() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+    let r = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({ "project_id": pid, "provider": "mock" }))
+        .send()
+        .await
+        .unwrap();
+    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
+
+    // Switch model
+    let r = client
+        .post(format!("{}/session/{}/model", base(port), sid))
+        .json(&serde_json::json!({ "provider": "mock", "model": "mock-alt" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+}

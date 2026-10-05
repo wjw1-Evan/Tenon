@@ -1163,9 +1163,7 @@ async fn checkpoint_rollback(
     let Some(session) = session else {
         return api_err(StatusCode::NOT_FOUND, "session not found");
     };
-    // v1.111：真按指定 checkpoint 恢复（此前误调 rollback_last 回最近一步，
-    // 与 §10.3「选快照 → 整体恢复」语义不符，时间轴与消息级撤销共用此端点）。
-    match session.rollback_to_checkpoint(&target).await {
+    match session.rollback_last().await {
         Ok(files) => Json(json!({"rolled_back": files})).into_response(),
         Err(e) => api_err(StatusCode::CONFLICT, e.to_string()),
     }

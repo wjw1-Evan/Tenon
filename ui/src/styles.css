@@ -1209,42 +1209,16 @@ button:disabled { opacity: 0.45; cursor: default; }
   margin-bottom: 0;
   padding-bottom: 0;
 }
-.turn-user {
-  /* v1.109 用户消息居右（v1.111 撤销钮挂气泡下方） */
-  align-self: flex-end;
-  max-width: 85%;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 3px;
-}
 .turn-task {
-  /* v1.109 用户消息气泡：居右（max-width 限宽），与居左 AI 回复按侧区分 */
-  background: var(--accent-soft-strong);
+  border-left: 3px solid var(--accent);
+  background: var(--accent-soft);
   color: var(--fg-strong);
-  border-radius: var(--radius-m);
-  padding: 7px 11px;
+  border-radius: var(--radius-s);
+  padding: 7px 10px;
   font-size: 12.5px;
   line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
-}
-.turn-undo {
-  border: none;
-  background: none;
-  color: var(--muted);
-  font-size: 11px;
-  padding: 1px 4px;
-  cursor: pointer;
-  border-radius: var(--radius-s);
-}
-.turn-undo:hover {
-  color: var(--error-text);
-  background: var(--error-soft);
-}
-.turn-undo:disabled {
-  opacity: 0.5;
-  cursor: default;
 }
 .turn-body {
   margin-left: 4px;

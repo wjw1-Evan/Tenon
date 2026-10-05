@@ -428,50 +428,6 @@ async fn rollback_last_restores_pre_task_snapshot() {
     );
 }
 
-// v1.111 消息级撤销：按指定 checkpoint 恢复到该步写入前状态（后续步骤改动一并消失）。
-#[tokio::test]
-async fn rollback_to_checkpoint_restores_target_step_tree() {
-    let (dir, session, store, _p) = setup(vec![
-        ScriptedReply::Tool {
-            name: "apply_patch".into(),
-            args: serde_json::json!({"file": "new.txt", "range": null, "content": "one\n"}),
-        },
-        ScriptedReply::Tool {
-            name: "apply_patch".into(),
-            args: serde_json::json!({"file": "second.txt", "range": null, "content": "two\n"}),
-        },
-        ScriptedReply::Text("done".into()),
-    ])
-    .await;
-    let sid = session.session_id.clone();
-    session.run_task("两步编辑").await;
-    assert!(dir.path().join("new.txt").exists());
-    assert!(dir.path().join("second.txt").exists());
-
-    // 消息级撤销锚点 = 回合内首个 patch_applied 的写前 checkpoint（event_seq 最小的事件级快照）。
-    let mut cps = store
-        .lock()
-        .await
-        .checkpoints(&sid)
-        .unwrap();
-    cps.retain(|c| c.event_seq.is_some() && !c.files.is_empty());
-    cps.sort_by_key(|c| c.event_seq.unwrap());
-    let first = cps.first().unwrap().clone();
-    assert_eq!(first.files, vec!["new.txt".to_string()]);
-
-    let rolled = session.rollback_to_checkpoint(&first).await.unwrap();
-    assert_eq!(rolled, vec!["new.txt".to_string()]);
-    assert!(!dir.path().join("new.txt").exists());
-    assert!(
-        !dir.path().join("second.txt").exists(),
-        "恢复到第一步写前：第二步的改动一并消失（树级快照语义）"
-    );
-
-    // unrevert 双向恢复
-    session.unrevert().await.unwrap();
-    assert!(dir.path().join("second.txt").exists());
-}
-
 #[tokio::test]
 async fn secret_redaction_applies_to_git_read_output() {
     use tenon_agent::executor::ToolContext;

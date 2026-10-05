@@ -50,8 +50,6 @@ interface Turn {
   id: number;
   task: string | null;
   items: EventItem[];
-  /** v1.111 消息级撤销：回合内首个 patch_applied 事件 seq（对应该步写前 checkpoint）。 */
-  firstPatchSeq: number | null;
 }
 
 /** §9.2 内置工具协议集合：已知工具走动作短语，外部 / 未知工具原样显示名。 */
@@ -289,23 +287,6 @@ export function AgentPanel({
     await api.control(sessionId, "stop");
   }
 
-  // v1.111 消息级撤销：恢复到该消息（回合）首个改动写入前状态；unrevert 可撤销本次回滚。
-  async function undoTurn(turn: Turn) {
-    if (!sessionId || turn.firstPatchSeq === null || running) return;
-    if (!window.confirm(t("thread.undo_confirm"))) return;
-    try {
-      const { checkpoints } = await api.checkpoints(sessionId);
-      const cp = checkpoints.find((c) => c.event_seq === turn.firstPatchSeq);
-      if (!cp) {
-        window.alert(t("thread.undo_failed"));
-        return;
-      }
-      await api.rollbackCheckpoint(cp.id);
-    } catch {
-      window.alert(t("thread.undo_failed"));
-    }
-  }
-
   // v1.92：暂停只进不出的修复——paused 时发送钮承担恢复。
   async function resume() {
     if (!sessionId) return;
@@ -321,32 +302,19 @@ export function AgentPanel({
     let cur: Turn | null = null;
     for (const ev of events) {
       if (ev.type === "user_input") {
-        cur = { id: ev.id, task: String(ev.payload.text ?? ""), items: [], firstPatchSeq: null };
+        cur = { id: ev.id, task: String(ev.payload.text ?? ""), items: [] };
         list.push(cur);
         continue;
       }
       if (ev.type === "model_delta") continue;
       if (!cur) {
-        cur = { id: 0, task: null, items: [], firstPatchSeq: null };
+        cur = { id: 0, task: null, items: [] };
         list.push(cur);
-      }
-      // 消息级撤销锚点：回合内首个 patch_applied 的 checkpoint 记录该回合写入前状态。
-      if (ev.type === "patch_applied" && cur.firstPatchSeq === null) {
-        cur.firstPatchSeq = ev.seq;
       }
       cur.items.push(ev);
     }
     return list;
   }, [events]);
-
-  // v1.111：仅最后一个含改动的回合提供撤销——恢复是树级快照，撤销更早回合会连带丢弃后续回合改动
-  //（时间旅行场景由 checkpoint 时间轴覆盖）。
-  const undoableTurnId = useMemo(() => {
-    for (let i = turns.length - 1; i >= 0; i -= 1) {
-      if (turns[i].firstPatchSeq !== null) return turns[i].id;
-    }
-    return null;
-  }, [turns]);
 
   // 运行态「正在做什么」：取最后一个 decision 的意图；first_edit 无意图则显示执行中态。
   const runningLabel = useMemo(() => {
@@ -397,24 +365,7 @@ export function AgentPanel({
           const active = idx === turns.length - 1;
           return (
             <section className="turn" key={turn.id} data-testid="turn">
-              {turn.task !== null && (
-                <div className="turn-user" data-testid="turn-user">
-                  <div className="turn-task">{turn.task}</div>
-                  {turn.id === undoableTurnId && (
-                    <button
-                      type="button"
-                      className="turn-undo"
-                      data-testid="turn-undo"
-                      disabled={running}
-                      title={t("thread.undo_confirm")}
-                      aria-label={t("thread.undo")}
-                      onClick={() => void undoTurn(turn)}
-                    >
-                      ↩ {t("thread.undo")}
-                    </button>
-                  )}
-                </div>
-              )}
+              {turn.task !== null && <div className="turn-task">{turn.task}</div>}
               <div className="turn-body">
                 {turn.items.map((ev) => (
                   <EventNode key={ev.id} ev={ev} t={t} />
