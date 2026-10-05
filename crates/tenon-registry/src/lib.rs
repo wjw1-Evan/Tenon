@@ -463,4 +463,44 @@ signature: ""
             Err(RegistryError::BadSignature)
         ));
     }
+
+    #[test]
+    fn reserved_ids_detected() {
+        assert!(is_reserved_id("official.python"));
+        assert!(is_reserved_id("official.typescript"));
+        assert!(!is_reserved_id("community.python"));
+        assert!(!is_reserved_id("python"));
+    }
+
+    #[test]
+    fn sha256_hex_produces_correct_length() {
+        let hash = sha256_hex(b"hello");
+        assert_eq!(hash.len(), 64);
+        // Known SHA-256 of "hello"
+        assert_eq!(hash, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+    }
+
+    #[test]
+    fn sha256_hex_empty_input() {
+        let hash = sha256_hex(b"");
+        assert_eq!(hash, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    }
+
+    #[test]
+    fn pre_install_check_rejects_unofficial() {
+        let m = parse_manifest(SAMPLE_MANIFEST).unwrap();
+        assert!(pre_install_check(&m, false).is_err());
+        assert!(pre_install_check(&m, true).is_ok());
+    }
+
+    #[test]
+    fn permission_diff_detects_new_permissions() {
+        let diff = PermissionDiff {
+            added: vec!["net:new:api".into()],
+            removed: vec![],
+            unchanged: vec!["fs.read:project".into()],
+        };
+        assert_eq!(diff.added.len(), 1);
+        assert!(diff.removed.is_empty());
+    }
 }
