@@ -8,6 +8,7 @@ import {
   parseLspHover,
   parseLspLocations,
   parseLspSignatureHelp,
+  toMonacoCompletionSuggestions,
 } from "../lib/lsp";
 
 describe("LSP normalizers", () => {
@@ -61,5 +62,96 @@ describe("LSP normalizers", () => {
       kind: "refactor",
       workspaceEdit: { changes: {} },
     }]);
+  });
+
+  it("lspRange handles missing/invalid positions gracefully", () => {
+    expect(lspRange(null)).toEqual({ startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 1 });
+    expect(lspRange({})).toEqual({ startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 1 });
+    expect(lspRange({ start: { line: -1, character: -1 } })).toEqual({
+      startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 1,
+    });
+  });
+
+  it("lspUriToModelPath handles edge cases", () => {
+    // Windows 盘符路径
+    expect(lspUriToModelPath("file:///C:/repo/src/a.ts", "C:/repo")).toBe("src/a.ts");
+    // root 本身
+    expect(lspUriToModelPath("file:///tmp/repo", "/tmp/repo")).toBe("");
+    // 非 file URI
+    expect(lspUriToModelPath("https://example.com/a.ts")).toBe("https://example.com/a.ts");
+    // 无效 URI
+    expect(lspUriToModelPath("not a uri")).toBe("not a uri");
+    // 无 projectRoot
+    expect(lspUriToModelPath("file:///tmp/x.ts")).toBe("/tmp/x.ts");
+  });
+
+  it("parseLspHover handles array contents and empty", () => {
+    expect(parseLspHover(null)).toBe("");
+    expect(parseLspHover({})).toBe("");
+    expect(parseLspHover({ contents: [{ value: "line1" }, { value: "line2" }] })).toBe("line1\n\nline2");
+    expect(parseLspHover({ contents: "plain" })).toBe("plain");
+    expect(parseLspHover({ contents: [{ value: "" }] })).toBe("");
+  });
+
+  it("parseLspCompletions handles items wrapper, textEdit, documentation object", () => {
+    const result = parseLspCompletions([
+      { label: "a", textEdit: { newText: "inserted" }, documentation: { value: "doc text" }, sortText: "0001", filterText: "flt" },
+      { label: "", kind: 1 },
+      { label: "b" },
+    ]);
+    expect(result).toHaveLength(2);
+    expect(result[0].insertText).toBe("inserted");
+    expect(result[0].documentation).toBe("doc text");
+    expect(result[0].sortText).toBe("0001");
+    expect(result[1].insertText).toBe("b");
+  });
+
+  it("toMonacoCompletionSuggestions maps items to Monaco format", () => {
+    const range = { startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 5 };
+    const result = toMonacoCompletionSuggestions(
+      [{ label: "x", kind: 3, detail: "d", documentation: "doc", insertText: "xx" }],
+      range
+    );
+    expect(result[0]).toEqual({
+      label: "x", kind: 3, detail: "d", documentation: "doc",
+      insertText: "xx", sortText: undefined, filterText: undefined, range,
+    });
+    // kind 缺省为 0
+    const noKind = toMonacoCompletionSuggestions([{ label: "y" }], range);
+    expect(noKind[0].kind).toBe(0);
+  });
+
+  it("parseLspSignatureHelp handles empty / missing / fallback", () => {
+    expect(parseLspSignatureHelp(null)).toBe("");
+    expect(parseLspSignatureHelp({})).toBe("");
+    expect(parseLspSignatureHelp({ signatures: [] })).toBe("");
+    expect(parseLspSignatureHelp({ signatures: [{ label: "" }] })).toBe("");
+    // activeSignature 缺省 0
+    expect(parseLspSignatureHelp({ signatures: [{ label: "fn()" }] })).toBe("fn()");
+    // 负 activeSignature → 回退 0
+    expect(parseLspSignatureHelp({
+      activeSignature: -1, signatures: [{ label: "fb()" }, { label: "real()" }],
+    })).toBe("fb()");
+  });
+
+  it("parseLspLocations handles LocationLink and wrapped locations", () => {
+    // targetUri / targetSelectionRange（LocationLink 格式）
+    const link = {
+      targetUri: "file:///tmp/repo/target.ts",
+      targetSelectionRange: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
+    };
+    const result = parseLspLocations(link, "/tmp/repo");
+    expect(result[0].uri).toBe("target.ts");
+    // { locations: [...] } 包装
+    const wrapped = { locations: [{ uri: "file:///x.ts", range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } }] };
+    expect(parseLspLocations(wrapped)).toHaveLength(1);
+    // 无 uri 的记录被过滤
+    expect(parseLspLocations([{ range: {} }])).toHaveLength(0);
+  });
+
+  it("parseLspCodeActions handles actions wrapper and missing edit", () => {
+    expect(parseLspCodeActions(null)).toEqual([]);
+    expect(parseLspCodeActions({ actions: [{ title: "x", edit: { workspaceEdit: {} } }] })).toHaveLength(1);
+    expect(parseLspCodeActions([{ title: "no edit" }])).toEqual([]);
   });
 });

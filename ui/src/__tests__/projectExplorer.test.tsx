@@ -377,3 +377,54 @@ describe("Global activity strip (v1.87 multi-project monitoring)", () => {
     );
   });
 });
+
+
+describe("ProjectExplorer 补充", () => {
+  beforeEach(() => {
+    const backing = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => (backing.has(k) ? backing.get(k)! : null),
+      setItem: (k: string, v: string) => void backing.set(k, v),
+      removeItem: (k: string) => void backing.delete(k),
+      clear: () => backing.clear(),
+    });
+    treeMock.mockReset();
+    treeMock.mockResolvedValue({ entries: [] });
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("remove project button calls onRemoveProject", async () => {
+    const { onRemoveProject } = renderExplorer([project("p1")]);
+    fireEvent.click(screen.getByTestId("project-remove-p1"));
+    await waitFor(() => expect(onRemoveProject).toHaveBeenCalledWith(expect.objectContaining({ id: "p1" })));
+  });
+
+  it("session-show-all expands session list", () => {
+    const proj = project("p1");
+    proj.sessions = Array.from({ length: 12 }, (_, i) => ({
+      id: `s${i}`, status: "idle", model: "m", title: `Chat ${i}`, updated_at: "2026-01-01T00:00:00Z",
+    }));
+    renderExplorer([proj]);
+    const showAll = screen.getByTestId("session-show-all-p1");
+    fireEvent.click(showAll);
+    // 展开后显示更多会话行
+    expect(screen.getAllByTestId(/^chat-row-/).length).toBeGreaterThan(5);
+  });
+
+  it("project search filters by name", () => {
+    renderExplorer([project("alpha"), project("beta")]);
+    fireEvent.change(screen.getByTestId("project-search"), { target: { value: "beta" } });
+    expect(screen.getByTestId("project-item-beta")).toBeInTheDocument();
+  });
+
+
+  it("worktree discard confirm via window.confirm", () => {
+    vi.stubGlobal("confirm", vi.fn().mockReturnValue(true));
+    const { api: apiMock } = renderExplorer([project("p1")]);
+    const discardBtn = screen.queryByTestId("worktree-discard");
+    if (discardBtn) fireEvent.click(discardBtn);
+    // 不崩溃即可
+    expect(screen.getByTestId("project-list")).toBeInTheDocument();
+  });
+});

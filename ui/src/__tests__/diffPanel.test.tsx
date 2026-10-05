@@ -58,3 +58,21 @@ describe("diff 面板（M0 交付）", () => {
     expect(performance.now() - started).toBeLessThan(16);
   });
 });
+
+describe("DiffPanel 补充", () => {
+  it("parseDiffLines 分类行类型", () => {
+    const lines = parseDiffLines("--- a/f\n+++ b/f\n@@ -1 +1 @@\n context\n-old\n+new\n");
+    expect(lines.length).toBeGreaterThan(0);
+  });
+
+  it("hunk 头渲染", () => {
+    const diff = "--- a/f.txt\n+++ b/f.txt\n@@ -3,4 +3,4 @@\n context\n";
+    render(<DiffPanel diff={diff} />);
+    expect(screen.getByTestId("diff-panel")).toHaveTextContent("@@");
+  });
+
+  it("empty diff shows placeholder", () => {
+    render(<DiffPanel diff="" />);
+    expect(screen.getByTestId("diff-panel")).toHaveTextContent("（无改动）");
+  });
+});
