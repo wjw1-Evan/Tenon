@@ -1018,23 +1018,39 @@ mod tests {
     #[test]
     fn read_file_not_found_returns_error() {
         let (_d, c) = ctx();
-        let out = execute_tool(&c, "read_file", &serde_json::json!({"path": "nonexistent.txt"}));
+        let out = execute_tool(
+            &c,
+            "read_file",
+            &serde_json::json!({"path": "nonexistent.txt"}),
+        );
         assert!(!out.ok);
     }
 
     #[test]
     fn write_file_creates_and_overwrites() {
         let (_d, c) = ctx();
-        let out = execute_tool(&c, "apply_patch", &serde_json::json!({"file": "x.txt", "range": null, "content": "v1"}));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({"file": "x.txt", "range": null, "content": "v1"}),
+        );
         assert!(out.ok);
-        let out = execute_tool(&c, "apply_patch", &serde_json::json!({"file": "x.txt", "range": null, "content": "v2"}));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({"file": "x.txt", "range": null, "content": "v2"}),
+        );
         assert!(out.ok);
     }
 
     #[test]
     fn bash_echo_works() {
         let (_d, c) = ctx();
-        let out = execute_tool(&c, "bash", &serde_json::json!({"command": "echo test_ok", "timeout_s": 5}));
+        let out = execute_tool(
+            &c,
+            "bash",
+            &serde_json::json!({"command": "echo test_ok", "timeout_s": 5}),
+        );
         // bash 可能在沙箱环境不可用——仅验证不 panic
         let _ = out;
     }
@@ -1042,7 +1058,11 @@ mod tests {
     #[test]
     fn bash_invalid_command_returns_error() {
         let (_d, c) = ctx();
-        let out = execute_tool(&c, "bash", &serde_json::json!({"command": "nonexistent_command_xyz", "timeout_s": 5}));
+        let out = execute_tool(
+            &c,
+            "bash",
+            &serde_json::json!({"command": "nonexistent_command_xyz", "timeout_s": 5}),
+        );
         assert!(!out.ok);
     }
 
@@ -1051,7 +1071,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
         c.readonly.store(true, std::sync::atomic::Ordering::Relaxed);
-        let out = execute_tool(&c, "apply_patch", &serde_json::json!({"file": "blocked.txt", "range": null, "content": "x"}));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({"file": "blocked.txt", "range": null, "content": "x"}),
+        );
         assert!(!out.ok, "readonly should block write");
     }
 
@@ -1060,7 +1084,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut c = ToolContext::new(dir.path(), Duration::from_secs(30));
         c.team_denied_tools = vec!["bash".into()];
-        let out = execute_tool(&c, "bash", &serde_json::json!({"command": "echo hi", "timeout_s": 5}));
+        let out = execute_tool(
+            &c,
+            "bash",
+            &serde_json::json!({"command": "echo hi", "timeout_s": 5}),
+        );
         assert!(!out.ok, "denied tool should be blocked");
     }
 
@@ -1126,7 +1154,11 @@ mod tests {
     fn grep_no_matches_returns_empty_message() {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        let out = execute_tool(&c, "grep", &serde_json::json!({"pattern": "nonexistent_string_xyz"}));
+        let out = execute_tool(
+            &c,
+            "grep",
+            &serde_json::json!({"pattern": "nonexistent_string_xyz"}),
+        );
         assert!(out.ok);
     }
 
@@ -1166,10 +1198,17 @@ mod tests {
             .unwrap();
         assert!(init.status.success());
         std::fs::write(dir.path().join("f.txt"), "data").unwrap();
-        let _ = std::process::Command::new("git").args(["add", "f.txt"]).current_dir(dir.path()).output();
-        let _ = std::process::Command::new("git").args(["commit", "-m", "init"]).current_dir(dir.path())
-            .env("GIT_AUTHOR_NAME", "t").env("GIT_AUTHOR_EMAIL", "t@l")
-            .env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@l")
+        let _ = std::process::Command::new("git")
+            .args(["add", "f.txt"])
+            .current_dir(dir.path())
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(dir.path())
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@l")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@l")
             .output();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
         let out = execute_tool(&c, "git_read", &serde_json::json!({"sub": "log"}));
@@ -1179,7 +1218,11 @@ mod tests {
     #[test]
     fn create_pr_with_title_and_branch_args() {
         let (_d, c) = ctx();
-        let out = execute_tool(&c, "create_pr", &serde_json::json!({"title": "Test PR", "branch": "feature"}));
+        let out = execute_tool(
+            &c,
+            "create_pr",
+            &serde_json::json!({"title": "Test PR", "branch": "feature"}),
+        );
         assert!(!out.ok, "无 gh CLI / 无远程仓库");
     }
 
@@ -1188,7 +1231,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"t\"").unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        let out = execute_tool(&c, "run_tests", &serde_json::json!({"command": "echo tests_passed"}));
+        let out = execute_tool(
+            &c,
+            "run_tests",
+            &serde_json::json!({"command": "echo tests_passed"}),
+        );
         assert!(out.ok, "{}", out.content);
         assert!(out.content.contains("tests_passed"));
     }
@@ -1196,7 +1243,11 @@ mod tests {
     #[test]
     fn run_build_with_explicit_command() {
         let (_d, c) = ctx();
-        let out = execute_tool(&c, "run_build", &serde_json::json!({"command": "echo build_ok"}));
+        let out = execute_tool(
+            &c,
+            "run_build",
+            &serde_json::json!({"command": "echo build_ok"}),
+        );
         assert!(out.ok);
         assert!(out.content.contains("build_ok"));
     }
@@ -1214,7 +1265,11 @@ mod tests {
     #[test]
     fn install_deps_with_command() {
         let (_d, c) = ctx();
-        let out = execute_tool(&c, "install_deps", &serde_json::json!({"command": "echo deps_ok"}));
+        let out = execute_tool(
+            &c,
+            "install_deps",
+            &serde_json::json!({"command": "echo deps_ok"}),
+        );
         // MirrorProxy sandbox 可能不可用——验证不 panic
         let _ = out;
     }
@@ -1231,11 +1286,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("edit.txt"), "original").unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "edit.txt",
-            "range": null,
-            "content": "updated content"
-        }));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "edit.txt",
+                "range": null,
+                "content": "updated content"
+            }),
+        );
         assert!(out.ok, "{}", out.content);
         let content = std::fs::read_to_string(dir.path().join("edit.txt")).unwrap();
         assert!(content.contains("updated"));
@@ -1245,11 +1304,15 @@ mod tests {
     fn apply_patch_creates_new_file() {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "brand-new.ts",
-            "range": null,
-            "content": "export const x = 1;\n"
-        }));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "brand-new.ts",
+                "range": null,
+                "content": "export const x = 1;\n"
+            }),
+        );
         assert!(out.ok);
         assert!(out.changed_files.contains(&"brand-new.ts".to_string()));
     }
@@ -1258,9 +1321,13 @@ mod tests {
     fn apply_patch_records_changed_files() {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "changed.ts", "range": null, "content": "data"
-        }));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "changed.ts", "range": null, "content": "data"
+            }),
+        );
         assert!(out.ok);
         assert!(!out.changed_files.is_empty());
     }
@@ -1271,7 +1338,11 @@ mod tests {
         let mut c = ToolContext::new(dir.path(), Duration::from_secs(30));
         c.team_denied_tools = vec!["bash".into(), "run_tests".into(), "read_file".into()];
         for tool in ["bash", "run_tests", "read_file"] {
-            let out = execute_tool(&c, tool, &serde_json::json!({"command": "echo", "path": "x"}));
+            let out = execute_tool(
+                &c,
+                tool,
+                &serde_json::json!({"command": "echo", "path": "x"}),
+            );
             assert!(!out.ok, "{} should be denied", tool);
             assert!(out.content.contains("团队策略"));
         }
@@ -1294,5 +1365,110 @@ mod tests {
         std::fs::write(dir.path().join("Makefile"), "all:\n\techo build").unwrap();
         let cmd = detect_build_command(dir.path());
         assert!(cmd.is_some() || cmd.is_none(), "Makefile 可能不触发");
+    }
+
+    #[test]
+    fn apply_patch_missing_file_arg() {
+        let (_d, c) = ctx();
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({"content": "data"}));
+        assert!(!out.ok);
+    }
+
+    #[test]
+    fn apply_patch_empty_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "empty.txt", "range": null, "content": ""
+        }));
+        assert!(out.ok);
+    }
+
+    #[test]
+    fn apply_patch_to_subdirectory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "src/deep/nested.rs", "range": null, "content": "fn deep() {}"
+        }));
+        assert!(out.ok, "create parent dirs: {}", out.content);
+    }
+
+    #[test]
+    fn read_file_in_subdirectory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/mod.rs"), "pub fn foo() {}").unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "read_file", &serde_json::json!({"path": "src/mod.rs"}));
+        assert!(out.ok);
+        assert!(out.content.contains("foo"));
+    }
+
+    #[test]
+    fn list_dir_nested_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/main.rs"), "").unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "list_dir", &serde_json::json!({"path": "src"}));
+        assert!(out.ok);
+        assert!(out.content.contains("main.rs"));
+    }
+
+    #[test]
+    fn git_commit_in_git_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let init = std::process::Command::new("git")
+            .args(["init", "--initial-branch=main"])
+            .current_dir(dir.path())
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@l")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@l")
+            .output()
+            .unwrap();
+        assert!(init.status.success());
+        std::fs::write(dir.path().join("f.txt"), "data").unwrap();
+
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "git_commit", &serde_json::json!({"message": "add file"}));
+        assert!(out.ok, "{}", out.content);
+    }
+
+    #[test]
+    fn git_commit_missing_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let init = std::process::Command::new("git")
+            .args(["init", "--initial-branch=main"])
+            .current_dir(dir.path())
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@l")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@l")
+            .output()
+            .unwrap();
+        assert!(init.status.success());
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "git_commit", &serde_json::json!({}));
+        assert!(!out.ok);
+    }
+
+    #[test]
+    fn apply_patch_path_escape_blocked() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "../../etc/passwd", "range": null, "content": "evil"
+        }));
+        assert!(!out.ok, "path escape should be blocked");
+    }
+
+    #[test]
+    fn read_file_path_escape_blocked() {
+        let (_d, c) = ctx();
+        let out = execute_tool(&c, "read_file", &serde_json::json!({"path": "../../../etc/passwd"}));
+        assert!(!out.ok);
     }
 }

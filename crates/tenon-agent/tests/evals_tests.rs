@@ -259,10 +259,14 @@ async fn eval_runner_assertions_file_exists_and_not_contains() {
     let task = EvalTask {
         id: "T-COV".into(),
         instruction: "创建新文件".into(),
-        assertions: vec![
-            Assertion::FileContains { path: "new.rs".into(), text: "Foo".into() },
-        ],
-        budget: EvalBudget { max_steps: 12, max_tokens: 200_000 },
+        assertions: vec![Assertion::FileContains {
+            path: "new.rs".into(),
+            text: "Foo".into(),
+        }],
+        budget: EvalBudget {
+            max_steps: 12,
+            max_tokens: 200_000,
+        },
         expected_l4_path: None,
     };
     let result = runner
@@ -288,10 +292,13 @@ async fn eval_runner_tool_call_then_text_pass() {
     let task = EvalTask {
         id: "T-TOOL".into(),
         instruction: "执行 echo".into(),
-        assertions: vec![
-            Assertion::AnswerContains { text: "完成".into() },
-        ],
-        budget: EvalBudget { max_steps: 12, max_tokens: 200_000 },
+        assertions: vec![Assertion::AnswerContains {
+            text: "完成".into(),
+        }],
+        budget: EvalBudget {
+            max_steps: 12,
+            max_tokens: 200_000,
+        },
         expected_l4_path: None,
     };
     let result = runner
@@ -311,10 +318,14 @@ async fn eval_runner_budget_exceeded_fails() {
     let task = EvalTask {
         id: "T-BUDGET".into(),
         instruction: "write file".into(),
-        assertions: vec![
-            Assertion::FileContains { path: "nonexistent.txt".into(), text: "data".into() },
-        ],
-        budget: EvalBudget { max_steps: 12, max_tokens: 200_000 },
+        assertions: vec![Assertion::FileContains {
+            path: "nonexistent.txt".into(),
+            text: "data".into(),
+        }],
+        budget: EvalBudget {
+            max_steps: 12,
+            max_tokens: 200_000,
+        },
         expected_l4_path: None,
     };
     let result = runner
@@ -334,10 +345,13 @@ async fn eval_runner_answer_contains_pass() {
     let task = EvalTask {
         id: "T-ANSWER".into(),
         instruction: "回答问题".into(),
-        assertions: vec![
-            Assertion::AnswerContains { text: "空指针".into() },
-        ],
-        budget: EvalBudget { max_steps: 12, max_tokens: 200_000 },
+        assertions: vec![Assertion::AnswerContains {
+            text: "空指针".into(),
+        }],
+        budget: EvalBudget {
+            max_steps: 12,
+            max_tokens: 200_000,
+        },
         expected_l4_path: None,
     };
     let result = runner
@@ -357,10 +371,13 @@ async fn eval_runner_summarize_suite_report() {
     let task = EvalTask {
         id: "T-SUM".into(),
         instruction: "回答".into(),
-        assertions: vec![
-            Assertion::AnswerContains { text: "完毕".into() },
-        ],
-        budget: EvalBudget { max_steps: 12, max_tokens: 200_000 },
+        assertions: vec![Assertion::AnswerContains {
+            text: "完毕".into(),
+        }],
+        budget: EvalBudget {
+            max_steps: 12,
+            max_tokens: 200_000,
+        },
         expected_l4_path: None,
     };
     let result = runner
@@ -387,10 +404,14 @@ async fn eval_runner_with_git_init_pass() {
     let task = EvalTask {
         id: "T-GIT".into(),
         instruction: "修复".into(),
-        assertions: vec![
-            Assertion::FileContains { path: "src/main.rs".into(), text: "fixed".into() },
-        ],
-        budget: EvalBudget { max_steps: 12, max_tokens: 200_000 },
+        assertions: vec![Assertion::FileContains {
+            path: "src/main.rs".into(),
+            text: "fixed".into(),
+        }],
+        budget: EvalBudget {
+            max_steps: 12,
+            max_tokens: 200_000,
+        },
         expected_l4_path: None,
     };
     let result = runner
@@ -410,10 +431,14 @@ async fn eval_runner_truncated_reply_fails() {
     let task = EvalTask {
         id: "T-TRUNC".into(),
         instruction: "修复".into(),
-        assertions: vec![
-            Assertion::FileContains { path: "f.rs".into(), text: "fixed".into() },
-        ],
-        budget: EvalBudget { max_steps: 12, max_tokens: 200_000 },
+        assertions: vec![Assertion::FileContains {
+            path: "f.rs".into(),
+            text: "fixed".into(),
+        }],
+        budget: EvalBudget {
+            max_steps: 12,
+            max_tokens: 200_000,
+        },
         expected_l4_path: None,
     };
     let result = runner
@@ -421,7 +446,6 @@ async fn eval_runner_truncated_reply_fails() {
         .await;
     assert_eq!(result.verdict(), "fail");
 }
-
 
 #[tokio::test]
 async fn eval_runner_answer_not_contains_fails() {
@@ -434,14 +458,82 @@ async fn eval_runner_answer_not_contains_fails() {
     let task = EvalTask {
         id: "T-ANS-NEG".into(),
         instruction: "回答".into(),
-        assertions: vec![
-            Assertion::AnswerContains { text: "不存在的内容".into() },
-        ],
-        budget: EvalBudget { max_steps: 12, max_tokens: 200_000 },
+        assertions: vec![Assertion::AnswerContains {
+            text: "不存在的内容".into(),
+        }],
+        budget: EvalBudget {
+            max_steps: 12,
+            max_tokens: 200_000,
+        },
         expected_l4_path: None,
     };
     let result = runner
         .run_task(&task, provider, &[("f.rs", "fn main() {}\\n")])
         .await;
     assert_eq!(result.verdict(), "fail");
+}
+
+#[tokio::test]
+async fn eval_runner_tool_with_truncated_then_text() {
+    let runner = EvalRunner::new(store());
+    let provider = Arc::new(MockProvider::new(
+        "mock",
+        "mock-1",
+        vec![
+            ScriptedReply::Tool {
+                name: "apply_patch".into(),
+                args: serde_json::json!({"file": "t.rs", "range": null, "content": "// done"}),
+            },
+            ScriptedReply::Truncated("partial".into()),
+            ScriptedReply::Text("任务完成".into()),
+        ],
+    ));
+    let task = EvalTask {
+        id: "T-MIX".into(),
+        instruction: "write file".into(),
+        assertions: vec![
+            Assertion::FileContains { path: "t.rs".into(), text: "done".into() },
+        ],
+        budget: EvalBudget { max_steps: 24, max_tokens: 400_000 },
+        expected_l4_path: None,
+    };
+    let result = runner
+        .run_task(&task, provider, &[("t.rs", "")])
+        .await;
+    assert_eq!(result.verdict(), "pass", "{result:?}");
+}
+
+#[tokio::test]
+async fn eval_summary_reports_aggregated() {
+    let runner = EvalRunner::new(store());
+    let provider = Arc::new(MockProvider::new(
+        "mock",
+        "mock-1",
+        vec![ScriptedReply::Text("回答".into())],
+    ));
+    let task_pass = EvalTask {
+        id: "T-P".into(),
+        instruction: "answer".into(),
+        assertions: vec![Assertion::AnswerContains { text: "回答".into() }],
+        budget: EvalBudget { max_steps: 12, max_tokens: 200_000 },
+        expected_l4_path: None,
+    };
+    let r1 = runner.run_task(&task_pass, provider, &[("f.rs", "")]).await;
+
+    let provider2 = Arc::new(MockProvider::new(
+        "mock",
+        "mock-1",
+        vec![ScriptedReply::Text("不匹配".into())],
+    ));
+    let task_fail = EvalTask {
+        id: "T-F".into(),
+        instruction: "answer".into(),
+        assertions: vec![Assertion::AnswerContains { text: "不存在的文本".into() }],
+        budget: EvalBudget { max_steps: 12, max_tokens: 200_000 },
+        expected_l4_path: None,
+    };
+    let r2 = runner.run_task(&task_fail, provider2, &[("f.rs", "")]).await;
+
+    let report = runner.summarize(vec![r1, r2], "mock").await;
+    assert!(report.total_tokens > 0 || report.total_steps > 0);
 }
