@@ -255,6 +255,8 @@
   "relative.days_ago": "{count}d ago",
   "message.resume": "Resume",
   "palette.toggle_sidebar": "Toggle sidebar",
+  "palette.collapse_sidebar": "Collapse sidebar",
+  "palette.expand_sidebar": "Expand sidebar",
   "panel.patch_diff": "Latest patch diff",
   "palette.readonly_on": "Read-only mode: on (writes denied)",
   "palette.readonly_off": "Read-only mode: off (writes allowed)",

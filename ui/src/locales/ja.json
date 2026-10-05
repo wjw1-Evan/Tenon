@@ -255,6 +255,8 @@
   "relative.days_ago": "{count} 日前",
   "message.resume": "再開",
   "palette.toggle_sidebar": "サイドバーの切り替え",
+  "palette.collapse_sidebar": "サイドバーを折りたたむ",
+  "palette.expand_sidebar": "サイドバーを展開",
   "panel.patch_diff": "最新パッチ Diff",
   "palette.readonly_on": "読み取り専用モード：オン（書き込み拒否）",
   "palette.readonly_off": "読み取り専用モード：オフ（書き込み許可）",

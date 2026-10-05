@@ -660,8 +660,35 @@ button:disabled { opacity: 0.45; cursor: default; }
   border-right: 1px solid var(--border);
 }
 
-/* 侧栏视图头（activity rail 配套） */
-.side-head { flex-shrink: 0; padding: 2px 2px 8px; }
+/* 侧栏视图头（activity rail 配套；v1.106 标题行含收起钮） */
+.side-head {
+  flex-shrink: 0;
+  padding: 2px 2px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.pe-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.pe-collapse {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.pe-collapse:hover { background: var(--raised); color: var(--fg); }
 .side-title {
   font-size: 10px;
   font-weight: 600;

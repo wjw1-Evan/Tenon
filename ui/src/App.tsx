@@ -976,6 +976,40 @@ export default function App({
         data-testid="workspace"
       >
         <nav className="activity-rail" aria-label={t("rail.label")}>
+          {/* v1.106：常驻侧栏切换钮——收起后 rail 仍可见，经此钮或任意视图图标恢复。 */}
+          <button
+            type="button"
+            className="rail-btn"
+            data-testid="rail-sidebar-toggle"
+            title={sidebarOpen ? t("palette.collapse_sidebar") : t("palette.expand_sidebar")}
+            aria-label={sidebarOpen ? t("palette.collapse_sidebar") : t("palette.expand_sidebar")}
+            aria-expanded={sidebarOpen}
+            onClick={() => setSidebarOpen((v) => !v)}
+          >
+            <svg
+              width={17}
+              height={17}
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={1.8}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              {sidebarOpen ? (
+                <>
+                  <path d="m11 17-5-5 5-5" />
+                  <path d="m18 17-5-5 5-5" />
+                </>
+              ) : (
+                <>
+                  <path d="m6 17 5-5-5-5" />
+                  <path d="m13 17 5-5-5-5" />
+                </>
+              )}
+            </svg>
+          </button>
           <button
             type="button"
             className={sidebarOpen && sideView === "projects" ? "rail-btn active" : "rail-btn"}
@@ -1052,6 +1086,19 @@ export default function App({
                       ? t("search.title")
                       : t("panel.packs")}
                   </span>
+                  <button
+                    type="button"
+                    className="pe-collapse"
+                    data-testid="sidebar-collapse"
+                    title={t("palette.collapse_sidebar")}
+                    aria-label={t("palette.collapse_sidebar")}
+                    onClick={() => setSidebarOpen(false)}
+                  >
+                    <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                      <path d="m11 17-5-5 5-5" />
+                      <path d="m18 17-5-5 5-5" />
+                    </svg>
+                  </button>
                 </div>
               )}
               <div className="side-body">
@@ -1074,6 +1121,7 @@ export default function App({
                         setOpenError(String(error))
                       )}
                     onRefreshProjects={() => void refreshProjects()}
+                    onCollapseSidebar={() => setSidebarOpen(false)}
                     onSessionRemoved={(removedProjectId, removedSessionId) => {
                       setSessionsByProject((prev) => {
                         if (prev[removedProjectId] !== removedSessionId) return prev;

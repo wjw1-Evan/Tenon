@@ -255,6 +255,8 @@
   "relative.days_ago": "{count} 天前",
   "message.resume": "繼續",
   "palette.toggle_sidebar": "切換側欄",
+  "palette.collapse_sidebar": "收起側欄",
+  "palette.expand_sidebar": "展開側欄",
   "panel.patch_diff": "最新修補 Diff",
   "palette.readonly_on": "唯讀模式：開（拒絕寫入操作）",
   "palette.readonly_off": "唯讀模式：關（允許寫入操作）",
