@@ -1947,4 +1947,74 @@ mod tests {
         let content = std::fs::read_to_string(dir.path().join("iter.txt")).unwrap();
         assert!(content.contains("version 2"));
     }
+
+    #[test]
+    fn readonly_grep_and_git_read() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("ro.txt"), "readonly content").unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        c.readonly.store(true, Ordering::Relaxed);
+        // A 级只读工具在 readonly 模式下仍可用
+        let grep = execute_tool(&c, "grep", &serde_json::json!({"pattern": "readonly"}));
+        assert!(grep.ok);
+    }
+
+    #[test]
+    fn install_deps_readonly_blocked() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        c.readonly.store(true, Ordering::Relaxed);
+        let out = execute_tool(&c, "install_deps", &serde_json::json!({"command": "cargo add serde"}));
+        assert!(!out.ok, "readonly should block C-level install_deps");
+    }
+
+    #[test]
+    fn git_read_in_git_repo_status_and_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let _ = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@l")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@l")
+                .output()
+                .unwrap();
+        };
+        git(&["init", "--initial-branch=main"]);
+        std::fs::write(dir.path().join("f.txt"), "content").unwrap();
+        git(&["add", "f.txt"]);
+        git(&["commit", "-m", "first"]);
+
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let status = execute_tool(&c, "git_read", &serde_json::json!({"sub": "status"}));
+        assert!(status.ok);
+        let log = execute_tool(&c, "git_read", &serde_json::json!({"sub": "log"}));
+        assert!(log.ok);
+    }
+
+    #[test]
+    fn apply_patch_to_existing_file_with_subdirs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src/lib")).unwrap();
+        std::fs::write(dir.path().join("src/lib/existing.rs"), "// old content").unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "src/lib/existing.rs", "range": null, "content": "// new content\nfn updated() {}\n"
+        }));
+        assert!(out.ok);
+        let content = std::fs::read_to_string(dir.path().join("src/lib/existing.rs")).unwrap();
+        assert!(content.contains("new content"));
+        assert!(content.contains("updated"));
+    }
+
+    #[test]
+    fn grep_special_regex_chars_in_pattern() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("special.txt"), "cost = $10.99").unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "grep", &serde_json::json!({"pattern": "10\\.99"}));
+        assert!(out.ok);
+    }
 }
