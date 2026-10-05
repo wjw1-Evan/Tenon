@@ -69,7 +69,10 @@ fn scope_rules_and_visibility() {
         .is_err());
     // 未知 kind 拒绝
     assert!(s
-        .upsert_memory(&mem_rec("project", "unknown-kind", "非法类型", &[1.0, 0.0]), 0.9)
+        .upsert_memory(
+            &mem_rec("project", "unknown-kind", "非法类型", &[1.0, 0.0]),
+            0.9
+        )
         .is_err());
     // 空内容拒绝
     let mut empty = mem_rec("project", "fact", "  ", &[1.0, 0.0]);
@@ -103,9 +106,13 @@ fn scope_rules_and_visibility() {
 #[test]
 fn prune_keeps_high_importance() {
     let mut s = mem();
-    for (i, (importance, emb)) in [(5, [1.0f32, 0.0, 0.0]), (1, [0.0, 1.0, 0.0]), (3, [0.0, 0.0, 1.0])]
-        .into_iter()
-        .enumerate()
+    for (i, (importance, emb)) in [
+        (5, [1.0f32, 0.0, 0.0]),
+        (1, [0.0, 1.0, 0.0]),
+        (3, [0.0, 0.0, 1.0]),
+    ]
+    .into_iter()
+    .enumerate()
     {
         let mut rec = mem_rec("project", "fact", &format!("记忆{i}"), &emb);
         rec.importance = importance;

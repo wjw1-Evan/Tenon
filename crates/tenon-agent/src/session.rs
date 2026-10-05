@@ -657,7 +657,12 @@ impl AgentSession {
             return Ok(());
         }
         // 每项目 active 上限治理（§10.1 v1.104）
-        if let Err(e) = st_upsert_prune(&self.store, &self.config.project_id).await {
+        if let Err(e) = self
+            .store
+            .lock()
+            .await
+            .prune_memories(&self.config.project_id, MAX_MEMORIES_PER_PROJECT)
+        {
             tracing::debug!("L5 memory prune failed: {e}");
         }
         self.emit(

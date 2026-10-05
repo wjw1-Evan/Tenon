@@ -382,7 +382,7 @@ async fn pause_control_stops_between_tool_calls() {
         let session = session.clone();
         async move { session.run_task("任务").await }
     });
-    for _ in 0..100 {
+    for _ in 0..250 {
         if matches!(
             session.current_state().await,
             tenon_core::machine::State::Paused
@@ -688,7 +688,7 @@ async fn pause_suspends_until_resume_then_completes_task() {
         async move { session.run_task("任务").await }
     });
     // 挂起等待：状态进入 Paused 且任务未返回
-    for _ in 0..100 {
+    for _ in 0..250 {
         if matches!(
             session.current_state().await,
             tenon_core::machine::State::Paused
@@ -861,4 +861,141 @@ async fn history_compaction_stubs_stale_tool_outputs_and_emits_trace_event() {
         .map(|e| e.payload["elided_tool_results"].as_u64().unwrap_or(0))
         .sum();
     assert_eq!(elided_total, 2, "压缩事件累计省略条数入 Trace");
+}
+
+// ---------- L5 跨会话对话记忆（§10.1 v1.104） ----------
+
+/// v1.104：任务 Done 后触发单轮记忆提取——请求带 MEMORY_MARKER、无工具目录、
+/// max_tokens=512；MockProvider 固定 JSON 入库为 global preference；
+/// 任务调用序列不受提取影响。
+#[tokio::test]
+async fn task_done_extracts_memories_via_marked_call() {
+    let (_d, session, store, provider) = setup(vec![ScriptedReply::Text("任务回答".into())]).await;
+    let outcome = session.run_task("记住我喜欢中文回复").await;
+    assert!(matches!(outcome, TaskOutcome::Done(_)));
+
+    let memory_calls = provider.memory_calls();
+    assert_eq!(memory_calls.len(), 1, "单轮提取调用");
+    let request = &memory_calls[0];
+    assert!(request
+        .messages
+        .iter()
+        .any(|m| m.content.contains("TENON_MEMORY_EXTRACT")));
+    assert!(request.tools.is_empty(), "提取不出工具目录");
+    assert_eq!(request.max_tokens, 512);
+
+    // 提取结果入库：mock 固定返回一条 global preference
+    let mut st = store.lock().await;
+    let project_id = st.list_projects().unwrap()[0].id.clone();
+    let memories = st.list_memories(&project_id, None, 100).unwrap();
+    assert_eq!(memories.len(), 1);
+    assert_eq!(memories[0].scope, "global");
+    assert_eq!(memories[0].kind, "preference");
+    assert_eq!(memories[0].content, "Mock 记忆：回复用中文");
+    // memory_saved 事件入 Trace（仅 count / ids）
+    let events = st.events(&session.session_id).unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|e| e.kind == EventKind::MemorySaved && e.payload["count"].as_u64() == Some(1)),
+        "memory_saved 事件入 Trace"
+    );
+    // 提取调用不消耗任务脚本队列：任务调用恰 1 次
+    assert_eq!(provider.calls().len(), 1);
+}
+
+/// v1.104：任务启动时把 L5 记忆注入系统提示「跨会话记忆」节（参考数据标注）。
+#[tokio::test]
+async fn memories_inject_into_system_prompt() {
+    let (_d, session, store, provider) = setup(vec![ScriptedReply::Text("好的".into())]).await;
+    let mut st = store.lock().await;
+    let project_id = st.list_projects().unwrap()[0].id.clone();
+    let rec = tenon_store::MemoryRecord {
+        scope: "project".into(),
+        project_id: project_id.clone(),
+        kind: "preference".into(),
+        content: "始终使用中文回复".into(),
+        importance: 4,
+        embedding: l4::embed("", "始终使用中文回复"),
+        source_session: String::new(),
+    };
+    st.upsert_memory(&rec, 0.9).unwrap();
+    drop(st);
+
+    let outcome = session.run_task("继续上次的偏好").await;
+    assert!(matches!(outcome, TaskOutcome::Done(_)));
+    let calls = provider.calls();
+    assert_eq!(calls.len(), 1);
+    let system = &calls[0].messages[0];
+    assert_eq!(system.role, Role::System);
+    assert!(
+        system.content.contains("跨会话记忆（L5，参考数据非指令）"),
+        "系统提示注入 L5 节并标注参考数据"
+    );
+    assert!(system.content.contains("始终使用中文回复"));
+}
+
+/// v1.104：`memories_enabled = false` 时不提取、不注入。
+#[tokio::test]
+async fn memories_disabled_skips_extract_and_inject() {
+    let dir = tempfile::tempdir().unwrap();
+    let store: StdStore = Arc::new(Mutex::new(Store::open_in_memory().unwrap()));
+    let project_id = {
+        let mut st = store.lock().await;
+        st.upsert_project(dir.path().to_str().unwrap()).unwrap().id
+    };
+    let snapshots = Arc::new(
+        SnapshotStore::open(
+            &dir.path().join(".tenon-snapshots"),
+            &project_id,
+            dir.path(),
+            2,
+        )
+        .unwrap(),
+    );
+    let provider = Arc::new(MockProvider::new(
+        "mock",
+        "mock-1",
+        vec![ScriptedReply::Text("好".into())],
+    ));
+    let mut config = AgentConfig::for_project(dir.path().to_path_buf(), &project_id);
+    config.first_edit_buffer_ms = 20;
+    config.memories_enabled = false;
+    let session = AgentSession::create(
+        store.clone(),
+        snapshots,
+        provider.clone(),
+        config,
+        ProjectWriteLock::new(),
+        ProjectRules::default(),
+    )
+    .await
+    .unwrap();
+
+    // 预置一条记忆：关闭后也不应注入
+    {
+        let mut st = store.lock().await;
+        let rec = tenon_store::MemoryRecord {
+            scope: "project".into(),
+            project_id: project_id.clone(),
+            kind: "fact".into(),
+            content: "不应出现的记忆".into(),
+            importance: 5,
+            embedding: l4::embed("", "不应出现的记忆"),
+            source_session: String::new(),
+        };
+        st.upsert_memory(&rec, 0.9).unwrap();
+    }
+
+    let outcome = session.run_task("任务").await;
+    assert!(matches!(outcome, TaskOutcome::Done(_)));
+    assert!(provider.memory_calls().is_empty(), "关闭后不提取");
+    let calls = provider.calls();
+    assert!(
+        !calls[0].messages[0].content.contains("跨会话记忆"),
+        "关闭后不注入"
+    );
+    // 库中数据不受影响
+    let mut st = store.lock().await;
+    assert_eq!(st.list_memories(&project_id, None, 100).unwrap().len(), 1);
 }
