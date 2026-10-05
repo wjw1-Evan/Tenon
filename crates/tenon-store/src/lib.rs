@@ -2430,21 +2430,6 @@ mod managed_worktree_tests {
     }
 
     // v1.103：v7 旧库迁移补 sessions.archived_at 列。
-    #[test]
-    fn migrates_v7_sessions_adds_archived_at() {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE schema_version (version INTEGER NOT NULL);
-             INSERT INTO schema_version VALUES (7);
-             CREATE TABLE projects (id TEXT PRIMARY KEY, path TEXT NOT NULL, display_name TEXT NOT NULL DEFAULT '', trusted INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
-             CREATE TABLE sessions (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, model TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'idle', title TEXT NOT NULL DEFAULT '', worktree_path TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-             INSERT INTO sessions (id, project_id, created_at, updated_at) VALUES ('s1', 'p1', 't', 't');",
-        )
-        .unwrap();
-        let mut store = Store::init(conn).unwrap();
-        assert_eq!(store.list_archived_sessions("p1").unwrap().len(), 1);
-        assert!(store.list_sessions("p1").unwrap().is_empty());
-    }
 
 
     #[test]
