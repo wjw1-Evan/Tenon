@@ -1976,4 +1976,85 @@ mod managed_worktree_tests {
         let all = s.list_all_sessions().unwrap();
         assert!(all.len() >= 2);
     }
+
+    #[test]
+    fn event_append_query_and_latest_seq() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let sid = s.create_session(&p.id, "mock").unwrap().id;
+
+        let e1 = s.append_event(&sid, EventKind::UserInput, &serde_json::json!({"text": "hello"})).unwrap();
+        let e2 = s.append_event(&sid, EventKind::ModelDelta, &serde_json::json!({"text": "world"})).unwrap();
+        assert_eq!(e1.seq, 1);
+        assert_eq!(e2.seq, 2);
+
+        // events
+        let events = s.events(&sid).unwrap();
+        assert_eq!(events.len(), 2);
+
+        // events_since
+        let since = s.events_since(&sid, 1).unwrap();
+        assert_eq!(since.len(), 1);
+        assert_eq!(since[0].seq, 2);
+
+        // recent_events
+        let recent = s.recent_events(0, 10).unwrap();
+        assert!(recent.len() >= 2);
+
+        // latest_seq
+        assert_eq!(s.latest_seq(&sid).unwrap(), 2);
+
+        // count_events_of_kind
+        assert_eq!(s.count_events_of_kind(&sid, EventKind::UserInput).unwrap(), 1);
+    }
+
+    #[test]
+    fn session_status_transitions() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let sid = s.create_session(&p.id, "mock").unwrap().id;
+
+        s.set_session_status(&sid, SessionStatus::Executing).unwrap();
+        let session = s.session(&sid).unwrap().unwrap();
+        assert_eq!(session.status, SessionStatus::Executing);
+
+        s.set_session_status(&sid, SessionStatus::Done).unwrap();
+        let session = s.session(&sid).unwrap().unwrap();
+        assert_eq!(session.status, SessionStatus::Done);
+    }
+
+    #[test]
+    fn project_language_packs_update() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        s.set_project_language_packs(&p.id, &["typescript".into(), "python".into()]).unwrap();
+        let updated = s.project(&p.id).unwrap().unwrap();
+        assert_eq!(updated.language_packs.len(), 2);
+    }
+
+    #[test]
+    fn set_session_worktree() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let sid = s.create_session(&p.id, "mock").unwrap().id;
+        s.set_session_worktree(&sid, "/tmp/wt/test").unwrap();
+        let session = s.session(&sid).unwrap().unwrap();
+        assert_eq!(session.worktree_path, "/tmp/wt/test");
+    }
+
+
+    #[test]
+    fn session_worktree_path_roundtrip() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let sid = s.create_session(&p.id, "mock").unwrap().id;
+        s.set_session_worktree(&sid, "/some/wt/path").unwrap();
+        let sess = s.session(&sid).unwrap().unwrap();
+        assert!(!sess.worktree_path.is_empty());
+    }
 }
