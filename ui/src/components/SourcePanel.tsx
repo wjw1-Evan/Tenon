@@ -49,7 +49,7 @@ interface Props {
   activePath: string | null;
   onOpenFile: (path: string, line?: number) => void;
   onFileTreeChange: (change: FileTreeChange) => void;
-  /** 收起整列（v1.107）：恢复走右区左缘细条。 */
+  /** 关闭源码区（v1.108）：恢复走工作区右缘细条。 */
   onCollapse: () => void;
 }
 

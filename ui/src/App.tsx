@@ -265,7 +265,8 @@ export default function App({
     return () => saver.dispose();
   }, [api]);
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  // 右区源码树开合（v1.107）：localStorage 记忆，默认展开；收起后经窗格左缘细条恢复。
+  // 源码区整体开合（v1.108）：右区（源码树 + 编辑器）一区一开关，localStorage 记忆、
+  // 默认展开；关闭态经工作区右缘细条恢复，任意打开文件入口自动唤出。
   const [sourceTreeOpen, setSourceTreeOpen] = useState<boolean>(() => {
     try {
       return localStorage.getItem("tenon:sourceTree") !== "off";
@@ -282,6 +283,17 @@ export default function App({
         // 仅当前会话生效
       }
       return next;
+    });
+  }, []);
+  const ensureSourceAreaOpen = useCallback(() => {
+    setSourceTreeOpen((v) => {
+      if (v) return v;
+      try {
+        localStorage.setItem("tenon:sourceTree", "on");
+      } catch {
+        // 仅当前会话生效
+      }
+      return true;
     });
   }, []);
   const [sideView, setSideView] = useState<SideView>(loadSideView);
@@ -345,9 +357,9 @@ export default function App({
   // narrow 浮层互斥可见性（v1.78）：侧栏浮层；编辑器审查窗格窄屏转互斥浮层，
   // 最后一个 tab 关闭（含 WS removed 路径）时自动收起，防遮罩悬空。
   const sideVisible = narrow ? floatPane === "side" : sidebarOpen;
-  // v1.107：源码树展开即停靠（无需先开 tab）；收起树且无 tab 才整体隐藏（v1.78 语义保留）。
-  const editorDocked =
-    (tabs.length > 0 || sourceTreeOpen) && (!narrow || floatPane === "editor");
+  // v1.108：宽屏右区随源码区开关整体停靠/隐藏（无 tab 显编辑器空态）；
+  // 窄屏维持互斥浮层语义（顶栏切换钮唤出，v1.78）。
+  const editorDocked = narrow ? floatPane === "editor" : sourceTreeOpen;
   useEffect(() => {
     if (narrow && floatPane === "editor" && tabs.length === 0) setFloatPane(null);
   }, [narrow, floatPane, tabs.length]);
@@ -560,8 +572,9 @@ export default function App({
 
   const openFile = useCallback(
     async (path: string, line?: number) => {
-      // 窄屏打开文件即唤出编辑器浮层（v1.78）。
+      // 打开文件即唤出源码区（窄屏为编辑器浮层 v1.78；宽屏整体开合 v1.108）。
       if (narrow) setFloatPane("editor");
+      else ensureSourceAreaOpen();
       if (tabs.some((tab) => tab.path === path)) {
         setActivePath(path);
         if (line) setGotoLine({ path, line, token: Date.now() });
@@ -573,7 +586,7 @@ export default function App({
       setActivePathByProject((prev) => ({ ...prev, [projectId]: path }));
       if (line) setGotoLine({ path, line, token: Date.now() });
     },
-    [api, projectId, tabs, narrow]
+    [api, projectId, tabs, narrow, ensureSourceAreaOpen]
   );
 
   /** 统一保存（§8.2 v1.75）：待写盘条目走 AutoSaver flush，否则未保存缓冲直接写盘。 */
@@ -733,6 +746,7 @@ export default function App({
   const commands: Command[] = useMemo(
     () => [
       { id: "toggle.bottom", label: t("panel.bottom.toggle"), run: () => setTimelineOpen((v) => !v) },
+      { id: "toggle.source", label: t("palette.toggle_source"), run: toggleSourceTree },
       { id: "open.settings", label: t("settings.open"), run: () => setSettingsOpen(true) },
       {
         id: "editor.inline_completion",
@@ -793,7 +807,7 @@ export default function App({
         run: () => sessionId && api.control(sessionId, "unrollback"),
       },
     ],
-    [t, api, sessionId, agentState, inlineCompletionEnabled, toggleInlineCompletion]
+    [t, api, sessionId, agentState, inlineCompletionEnabled, toggleInlineCompletion, toggleSourceTree]
   );
 
   // 底部面板开合（v1.61）：展开态 tabs 行右端收起、收起态细条展开；标签与 tab 按钮共用一份
@@ -1217,8 +1231,8 @@ export default function App({
             }}
           />
         </section>
-        {/* v1.78：编辑器转线程右侧「审查窗格」；v1.107 源码树展开即停靠、窗格
-            左缘为单列合并源码树；窄屏转互斥浮层（§7.2 视口自适应）。 */}
+        {/* v1.78：编辑器转线程右侧「审查窗格」；v1.107 窗格左缘为单列合并源码树；
+            v1.108 右区随源码区开关整体停靠/隐藏；窄屏转互斥浮层（§7.2 视口自适应）。 */}
         {editorDocked && (<>
         {!narrow && (
           <ResizeHandle
@@ -1243,30 +1257,16 @@ export default function App({
           }
         >
           <div className="editor-dock">
-            {sourceTreeOpen ? (
-              <SourcePanel
-                api={api}
-                t={t}
-                projectId={projectId}
-                refreshToken={fileTreeVersion}
-                activePath={activePath}
-                onOpenFile={(path, line) => void openFile(path, line)}
-                onFileTreeChange={handleFileTreeChange}
-                onCollapse={toggleSourceTree}
-              />
-            ) : (
-              <button
-                type="button"
-                className="source-strip"
-                data-testid="source-open"
-                title={t("source.expand")}
-                aria-label={t("source.expand")}
-                onClick={toggleSourceTree}
-              >
-                <span aria-hidden="true">»</span>
-                <span className="source-strip-label">{t("source.title")}</span>
-              </button>
-            )}
+            <SourcePanel
+              api={api}
+              t={t}
+              projectId={projectId}
+              refreshToken={fileTreeVersion}
+              activePath={activePath}
+              onOpenFile={(path, line) => void openFile(path, line)}
+              onFileTreeChange={handleFileTreeChange}
+              onCollapse={toggleSourceTree}
+            />
             <div className="editor-dock-main">
               <EditorPane
             t={t}
@@ -1333,8 +1333,8 @@ export default function App({
           </div>
         </section>
         </>)}
-        {/* v1.107：源码树收起且无打开 tab 时右区整体隐藏，宽屏保留右缘细条恢复。 */}
-        {!narrow && !sourceTreeOpen && tabs.length === 0 && (
+        {/* v1.108：源码区关闭态的常驻恢复入口——工作区右缘细条（宽屏）。 */}
+        {!narrow && !sourceTreeOpen && (
           <button
             type="button"
             className="source-strip source-strip-solo"

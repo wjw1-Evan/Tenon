@@ -83,7 +83,7 @@ describe("档位与 clamp 纯函数（lib/viewport）", () => {
 });
 
 describe("三档布局（§7.2 v1.78）", () => {
-  it("宽屏：线程是主区，源码树停靠右区（v1.107），收起且无 tab 即隐藏", async () => {
+  it("宽屏：线程是主区，源码区整体停靠右区（v1.108），关闭即隐藏", async () => {
     render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/nope" />);
     await waitFor(() => expect(screen.getByTestId("task-input-box")).toBeTruthy());
     const workspace = screen.getByTestId("workspace");
@@ -92,16 +92,70 @@ describe("三档布局（§7.2 v1.78）", () => {
     expect(screen.queryByTestId("float-backdrop")).toBeNull();
     expect(screen.queryByTestId("editor-float-toggle")).toBeNull();
     expect(document.querySelector(".zone-thread")).not.toBeNull();
-    // v1.107：源码树默认展开 → 审查窗格停靠（源码树 + 空编辑器），无需先开 tab。
+    // v1.108：源码区默认开启 → 右区停靠（源码树 + 空编辑器），无需先开 tab。
     expect(document.querySelector(".source-dock")).not.toBeNull();
     expect(document.querySelector(".zone-center")).not.toBeNull();
 
-    // 收起源码树 → 无打开 tab 时右区整体隐藏（v1.78 显隐语义保留）。
+    // 关闭源码区 → 右区整体隐藏，右缘细条常驻恢复。
     fireEvent.click(screen.getByTestId("source-collapse"));
     await waitFor(() => expect(document.querySelector(".zone-center")).toBeNull());
-    // 收起态细条可恢复。
     fireEvent.click(screen.getByTestId("source-open"));
     await waitFor(() => expect(document.querySelector(".source-dock")).not.toBeNull());
+  });
+
+  it("宽屏源码区整体开关（v1.108）：有打开 tab 也整体隐藏，重开即恢复 tab", async () => {
+    // 项目打开成功 + ui-state 恢复一个 tab：完整链路。
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((input: RequestInfo | URL) => {
+        const url = String(input);
+        let body: unknown = {};
+        if (url.includes("/pairing")) {
+          body = { port: 9876, token: "dev" };
+        } else if (url.includes("/ws-ticket")) {
+          body = { ticket: "t", expires_in_s: 60 };
+        } else if (url.includes("/projects/open")) {
+          body = { id: "p1", path: "/tmp/repo", display_name: "repo", trusted: true };
+        } else if (url.includes("/projects")) {
+          body = {
+            projects: [
+              {
+                id: "p1",
+                path: "/tmp/repo",
+                display_name: "repo",
+                trusted: true,
+                sessions: [],
+                active_sessions: 0,
+                dirty_buffers: 0,
+                usage: { input_tokens: 0, output_tokens: 0, cost_usd: 0 },
+              },
+            ],
+          };
+        } else if (url.includes("/ui-state")) {
+          body = { tabs: ["a.txt"], activePath: "a.txt" };
+        } else if (url.includes("/file?")) {
+          body = { path: "a.txt", content: "hello", total_bytes: 5 };
+        } else if (url.includes("/tree")) {
+          body = { entries: [] };
+        } else if (url.includes("/session")) {
+          body = { session_id: "s1", project_id: "p1" };
+        }
+        return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+      })
+    );
+    render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/repo" />);
+    await waitFor(() => expect(screen.getByTestId("task-input-box")).toBeTruthy());
+    // ui-state 恢复的 tab 使编辑器有内容，源码区停靠。
+    await waitFor(() => expect(screen.getByTestId("editor-pane")).toBeTruthy());
+
+    // 关闭源码区：已打开 tab 不阻止整体隐藏，右缘细条常驻。
+    fireEvent.click(screen.getByTestId("source-collapse"));
+    await waitFor(() => expect(document.querySelector(".zone-center")).toBeNull());
+    expect(screen.getByTestId("source-open")).toBeTruthy();
+
+    // 细条重开：tab 状态保留、编辑器恢复。
+    fireEvent.click(screen.getByTestId("source-open"));
+    await waitFor(() => expect(screen.getByTestId("editor-pane")).toBeTruthy());
   });
 
   it("窄屏无线程浮层：线程留在文档流，侧栏按需唤出", async () => {

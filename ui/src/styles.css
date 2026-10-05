@@ -1198,7 +1198,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   max-height: 45vh;
   overflow: auto;
 }
-/* 收起态：窗格左缘细条（对齐底部收起细条模式），点击恢复源码树 */
+/* 源码区关闭态：工作区右缘细条（对齐底部收起细条模式），点击恢复 */
 .source-strip {
   flex: none;
   width: 22px;
@@ -1219,7 +1219,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   font-size: 10px;
   letter-spacing: 0.08em;
 }
-/* 独立态（源码树收起且无打开 tab）：工作区右缘细条，贴边改用左边框 */
+/* 关闭态唯一形态：贴工作区右缘，改用左边框 */
 .source-strip-solo {
   border-right: none;
   border-left: 1px solid var(--border);
