@@ -741,3 +741,80 @@ async fn eval_mixed_pass_and_fail_summary() {
     assert_eq!(r1.verdict(), "pass");
     assert_eq!(r2.verdict(), "fail");
 }
+
+#[tokio::test]
+async fn eval_file_contains_unicode_content() {
+    let runner = EvalRunner::new(store());
+    let provider = Arc::new(MockProvider::new(
+        "mock",
+        "mock-1",
+        vec![
+            ScriptedReply::Tool {
+                name: "apply_patch".into(),
+                args: serde_json::json!({"file": "i18n.ts", "range": null, "content": "// 支持中文\\nconst greeting = \"你好世界\";\\n"}),
+            },
+            ScriptedReply::Text("国际化文件已创建".into()),
+        ],
+    ));
+    let task = EvalTask {
+        id: "T-I18N".into(),
+        instruction: "create i18n file".into(),
+        assertions: vec![
+            Assertion::FileContains { path: "i18n.ts".into(), text: "你好".into() },
+        ],
+        budget: EvalBudget { max_steps: 24, max_tokens: 400_000 },
+        expected_l4_path: None,
+    };
+    let result = runner.run_task(&task, provider, &[("i18n.ts", "")]).await;
+    assert_eq!(result.verdict(), "pass", "{result:?}");
+}
+
+#[tokio::test]
+async fn eval_tool_read_file_step() {
+    let runner = EvalRunner::new(store());
+    let provider = Arc::new(MockProvider::new(
+        "mock",
+        "mock-1",
+        vec![
+            ScriptedReply::Tool {
+                name: "read_file".into(),
+                args: serde_json::json!({"path": "config.toml"}),
+            },
+            ScriptedReply::Text("文件读取完成".into()),
+        ],
+    ));
+    let task = EvalTask {
+        id: "T-READ".into(),
+        instruction: "read config".into(),
+        assertions: vec![Assertion::AnswerContains { text: "完成".into() }],
+        budget: EvalBudget { max_steps: 12, max_tokens: 200_000 },
+        expected_l4_path: None,
+    };
+    let result = runner.run_task(&task, provider, &[("config.toml", "key = \"value\"")]).await;
+    assert_eq!(result.verdict(), "pass", "{result:?}");
+}
+
+#[tokio::test]
+async fn eval_git_read_step() {
+    let runner = EvalRunner::new(store());
+    let provider = Arc::new(MockProvider::new(
+        "mock",
+        "mock-1",
+        vec![
+            ScriptedReply::Tool {
+                name: "git_read".into(),
+                args: serde_json::json!({"sub": "status"}),
+            },
+            ScriptedReply::Text("git status 完成".into()),
+        ],
+    ));
+    let task = EvalTask {
+        id: "T-GITR".into(),
+        instruction: "check git status".into(),
+        assertions: vec![Assertion::AnswerContains { text: "完成".into() }],
+        budget: EvalBudget { max_steps: 12, max_tokens: 200_000 },
+        expected_l4_path: None,
+    };
+    let result = runner.run_task_with_git(&task, provider, &[("f.rs", "fn main() {}")], true).await;
+    assert_eq!(result.verdict(), "pass", "{result:?}");
+}
