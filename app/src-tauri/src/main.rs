@@ -7,11 +7,15 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::io::BufRead;
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use serde::Serialize;
+use tauri::path::BaseDirectory;
 use tauri::{Emitter, Manager, Url};
+use tauri_plugin_updater::UpdaterExt;
 
 #[derive(Debug, Clone, Serialize)]
 struct Handshake {
@@ -25,8 +29,13 @@ struct AppState {
     _child: Mutex<Option<Child>>,
 }
 
-/// daemon 托管 UI 的产物目录：env 指定 > 仓库根 ui/dist（开发态）。
-fn ui_dist_dir() -> Option<std::path::PathBuf> {
+/// daemon 托管 UI 的产物目录：打包资源 > env 指定 > 仓库根 ui/dist（开发态）。
+fn ui_dist_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    if let Ok(index) = app.path().resolve("ui/index.html", BaseDirectory::Resource) {
+        if index.exists() {
+            return index.parent().map(PathBuf::from);
+        }
+    }
     if let Ok(p) = std::env::var("TENON_UI_DIST") {
         let p = std::path::PathBuf::from(p);
         if p.join("index.html").exists() {
@@ -55,11 +64,23 @@ fn discover_config(project: &str) -> Option<std::path::PathBuf> {
 }
 
 /// 启动 daemon sidecar 并读取握手行（§6.2 动态端口 + 握手）。
-fn spawn_daemon() -> Result<(Child, Handshake), String> {
+fn spawn_daemon(app: &tauri::AppHandle) -> Result<(Child, Handshake), String> {
     let project = std::env::var("TENON_PROJECT").unwrap_or_else(|_| ".".into());
     let target_triple = std::env::var("TARGET_TRIPLE")
         .unwrap_or_else(|_| format!("{}-apple-darwin", std::env::consts::ARCH));
-    let candidates = [
+    let sidecar_name = if cfg!(windows) {
+        format!("tenon-daemon-{target_triple}.exe")
+    } else {
+        format!("tenon-daemon-{target_triple}")
+    };
+    let mut candidates = Vec::new();
+    // 打包后 externalBin 与主程序同级（macOS Contents/MacOS、Linux/Windows bin 目录）。
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join(&sidecar_name).display().to_string());
+        }
+    }
+    candidates.extend([
         format!(
             "{}/binaries/tenon-daemon-{target_triple}",
             env!("CARGO_MANIFEST_DIR")
@@ -75,7 +96,7 @@ fn spawn_daemon() -> Result<(Child, Handshake), String> {
             "/../../target/debug/tenon-daemon"
         )
         .to_string(),
-    ];
+    ]);
     let bin = candidates
         .iter()
         .find(|p| std::path::Path::new(p).exists())
@@ -90,9 +111,11 @@ fn spawn_daemon() -> Result<(Child, Handshake), String> {
     if let Some(cfg) = discover_config(&project) {
         cmd.arg("--config").arg(&cfg);
     }
-    if let Some(ui) = ui_dist_dir() {
+    if let Some(ui) = ui_dist_dir(app) {
         cmd.env("TENON_UI_DIST", &ui);
     }
+    // v1.90：完整包由 Tauri Updater 负责；daemon 内置 auto 循环让位，避免双下载。
+    cmd.env("TENON_UPDATE_SURFACE", "shell");
 
     let mut child = cmd.spawn().map_err(|e| format!("daemon 启动失败: {e}"))?;
     let stdout = child.stdout.take().expect("piped stdout");
@@ -116,6 +139,63 @@ fn spawn_daemon() -> Result<(Child, Handshake), String> {
     }
     let _ = child.kill();
     Err("daemon 握手失败（未读到握手行）".into())
+}
+
+/// 用 daemon 的权威设置判断是否允许自动出网。
+async fn auto_update_enabled(client: &reqwest::Client, port: u16, token: &str) -> bool {
+    let response = client
+        .get(format!("http://127.0.0.1:{port}/settings"))
+        .header("X-Tenon-Token", token)
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await;
+    let Ok(response) = response else {
+        return false;
+    };
+    let Ok(settings) = response.json::<serde_json::Value>().await else {
+        return false;
+    };
+    settings["update"]["channel"] == serde_json::json!("auto")
+}
+
+/// 桌面壳更新循环（v1.90 / §6.2）：本地通道读取 5 分钟一次，
+/// 只有 auto 通道才检查 GitHub；发布者签名由 Tauri Updater 强制校验。
+fn spawn_update_monitor(app: tauri::AppHandle, port: u16, token: String) {
+    tauri::async_runtime::spawn(async move {
+        let client = reqwest::Client::new();
+        let mut ticker = tokio::time::interval(Duration::from_secs(5 * 60));
+        let mut last_check = Option::<std::time::Instant>::None;
+        loop {
+            ticker.tick().await;
+            if !auto_update_enabled(&client, port, &token).await {
+                continue;
+            }
+            let now = std::time::Instant::now();
+            if last_check.is_some_and(|at| now.duration_since(at) < Duration::from_secs(6 * 3600)) {
+                continue;
+            }
+            match app.updater() {
+                Ok(updater) => match updater.check().await {
+                    Ok(Some(update)) => {
+                        let version = update.version.clone();
+                        eprintln!("[tenon-shell] 下载桌面更新 v{version}");
+                        if let Err(e) = update.download_and_install(|_, _| {}, || {}).await {
+                            eprintln!("[tenon-shell] 桌面更新安装失败: {e}");
+                            continue;
+                        }
+                        eprintln!("[tenon-shell] 桌面更新 v{version} 安装完成，准备重启");
+                        app.restart();
+                    }
+                    Ok(None) => {
+                        eprintln!("[tenon-shell] 桌面更新：已是最新版本");
+                    }
+                    Err(e) => eprintln!("[tenon-shell] 桌面更新检查失败: {e}"),
+                },
+                Err(e) => eprintln!("[tenon-shell] updater 初始化失败: {e}"),
+            }
+            last_check = Some(now);
+        }
+    });
 }
 
 /// IPC 命令：UI 调用获取 daemon 握手（§6.2）。
@@ -154,6 +234,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState {
             handshake: Mutex::new(None),
             _child: Mutex::new(None),
@@ -162,7 +243,7 @@ fn main() {
         .setup(|app| {
             let handle = app.handle().clone();
             // daemon 在后台线程启动：读握手行可能阻塞，不能卡住 setup
-            std::thread::spawn(move || match spawn_daemon() {
+            std::thread::spawn(move || match spawn_daemon(&handle) {
                 Ok((child, hs)) => {
                     let state = handle.state::<AppState>();
                     *state.handshake.lock().unwrap() = Some(hs.clone());
@@ -174,6 +255,7 @@ fn main() {
                         &hs.token[..8.min(hs.token.len())]
                     );
                     let _ = handle.emit("tenon://handshake", &hs);
+                    spawn_update_monitor(handle.clone(), hs.port, hs.token.clone());
                     // 将 WebView 导航至 UI：debug 且 Vite dev server 在跑时导航
                     // dev server（HMR 热重载），否则 daemon 同源托管的 UI（浏览器
                     // 同款链路：握手经 URL 参数直传，UI 经 http://127.0.0.1 调 API，

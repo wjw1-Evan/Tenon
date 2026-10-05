@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v1.88** |
-| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.88） |
+| 版本 | **v1.90** |
+| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.90） |
 | 状态 | 定稿（v1.10 决策闭环），M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 | 历史评审 | v0.1 / v0.3 两轮共 41 项、v1.0 复审 21 项问题的结论已全部并入本方案（过程文档已清理） |
@@ -122,6 +122,7 @@
 | **v1.86** | **§4.2 / §6.2 / §15 自动更新执行器落地：ed25519 签名更新清单按平台锁定版本 / URL / SHA-256，下载写入 `~/.tenon/updates/staged/` 后原子 staging；daemon 启动绑定前将已验证产物原子替换当前可执行文件并继续启动。默认 manual；auto 仅按用户设置周期检查，缺公钥 / 坏签名 / 坏哈希 / 降级版本一律拒装；daemon 侧 staging + 壳/进程监督重启边界清晰，不做运行中原地热替换** |
 | **v1.87** | **多项目并行操作与管理（参考 codex 多线程 / managed worktree / 侧栏线程流模型）：① §9.7 写锁改按 `(project_id, worktree_scope)`——项目主根互斥不变，会话级受管 worktree（`~/.tenon/worktrees/`，§9.5 同款内核托管）可与主根会话及彼此并行 EXECUTING，收尾为「合并」（先 checkpoint 项目根再三方合入，冲突走 §8.6 预览）或「丢弃」；② 侧栏「项目」视图顶部新增全局活动条：跨项目聚合运行中 / 待审批计数，点开全局会话列表（跨项目平铺、状态点、筛选、点击跳转、运行中就地停止），审批决策面仍唯一在各项目代理面板；③ §3.1 / §4.1 / §6.4 / §7.1-7.3 / §9.7 / §14.1 / §15 / §18 / 术语表 / ADR-16 / 附录 E 同步。**已落地**：daemon 写锁作用域化 + `POST /session` `worktree:"managed"` + `worktree/merge`（两阶段：任一冲突整体不写盘，脏缓冲显式跳过，合并前项目根 shadow 快照）/ `worktree/discard`（confirm 必填）；侧栏全局活动条（跨项目计数 + 平铺列表 + 筛选 + 就地停止）与受管会话合并 / 丢弃行内操作；Rust 369 + Vitest 141 + Playwright 多项目 E2E 全绿** |
 | **v1.88** | **§7.1 / §7.2 左栏「项目」视图内容布局 Codex 化（用户决策：与 Codex projects sidebar 对齐）：移除仪表盘式顶部计数胶囊，改为项目索引结构——顶部紧凑搜索 + 添加入口，`Name / Updated` 列头统一密度；项目行采用两行内容（项目名 + 状态摘要 / 最近更新时间），展开后默认显示最近 10 条会话并显式展开全部；全局活动降为同构「All activity」列表组（筛选 chips / 跨项目平铺 / 跳转 / 停止能力不变），不再占据仪表盘首屏；文件夹展开、源码内嵌、隐式激活、受管 worktree 收尾、审批决策唯一在代理面板等语义不变；中英文案与 UI 测试同步** |
+| **v1.90** | **GitHub Release 发布与桌面壳自动更新：tag 推送触发三平台矩阵构建 daemon sidecar 与 Tauri 安装包，聚合签名 `latest.json` 到 GitHub Release；桌面壳在用户选择 auto 后用 Tauri Updater 从 `releases/latest/download/latest.json` 检查 / 下载 / 校验 / 安装完整包并重启，manual 默认不出网。v1.86 的 daemon-only 执行器继续服务无壳 Web / headless，桌面壳内禁用 auto 以避免双通道** |
 
 
 
@@ -347,6 +348,8 @@ Codex CLI 已开源且核心为 Rust 实现（codex-rs 工作区，另有遗留 
 | 插件进程 | 外部进程插件 / MCP | 按需 |
 
 **生命周期规则**：动态端口 + 握手；单实例锁（多窗口 / 多项目共享，daemon 不是“单项目进程”）；`--project` 仅作为首屏种子，运行中可通过项目 API 追加打开；退出时清理全部子进程；UI 崩溃不丢会话（状态全在 daemon + 磁盘）。
+
+**GitHub 发布与桌面更新（v1.90，参考 Codex 桌面端后台更新体验）**：tag `v*` 推送触发 GitHub Actions 的 macOS arm64 / macOS x86_64 / Linux x86_64 / Windows x86_64 矩阵。每个构建先按目标三件套产出 release daemon + `ui/dist` + Tauri 包，Tauri Updater 私钥只在 Actions Secret 中出现，构建器生成安装包与其 minisign `.sig`；发布任务聚合为静态 `latest.json`（`version` / `notes` / `pub_date` / `platforms.<os-arch>.{url,signature}`），连同安装包和签名上传到当前 GitHub Release。客户端固定消费该仓库 `releases/latest/download/latest.json`：GitHub 的 HTTPS 保证传输完整性，Tauri minisign 公钥内置于桌面壳保证发布者真实性；任一签名失败即中止且不触达安装器。桌面壳每 5 分钟读 daemon `/settings` 生效通道，且每 6 小时最多检查一次；只有 `update.channel=auto` 才出网，manual 默认静默不出网。发现新版本后后台下载、校验、安装并经 Tauri 进程重启收尾。发布 tag 必须与 Cargo workspace / `tauri.conf.json` 语义化版本一致。v1.86 的 daemon-only 执行器继续服务无壳 Web / headless；桌面壳 spawn 时设置 `TENON_UPDATE_SURFACE=shell`，daemon auto 循环在该表面让位给完整包更新，避免同时下载 sidecar 与完整包。
 
 **桌面窗体（v1.30）**：macOS `titleBarStyle=Overlay + hiddenTitle` 隐藏原生标题栏，红绿灯悬于 UI 顶栏之上（顶栏左内边距 78px，`is-tauri` 根类驱动，浏览器态自动豁免）；顶栏 / 品牌区 / 弹性区为 `data-tauri-drag-region` 拖拽区（capabilities 授予 `start-dragging` / `toggle-maximize`，双击顶栏 = 系统缩放）；窗口默认 1560×980、最小 1080×680、底色 `#0E1015` 与 §7.5 令牌一致（配置层 + HTML 双保险防首帧白闪）。启动体验：握手轮询期间即渲染品牌启动屏（渐变印记 + 脉冲连接指示），失败态同一卡片呈现错误与重启示；Windows/Linux 回退原生标题栏（macOS 优先决策不变）。
 
@@ -1080,6 +1083,7 @@ WS 事件与会话 events 表一一对应，均含 `project_id`；断线重连�
 | ADR-14 | 集成 Laya 本地决策模型（自动下载，§9.8） | 代理循环的延迟与 token 成本主要来自大模型回合；结构化判定下沉本地分类器（~30ms、零 token）收益直接，且全程本地契合隐私口径 | 模型分发与版本管理面；误判风险以「仅排序 / 提示 / 预筛 + 规则兜底 + 整体可回退 + Evals 门」控制 |
 | ADR-15 | 单 daemon 内多 ProjectRuntime，而非每项目一个 daemon / 每会话重传项目根 | 保留统一鉴权、审计、成本、审批与崩溃恢复；项目资源可引用计数回收；多项目并发不扩大攻击面。参考 codex app-server：thread 携带 cwd / projectId / workspace roots，多个 thread 由同一服务端管理 | Runtime 状态机、全局调度与项目作用域 API 需要显式实现；单 daemon 故障影响所有项目，靠 WAL/事件溯源与崩溃恢复兜底 |
 | ADR-16 | 同项目并行会话用会话级受管 worktree，而非放宽项目主根写锁（v1.87） | 主根互斥保证用户工作区确定性；worktree 隔离让多任务真正并行（对齐 codex managed worktree 多线程模型），沙箱 / 快照 / 合并边界复用现成机制 | worktree 生命周期管理（合并冲突 / 磁盘占用）；并行总量仍受全局 `max_concurrent_agent_tasks` 约束 |
+| ADR-18 | 桌面壳更新用 Tauri Updater + GitHub 静态 `latest.json`（v1.90） | 完整包原子升级（壳 + UI + daemon sidecar），HTTPS + minisign 双校验，无需自建更新服务；Codex 式后台下载 / 退出重启 | 依赖 GitHub 可达性与 Actions 签名密钥安全；私钥丢失后必须轮换发布通道 | 签名失败不安装；manual 默认零出网；企业可改 `latest.json` 镜像（Tauri 配置支持多端点演进） |
 
 ### 附录 C · 已决事项（原 Open Questions，v1.2 全部定稿并前置本期）
 

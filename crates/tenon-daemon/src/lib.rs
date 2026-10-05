@@ -3,7 +3,7 @@
 //! - 绑定 127.0.0.1 随机端口；HTTP 用 `X-Tenon-Token` 头鉴权；
 //! - WS 先 `POST /ws-ticket` 换 60 秒一次性票据（首帧携带，重放即拒，ADR-10）；
 //! - 校验 Origin / Host（CORS 仅放行应用自身源；网页请求一律拒绝，§12.6）；
-//! - 会话 / 审批 / 回滚 / 文件 / 搜索 / 成本端点一一对应 §15 表。
+//! - 会话 / 回滚 / 文件 / 搜索 / 成本端点一一对应 §15 表。
 
 mod auth;
 mod lsp_edit;
@@ -84,7 +84,10 @@ pub async fn serve(options: DaemonOptions) -> std::io::Result<DaemonHandle> {
     state.spawn_laya_auto_download(laya_registry_url);
 
     // 自动更新执行器（v1.86）：只在用户显式选择 auto 后出网；manual 仅有 /updates/check。
-    {
+    // 桌面壳表面（v1.90）由 Tauri Updater 更新完整包，这里不重复下载 sidecar。
+    if std::env::var("TENON_UPDATE_SURFACE").as_deref() == Ok("shell") {
+        tracing::debug!("桌面壳表面：daemon-only 自动更新已让位给完整包 updater");
+    } else {
         let state = state.clone();
         let interval = state.config.update.check_interval_s;
         let manifest_url = state.config.update.manifest_url.clone();

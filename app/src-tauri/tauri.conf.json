@@ -30,6 +30,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -37,8 +38,22 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "resources": {
+      "../../ui/dist/": "ui"
+    },
     "externalBin": [
       "binaries/tenon-daemon"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM1QjM4QUY1MjMxMDc0QjIKUldTeWRCQWo5WXF6TlpxUE56VVUzMmdCT2xOVmh1cDFMSGtsUVppempUK21Xenp0Z2NHREtDNU8K",
+      "endpoints": [
+        "https://github.com/wjw1-Evan/Tenon/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

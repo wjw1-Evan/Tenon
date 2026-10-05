@@ -1,0 +1,172 @@
+# GitHub Release 流水线（v1.90 / §6.2）：三平台构建完整桌面包并聚合签名 latest.json。
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "已存在的发布 tag（v前缀）"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+env:
+  TAURI_CLI_VERSION: "2.12.1"
+
+jobs:
+  validate:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+      - name: 校验 tag 与 manifest / Tauri 版本一致
+        run: |
+          set -euo pipefail
+          tag="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}"
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "tag 必须是 vX.Y.Z：$tag"; exit 1; }
+          expected="${tag#v}"
+          workspace_version="$(sed -E -n 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -1)"
+          tauri_version="$(node -p "require('./app/src-tauri/tauri.conf.json').version")"
+          [[ "$expected" == "$workspace_version" ]] || { echo "workspace=$workspace_version tag=$expected"; exit 1; }
+          [[ "$expected" == "$tauri_version" ]] || { echo "tauri=$tauri_version tag=$expected"; exit 1; }
+
+  desktop:
+    name: Desktop (${{ matrix.target }})
+    needs: validate
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: 安装 Linux WebView 依赖
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - name: 安装前端依赖
+        run: pnpm install --frozen-lockfile
+      - name: 构建目标平台 daemon sidecar
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --target "${{ matrix.target }}" -p tenon-daemon --bin tenon-daemon
+          mkdir -p app/src-tauri/binaries
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            cp "target/${{ matrix.target }}/release/tenon-daemon.exe" \
+              "app/src-tauri/binaries/tenon-daemon-${{ matrix.target }}.exe"
+          else
+            cp "target/${{ matrix.target }}/release/tenon-daemon" \
+              "app/src-tauri/binaries/tenon-daemon-${{ matrix.target }}"
+          fi
+      - name: 构建并签名 Tauri 桌面包
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          pnpm dlx "@tauri-apps/cli@${TAURI_CLI_VERSION}" build --target "${{ matrix.target }}"
+      - name: 归集更新器与安装包产物
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="${{ matrix.target }}"
+          bundle="target/$target/release/bundle"
+          mkdir -p release-assets updater
+          copy_prefixed() {
+            file="$1"
+            [[ -f "$file" ]] || { echo "缺少产物：$file"; exit 1; }
+            name="$(basename "$file")"
+            cp "$file" "release-assets/${target}-${name}"
+            cp "$file" "updater/${target}-${name}"
+          }
+          if [[ "$target" == *apple-darwin ]]; then
+            copy_prefixed "$(find "$bundle/macos" -maxdepth 1 -name '*.app.tar.gz' | head -1)"
+            copy_prefixed "$(find "$bundle/macos" -maxdepth 1 -name '*.app.tar.gz.sig' | head -1)"
+            find "$bundle/dmg" -maxdepth 1 -name '*.dmg' -print0 | while IFS= read -r -d '' file; do copy_prefixed "$file"; done
+          elif [[ "$target" == *linux-gnu ]]; then
+            copy_prefixed "$(find "$bundle/appimage" -maxdepth 1 -name '*.AppImage' | head -1)"
+            copy_prefixed "$(find "$bundle/appimage" -maxdepth 1 -name '*.AppImage.sig' | head -1)"
+            find "$bundle/deb" -maxdepth 1 -name '*.deb' -print0 | while IFS= read -r -d '' file; do copy_prefixed "$file"; done
+          else
+            copy_prefixed "$(find "$bundle/nsis" -maxdepth 1 -name '*-setup.exe' | head -1)"
+            copy_prefixed "$(find "$bundle/nsis" -maxdepth 1 -name '*-setup.exe.sig' | head -1)"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: updater-${{ matrix.target }}
+          path: updater/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-${{ matrix.target }}
+          path: release-assets/
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: desktop
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: updater-*
+          merge-multiple: true
+          path: updater
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-assets-*
+          merge-multiple: true
+          path: release-assets
+      - name: 聚合 Tauri latest.json
+        run: |
+          tag="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}"
+          python3 scripts/build_update_manifest.py updater release-assets updater/latest.json "$tag"
+      - name: 创建并发布 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}"
+          assets="$(find release-assets -type f -print0 | xargs -0 echo)"
+          gh release create "$tag" $assets updater/latest.json \
+            --title "Tenon ${tag#v}" \
+            --generate-notes \
+            --verify-tag \
+            --latest
