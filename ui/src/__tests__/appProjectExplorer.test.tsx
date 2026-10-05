@@ -163,15 +163,4 @@ describe("App project explorer deep", () => {
       expect(chatRow).toBeTruthy();
     }
   });
-
-  it("global activity bar expands list", async () => {
-    render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/proj-a" />);
-    const bar = await screen.findByTestId("global-activity-bar");
-    fireEvent.click(bar);
-    await waitFor(() => {
-      expect(screen.getByTestId("global-activity-list")).toBeTruthy();
-    }, { timeout: 3000 });
-    // 关闭
-    fireEvent.click(screen.getByTestId("global-activity-bar"));
-  });
 });

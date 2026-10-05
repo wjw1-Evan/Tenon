@@ -265,7 +265,7 @@ function projectWithSessions(
   };
 }
 
-describe("Global activity strip (v1.87 multi-project monitoring)", () => {
+describe("ProjectExplorer worktree sessions (v1.87)", () => {
   beforeEach(() => {
     const backing = new Map<string, string>();
     vi.stubGlobal("localStorage", {
@@ -279,50 +279,6 @@ describe("Global activity strip (v1.87 multi-project monitoring)", () => {
   });
 
   afterEach(() => vi.unstubAllGlobals());
-
-  it("aggregates cross-project counts and flattens sessions on expand", () => {
-    const a = projectWithSessions("proj-a", [
-      { id: "s-a1", status: "executing", updated_at: "2026-10-05T01:00:00Z" },
-      { id: "s-a2", status: "done" },
-    ]);
-    const b = projectWithSessions("proj-b", [
-      { id: "s-b1", status: "idle" },
-    ]);
-    renderExplorer([a, b]);
-    const bar = screen.getByTestId("global-activity-bar");
-    expect(bar).toHaveTextContent("activity.running 1");
-    expect(bar).toHaveTextContent("activity.done 1");
-    fireEvent.click(bar);
-    const list = screen.getByTestId("global-activity-list");
-    // 跨项目平铺：三个会话全部可见，无需展开项目文件夹
-    expect(list).toHaveTextContent("proj-a");
-    expect(list).toHaveTextContent("proj-b");
-  });
-
-  it("jumps to the target project and session from a global row", () => {
-    const a = projectWithSessions("proj-a", [{ id: "s-a1", status: "idle" }]);
-    const b = projectWithSessions("proj-b", [
-      { id: "s-b1", status: "idle", updated_at: "2026-10-05T02:00:00Z" },
-    ]);
-    const { onSwitchProject, onSelectSession } = renderExplorer([a, b]);
-    fireEvent.click(screen.getByTestId("global-activity-bar"));
-    fireEvent.click(screen.getAllByRole("button", { name: /proj-b/ })[0]);
-    expect(onSwitchProject).toHaveBeenCalledWith(expect.objectContaining({ id: "proj-b" }));
-    expect(onSelectSession).toHaveBeenCalledWith("proj-b", "s-b1");
-  });
-
-  it("filters running rows and exposes in-place stop", async () => {
-    const a = projectWithSessions("proj-a", [
-      { id: "s-run", status: "executing" },
-      { id: "s-idle", status: "idle" },
-    ]);
-    const { api: apiMock } = renderExplorer([a]);
-    fireEvent.click(screen.getByTestId("global-activity-bar"));
-    fireEvent.click(screen.getByRole("button", { name: "activity.filter.running" }));
-    const stop = screen.getAllByRole("button", { name: "activity.stop" })[0];
-    fireEvent.click(stop);
-    await waitFor(() => expect(apiMock.control).toHaveBeenCalledWith("s-run", "stop"));
-  });
 
   it("creates plain and managed worktree sessions from per-project entries", () => {
     const a = projectWithSessions("proj-a", [{ id: "s-a1", status: "idle" }]);
@@ -345,8 +301,7 @@ describe("Global activity strip (v1.87 multi-project monitoring)", () => {
       { id: "s-root", status: "done" },
     ]);
     const { api: apiMock } = renderExplorer([a]);
-    // 全局列表标题带 ⎇ 标记（受管 worktree）
-    fireEvent.click(screen.getByTestId("global-activity-bar"));
+    // 会话行标题带 ⎇ 标记（受管 worktree）
     expect(screen.getAllByText(/⎇/).length).toBeGreaterThan(0);
     // 会话行 hover 操作：仅受管会话出现合并 / 丢弃
     const merge = screen.getByRole("button", { name: "projects.worktree_merge" });
