@@ -23,7 +23,11 @@ function api(overrides: Partial<TenonApi> = {}) {
   return { tree: treeMock, control: vi.fn().mockResolvedValue({ ok: true }), mergeWorktreeSession: vi.fn().mockResolvedValue({ merged: [], skipped: [], conflicts: [] }), discardWorktreeSession: vi.fn().mockResolvedValue({ discarded: true }), ...overrides } as unknown as TenonApi;
 }
 
-function renderExplorer(projects: ProjectSummary[], apiOverrides: Partial<TenonApi> = {}) {
+function renderExplorer(
+  projects: ProjectSummary[],
+  apiOverrides: Partial<TenonApi> = {},
+  callbacks: { onRefreshProjects?: () => void; onSessionRemoved?: (projectId: string, sessionId: string) => void } = {}
+) {
   const onSwitchProject = vi.fn();
   const onOpenProject = vi.fn().mockResolvedValue(undefined);
   const onRemoveProject = vi.fn().mockResolvedValue(undefined);
@@ -44,6 +48,8 @@ function renderExplorer(projects: ProjectSummary[], apiOverrides: Partial<TenonA
       onRemoveProject={onRemoveProject}
       onSelectSession={onSelectSession}
       onCreateSession={onCreateSession}
+      onRefreshProjects={callbacks.onRefreshProjects}
+      onSessionRemoved={callbacks.onSessionRemoved}
       onOpenFile={() => {}}
       onFileTreeChange={() => {}}
     />
@@ -354,5 +360,78 @@ describe("ProjectExplorer 补充", () => {
     if (discardBtn) fireEvent.click(discardBtn);
     // 不崩溃即可
     expect(screen.getByTestId("project-list")).toBeInTheDocument();
+  });
+});
+
+// v1.103：会话归档 / 删除（§14.2 / §15）——行内动作、运行中隐藏、confirm 门、已归档组。
+describe("Session archive & delete (v1.103)", () => {
+  beforeEach(() => {
+    const backing = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => (backing.has(k) ? backing.get(k)! : null),
+      setItem: (k: string, v: string) => void backing.set(k, v),
+      removeItem: (k: string) => void backing.delete(k),
+      clear: () => backing.clear(),
+    });
+    treeMock.mockReset();
+    treeMock.mockResolvedValue({ entries: [] });
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  const row = (id: string, status = "done") => ({
+    id,
+    status,
+    model: "mock",
+    updated_at: "2026-10-05T00:00:00Z",
+  });
+
+  it("archives an idle session from its row action", async () => {
+    const archiveSession = vi.fn().mockResolvedValue({ archived: true });
+    const onRefreshProjects = vi.fn();
+    const p = { ...project("proj-a"), sessions: [row("s-done")] };
+    renderExplorer([p], { archiveSession }, { onRefreshProjects });
+    fireEvent.click(screen.getByTestId("session-archive-s-done"));
+    await waitFor(() => expect(archiveSession).toHaveBeenCalledWith("s-done"));
+    await waitFor(() => expect(onRefreshProjects).toHaveBeenCalled());
+  });
+
+  it("hides archive and delete actions on running sessions", () => {
+    const p = { ...project("proj-a"), sessions: [row("s-run", "executing")] };
+    renderExplorer([p]);
+    expect(screen.queryByTestId("session-archive-s-run")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("session-delete-s-run")).not.toBeInTheDocument();
+  });
+
+  it("delete confirms then reports removal via onSessionRemoved", async () => {
+    vi.stubGlobal("confirm", vi.fn().mockReturnValue(true));
+    const deleteSession = vi.fn().mockResolvedValue({ deleted: true });
+    const onSessionRemoved = vi.fn();
+    const p = { ...project("proj-a"), sessions: [row("s-gone")] };
+    renderExplorer([p], { deleteSession }, { onSessionRemoved });
+    fireEvent.click(screen.getByTestId("session-delete-s-gone"));
+    await waitFor(() => expect(deleteSession).toHaveBeenCalledWith("s-gone", true));
+    await waitFor(() => expect(onSessionRemoved).toHaveBeenCalledWith("proj-a", "s-gone"));
+  });
+
+  it("cancels delete when confirm is dismissed", () => {
+    vi.stubGlobal("confirm", vi.fn().mockReturnValue(false));
+    const deleteSession = vi.fn();
+    const p = { ...project("proj-a"), sessions: [row("s-keep")] };
+    renderExplorer([p], { deleteSession });
+    fireEvent.click(screen.getByTestId("session-delete-s-keep"));
+    expect(deleteSession).not.toHaveBeenCalled();
+  });
+
+  it("shows the archived group with restore action", async () => {
+    const unarchiveSession = vi.fn().mockResolvedValue({ unarchived: true });
+    const p = { ...project("proj-a"), sessions: [], archived_sessions: [row("s-arc")] };
+    renderExplorer([p], { unarchiveSession });
+    // 默认收起
+    expect(screen.queryByTestId("session-unarchive-s-arc")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("archived-toggle-proj-a"));
+    expect(screen.getByTestId("session-unarchive-s-arc")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("session-unarchive-s-arc"));
+    await waitFor(() => expect(unarchiveSession).toHaveBeenCalledWith("s-arc"));
   });
 });

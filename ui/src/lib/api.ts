@@ -17,21 +17,25 @@ export interface Handshake {
   token: string;
 }
 
+export interface SessionSummary {
+  id: string;
+  status: string;
+  model: string;
+  /** 自动生成对话标题（v1.58）；空 / 缺省回退模型名 / 短 id。 */
+  title?: string;
+  /** 会话级受管 worktree 路径（v1.87）；空 = 项目主根会话。 */
+  worktree_path?: string;
+  updated_at: string;
+}
+
 export interface ProjectSummary {
   id: string;
   path: string;
   display_name: string;
   trusted: boolean;
-  sessions: Array<{
-    id: string;
-    status: string;
-    model: string;
-    /** 自动生成对话标题（v1.58）；空 / 缺省回退模型名 / 短 id。 */
-    title?: string;
-    /** 会话级受管 worktree 路径（v1.87）；空 = 项目主根会话。 */
-    worktree_path?: string;
-    updated_at: string;
-  }>;
+  sessions: SessionSummary[];
+  /** 手动归档会话（v1.103 §15）：侧栏默认隐藏，「已归档」折叠组数据源。 */
+  archived_sessions?: SessionSummary[];
   /** 有活跃 runtime 的会话 id（§6.2：runtime 不跨 daemon 重启）。 */
   session_runtimes?: string[];
   active_sessions: number;
@@ -322,6 +326,28 @@ export class TenonApi {
   discardWorktreeSession(sessionId: string, confirm: boolean) {
     return this.request<{ discarded: boolean }>(`/session/${sessionId}/worktree/discard`, {
       method: "POST",
+      json: { confirm },
+    });
+  }
+
+  /** 归档会话（v1.103 §15）：侧栏默认隐藏、可还原；运行中 / 未收尾 worktree 409。 */
+  archiveSession(sessionId: string) {
+    return this.request<{ archived: boolean }>(`/session/${sessionId}/archive`, {
+      method: "POST",
+    });
+  }
+
+  /** 取消归档（v1.103）：恢复侧栏列表。 */
+  unarchiveSession(sessionId: string) {
+    return this.request<{ unarchived: boolean }>(`/session/${sessionId}/unarchive`, {
+      method: "POST",
+    });
+  }
+
+  /** 删除会话（v1.103 §15）：confirm 必填，事务级联清事件 / 工具调用 / 用量；快照不随删。 */
+  deleteSession(sessionId: string, confirm: boolean) {
+    return this.request<{ deleted: boolean }>(`/session/${sessionId}`, {
+      method: "DELETE",
       json: { confirm },
     });
   }

@@ -5,7 +5,7 @@
 import { useEffect, useState } from "react";
 import type { ProjectSummary, TenonApi } from "../lib/api";
 import { useResolvedLocale, type Translate } from "../lib/i18n";
-import { STATE_COLORS, type AgentStateName } from "../lib/stateColors";
+import { RUNNING_STATES, STATE_COLORS, type AgentStateName } from "../lib/stateColors";
 import { FileTree, type FileTreeChange } from "./FileTree";
 
 const PE_EXPANDED_KEY = "tenon:peExpanded";
@@ -49,6 +49,8 @@ interface Props {
   onCreateSession: (project: ProjectSummary, worktree: boolean) => void;
   /** 受管 worktree 合并 / 丢弃后刷新项目摘要（会话状态与文件树）。 */
   onRefreshProjects?: () => void;
+  /** 会话被归档 / 删除后回调（v1.103）：App 清理激活选择并刷新摘要。 */
+  onSessionRemoved?: (projectId: string, sessionId: string) => void;
   onOpenFile: (path: string) => void;
   onFileTreeChange: (change: FileTreeChange) => void;
 }
@@ -202,6 +204,7 @@ export function ProjectExplorer({
   onSelectSession,
   onCreateSession,
   onRefreshProjects,
+  onSessionRemoved,
   onOpenFile,
   onFileTreeChange,
 }: Props) {
@@ -216,6 +219,8 @@ export function ProjectExplorer({
   const [nameEdited, setNameEdited] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [worktreeBusyId, setWorktreeBusyId] = useState<string | null>(null);
+  /** 「已归档」折叠组展开集合（v1.103）；不落盘，默认收起。 */
+  const [archivedOpen, setArchivedOpen] = useState<Set<string>>(new Set());
   /** 超过最近 10 条的项目的显式展开集合；不落盘，保持项目列表轻量。 */
   const [allSessionsOpen, setAllSessionsOpen] = useState<Set<string>>(new Set());
 
@@ -285,6 +290,31 @@ export function ProjectExplorer({
     } finally {
       setWorktreeBusyId(null);
     }
+  };
+
+  // v1.103：归档 / 还原 / 删除（§15）。409 守卫（运行中 / 未收尾 worktree）经刷新后的摘要呈现。
+  const archiveSessionRow = async (sessionId: string) => {
+    try {
+      await api.archiveSession(sessionId);
+      onSessionRemoved?.(projectId ?? "", sessionId);
+      onRefreshProjects?.();
+    } catch {}
+  };
+
+  const unarchiveSessionRow = async (sessionId: string) => {
+    try {
+      await api.unarchiveSession(sessionId);
+      onRefreshProjects?.();
+    } catch {}
+  };
+
+  const deleteSessionRow = async (projectId: string, sessionId: string) => {
+    if (!window.confirm(t("projects.delete_confirm"))) return;
+    try {
+      await api.deleteSession(sessionId, true);
+      onSessionRemoved?.(projectId, sessionId);
+      onRefreshProjects?.();
+    } catch {}
   };
 
   // active 项目默认展开（v1.63：切换即见会话全貌）。
@@ -391,6 +421,29 @@ export function ProjectExplorer({
                 </button>
               </span>
             )}
+            {/* v1.103：未收尾 worktree 行只留合并 / 丢弃；运行中行不渲染归档 / 删除。 */}
+            {!session.worktree_path && !RUNNING_STATES.has(session.status as AgentStateName) && (
+              <span className="pe-row-actions">
+                <button
+                  type="button"
+                  className="pe-action"
+                  data-testid={`session-archive-${session.id}`}
+                  title={t("projects.archive")}
+                  onClick={() => void archiveSessionRow(session.id)}
+                >
+                  {t("projects.archive")}
+                </button>
+                <button
+                  type="button"
+                  className="pe-action danger"
+                  data-testid={`session-delete-${session.id}`}
+                  title={t("projects.delete")}
+                  onClick={() => void deleteSessionRow(project.id, session.id)}
+                >
+                  {t("projects.delete")}
+                </button>
+              </span>
+            )}
           </li>
           );
         })}
@@ -415,6 +468,76 @@ export function ProjectExplorer({
         )}
         {project.sessions.length === 0 && (
           <li className="pe-empty">{t("projects.chats_empty")}</li>
+        )}
+        {/* 已归档组（v1.103）：默认收起，展开后行内还原 / 删除。 */}
+        {(project.archived_sessions?.length ?? 0) > 0 && (
+          <li className="pe-archived">
+            <button
+              type="button"
+              className="pe-show-all"
+              data-testid={`archived-toggle-${project.id}`}
+              aria-expanded={archivedOpen.has(project.id)}
+              onClick={() =>
+                setArchivedOpen((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(project.id)) next.delete(project.id);
+                  else next.add(project.id);
+                  return next;
+                })
+              }
+            >
+              {t("projects.archived_group", { count: project.archived_sessions!.length })}
+            </button>
+            {archivedOpen.has(project.id) && (
+              <ul className="pe-chat-list pe-archived-list">
+                {project.archived_sessions!.map((session) => (
+                  <li key={session.id} className="pe-chat-item">
+                    <button
+                      type="button"
+                      className="pe-chat-row muted"
+                      onClick={() => onSelectSession(project.id, session.id)}
+                      title={session.id}
+                    >
+                      <span
+                        className="pe-chat-dot"
+                        aria-hidden="true"
+                        data-state={session.status}
+                        title={stateLabel(t, session.status)}
+                        style={{
+                          background:
+                            STATE_COLORS[session.status as AgentStateName] ?? "#8a8f98",
+                        }}
+                      />
+                      <span className="pe-chat-name">
+                        {sessionDisplayName(session)}
+                        {session.worktree_path ? " ⎇" : ""}
+                      </span>
+                    </button>
+                    <span className="pe-row-actions">
+                      <button
+                        type="button"
+                        className="pe-action"
+                        data-testid={`session-unarchive-${session.id}`}
+                        title={t("projects.unarchive")}
+                        onClick={() => void unarchiveSessionRow(session.id)}
+                      >
+                        {t("projects.unarchive")}
+                      </button>
+                      <button
+                        type="button"
+                        className="pe-action danger"
+                        data-testid={`session-delete-${session.id}`}
+                        title={t("projects.delete")}
+                        onClick={() => void deleteSessionRow(project.id, session.id)}
+                      >
+                        {t("projects.delete")}
+                      </button>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </li>
         )}
         {/* 新会话入口（v1.87 §7.3）：主根 / 受管 worktree（可与主根并行执行）。 */}
         <li className="pe-session-actions">
