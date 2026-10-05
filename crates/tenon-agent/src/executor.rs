@@ -2829,4 +2829,49 @@ mod tests {
         assert!(list.ok);
         assert!(list.content.contains("001_init.sql"));
     }
+
+    #[test]
+    fn apply_patch_read_grep_full_cycle_nested() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        // Create nested project structure
+        let files = [
+            ("src/core/engine.ts", "export class Engine {\n  start() {}\n}\n"),
+            ("src/core/engine.test.ts", "import { Engine } from './engine';\n"),
+            ("docs/engine.md", "# Engine\n\nCore module.\n"),
+        ];
+        for (path, content) in files {
+            let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+                "file": path, "range": null, "content": content
+            }));
+            assert!(out.ok, "write {}", path);
+        }
+        // Read each file
+        for (path, expected) in files {
+            let read = execute_tool(&c, "read_file", &serde_json::json!({"path": path}));
+            assert!(read.ok, "read {}", path);
+            let keyword = expected.split_whitespace().nth(2).unwrap_or("content");
+            assert!(read.content.len() > 0, "read {} has content", path);
+        }
+        // Grep for Engine
+        let grep = execute_tool(&c, "grep", &serde_json::json!({"pattern": "Engine"}));
+        assert!(grep.ok);
+    }
+
+    #[test]
+    fn list_dir_and_read_in_cycle() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        // Create file
+        execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "cycle-test.txt", "range": null, "content": "cycle content"
+        }));
+        // List to verify
+        let list = execute_tool(&c, "list_dir", &serde_json::json!({}));
+        assert!(list.content.contains("cycle-test.txt"));
+        // Read to verify
+        let read = execute_tool(&c, "read_file", &serde_json::json!({"path": "cycle-test.txt"}));
+        assert!(read.ok);
+        assert!(read.content.contains("cycle"));
+    }
 }
