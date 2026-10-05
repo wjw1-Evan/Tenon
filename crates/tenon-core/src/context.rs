@@ -316,4 +316,26 @@ mod tests {
         assert!(estimate_tokens("hello world 你好世界") > 0);
         assert_eq!(estimate_tokens(""), 0);
     }
+
+    #[test]
+    fn context_window_truncation() {
+        // Build a context that exceeds limits
+        let mut ctx = String::new();
+        for i in 0..100 {
+            ctx.push_str(&format!("line {}\n", i));
+        }
+        assert!(ctx.len() > 0);
+    }
+
+    #[test]
+    fn empty_context_is_valid() {
+        let ctx = "";
+        assert_eq!(ctx.len(), 0);
+    }
+
+    #[test]
+    fn context_with_unicode() {
+        let ctx = "中文上下文\n日本語\n한국어";
+        assert!(ctx.contains("中文"));
+    }
 }

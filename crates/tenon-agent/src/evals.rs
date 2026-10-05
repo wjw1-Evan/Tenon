@@ -625,4 +625,56 @@ mod tests {
         assert_eq!(t2.id, "T1");
         assert_eq!(t2.assertions.len(), 2);
     }
+
+    #[test]
+    fn eval_task_serde_roundtrip() {
+        let task = EvalTask {
+            id: "T-SER".into(),
+            instruction: "test instruction".into(),
+            assertions: vec![
+                Assertion::FileContains { path: "f.rs".into(), text: "check".into() },
+                Assertion::AnswerContains { text: "answer".into() },
+            ],
+            budget: EvalBudget { max_steps: 10, max_tokens: 100_000 },
+            expected_l4_path: None,
+        };
+        let json = serde_json::to_string(&task).unwrap();
+        let parsed: EvalTask = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.id, "T-SER");
+        assert_eq!(parsed.assertions.len(), 2);
+    }
+
+    #[test]
+    fn eval_budget_defaults() {
+        let budget = EvalBudget { max_steps: 12, max_tokens: 200_000 };
+        assert_eq!(budget.max_steps, 12);
+        assert_eq!(budget.max_tokens, 200_000);
+    }
+
+    #[test]
+    fn assertion_variants_serialize() {
+        let file_contains = Assertion::FileContains { path: "a.ts".into(), text: "check".into() };
+        let json = serde_json::to_string(&file_contains).unwrap();
+        assert!(json.contains("a.ts"));
+
+        let answer_contains = Assertion::AnswerContains { text: "expected".into() };
+        let json2 = serde_json::to_string(&answer_contains).unwrap();
+        assert!(json2.contains("expected"));
+    }
+
+    #[test]
+    fn eval_case_result_verdict() {
+        let result = EvalCaseResult {
+            task_id: "T-TEST".into(),
+            passed: true,
+            steps: 5,
+            tokens: 1000,
+            cost_usd: 0.01,
+            security_violations: 0,
+            assertions: vec![],
+            duration_ms: 100,
+            answer: "done".into(),
+        };
+        assert_eq!(result.verdict(), "pass");
+    }
 }
