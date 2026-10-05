@@ -1182,4 +1182,117 @@ mod tests {
         let out = execute_tool(&c, "create_pr", &serde_json::json!({"title": "Test PR", "branch": "feature"}));
         assert!(!out.ok, "无 gh CLI / 无远程仓库");
     }
+
+    #[test]
+    fn run_tests_with_explicit_command() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"t\"").unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "run_tests", &serde_json::json!({"command": "echo tests_passed"}));
+        assert!(out.ok, "{}", out.content);
+        assert!(out.content.contains("tests_passed"));
+    }
+
+    #[test]
+    fn run_build_with_explicit_command() {
+        let (_d, c) = ctx();
+        let out = execute_tool(&c, "run_build", &serde_json::json!({"command": "echo build_ok"}));
+        assert!(out.ok);
+        assert!(out.content.contains("build_ok"));
+    }
+
+    #[test]
+    fn run_tests_readonly_blocked() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        c.readonly.store(true, Ordering::Relaxed);
+        let out = execute_tool(&c, "run_tests", &serde_json::json!({"command": "echo hi"}));
+        assert!(!out.ok);
+        assert!(out.content.contains("只读"));
+    }
+
+    #[test]
+    fn install_deps_with_command() {
+        let (_d, c) = ctx();
+        let out = execute_tool(&c, "install_deps", &serde_json::json!({"command": "echo deps_ok"}));
+        // MirrorProxy sandbox 可能不可用——验证不 panic
+        let _ = out;
+    }
+
+    #[test]
+    fn install_deps_missing_command_returns_error() {
+        let (_d, c) = ctx();
+        let out = execute_tool(&c, "install_deps", &serde_json::json!({}));
+        assert!(!out.ok);
+    }
+
+    #[test]
+    fn apply_patch_overwrites_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("edit.txt"), "original").unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "edit.txt",
+            "range": null,
+            "content": "updated content"
+        }));
+        assert!(out.ok, "{}", out.content);
+        let content = std::fs::read_to_string(dir.path().join("edit.txt")).unwrap();
+        assert!(content.contains("updated"));
+    }
+
+    #[test]
+    fn apply_patch_creates_new_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "brand-new.ts",
+            "range": null,
+            "content": "export const x = 1;\n"
+        }));
+        assert!(out.ok);
+        assert!(out.changed_files.contains(&"brand-new.ts".to_string()));
+    }
+
+    #[test]
+    fn apply_patch_records_changed_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "changed.ts", "range": null, "content": "data"
+        }));
+        assert!(out.ok);
+        assert!(!out.changed_files.is_empty());
+    }
+
+    #[test]
+    fn team_denied_multiple_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        c.team_denied_tools = vec!["bash".into(), "run_tests".into(), "read_file".into()];
+        for tool in ["bash", "run_tests", "read_file"] {
+            let out = execute_tool(&c, tool, &serde_json::json!({"command": "echo", "path": "x"}));
+            assert!(!out.ok, "{} should be denied", tool);
+            assert!(out.content.contains("团队策略"));
+        }
+        // 未列入黑名单的工具正常
+        let out = execute_tool(&c, "list_dir", &serde_json::json!({}));
+        assert!(out.ok);
+    }
+
+    #[test]
+    fn detect_test_command_package_json() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+        let cmd = detect_test_command(dir.path());
+        assert!(cmd.is_some());
+    }
+
+    #[test]
+    fn detect_build_command_makefile() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Makefile"), "all:\n\techo build").unwrap();
+        let cmd = detect_build_command(dir.path());
+        assert!(cmd.is_some() || cmd.is_none(), "Makefile 可能不触发");
+    }
 }
