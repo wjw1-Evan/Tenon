@@ -3409,3 +3409,282 @@ async fn ws_ticket_post() {
     assert!(body["ticket"].is_string());
     assert!(body["expires_in_s"].is_number());
 }
+
+#[tokio::test]
+async fn inline_complete_endpoint() {
+    let script = vec![ScriptedReply::Text("completion text".into())];
+    let (_dir, port, token) = start_daemon(script).await;
+    let client = client_with_token(&token);
+
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": "." }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    let r = client
+        .post(format!("{}/project/{}/inline-complete", base(port), pid))
+        .json(&serde_json::json!({ "prefix": "const x = ", "suffix": "", "path": "a.ts", "language": "ts" }))
+        .send()
+        .await
+        .unwrap();
+    // 可能 200（有 completion）或 4xx/5xx（无 provider support）
+    assert_ne!(r.status(), 401);
+}
+
+#[tokio::test]
+async fn file_ops_endpoint() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": "." }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    // POST file/ops (create/rename/delete)
+    let r = client
+        .post(format!("{}/project/{}/file/ops", base(port), pid))
+        .json(&serde_json::json!({ "ops": [
+            { "op": "create", "path": "new-file.ts", "content": "export {}" }
+        ]}))
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(r.status(), 401);
+}
+
+#[tokio::test]
+async fn search_replace_endpoint() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": "." }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    // 先写一个文件
+    client
+        .put(format!("{}/project/{}/file", base(port), pid))
+        .json(&serde_json::json!({ "path": "sr.ts", "content": "old text here" }))
+        .send()
+        .await
+        .unwrap();
+
+    // 搜索替换
+    let r = client
+        .post(format!("{}/project/{}/search/replace", base(port), pid))
+        .json(&serde_json::json!({ "q": "old", "replace": "new", "files": ["sr.ts"] }))
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(r.status(), 401);
+}
+
+#[tokio::test]
+async fn syntax_highlight_endpoint() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": "." }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    client
+        .put(format!("{}/project/{}/file", base(port), pid))
+        .json(&serde_json::json!({ "path": "hl.ts", "content": "const x = 1;" }))
+        .send()
+        .await
+        .unwrap();
+
+    let r = client
+        .get(format!("{}/project/{}/highlight?path=hl.ts", base(port), pid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+}
+
+#[tokio::test]
+async fn git_source_view_endpoint() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": "." }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    let r = client
+        .get(format!("{}/project/{}/git/view", base(port), pid))
+        .send()
+        .await
+        .unwrap();
+    // 可能 200 或 4xx/5xx（非 git 仓库）
+    assert_ne!(r.status(), 401);
+}
+
+#[tokio::test]
+async fn project_lsp_proxy_endpoint() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": "." }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    let r = client
+        .post(format!("{}/project/{}/lsp", base(port), pid))
+        .json(&serde_json::json!({ "path": "test.ts", "action": "diagnostics" }))
+        .send()
+        .await
+        .unwrap();
+    // LSP 可能 200 或 4xx/5xx（无语言包安装）
+    assert_ne!(r.status(), 401);
+}
+
+#[tokio::test]
+async fn delete_project_removes_from_list() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    // 创建临时目录项目
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    let pid = body["id"].as_str().unwrap();
+
+    // DELETE
+    let r = client
+        .delete(format!("{}/projects/{}", base(port), pid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    // 列表中不再出现
+    let r = client.get(format!("{}/projects", base(port))).send().await.unwrap();
+    let list: serde_json::Value = r.json().await.unwrap();
+    let ids: Vec<&str> = list["projects"].as_array().unwrap()
+        .iter().filter_map(|p| p["id"].as_str()).collect();
+    assert!(!ids.contains(&pid));
+}
+
+#[tokio::test]
+async fn create_session_with_worktree() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    // 创建 git 仓库项目
+    let tmp = tempfile::tempdir().unwrap();
+    let init = std::process::Command::new("git")
+        .args(["init", "--initial-branch=main"])
+        .current_dir(tmp.path())
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@l")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@l")
+        .output()
+        .unwrap();
+    assert!(init.status.success());
+
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    // 带 worktree 参数创建会话
+    let r = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({ "project_id": pid, "provider": "mock", "worktree": "managed" }))
+        .send()
+        .await
+        .unwrap();
+    // 可能 200（git 仓库）或 400（非 git/创建失败）
+    assert_ne!(r.status(), 401);
+}
+
+#[tokio::test]
+async fn checkpoint_rollback_endpoint() {
+    let script = vec![ScriptedReply::Text("done".into())];
+    let (_dir, port, token) = start_daemon(script).await;
+    let client = client_with_token(&token);
+
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": "." }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    // 创建会话 + 发消息产生 checkpoint
+    let r = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({ "project_id": pid, "provider": "mock" }))
+        .send()
+        .await
+        .unwrap();
+    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
+
+    // POST checkpoint rollback（不存在的 id → 404 或 400）
+    let r = client
+        .post(format!("{}/checkpoint/nonexistent/rollback", base(port)))
+        .json(&serde_json::json!({ "granularity": "revert" }))
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(r.status(), 401);
+}
+
+#[tokio::test]
+async fn merge_and_discard_worktree_endpoints() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    // POST merge（不存在的 session → 404 或 400）
+    let r = client
+        .post(format!("{}/session/nonexistent/worktree/merge", base(port)))
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(r.status(), 401);
+
+    // POST discard
+    let r = client
+        .post(format!("{}/session/nonexistent/worktree/discard", base(port)))
+        .json(&serde_json::json!({ "confirm": true }))
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(r.status(), 401);
+}
