@@ -135,6 +135,7 @@
 | **v1.99** | **i18n 硬编码清扫三批（用户令「检查遗漏的硬编码」；扫描法 = 中文剥全注释 + 英文 JSX 文本节点 / 属性值 / `??` fallback 三路正则，中英双向）：① main.tsx 启动屏 5 处接入双语（boot.connecting / connect_failed / failed_title / hint / root_missing）——React 挂载前直用 createTranslator 纯函数，偏好源与 App 同一 localStorage `tenon:locale`；② Evals 列头 target / tokens / steps 与 Trace 列头 seq 接 t()（同表其余列头 v1.94 已双语，此 4 处漏网）；③ FileTree 空目录 aria-label 与 file/ops 失败 fallback（tree.empty_dir / tree.op_failed）；④ 顶栏语言选择器 Auto 项与 language / theme aria-label 双语化（language.auto / topbar.language / topbar.theme；语言名 English / 中文按 i18n 惯例以母语显示豁免）；⑤ AgentPanel 证据 error fallback 与 EditorPane LSP 写操作无会话守卫（agent.error_fallback / editor.needs_session）；⑥ 豁免留档——键盘键名（Enter / Escape / Arrow*）、git HEAD、品牌名 Tenon、L4 状态 token（经 `t(l4.state.*)` 键名插值）、DiffPanel 标题 `?? "diff"` 源语言默认（与 emptyText 同模式，App 恒传双语标题）、api.ts HTTP 错误包装与 merge.ts 哨兵串属技术层非文案** |
 | **v1.100** | **多语言支持落地（用户令「开发中英文以外的语言包，实现全站多语言，优化多语言支持」；§4.2 i18n 行改写为多语言规格）：① 社区语言包首发三件——繁體中文（zh-TW，台灣用語：專案 / 檔案 / 設定 / 儲存庫 / 套用）、日本語（ja）、한국어（ko），288 键全量翻译且与 en 键集对齐（五语言键对齐测试门禁，新增语言 = `locales/<tag>.json` + `LOCALES` 注册表一行）；② i18n 内核重构——`LOCALES` 注册表驱动顶栏选择器（语言名母语显示）、en + zh-CN 静态随包（首屏即需）、其余语言 `import()` 懒加载为独立分块（各 ~5KB gzip，主包零增量），`loadLocaleResource` 幂等 + `useLocaleTranslator` 就绪后重渲染（未载入时优雅回退英文）；③ resolveLocale 升级 BCP-47 前缀匹配——zh-Hant / TW / HK / MO → zh-TW，其余 zh → zh-CN，ja / ko 前缀直达；④ 语言偏好双写（§7.5 同外观档法）——localStorage 快路径 + `PUT /ui-prefs` `locale` 键跨启动权威，boot 握手后对齐并预载语言包再渲染启动屏（启动屏首绘即目标语言）；⑤ `<html lang>` 随语言切换（屏幕阅读器发音）；⑥ 测试：五语言键对齐 / 前缀匹配 / 懒加载幂等与回退 / 偏好读写共 +16 例；E2E 冷启动 P50 226ms 不受懒加载影响。范围注记：Monaco 编辑器 chrome（查找 / 菜单等内建 UI）本地化需 nls 语言包注入，属独立特性另行评审，本版不含** |
 | **v1.101** | **左栏「项目」视图排版紧凑化（用户选定 Codex 紧凑索引形态；目检问题：孤行「+」按钮 / 列头与会话行右列语义错位 / 大量无标题回退会话同权重平铺 / 脏标题直达）：① 孤行「添加」按钮并入视图标题行右端（`pe-head` = 视图名 + 「+」，projects 视图不再渲染通用 `side-head` 标题）；② 移除「Name / Updated」列头（信息密度低且语义错位）；③ 会话行状态由灰色文字改为 §7.5 状态色圆点（`STATE_COLORS` 单一来源，状态文字转 hover title），行高压缩；④ 已回滚 / 无标题回退（显示模型名）会话整行灰显降噪（hover / active 恢复）；⑤ 显示层标题清洗——剥离截断 prompt 引導前缀（`The user's message is:` 等）与首尾引号，不改库，清空回退模型名；⑥ 空状态摘要不渲染空 `meta` span；`projects.column.*` 五语言键删除** |
+| **v1.102** | **Laya 分发多镜像 + 内置 starter 兜底（用户令「多添加几个下载地址保证模型可用」；实证：默认 registry `tenonide.dev` 尚未解析，自动下载必失败静默回退，模型永不可用）：① registry 清单多镜像链——`DEFAULT_REGISTRY_URLS`（官方域名 → GitHub Pages 静态托管 → jsDelivr CDN），顺序尝试任一可达且解析成功即用，全部失败才判不可达；`DaemonOptions.laya_registry_url` 测试注入语义不变（显式覆盖 = 单地址）；② 清单 `ModelEntry.urls` 模型文件镜像列表（可选字段，serde default 兼容旧清单；SHA-256 钉扎保证任一镜像字节一致，顺序尝试）——`url` 保留为主镜像；③ 内置 starter 兜底（保证可用）——所有 registry 镜像与模型镜像均失败且本地未装载时，安装编译期内嵌 starter 模型（`tenon-laya/models/laya-starter-v1.json`，~9KB JSON 线性分类器，与二进制同分发同完整性、版本锁定 1）并热装载，registry 日后可达时按版本比较正常升级覆盖；**§9.8「模型文件不进安装包」修订为「完整模型不进安装包，starter 兜底内嵌」**（保包体初衷是体积，KB 级 JSON 不违背）；失败仍静默回退不阻塞，`InstallPlan.size_bytes` 死字段移除（恒 None 无消费方），§16 风险行与附录 E 注释同步** |
 | **v1.105** | **§10.2 对话 token 消耗优化：历史压缩落地（用户令「优化对话 token 消耗」；原语在而接线缺——`TokenBudget::needs_compaction` / `SessionMemory::compact` 无人调用，工具输出全文永久驻留任务内历史逐回合重发，L2 goals 跨任务只增不减）：① 任务内输入预算压缩——每回合请求前估算输入 token（正文 + tool_calls 参数，字符近似），估算或上一回合 provider 权威 usage 超阈值（24k）即压缩：保留最近 4 条工具输出原文，更早的 tool 消息替换为存根（`[工具输出已省略：{tool} 原约 N 字符——需要时重新调用该工具获取]`），只替换内容不增删消息、tool_call_id 配对不变，首条 user（任务 + L1 工作集）与 assistant 意图文本永不省略，存根幂等不重写；② L2 有界——goals 压缩至最近 8 条（`MAX_L2_GOALS`），系统提示不随会话长度线性膨胀；③ 压缩事件 `compaction` 入 Trace（before / after 估算 token、省略条数；重引入 v1.93 清理的 EventKind，当时无消费方），UI 时间轴 default 分支容忍不渲染（文案后补）；④ 「压缩后自检问答」修订为确定性校验（tool_call_id 配对完整性，失败即本回合放弃压缩）——省略式压缩只丢弃模型已消费过的历史输出、不产生摘要失真，替代模型自检省一次调用** |
 
 
@@ -677,7 +678,7 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 | 2 | 命令风险辅助 | §12.2 规则引擎为主、Laya 为规则库外命令补盲区（借鉴 codex execpolicy 思路，§3.1）；打分用于风险说明与执行前提示，**不改变 A/B/C/D 分级语义、不替代只读开关 / 工具黑名单**（v1.89 铁律不受影响） | 高风险早暴露，减少事后回滚 |
 | 3 | 路由启发式 | 承接 §11「纯读任务提示轻模型」的轻量启发式（展示建议、一键采纳；auto 路由仍为实验特性默认关，§5 非目标 8） | 云端 token 成本下降 |
 
-**分发与生命周期**：模型文件不进安装包（保包体，同 §8.4 运行时分发原则）；**daemon 启动即自动下载并启用（v1.71，用户决策）**——`models.laya.enabled` 且 `models.laya.auto_download`（默认开）时后台拉取官方静态 registry（附录 C Q1）签名清单，版本锁定 + ed25519 签名校验 + SHA-256 校验通过后下载安装至 `~/.tenon/models/laya/`（§14.1）并热装载，清单版本新于已装即自动升级、相同即跳过；**全程无确认卡**——决策模型是产品自管、版本锁定、签名钉扎的静态资产，经官方 registry 分发、推理不出网，不是代理动作；下载失败静默回退现状（日志留痕、下次启动重试，不做重试风暴），不阻塞任何功能。`auto_download = false` 时不自动下载（重新开启后下次启动拉取；手动下载端点已随 v1.92 移除）。由 daemon 内置 Rust 推理运行时加载（不额外进程、不进 WebView）；中英输入自动路由对应语言变体（模型随发双变体，与 Q5 中英同期一致）。
+**分发与生命周期**：完整模型文件不进安装包（保包体，同 §8.4 运行时分发原则；**v1.102 修订**：KB 级 starter 兜底模型内嵌，见下）；**daemon 启动即自动下载并启用（v1.71，用户决策）**——`models.laya.enabled` 且 `models.laya.auto_download`（默认开）时后台按**多镜像链（v1.102）**拉取官方静态 registry（附录 C Q1）签名清单：`DEFAULT_REGISTRY_URLS` 顺序尝试（官方域名 tenonide.dev → GitHub Pages 静态托管 → jsDelivr CDN），任一可达且解析成功即用；版本锁定 + ed25519 签名校验 + SHA-256 校验通过后按清单 `urls` 镜像列表（`url` 为首镜像，可选字段兼容旧清单）顺序下载安装至 `~/.tenon/models/laya/`（§14.1）并热装载——SHA-256 钉扎保证任一镜像字节一致；清单版本新于已装即自动升级、相同即跳过；**全程无确认卡**——决策模型是产品自管、版本锁定、签名钉扎的静态资产，经官方 registry 分发、推理不出网，不是代理动作。**内置 starter 兜底（v1.102，保证可用）**：所有 registry 镜像不可达 / 清单校验失败 / 模型镜像全部下载失败，且本地未装载时，安装编译期内嵌 starter 模型（与二进制同分发同完整性，版本锁定 1）并热装载——离线首启同样可用；registry 日后可达时按版本比较正常升级覆盖。下载失败静默回退现状（日志留痕、下次启动重试，不做重试风暴），不阻塞任何功能。`auto_download = false` 时不自动下载（重新开启后下次启动拉取；手动下载端点已随 v1.92 移除）。由 daemon 内置 Rust 推理运行时加载（不额外进程、不进 WebView）；中英输入自动路由对应语言变体（模型随发双变体，与 Q5 中英同期一致）。
 
 **边界与兜底**：
 
@@ -1043,7 +1044,7 @@ WS 事件与会话 events 表一一对应，均含 `project_id`；断线重连�
 | 范围蔓延 | 非目标清单 + 每里程碑验收指标 |
 | 产品名撞名（原 OpenCodex） | 已定名 **Tenon** 并完成全局替换（v1.10，Q6；官网 tenonide.dev 经 RDAP 核验未注册；沿革 OpenCodex → Weft → Tenon）；实证：GitHub 已有 151 个同名仓库（榜首 16.8k star，系 OpenAI Codex 代理工具）、opencodex.dev/.com 已被注册——回归该名不可行；近似商标风险纳入季度复查 |
 | M0 容量接近上限（v1.2 起新增 i18n 骨架与两个决策 spike） | 均为受控小项；进度 slip 时按「先砍体验项（fuzzy / 分栏），不动安全、i18n 与 spike」顺序降载 |
-| 本地决策模型（Laya）误判或分发失败 | 判定仅用于排序 / 提示 / 预筛且逐项可关；规则引擎兜底；不可用即整体回退现状；自动下载（v1.71）仅面向官方静态 registry，过版本锁定 + ed25519 签名 + SHA-256 钉扎，失败静默回退、不阻塞（§9.8）；效果经 Evals 门「通过率不降、token 下降」验收（§18.3） |
+| 本地决策模型（Laya）误判或分发失败 | 判定仅用于排序 / 提示 / 预筛且逐项可关；规则引擎兜底；不可用即整体回退现状；自动下载（v1.71）仅面向官方静态 registry 多镜像链（v1.102：官方域名 → GitHub Pages → jsDelivr，SHA-256 钉扎保证镜像一致），全部失败回退内置 starter 模型（与二进制同分发同完整性），失败静默回退、不阻塞（§9.8）；效果经 Evals 门「通过率不降、token 下降」验收（§18.3） |
 
 ---
 
@@ -1186,6 +1187,6 @@ price_out_per_mtok = 0.0          # 可选：美元 / 百万输出 token
 
 [models.laya]
 enabled       = true              # 本地决策模型总开关（§9.8；false = 各集成点回退现状）
-auto_download = true              # daemon 启动自动下载并热装载（v1.71：无审批卡，失败静默回退）；false = 不自动下载
+auto_download = true              # daemon 启动自动下载并热装载（v1.71：无审批卡；v1.102：registry 多镜像 + 内置 starter 兜底，失败静默回退）；false = 不自动下载
 features      = ["intent", "risk", "routing"]  # 集成点逐项开关（§9.8 表 #1-3，v1.92 收敛）
 ```

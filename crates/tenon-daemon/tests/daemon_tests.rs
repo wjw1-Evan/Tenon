@@ -2596,15 +2596,16 @@ async fn spawn_laya_registry() -> (String, String) {
     use ed25519_dalek::Signer;
 
     let model = std::fs::read(LAYA_STARTER_MODEL).unwrap();
-    let sha = tenon_laya::sha256_hex(&model);
     let sk = laya_test_signer();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     // 模型体内部版本同步升 2：/models 上报的是模型文件版本，须与清单版本一致
-    // 才能区分「registry v2」与「starter 兜底 v1」；清单对其 sha256 签名（v1.102）。
+    // 才能区分「registry v2」与「starter 兜底 v1」；sha 在变异后计算，保证
+    // 清单钉扎的就是所服务的字节（v1.102）。
     let mut model: serde_json::Value = serde_json::from_slice(&model).unwrap();
     model["version"] = serde_json::json!(2);
     let model = serde_json::to_vec(&model).unwrap();
+    let sha = tenon_laya::sha256_hex(&model);
     // urls 首位为不可达镜像（v1.102）：常规路径即覆盖模型镜像回退。
     let manifest = serde_json::json!({
         "laya": {
@@ -2705,14 +2706,24 @@ async fn laya_auto_download_disabled_stays_unloaded() {
 
 #[tokio::test]
 async fn laya_falls_back_to_bundled_starter_when_registry_unreachable() {
+    // 本地恒 500 的 registry：模拟在线链路全镜像失败（确定性错误路径，
+    // 不依赖 connection refused 的时序）
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = axum::Router::new().route(
+        "/registry/laya.json",
+        axum::routing::get(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE }),
+    );
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
     let dir = tempfile::tempdir().unwrap();
     let mut options = DaemonOptions::in_memory();
     options.endpoint_path = Some(dir.path().join("daemon.endpoint"));
     options.settings_path = Some(dir.path().join("settings.json"));
     let models_dir = dir.path().join("models/laya");
     options.laya_models_dir = Some(models_dir.clone());
-    // 不可达 registry（连接拒绝）：在线链路全失败 → 内置 starter 兜底（v1.102）
-    options.laya_registry_url = Some("http://127.0.0.1:1/registry/laya.json".into());
+    options.laya_registry_url = Some(format!("http://{addr}/registry/laya.json"));
     options.config.models.laya.auto_download = true;
     let handle = serve(options).await.unwrap();
 
@@ -2745,7 +2756,11 @@ async fn laya_upgrades_installed_starter_from_registry_when_reachable() {
 
     let client = client_with_token(&handle.token);
     for _ in 0..50 {
-        if let Ok(r) = client.get(format!("{}/models", base(handle.port))).send().await {
+        if let Ok(r) = client
+            .get(format!("{}/models", base(handle.port)))
+            .send()
+            .await
+        {
             if let Ok(v) = r.json::<serde_json::Value>().await {
                 if v["laya"]["version"] == serde_json::json!(["laya-starter", 2]) {
                     return;

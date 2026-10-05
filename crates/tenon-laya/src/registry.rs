@@ -262,7 +262,9 @@ mod tests {
         .to_string();
         let good_body: &'static [u8] = Box::leak(manifest.into_bytes().into_boxed_slice());
         let good = spawn_status_endpoint(200, good_body).await;
-        let m = fetch_manifest_from(&[bad.as_str(), good.as_str()]).await.unwrap();
+        let m = fetch_manifest_from(&[bad.as_str(), good.as_str()])
+            .await
+            .unwrap();
         assert_eq!(m.laya.version, 2);
     }
 
