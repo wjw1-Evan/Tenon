@@ -2673,4 +2673,43 @@ mod tests {
         assert!(out.content.contains("App.java"));
         assert!(out.content.contains("Program.cs"));
     }
+
+    #[test]
+    fn apply_patch_dockerfile_and_compose() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let files = [
+            ("Dockerfile", "FROM node:20-alpine\nWORKDIR /app\nCOPY . .\nRUN npm ci\nCMD [\"npm\", \"start\"]\n"),
+            ("docker-compose.yml", "version: \"3\"\nservices:\n  app:\n    build: .\n"),
+        ];
+        for (path, content) in files {
+            let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+                "file": path, "range": null, "content": content
+            }));
+            assert!(out.ok, "failed: {}", path);
+        }
+    }
+
+    #[test]
+    fn apply_patch_ci_workflow() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": ".github/workflows/ci.yml",
+            "range": null,
+            "content": "name: CI\non: [push]\njobs:\n  test:\n    runs-on: ubuntu-latest\n"
+        }));
+        assert!(out.ok);
+    }
+
+    #[test]
+    fn apply_patch_env_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": ".env.example", "range": null,
+            "content": "DATABASE_URL=postgres://localhost/mydb\nAPI_KEY=your-key-here\n"
+        }));
+        assert!(out.ok);
+    }
 }
