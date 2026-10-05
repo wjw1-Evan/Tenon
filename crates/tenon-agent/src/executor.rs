@@ -2017,4 +2017,40 @@ mod tests {
         let out = execute_tool(&c, "grep", &serde_json::json!({"pattern": "10\\.99"}));
         assert!(out.ok);
     }
+
+    #[test]
+    fn install_deps_missing_command_after_readonly_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        // NOT readonly, but no command → should fail with "缺少 command"
+        let out = execute_tool(&c, "install_deps", &serde_json::json!({}));
+        assert!(!out.ok);
+        assert!(out.content.contains("command"));
+    }
+
+    #[test]
+    fn apply_patch_complex_nested_path_creation() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "packages/core/src/types/config.ts",
+            "range": null,
+            "content": "export interface Config { debug: boolean; }\n"
+        }));
+        assert!(out.ok);
+        assert!(dir.path().join("packages/core/src/types/config.ts").exists());
+    }
+
+    #[test]
+    fn grep_multiline_file_finds_on_multiple_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("multi-line.txt"),
+            "first match here\nno match\nanother match\n").unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "grep", &serde_json::json!({"pattern": "match"}));
+        assert!(out.ok);
+        // Should find on lines 1 and 3
+        assert!(out.content.contains("1:"));
+        assert!(out.content.contains("3:"));
+    }
 }
