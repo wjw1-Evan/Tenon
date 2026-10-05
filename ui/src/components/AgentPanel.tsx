@@ -190,6 +190,9 @@ export function AgentPanel({
   const [streamText, setStreamText] = useState("");
   const [status, setStatus] = useState<AgentStateName>("idle");
   const [input, setInput] = useState("");
+  // v1.135：撤销截断后整流重载（递增触发轮询 effect 以 after=0 重拉）与被撤销回合原文。
+  const [traceEpoch, setTraceEpoch] = useState(0);
+  const [undoneText, setUndoneText] = useState("");
   // 草稿输入文本 per-project（v1.126）：多项目并行草稿互不串扰——
   // 发送成功随草稿清除；弃草稿重进「＋ 新任务」时文本恢复（草稿意图 v1.116 同语义）。
   const [draftInputs, setDraftInputs] = useState<Record<string, string>>({});
@@ -323,7 +326,7 @@ export function AgentPanel({
       alive = false;
       clearInterval(timer);
     };
-  }, [api, sessionId, onStateChange, onLatestDiff, onDirtyConflict]);
+  }, [api, sessionId, onStateChange, onLatestDiff, onDirtyConflict, traceEpoch]);
 
   async function send() {
     const text = inputValue.trim();
@@ -353,6 +356,8 @@ export function AgentPanel({
     try {
       await api.sendMessage(sessionId, text);
       setInput("");
+      // v1.135：新消息发出后「已撤销」提示条（重做入口）完成使命即收。
+      setUndoneTurnId(null);
     } finally {
       setBusy(false);
     }
@@ -388,8 +393,15 @@ export function AgentPanel({
         window.alert(t("thread.undo_failed"));
         return;
       }
-      await api.rollbackCheckpoint(cp.id);
+      // v1.135 撤销三合一：①任务文本回填输入框；②文件修改随树回滚；③线程截断
+      //（服务端水位过滤，气泡及其后信息消失），整流重载后重做改挂「已撤销」提示条。
+      await api.rollbackCheckpoint(cp.id, true);
+      setUndoneText(turn.task ?? "");
+      setInputValue(turn.task ?? "");
       setUndoneTurnId(turn.id);
+      setEvents([]);
+      setStreamText("");
+      setTraceEpoch((e) => e + 1);
     } catch {
       window.alert(t("thread.undo_failed"));
     }
@@ -405,8 +417,14 @@ export function AgentPanel({
   async function redoTurn() {
     if (!sessionId || running || undoneTurnId === null) return;
     try {
+      // v1.135：重做 = unrollback 清截断水位，被隐藏回合随气泡恢复；整流重载。
       await api.control(sessionId, "unrollback");
       setUndoneTurnId(null);
+      setEvents([]);
+      setStreamText("");
+      setTraceEpoch((e) => e + 1);
+      // 撤销时已把原消息放回输入框；恢复回合后若输入框仍是原文则清空防重复发送。
+      if (inputValue === undoneText) setInput("");
     } catch {
       window.alert(t("thread.undo_failed"));
     }
@@ -559,7 +577,7 @@ export function AgentPanel({
               {turn.task !== null && (
                 <div className="turn-user" data-testid="turn-user">
                   <div className="turn-task">{turn.task}</div>
-                  {/* v1.127 气泡下功能按钮组：复制（恒可用）/ 撤销（每个含改动回合）/ 重做（挂最近被撤销回合） */}
+                  {/* v1.127 气泡下功能按钮组：复制（恒可用）/ 撤销（每个含改动回合）；v1.135 重做改挂「已撤销」提示条 */}
                   <div className="turn-actions">
                     <button
                       type="button"
@@ -582,19 +600,6 @@ export function AgentPanel({
                         onClick={() => void undoTurn(turn)}
                       >
                         ↩ {t("thread.undo")}
-                      </button>
-                    )}
-                    {turn.id === undoneTurnId && (
-                      <button
-                        type="button"
-                        className="turn-action"
-                        data-testid={`turn-redo-${turn.id}`}
-                        disabled={running}
-                        title={t("thread.redo")}
-                        aria-label={t("thread.redo")}
-                        onClick={() => void redoTurn()}
-                      >
-                        ↪ {t("thread.redo")}
                       </button>
                     )}
                     {turn.model && (
@@ -628,6 +633,22 @@ export function AgentPanel({
             </section>
           );
         })}
+        {undoneTurnId !== null && (
+          <div className="turn-undo-chip" data-testid="undo-notice">
+            <span>{t("thread.undo_notice")}</span>
+            <button
+              type="button"
+              className="turn-action"
+              data-testid="undo-redo"
+              disabled={running}
+              title={t("thread.redo")}
+              aria-label={t("thread.redo")}
+              onClick={() => void redoTurn()}
+            >
+              ↪ {t("thread.redo")}
+            </button>
+          </div>
+        )}
       </div>
 
       <div

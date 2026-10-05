@@ -259,6 +259,7 @@
   "thread.copy": "コピー",
   "thread.copied": "コピーしました",
   "thread.redo": "やり直す",
+  "thread.undo_notice": "取り消しました：変更はロールバックされ、メッセージを入力欄に戻しました",
   "tool.read_file": "読み取り",
   "tool.list_dir": "一覧",
   "tool.grep": "検索",

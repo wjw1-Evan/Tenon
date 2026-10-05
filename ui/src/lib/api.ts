@@ -398,10 +398,10 @@ export class TenonApi {
     }>(`/session/${sessionId}/checkpoints`);
   }
 
-  rollbackCheckpoint(checkpointId: string) {
+  rollbackCheckpoint(checkpointId: string, truncate = false) {
     return this.request<{ rolled_back: string[] }>(
       `/checkpoint/${checkpointId}/rollback`,
-      { method: "POST", json: { granularity: "revert" } }
+      { method: "POST", json: { granularity: "revert", truncate } }
     );
   }
 

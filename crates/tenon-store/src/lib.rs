@@ -203,6 +203,12 @@ pub struct Session {
     /// 手动归档时间（v1.103 §14.2）；空串 = 未归档，侧栏默认隐藏。
     #[serde(default)]
     pub archived_at: String,
+    /// 线程截断水位（v1.135 消息级撤销）：[from, to] 闭区间内事件对线程 / Trace 隐藏；
+    /// None = 无截断。unrollback 清水位，事件随之恢复可见。
+    #[serde(default)]
+    pub truncated_from_seq: Option<i64>,
+    #[serde(default)]
+    pub truncated_to_seq: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -315,7 +321,7 @@ pub struct Plugin {
     pub installed_at: String,
 }
 
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
 
 const DDL: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -342,6 +348,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     title TEXT NOT NULL DEFAULT '',
     worktree_path TEXT NOT NULL DEFAULT '',
     archived_at TEXT NOT NULL DEFAULT '',
+    truncated_from_seq INTEGER,
+    truncated_to_seq INTEGER,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -670,6 +678,20 @@ impl Store {
                         [],
                     )?;
                 }
+                // v10 → v11：会话线程截断水位（v1.135 消息级撤销——水位 [from,to] 内事件
+                // 对线程 / Trace 隐藏；事件行保留在库可审计，unrollback 清水位即恢复）。
+                if !Self::column_exists(&conn, "sessions", "truncated_from_seq")? {
+                    conn.execute(
+                        "ALTER TABLE sessions ADD COLUMN truncated_from_seq INTEGER",
+                        [],
+                    )?;
+                }
+                if !Self::column_exists(&conn, "sessions", "truncated_to_seq")? {
+                    conn.execute(
+                        "ALTER TABLE sessions ADD COLUMN truncated_to_seq INTEGER",
+                        [],
+                    )?;
+                }
                 conn.execute("UPDATE schema_version SET version = ?1", [SCHEMA_VERSION])?;
             }
             Some(_) => {}
@@ -816,6 +838,8 @@ impl Store {
             title: String::new(),
             worktree_path: String::new(),
             archived_at: String::new(),
+            truncated_from_seq: None,
+            truncated_to_seq: None,
             created_at: now.clone(),
             updated_at: now,
         };
@@ -847,7 +871,7 @@ impl Store {
 
     pub fn session(&mut self, id: &str) -> Result<Option<Session>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, model, status, title, worktree_path, created_at, updated_at, archived_at
+            "SELECT id, project_id, model, status, title, worktree_path, created_at, updated_at, archived_at, truncated_from_seq, truncated_to_seq
              FROM sessions WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map([id], row_to_session)?;
@@ -857,7 +881,7 @@ impl Store {
     /// 全部会话（崩溃恢复扫描用；含已归档，恢复语义不因归档改变）。
     pub fn list_all_sessions(&mut self) -> Result<Vec<Session>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, model, status, title, worktree_path, created_at, updated_at, archived_at
+            "SELECT id, project_id, model, status, title, worktree_path, created_at, updated_at, archived_at, truncated_from_seq, truncated_to_seq
              FROM sessions ORDER BY created_at ASC",
         )?;
         let rows = stmt.query_map([], row_to_session)?;
@@ -867,7 +891,7 @@ impl Store {
     /// 项目未归档会话（v1.103：手动归档在侧栏默认隐藏）。
     pub fn list_sessions(&mut self, project_id: &str) -> Result<Vec<Session>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, model, status, title, worktree_path, created_at, updated_at, archived_at
+            "SELECT id, project_id, model, status, title, worktree_path, created_at, updated_at, archived_at, truncated_from_seq, truncated_to_seq
              FROM sessions WHERE project_id = ?1 AND archived_at = '' ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([project_id], row_to_session)?;
@@ -877,7 +901,7 @@ impl Store {
     /// 项目已归档会话（v1.103：侧栏「已归档」折叠组数据源）。
     pub fn list_archived_sessions(&mut self, project_id: &str) -> Result<Vec<Session>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, model, status, title, worktree_path, created_at, updated_at, archived_at
+            "SELECT id, project_id, model, status, title, worktree_path, created_at, updated_at, archived_at, truncated_from_seq, truncated_to_seq
              FROM sessions WHERE project_id = ?1 AND archived_at != '' ORDER BY updated_at DESC",
         )?;
         let rows = stmt.query_map([project_id], row_to_session)?;
@@ -984,13 +1008,63 @@ impl Store {
     }
 
     /// 断线续传：返回 seq > after_seq 的事件（§15）。
+    /// v1.135：会话截断水位 [from, to] 内的事件对线程 / Trace 隐藏（行留库可审计）。
     pub fn events_since(&mut self, session_id: &str, after_seq: i64) -> Result<Vec<Event>> {
+        let truncation = self.thread_truncation(session_id)?;
         let mut stmt = self.conn.prepare(
             "SELECT id, session_id, project_id, seq, type, payload, created_at
              FROM events WHERE session_id = ?1 AND seq > ?2 ORDER BY seq ASC",
         )?;
         let rows = stmt.query_map(params![session_id, after_seq], row_to_event)?;
-        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        let all = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(all
+            .into_iter()
+            .filter(|e| match (truncation.0, truncation.1) {
+                (Some(from), Some(to)) => !(e.seq >= from && e.seq <= to),
+                _ => true,
+            })
+            .collect())
+    }
+
+    /// 线程截断水位（v1.135）：None = 无截断。
+    pub fn thread_truncation(&mut self, session_id: &str) -> Result<(Option<i64>, Option<i64>)> {
+        let row: Option<(Option<i64>, Option<i64>)> = self
+            .conn
+            .query_row(
+                "SELECT truncated_from_seq, truncated_to_seq FROM sessions WHERE id = ?1",
+                [session_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        Ok(row.unwrap_or((None, None)))
+    }
+
+    /// 回合起点（v1.135 消息级撤销）：`before_seq`（含）之前最近的 user_input seq；
+    /// 无则 None（该回合无 user_input，不截断）。
+    pub fn turn_start_seq(&mut self, session_id: &str, before_seq: i64) -> Option<i64> {
+        self.conn
+            .query_row(
+                "SELECT MAX(seq) FROM events
+                 WHERE session_id = ?1 AND seq <= ?2 AND type = 'user_input'",
+                params![session_id, before_seq],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .ok()
+            .flatten()
+    }
+
+    /// 设置 / 清除线程截断水位（v1.135）：None = 清除（unrollback 恢复可见）。
+    pub fn set_thread_truncation(
+        &mut self,
+        session_id: &str,
+        from: Option<i64>,
+        to: Option<i64>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET truncated_from_seq = ?2, truncated_to_seq = ?3 WHERE id = ?1",
+            params![session_id, from, to],
+        )?;
+        Ok(())
     }
 
     /// 全局事件流（WS 推送用）：id 升序、跨会话、限量。
@@ -1761,6 +1835,8 @@ fn row_to_session(r: &rusqlite::Row<'_>) -> rusqlite::Result<Session> {
         title: r.get(4)?,
         worktree_path: r.get(5)?,
         archived_at: r.get(8)?,
+        truncated_from_seq: r.get(9)?,
+        truncated_to_seq: r.get(10)?,
         created_at: r.get(6)?,
         updated_at: r.get(7)?,
     })
@@ -2018,6 +2094,34 @@ mod tests {
         // 空串 = 清除自定义名，回退派生。
         s.set_project_display_name(&p.id, "").unwrap();
         assert_eq!(s.project(&p.id).unwrap().unwrap().display_name, "");
+    }
+
+    #[test]
+    fn thread_truncation_hides_range_until_cleared() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let sess = s.create_session(&p.id, "mock").unwrap();
+        for i in 1..=4 {
+            s.append_event(&sess.id, EventKind::UserInput, &json!({"i": i}))
+                .unwrap();
+        }
+        assert_eq!(s.events(&sess.id).unwrap().len(), 4);
+        assert_eq!(s.turn_start_seq(&sess.id, 4), Some(4));
+        assert_eq!(s.turn_start_seq(&sess.id, 1), Some(1));
+
+        // v1.135：水位 [2,4] → seq 2..4 对线程 / Trace 隐藏，仅剩 seq 1。
+        s.set_thread_truncation(&sess.id, Some(2), Some(4)).unwrap();
+        let visible: Vec<i64> = s.events(&sess.id).unwrap().iter().map(|e| e.seq).collect();
+        assert_eq!(visible, vec![1]);
+        assert!(s.events_since(&sess.id, 2).unwrap().is_empty());
+        let sess_row = s.session(&sess.id).unwrap().unwrap();
+        assert_eq!(sess_row.truncated_from_seq, Some(2));
+        assert_eq!(sess_row.truncated_to_seq, Some(4));
+
+        // unrollback 清水位 → 全部恢复可见。
+        s.set_thread_truncation(&sess.id, None, None).unwrap();
+        assert_eq!(s.events(&sess.id).unwrap().len(), 4);
     }
 
     #[test]

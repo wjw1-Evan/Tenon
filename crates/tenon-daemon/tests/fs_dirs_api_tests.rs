@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tenon_daemon::{serve, DaemonOptions};
-use tenon_models::{MockProvider, ScriptedReply};
+use tenon_models::MockProvider;
 
 fn base(port: u16) -> String {
     format!("http://127.0.0.1:{port}")

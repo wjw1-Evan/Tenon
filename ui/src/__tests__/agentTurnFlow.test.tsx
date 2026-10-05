@@ -282,14 +282,36 @@ describe("v1.111 消息级撤销", () => {
     expect(qaContainer.querySelector("[data-testid^=\"turn-undo-\"]")).toBeNull();
   });
 
-  it("点击撤销：确认后按回合首步 seq 匹配 checkpoint 并回滚", async () => {
+  // v1.135 撤销三合一：truncate 回滚 + 任务文本回填输入框 + 线程截断（气泡及其后信息消失），
+  // 重做改挂「已撤销」提示条。
+  it("点击撤销：truncate 回滚、文字回填输入框、气泡截断、重做挂提示条", async () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    let call = 0;
     const api = mockUndoApi(twoTurnEvents);
+    (api.trace as ReturnType<typeof vi.fn>).mockImplementation((_sid: string, after = 0) => {
+      call += 1;
+      const visible = call === 1 ? twoTurnEvents : twoTurnEvents.filter((e) => (e.seq as number) < 3);
+      return Promise.resolve({
+        events: visible.filter((e) => (e.seq as number) > after),
+        latest_seq: 4,
+      });
+    });
     render(<AgentPanel api={api} t={t} sessionId="s1" />);
-    const undo = await screen.findByTestId("turn-undo-3");
-    fireEvent.click(undo);
-    await waitFor(() => expect(api.rollbackCheckpoint).toHaveBeenCalledWith("cp2"));
-    expect(confirmSpy).toHaveBeenCalled();
+    fireEvent.click(await screen.findByTestId("turn-undo-3"));
+    await waitFor(() => expect(api.rollbackCheckpoint).toHaveBeenCalledWith("cp2", true));
+    // ① 任务文本回填输入框
+    await waitFor(() => {
+      const box = screen.getByRole("textbox") as HTMLTextAreaElement;
+      expect(box.value).toBe("任务二");
+    });
+    // ② 气泡及其后信息消失（重载返回截断后事件；「任务一」仍在）
+    await waitFor(() =>
+      expect(screen.queryByText("任务二", { selector: ".turn-task" })).toBeNull(),
+    );
+    expect(screen.getByText("任务一")).toBeTruthy();
+    // ③ 重做挂「已撤销」提示条
+    expect(screen.getByTestId("undo-notice")).toBeTruthy();
+    expect(screen.getByTestId("undo-redo")).toBeTruthy();
     confirmSpy.mockRestore();
   });
 
@@ -330,18 +352,30 @@ describe("v1.111 消息级撤销", () => {
     }
   });
 
-  it("撤销成功后重做钮出现在被撤销回合并调 unrollback，成功即收", async () => {
+  // v1.135：重做从气泡钮改挂「已撤销」提示条——调 unrollback 清水位，成功即收。
+  it("撤销后重做挂提示条并调 unrollback，成功即收", async () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     const api = mockUndoApi(twoTurnEvents);
     render(<AgentPanel api={api} t={t} sessionId="s1" />);
-    expect(screen.queryByTestId(/^turn-redo-/)).toBeNull();
+    expect(screen.queryByTestId("undo-notice")).toBeNull();
     fireEvent.click(await screen.findByTestId("turn-undo-3"));
-    const redo = await screen.findByTestId("turn-redo-3");
-    // 重做挂在被撤销的回合（最后一个含改动回合）上
-    expect(redo.closest(".turn-user")).toBe(screen.getAllByTestId("turn-user")[1]);
-    fireEvent.click(redo);
+    fireEvent.click(await screen.findByTestId("undo-redo"));
     await waitFor(() => expect(api.control).toHaveBeenCalledWith("s1", "unrollback"));
-    await waitFor(() => expect(screen.queryByTestId(/^turn-redo-/)).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId("undo-notice")).toBeNull());
+    confirmSpy.mockRestore();
+  });
+
+  // v1.135：撤销后发送新消息，提示条（重做入口）即收。
+  it("撤销后发送新消息提示条即收", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const api = mockUndoApi(twoTurnEvents);
+    render(<AgentPanel api={api} t={t} sessionId="s1" />);
+    fireEvent.click(await screen.findByTestId("turn-undo-3"));
+    expect(await screen.findByTestId("undo-notice")).toBeTruthy();
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "新任务" } });
+    fireEvent.click(screen.getByRole("button", { name: "message.send" }));
+    await waitFor(() => expect(api.sendMessage).toHaveBeenCalledWith("s1", "新任务"));
+    await waitFor(() => expect(screen.queryByTestId("undo-notice")).toBeNull());
     confirmSpy.mockRestore();
   });
 });

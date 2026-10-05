@@ -259,6 +259,7 @@
   "thread.copy": "复制",
   "thread.copied": "已复制",
   "thread.redo": "重做",
+  "thread.undo_notice": "已撤销：文件修改已回滚，原消息已放回输入框",
   "tool.read_file": "读取",
   "tool.list_dir": "列出",
   "tool.grep": "搜索",

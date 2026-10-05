@@ -735,7 +735,12 @@ async fn session_control(
         }
         "unrollback" => {
             return match session.unrevert().await {
-                Ok(()) => Json(json!({"unrolled": true})).into_response(),
+                Ok(()) => {
+                    // v1.135：unrollback 清线程截断水位——被隐藏的回合随气泡恢复可见。
+                    let mut store = state.store.lock().await;
+                    let _ = store.set_thread_truncation(&id, None, None);
+                    Json(json!({"unrolled": true})).into_response()
+                }
                 Err(e) => api_err(StatusCode::CONFLICT, e.to_string()),
             };
         }
@@ -1210,13 +1215,19 @@ async fn session_checkpoints(
     }
 }
 
+/// v1.135 消息级撤销请求体：`truncate = true` 时回滚后截断线程——该回合 user_input
+/// 起至最新事件（含 rollback 事件）对线程 / Trace 隐藏，会话状态复位 idle；时间轴
+/// 回滚（§10.3 快照时间轴）不传即保持原语义。
 #[derive(Deserialize)]
-struct RollbackBody {}
+struct RollbackBody {
+    #[serde(default)]
+    truncate: bool,
+}
 
 async fn checkpoint_rollback(
     State(state): State<Arc<DaemonState>>,
     Path(checkpoint_id): Path<String>,
-    Json(_body): Json<RollbackBody>,
+    Json(body): Json<RollbackBody>,
 ) -> Response {
     let target = {
         let mut store = state.store.lock().await;
@@ -1235,7 +1246,32 @@ async fn checkpoint_rollback(
     // v1.111：真按指定 checkpoint 恢复（此前误调 rollback_last 回最近一步，
     // 与 §10.3「选快照 → 整体恢复」语义不符，时间轴与消息级撤销共用此端点）。
     match session.rollback_to_checkpoint(&target).await {
-        Ok(files) => Json(json!({"rolled_back": files})).into_response(),
+        Ok(files) => {
+            if body.truncate {
+                // v1.135：线程截断——回合起点（该回合 user_input）起全部隐藏；
+                // 水位与既有区间合并（多次撤销向更早处扩展）；含刚落库的 rollback
+                // 事件，线程回到干净状态。会话状态复位 idle，输入框可继续编辑发送。
+                let mut store = state.store.lock().await;
+                let turn_start = match target.event_seq {
+                    Some(seq) => store.turn_start_seq(&target.session_id, seq),
+                    None => None,
+                };
+                let latest = store.latest_seq(&target.session_id).unwrap_or(0);
+                let (prev_from, prev_to) = store
+                    .thread_truncation(&target.session_id)
+                    .unwrap_or((None, None));
+                let from = match (prev_from, turn_start) {
+                    (Some(p), Some(t)) => Some(p.min(t)),
+                    (None, Some(t)) => Some(t),
+                    (Some(p), None) => Some(p),
+                    (None, None) => None,
+                };
+                let to = Some(prev_to.map_or(latest, |p| p.max(latest)));
+                let _ = store.set_thread_truncation(&target.session_id, from, to);
+                let _ = store.set_session_status(&target.session_id, SessionStatus::Idle);
+            }
+            Json(json!({"rolled_back": files})).into_response()
+        }
         Err(e) => api_err(StatusCode::CONFLICT, e.to_string()),
     }
 }
