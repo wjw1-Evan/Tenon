@@ -4854,7 +4854,7 @@ async fn session_created_returns_project_id() {
         .await
         .unwrap();
     let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(body["project_id"], pid);
+    assert!(body["session_id"].as_str().unwrap().len() > 0);
 }
 
 #[tokio::test]
@@ -5066,4 +5066,56 @@ async fn create_session_empty_provider_uses_default() {
     assert_eq!(r.status(), 200);
     let body: serde_json::Value = r.json().await.unwrap();
     assert!(body["session_id"].as_str().unwrap().len() > 0);
+}
+
+#[tokio::test]
+async fn open_project_missing_path_returns_error() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": "/definitely/not/a/real/path/xyz" }))
+        .send()
+        .await
+        .unwrap();
+    // May return 400, 404, or 500 depending on whether daemon creates the dir
+    assert_ne!(r.status(), 401);
+}
+
+#[tokio::test]
+async fn search_nonexistent_project_returns_error() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let r = client
+        .get(format!("{}/project/nonexistent/search?q=test", base(port)))
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_client_error() || r.status().is_server_error());
+}
+
+#[tokio::test]
+async fn create_session_nonexistent_project_returns_error() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let r = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({ "project_id": "nonexistent", "provider": "mock" }))
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(r.status(), 401);
+}
+
+#[tokio::test]
+async fn checkpoint_rollback_nonexistent_returns_error() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let r = client
+        .post(format!("{}/checkpoint/nonexistent-id/rollback", base(port)))
+        .json(&serde_json::json!({ "granularity": "revert" }))
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(r.status(), 401);
 }

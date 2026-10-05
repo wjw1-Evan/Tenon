@@ -1569,4 +1569,70 @@ mod tests {
         let out = execute_tool(&c, "grep", &serde_json::json!({"pattern": "findable"}));
         assert!(out.ok);
     }
+
+    #[test]
+    fn apply_patch_overwrites_large_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let big = "x".repeat(100_000);
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "big.txt", "range": null, "content": big
+        }));
+        assert!(out.ok);
+        let metadata = std::fs::metadata(dir.path().join("big.txt")).unwrap();
+        assert!(metadata.len() > 0);
+    }
+
+    #[test]
+    fn grep_searches_multiple_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "hello world").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "say hello again").unwrap();
+        std::fs::write(dir.path().join("c.txt"), "no match here").unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "grep", &serde_json::json!({"pattern": "hello"}));
+        assert!(out.ok);
+        assert!(out.content.contains("a.txt"));
+        assert!(out.content.contains("b.txt"));
+        assert!(!out.content.contains("c.txt"));
+    }
+
+    #[test]
+    fn list_dir_root_vs_subdir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("root.txt"), "").unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/nested.txt"), "").unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let root_out = execute_tool(&c, "list_dir", &serde_json::json!({"path": "."}));
+        assert!(root_out.content.contains("root.txt"));
+        assert!(root_out.content.contains("sub/"));
+        let sub_out = execute_tool(&c, "list_dir", &serde_json::json!({"path": "sub"}));
+        assert!(sub_out.content.contains("nested.txt"));
+    }
+
+    #[test]
+    fn read_file_utf8_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "中文内容\n日本語テキスト\n한국어\n";
+        std::fs::write(dir.path().join("utf8.txt"), content).unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "read_file", &serde_json::json!({"path": "utf8.txt"}));
+        assert!(out.ok);
+        assert!(out.content.contains("中文"));
+        assert!(out.content.contains("日本語"));
+    }
+
+    #[test]
+    fn apply_patch_preserves_subdirectory_structure() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "src/deeply/nested/module.rs",
+            "range": null,
+            "content": "pub struct Deep;\n"
+        }));
+        assert!(out.ok);
+        assert!(dir.path().join("src/deeply/nested/module.rs").exists());
+    }
 }
