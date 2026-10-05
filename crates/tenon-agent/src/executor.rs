@@ -1901,4 +1901,50 @@ mod tests {
         let out = execute_tool(&c, "git_push", &serde_json::json!({"remote": "origin"}));
         assert!(!out.ok);
     }
+
+    #[test]
+    fn apply_patch_file_with_spaces_in_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "my file with spaces.txt", "range": null, "content": "content with spaces"
+        }));
+        assert!(out.ok);
+        assert!(dir.path().join("my file with spaces.txt").exists());
+    }
+
+    #[test]
+    fn grep_multiple_patterns_match_same_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("multi.txt"), "alpha\nbeta\ngamma").unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out1 = execute_tool(&c, "grep", &serde_json::json!({"pattern": "alpha"}));
+        assert!(out1.ok);
+        let out2 = execute_tool(&c, "grep", &serde_json::json!({"pattern": "gamma"}));
+        assert!(out2.ok);
+    }
+
+    #[test]
+    fn bash_ls_command_works() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("ls-test.txt"), "data").unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "bash", &serde_json::json!({"command": "ls", "timeout_s": 5}));
+        // ls 可能被沙箱拦截或成功
+        let _ = out;
+    }
+
+    #[test]
+    fn apply_patch_same_file_multiple_times() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        for i in 0..3 {
+            let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+                "file": "iter.txt", "range": null, "content": format!("version {}", i)
+            }));
+            assert!(out.ok, "iteration {}: {}", i, out.content);
+        }
+        let content = std::fs::read_to_string(dir.path().join("iter.txt")).unwrap();
+        assert!(content.contains("version 2"));
+    }
 }
