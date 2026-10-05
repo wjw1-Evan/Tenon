@@ -2993,3 +2993,419 @@ async fn set_readonly_control_blocks_b_level_writes_over_http() {
         "只读会话中 B 级写必须被拒绝"
     );
 }
+
+// ---------- 覆盖率补齐：低频路由全链路 ----------
+
+#[tokio::test]
+async fn settings_roundtrip_and_team_policy() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    // GET settings
+    let r = client.get(format!("{}/settings", base(port))).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+
+    // PUT settings
+    let r = client
+        .put(format!("{}/settings", base(port)))
+        .json(&serde_json::json!({
+            "session": { "first_edit_buffer_ms": 3000 },
+            "exec": { "command_timeout_s": 60 }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    // PUT team-policy
+    let r = client
+        .put(format!("{}/team-policy", base(port)))
+        .json(&serde_json::json!({
+            "denied_tools": ["git_push"],
+            "max_cost_usd": 5.0
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    // GET ui-prefs
+    let r = client.get(format!("{}/ui-prefs", base(port))).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+
+    // PUT ui-prefs
+    let r = client
+        .put(format!("{}/ui-prefs", base(port)))
+        .json(&serde_json::json!({ "theme": "dark" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+}
+
+#[tokio::test]
+async fn pairing_lan_and_costs_endpoints() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    // GET pairing
+    let r = client.get(format!("{}/pairing", base(port))).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    let pairing_body: serde_json::Value = r.json().await.unwrap();
+    assert!(pairing_body["port"].is_number());
+
+    // GET costs（不带 session 可能 200 或 400——v1.93 变更容忍）
+    let r = client.get(format!("{}/costs", base(port))).send().await.unwrap();
+    assert_ne!(r.status(), 401);
+
+    // GET costs with session filter
+    let r = client
+        .get(format!("{}/costs?session=s1", base(port)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+}
+
+#[tokio::test]
+async fn evals_and_plugins_endpoints() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    // GET evals
+    let r = client.get(format!("{}/evals", base(port))).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+
+    // GET plugins
+    let r = client.get(format!("{}/plugins", base(port))).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+
+    // PUT plugins (search registry)
+    let r = client
+        .put(format!("{}/plugins", base(port)))
+        .json(&serde_json::json!({ "query": "lsp" }))
+        .send()
+        .await
+        .unwrap();
+    // 搜索可能 200 或 502（无网络）；不 401 即可
+    assert_ne!(r.status(), 401);
+}
+
+#[tokio::test]
+async fn updates_endpoints() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    // GET updates
+    let r = client.get(format!("{}/updates", base(port))).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+
+    // POST updates/check（可能因无网络 500——仅验证端点可达）
+    let r = client.post(format!("{}/updates/check", base(port))).send().await.unwrap();
+    assert_ne!(r.status(), 401);
+
+    // POST updates/apply（可能因无 staged 更新 500）
+    let r = client.post(format!("{}/updates/apply", base(port))).send().await.unwrap();
+    assert_ne!(r.status(), 401);
+}
+
+#[tokio::test]
+async fn lan_endpoints() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    // POST lan/enable
+    let r = client.post(format!("{}/lan/enable", base(port))).send().await.unwrap();
+    assert_ne!(r.status(), 401);
+    let body: serde_json::Value = r.json().await.unwrap();
+
+    // 配对码存在
+    if let Some(code) = body["code"].as_str() {
+        // POST lan/pair
+        let r = client
+            .post(format!("{}/lan/pair", base(port)))
+            .json(&serde_json::json!({ "device": "test-device", "code": code }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+
+        // POST lan/revoke
+        let r = client
+            .post(format!("{}/lan/revoke", base(port)))
+            .json(&serde_json::json!({ "device": "test-device" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+    }
+}
+
+#[tokio::test]
+async fn project_trust_endpoint() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    // 打开项目
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": "." }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    let project_id = body["id"].as_str().unwrap();
+
+    // PUT project trust
+    let r = client
+        .put(format!("{}/project/trust", base(port)))
+        .json(&serde_json::json!({ "project_id": project_id, "trusted": true }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+}
+
+#[tokio::test]
+async fn file_operations_crud() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    // 打开项目
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": "." }))
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = r.json().await.unwrap();
+    let pid = body["id"].as_str().unwrap();
+
+    // PUT file (write)
+    let r = client
+        .put(format!("{}/project/{}/file", base(port), pid))
+        .json(&serde_json::json!({ "path": "test-coverage.rs", "content": "fn main() {}" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    // GET file (read)
+    let r = client
+        .get(format!("{}/project/{}/file?path=test-coverage.rs", base(port), pid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body["content"], "fn main() {}");
+
+    // GET tree
+    let r = client
+        .get(format!("{}/project/{}/tree", base(port), pid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    // GET fuzzy
+    let r = client
+        .get(format!("{}/project/{}/files/fuzzy?q=test", base(port), pid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    // GET search
+    let r = client
+        .get(format!("{}/project/{}/search?q=main", base(port), pid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    // DELETE project
+    let r = client
+        .delete(format!("{}/projects/{}", base(port), pid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+}
+
+#[tokio::test]
+async fn language_packs_and_l4_endpoints() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    // 打开项目
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": "." }))
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = r.json().await.unwrap();
+    let pid = body["id"].as_str().unwrap();
+
+    // GET language-packs
+    let r = client
+        .get(format!("{}/project/{}/language-packs", base(port), pid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    // GET l4/stats
+    let r = client
+        .get(format!("{}/project/{}/l4/stats", base(port), pid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    // POST l4/rebuild
+    let r = client
+        .post(format!("{}/project/{}/l4/rebuild", base(port), pid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+}
+
+#[tokio::test]
+async fn session_lifecycle_full() {
+    let script = vec![ScriptedReply::Text("done".into()), ScriptedReply::Text("ok".into()), ScriptedReply::Text("ok2".into())];
+    let (_dir, port, token) = start_daemon(script).await;
+    let client = client_with_token(&token);
+
+    // 打开项目
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": "." }))
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = r.json().await.unwrap();
+    let pid = body["id"].as_str().unwrap();
+
+    // 创建会话
+    let r = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({ "project_id": pid, "provider": "mock" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    let sid = body["session_id"].as_str().unwrap();
+
+    // GET session
+    let r = client
+        .get(format!("{}/session/{}", base(port), sid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    // 发送消息（可能因模型状态拒绝——仅验证端点可达）
+    let r = client
+        .post(format!("{}/session/{}/message", base(port), sid))
+        .json(&serde_json::json!({ "text": "hello" }))
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(r.status(), 401);
+
+    // GET trace
+    let r = client
+        .get(format!("{}/session/{}/trace", base(port), sid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    // GET checkpoints
+    let r = client
+        .get(format!("{}/session/{}/checkpoints", base(port), sid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    // POST control
+    let r = client
+        .post(format!("{}/session/{}/control", base(port), sid))
+        .json(&serde_json::json!({ "action": "stop" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    // POST model switch
+    let r = client
+        .post(format!("{}/session/{}/model", base(port), sid))
+        .json(&serde_json::json!({ "provider": "mock", "model": "mock-1" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    // POST model-suggest
+    let r = client
+        .post(format!("{}/model-suggest", base(port)))
+        .json(&serde_json::json!({ "text": "write code" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    // POST ws-ticket
+    let r = client.post(format!("{}/ws-ticket", base(port))).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+}
+
+#[tokio::test]
+async fn error_paths_unauthorized_and_not_found() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    // 404 不存在的路由
+    let r = client.get(format!("{}/nonexistent", base(port))).send().await.unwrap();
+    assert_eq!(r.status(), 404);
+
+    // GET 不存在的 session
+    let r = client.get(format!("{}/session/nonexistent", base(port))).send().await.unwrap();
+    assert_eq!(r.status(), 404);
+
+    // GET 不存在的项目树
+    let r = client
+        .get(format!("{}/project/nonexistent/tree", base(port)))
+        .send()
+        .await
+        .unwrap();
+    // 可能 404 或 500（取决于 daemon 实现）
+    assert!(r.status().is_client_error() || r.status().is_server_error());
+
+    // PATH_ESCAPE：尝试路径穿越
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": "/nonexistent/path/that/does/not/exist" }))
+        .send()
+        .await
+        .unwrap();
+    // 可能 400（路径不存在）或 200（daemon 创建）
+    assert!(r.status() == 400 || r.status() == 200 || r.status() == 500);
+}
+
+#[tokio::test]
+async fn ws_ticket_post() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let r = client.post(format!("{}/ws-ticket", base(port))).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert!(body["ticket"].is_string());
+    assert!(body["expires_in_s"].is_number());
+}

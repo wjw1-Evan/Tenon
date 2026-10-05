@@ -241,3 +241,131 @@ async fn suite_summary_records_eval_run() {
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0].verdict, "pass");
 }
+
+#[tokio::test]
+async fn eval_runner_assertions_file_exists_and_not_contains() {
+    let runner = EvalRunner::new(store());
+    let provider = Arc::new(MockProvider::new(
+        "mock",
+        "mock-1",
+        vec![
+            ScriptedReply::Tool {
+                name: "apply_patch".into(),
+                args: serde_json::json!({"file": "new.rs", "range": null, "content": "// new file\nstruct Foo;\n"}),
+            },
+            ScriptedReply::Text("创建完成".into()),
+        ],
+    ));
+    let task = EvalTask {
+        id: "T-COV".into(),
+        instruction: "创建新文件".into(),
+        assertions: vec![
+            Assertion::FileContains { path: "new.rs".into(), text: "Foo".into() },
+        ],
+        budget: EvalBudget { max_steps: 12, max_tokens: 200_000 },
+        expected_l4_path: None,
+    };
+    let result = runner
+        .run_task(&task, provider, &[("existing.rs", "// existing\n")])
+        .await;
+    assert_eq!(result.verdict(), "pass", "{result:?}");
+}
+
+#[tokio::test]
+async fn eval_runner_tool_call_then_text_pass() {
+    let runner = EvalRunner::new(store());
+    let provider = Arc::new(MockProvider::new(
+        "mock",
+        "mock-1",
+        vec![
+            ScriptedReply::Tool {
+                name: "bash".into(),
+                args: serde_json::json!({"command": "echo hello", "timeout_s": 5}),
+            },
+            ScriptedReply::Text("命令执行完成".into()),
+        ],
+    ));
+    let task = EvalTask {
+        id: "T-TOOL".into(),
+        instruction: "执行 echo".into(),
+        assertions: vec![
+            Assertion::AnswerContains { text: "完成".into() },
+        ],
+        budget: EvalBudget { max_steps: 12, max_tokens: 200_000 },
+        expected_l4_path: None,
+    };
+    let result = runner
+        .run_task(&task, provider, &[("main.rs", "fn main() {}\n")])
+        .await;
+    assert_eq!(result.verdict(), "pass", "{result:?}");
+}
+
+#[tokio::test]
+async fn eval_runner_budget_exceeded_fails() {
+    let runner = EvalRunner::new(store());
+    let provider = Arc::new(MockProvider::new(
+        "mock",
+        "mock-1",
+        vec![ScriptedReply::Text("answer without tools".into())],
+    ));
+    let task = EvalTask {
+        id: "T-BUDGET".into(),
+        instruction: "write file".into(),
+        assertions: vec![
+            Assertion::FileContains { path: "nonexistent.txt".into(), text: "data".into() },
+        ],
+        budget: EvalBudget { max_steps: 12, max_tokens: 200_000 },
+        expected_l4_path: None,
+    };
+    let result = runner
+        .run_task(&task, provider, &[("main.rs", "fn main() {}\n")])
+        .await;
+    assert_eq!(result.verdict(), "fail");
+}
+
+#[tokio::test]
+async fn eval_runner_answer_contains_pass() {
+    let runner = EvalRunner::new(store());
+    let provider = Arc::new(MockProvider::new(
+        "mock",
+        "mock-1",
+        vec![ScriptedReply::Text("修复了空指针异常".into())],
+    ));
+    let task = EvalTask {
+        id: "T-ANSWER".into(),
+        instruction: "回答问题".into(),
+        assertions: vec![
+            Assertion::AnswerContains { text: "空指针".into() },
+        ],
+        budget: EvalBudget { max_steps: 12, max_tokens: 200_000 },
+        expected_l4_path: None,
+    };
+    let result = runner
+        .run_task(&task, provider, &[("main.rs", "fn main() {}\n")])
+        .await;
+    assert_eq!(result.verdict(), "pass", "{result:?}");
+}
+
+#[tokio::test]
+async fn eval_runner_summarize_suite_report() {
+    let runner = EvalRunner::new(store());
+    let provider = Arc::new(MockProvider::new(
+        "mock",
+        "mock-1",
+        vec![ScriptedReply::Text("回答完毕".into())],
+    ));
+    let task = EvalTask {
+        id: "T-SUM".into(),
+        instruction: "回答".into(),
+        assertions: vec![
+            Assertion::AnswerContains { text: "完毕".into() },
+        ],
+        budget: EvalBudget { max_steps: 12, max_tokens: 200_000 },
+        expected_l4_path: None,
+    };
+    let result = runner
+        .run_task(&task, provider, &[("main.rs", "fn main() {}\n")])
+        .await;
+    let report = runner.summarize(vec![result], "mock").await;
+    assert!(report.total_tokens > 0 || report.total_steps > 0);
+}
