@@ -1568,3 +1568,44 @@ mod parallel_write_lock_tests {
         assert!(contended.is_err(), "同作用域写锁必须互斥");
     }
 }
+
+#[cfg(test)]
+mod agent_config_tests {
+    use super::*;
+
+    #[test]
+    fn agent_config_for_project_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = AgentConfig::for_project(dir.path().to_path_buf(), "test-project");
+        assert_eq!(cfg.project_id, "test-project");
+        assert_eq!(cfg.project_root, dir.path());
+        assert_eq!(cfg.first_edit_buffer_ms, 2000);
+        assert!(!cfg.policy.readonly);
+    }
+
+    #[test]
+    fn agent_config_first_edit_buffer_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = AgentConfig::for_project(dir.path().to_path_buf(), "p1");
+        cfg.first_edit_buffer_ms = 500;
+        assert_eq!(cfg.first_edit_buffer_ms, 500);
+    }
+
+
+
+    #[test]
+    fn evidence_card_serialization() {
+        let card = EvidenceCard {
+            answer: "done".into(),
+            changed_files: vec!["a.ts".into()],
+            verification: "high".into(),
+            rolled_back: false,
+            steps: 3,
+            verification_strength: "high".into(),
+        };
+        let json = serde_json::to_string(&card).unwrap();
+        let parsed: EvidenceCard = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.answer, "done");
+    }
+
+}
