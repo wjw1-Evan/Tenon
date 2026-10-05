@@ -2053,4 +2053,58 @@ mod tests {
         assert!(out.content.contains("1:"));
         assert!(out.content.contains("3:"));
     }
+
+    #[test]
+    fn apply_patch_then_grep_finds_new_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "searchable.rs", "range": null, "content": "pub fn searchable_function() {}"
+        }));
+        let out = execute_tool(&c, "grep", &serde_json::json!({"pattern": "searchable_function"}));
+        assert!(out.ok);
+        assert!(out.content.contains("searchable.rs"));
+    }
+
+    #[test]
+    fn read_file_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("empty.txt"), "").unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "read_file", &serde_json::json!({"path": "empty.txt"}));
+        assert!(out.ok);
+        assert_eq!(out.content, "");
+    }
+
+    #[test]
+    fn list_dir_with_only_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("dir1")).unwrap();
+        std::fs::create_dir(dir.path().join("dir2")).unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "list_dir", &serde_json::json!({}));
+        assert!(out.ok);
+        assert!(out.content.contains("dir1/"));
+        assert!(out.content.contains("dir2/"));
+    }
+
+    #[test]
+    fn apply_patch_content_with_special_regex_chars() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let content = "let re = r\"(\\d+)\\.(\\d+)\";\nconst cost = $10.99;\n";
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "regex-content.rs", "range": null, "content": content
+        }));
+        assert!(out.ok);
+    }
+
+    #[test]
+    fn team_denied_list_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        c.team_denied_tools = vec!["list_dir".into()];
+        let out = execute_tool(&c, "list_dir", &serde_json::json!({}));
+        assert!(!out.ok);
+    }
 }

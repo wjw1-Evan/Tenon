@@ -687,3 +687,57 @@ async fn eval_fixture_with_subdirectories() {
         .await;
     assert_eq!(result.verdict(), "pass", "{result:?}");
 }
+
+#[tokio::test]
+async fn eval_file_not_contains_via_missing_file() {
+    let runner = EvalRunner::new(store());
+    let provider = Arc::new(MockProvider::new(
+        "mock",
+        "mock-1",
+        vec![ScriptedReply::Text("response without file changes".into())],
+    ));
+    let task = EvalTask {
+        id: "T-NOFILE".into(),
+        instruction: "don't change anything".into(),
+        assertions: vec![
+            Assertion::FileContains { path: "no-such-file.txt".into(), text: "content".into() },
+        ],
+        budget: EvalBudget { max_steps: 12, max_tokens: 200_000 },
+        expected_l4_path: None,
+    };
+    let result = runner.run_task(&task, provider, &[("f.rs", "")]).await;
+    assert_eq!(result.verdict(), "fail");
+}
+
+#[tokio::test]
+async fn eval_mixed_pass_and_fail_summary() {
+    let runner = EvalRunner::new(store());
+    let provider_pass = Arc::new(MockProvider::new(
+        "mock",
+        "mock-1",
+        vec![ScriptedReply::Text("correct answer".into())],
+    ));
+    let provider_fail = Arc::new(MockProvider::new(
+        "mock",
+        "mock-1",
+        vec![ScriptedReply::Text("wrong answer".into())],
+    ));
+    let task_pass = EvalTask {
+        id: "T-PASS".into(),
+        instruction: "answer".into(),
+        assertions: vec![Assertion::AnswerContains { text: "correct".into() }],
+        budget: EvalBudget { max_steps: 12, max_tokens: 200_000 },
+        expected_l4_path: None,
+    };
+    let task_fail = EvalTask {
+        id: "T-FAIL".into(),
+        instruction: "answer".into(),
+        assertions: vec![Assertion::AnswerContains { text: "expected".into() }],
+        budget: EvalBudget { max_steps: 12, max_tokens: 200_000 },
+        expected_l4_path: None,
+    };
+    let r1 = runner.run_task(&task_pass, provider_pass, &[("f.rs", "")]).await;
+    let r2 = runner.run_task(&task_fail, provider_fail, &[("f.rs", "")]).await;
+    assert_eq!(r1.verdict(), "pass");
+    assert_eq!(r2.verdict(), "fail");
+}
