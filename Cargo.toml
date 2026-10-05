@@ -67,6 +67,14 @@ lsp-types = "0.97"
 rand = "0.9"
 similar = "2"
 
+# 控制本地 target/ 膨胀：dev 产物默认 debug = 2 全量调试信息，
+# 十几个 crate × 几十个测试二进制多轮迭代后可达百 GB 级（无自动 GC）。
+[profile.dev]
+debug = "line-tables-only"   # 崩溃回溯仍带 文件:行号，仅丢局部变量级调试细节
+
+[profile.dev.package."*"]
+debug = false                # 第三方依赖不带调试信息（" *" 不匹配 workspace 成员，自身代码调试不受影响）
+
 [profile.release]
 lto = "thin"
 strip = "debuginfo"
