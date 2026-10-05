@@ -26,12 +26,12 @@ export function EvalsPanel({ api, t }: { api: TenonApi; t: Translate }) {
       <table>
         <thead>
           <tr>
-            <th>target</th>
+            <th>{t("evals.col_target")}</th>
             <th>{t("evals.col_time")}</th>
             <th>{t("evals.col_verdict")}</th>
             <th>{t("evals.col_pass_rate")}</th>
-            <th>tokens</th>
-            <th>steps</th>
+            <th>{t("evals.col_tokens")}</th>
+            <th>{t("evals.col_steps")}</th>
             <th>{t("evals.col_risk_actions")}</th>
             <th>{t("evals.col_violations")}</th>
             <th>{t("evals.col_l4_hit")}</th>

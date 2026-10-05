@@ -928,7 +928,7 @@ export default function App({
         <strong data-tauri-drag-region>{t("app.title")}</strong>
         <span className="spacer" data-tauri-drag-region />
         <ThemePicker api={api} t={t} />
-        <LanguagePicker value={localePref} />
+        <LanguagePicker value={localePref} t={t} />
         {narrow && tabs.length > 0 && (
           <button
             type="button"
@@ -1396,13 +1396,13 @@ export default function App({
   );
 }
 
-function LanguagePicker({ value }: { value: Locale }) {
+function LanguagePicker({ value, t }: { value: Locale; t: Translate }) {
   const [locale, setLocaleState] = useState<Locale>(value);
   // 父级偏好变化（含 localStorage 恢复）同步回显
   useEffect(() => setLocaleState(value), [value]);
   return (
     <select
-      aria-label="language"
+      aria-label={t("topbar.language")}
       value={locale}
       onChange={(e) => {
         const v = e.target.value as Locale;
@@ -1410,7 +1410,8 @@ function LanguagePicker({ value }: { value: Locale }) {
         window.dispatchEvent(new CustomEvent(LOCALE_CHANGE, { detail: v }));
       }}
     >
-      <option value="auto">Auto</option>
+      <option value="auto">{t("language.auto")}</option>
+      {/* 语言名以各自母语显示（i18n 惯例），不经 t() */}
       <option value="en">English</option>
       <option value="zh-CN">中文</option>
     </select>
@@ -1426,7 +1427,7 @@ function ThemePicker({ api, t }: { api: TenonApi; t: Translate }) {
   useEffect(() => watchSystemTheme(() => applyTheme(pref)), [pref]);
   return (
     <select
-      aria-label="theme"
+      aria-label={t("topbar.theme")}
       data-testid="theme-picker"
       value={pref}
       onChange={(e) => {

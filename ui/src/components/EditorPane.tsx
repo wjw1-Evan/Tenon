@@ -295,7 +295,7 @@ export function EditorPane({
     const applyEdit = async (workspaceEdit: unknown, path: string) => {
       const runtime = runtimeRef.current;
       if (!runtime.projectId || !runtime.sessionId) {
-        throw new Error("active session required");
+        throw new Error(t("editor.needs_session"));
       }
       await runtime.onFlushFile?.(path);
       const applied = await runtime.api.applyLspEdit(

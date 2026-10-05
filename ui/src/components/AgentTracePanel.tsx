@@ -105,7 +105,7 @@ export function AgentTracePanel({ api, sessionId, t }: Props) {
       <table className="trace-table">
         <thead>
           <tr>
-            <th>seq</th>
+            <th>{t("trace.col_seq")}</th>
             <th>{t("trace.col_type")}</th>
             <th>{t("trace.col_detail")}</th>
           </tr>

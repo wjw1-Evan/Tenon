@@ -220,7 +220,7 @@ function TreeDir({
             />
           ))}
           {open && loaded !== null && entries.length === 0 && (
-            <li className="muted" aria-label="empty directory" />
+            <li className="muted" aria-label={t("tree.empty_dir")} />
           )}
         </ul>
       )}
@@ -320,7 +320,7 @@ export function FileTree({
     try {
       const response = await api.fileOps(projectId, [operation]);
       if (!response.results[0]?.ok) {
-        throw new Error(response.results[0]?.error ?? "operation failed");
+        throw new Error(response.results[0]?.error ?? t("tree.op_failed"));
       }
       onOperation?.(change);
     } catch (e) {

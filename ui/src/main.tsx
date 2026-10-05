@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import { TenonApi } from "./lib/api";
+import { createTranslator, type Locale, type Translate } from "./lib/i18n";
 import { applyTheme, isThemePreference, loadThemePreference, saveThemePreference } from "./lib/theme";
 import "./styles.css";
 
@@ -58,6 +59,21 @@ function escapeHtml(s: string): string {
   }[c] ?? c));
 }
 
+/** 启动屏文案随应用语言（§4.2）：React 挂载前直用纯函数翻译器，
+ *  偏好源与 App 一致——localStorage `tenon:locale`，缺省 auto 跟随系统。 */
+function bootTranslator(): Translate {
+  let pref: Locale = "auto";
+  try {
+    const raw = localStorage.getItem("tenon:locale");
+    if (raw === "en" || raw === "zh-CN" || raw === "auto") pref = raw;
+  } catch {
+    // 存储不可用：维持 auto
+  }
+  return createTranslator(pref);
+}
+
+const t = bootTranslator();
+
 /** 品牌启动屏：握手轮询期间即渲染（桌面端最多等 10s，不再白屏）。 */
 function renderSplash(): void {
   const el = document.getElementById("root");
@@ -66,7 +82,7 @@ function renderSplash(): void {
     <div id="boot-splash">
       <div class="boot-mark">T</div>
       <div class="boot-name">Tenon</div>
-      <div class="boot-note">正在连接 Tenon 内核</div>
+      <div class="boot-note">${escapeHtml(t("boot.connecting"))}</div>
       <div class="boot-dots"><i></i><i></i><i></i></div>
     </div>`;
 }
@@ -115,9 +131,7 @@ async function discoverHandshake(): Promise<Handshake> {
   if (viaOrigin) return viaOrigin;
 
   if (import.meta.env.DEV) return { port: 9876, token: "dev" };
-  throw new Error(
-    "无法连接 Tenon 内核（daemon 未就绪）。请重启应用；若持续失败请查看日志。"
-  );
+  throw new Error(t("boot.connect_failed"));
 }
 
 function projectPath(handshake: Handshake): string {
@@ -135,16 +149,16 @@ function renderFatal(message: string) {
   el.innerHTML = `
     <div id="boot-splash" class="boot-failed">
       <div class="boot-mark">T</div>
-      <div class="boot-name">Tenon 启动失败</div>
+      <div class="boot-name">${escapeHtml(t("boot.failed_title"))}</div>
       <p class="boot-note boot-error">${escapeHtml(message)}</p>
-      <div class="boot-hint">请重启应用；若持续失败请查看日志</div>
+      <div class="boot-hint">${escapeHtml(t("boot.hint"))}</div>
     </div>`;
 }
 
 async function boot() {
   const rootEl = document.getElementById("root");
   if (!rootEl) {
-    renderFatal("页面缺少 #root 容器。");
+    renderFatal(t("boot.root_missing"));
     return;
   }
   try {

@@ -95,11 +95,11 @@ describe("App locale picker", () => {
   it("changing locale select dispatches LOCALE_CHANGE", async () => {
     render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/nope" />);
     await waitFor(() => {
-      const localeSelect = document.querySelector('[aria-label="language"]') as HTMLSelectElement;
+      const localeSelect = document.querySelector('[aria-label="Language"], [aria-label="language"]') as HTMLSelectElement;
       expect(localeSelect || screen.getByTestId("project-list")).toBeTruthy();
     }, { timeout: 8000 });
 
-    const localeSelect = document.querySelector('[aria-label="language"]') as HTMLSelectElement;
+    const localeSelect = document.querySelector('[aria-label="Language"], [aria-label="language"]') as HTMLSelectElement;
     if (localeSelect) {
       const events: CustomEvent[] = [];
       window.addEventListener("LOCALE_CHANGE", (e) => events.push(e as CustomEvent));

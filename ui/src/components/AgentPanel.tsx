@@ -310,7 +310,7 @@ function EventCard({ ev, t }: { ev: EventItem; t: Translate }) {
     case "error":
       return (
         <div className="ev ev-error">
-          ⚠ {String((ev.payload as { error?: string }).error ?? "error")}
+          ⚠ {String((ev.payload as { error?: string }).error ?? t("agent.error_fallback"))}
         </div>
       );
     default:

@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v1.98** |
-| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.98） |
+| 版本 | **v1.99** |
+| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.99） |
 | 状态 | 定稿（v1.10 决策闭环），M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 | 历史评审 | v0.1 / v0.3 两轮共 41 项、v1.0 复审 21 项问题的结论已全部并入本方案（过程文档已清理） |
@@ -132,6 +132,7 @@
 | **v1.96** | **移除项目视图顶部搜索框（用户决策：登记项目数量级小，即时过滤无实用价值）：撤销 v1.88「顶部搜索 + 添加入口」中的搜索半边——`pe-search` 输入 / 项目名·路径·会话标题过滤链路 / 「没有匹配的项目」空态 / `projects.search` 等双语文案与样式整链移除，工具栏仅存「添加项目」常驻入口；`Name / Updated` 列头、项目行、会话内嵌、All activity 组等 v1.88 其余语义不变；§7.2 组件表同步** |
 | **v1.97** | **i18n 落地收尾二批（§4.2「UI 文案外置 / 日期时间本地化」余项）+ 会话创建断链修复：① 剩余硬编码文案清零——模型切换 toast（v1.51 遗留）、diff 空态占位（DiffPanel 新增 emptyText prop，默认英文源语言，App 经 t("diff.no_changes") 传入）、Monaco 加载占位与 AI 修改区 glyph hover（EditorPane 接既有 t prop）、T4 修复诊断任务模板（diagnostic.fix_*）与行内指令任务模板（buildInlineTask 增 Translate 参数，inline.task_*，双语资源化并附英文用例）；② 日期时间本地化——新增 useResolvedLocale()（localStorage `tenon:locale` 初值 + LOCALE_CHANGE 订阅，与 App 同源），ProjectExplorer / CheckpointTimeline / L4StatusPanel / GitSourcePanel 的时间格式随应用内语言切换（此前 toLocale* 无参恒随浏览器 locale）；③ 豁免留档——语言选择器语言名以母语显示（i18n 惯例）、DiagnosticsPanel 对 tenon-lsp 后端错误串的 includes 匹配属协议判断非 UI 文案；④ 断链修复——activateProject 建会话误把 `"interactive"`（v1.92 已删除的会话档位回退值）传入 createSession 的 provider 位，未知 provider 使建会话恒失败、切项目永远建不出会话（多项目 E2E 自 v1.92 起整链挂死的根因），改为 provider 留空走 daemon 默认** |
 | **v1.98** | **移除「All activity」全局活动组（用户决策：项目行徽标与行内会话列表已承载活动信息，跨项目聚合层冗余）：撤销 v1.87 引入、v1.88 降为列表组的全局活动条——`pe-activity-group` 折叠条（运行中 / 完成计数 + 筛选 chips）、跨项目平铺会话列表（跳转 / 就地停止）与 `activity.*` 双语文案 / 样式 / 单测 / E2E 步骤整链移除；项目行徽标（运行中会话 / 脏缓冲）为活动可见性唯一承载，「不做系统级推送通知、attention 一律以 UI 徽标为准」的边界不变式保留；§4.1 / §6.4 / §7.2-7.3 / §9.7 / §14.1 / §15 / §18 / 术语表同步** |
+| **v1.99** | **i18n 硬编码清扫三批（用户令「检查遗漏的硬编码」；扫描法 = 中文剥全注释 + 英文 JSX 文本节点 / 属性值 / `??` fallback 三路正则，中英双向）：① main.tsx 启动屏 5 处接入双语（boot.connecting / connect_failed / failed_title / hint / root_missing）——React 挂载前直用 createTranslator 纯函数，偏好源与 App 同一 localStorage `tenon:locale`；② Evals 列头 target / tokens / steps 与 Trace 列头 seq 接 t()（同表其余列头 v1.94 已双语，此 4 处漏网）；③ FileTree 空目录 aria-label 与 file/ops 失败 fallback（tree.empty_dir / tree.op_failed）；④ 顶栏语言选择器 Auto 项与 language / theme aria-label 双语化（language.auto / topbar.language / topbar.theme；语言名 English / 中文按 i18n 惯例以母语显示豁免）；⑤ AgentPanel 证据 error fallback 与 EditorPane LSP 写操作无会话守卫（agent.error_fallback / editor.needs_session）；⑥ 豁免留档——键盘键名（Enter / Escape / Arrow*）、git HEAD、品牌名 Tenon、L4 状态 token（经 `t(l4.state.*)` 键名插值）、DiffPanel 标题 `?? "diff"` 源语言默认（与 emptyText 同模式，App 恒传双语标题）、api.ts HTTP 错误包装与 merge.ts 哨兵串属技术层非文案** |
 
 
 
