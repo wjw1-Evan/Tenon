@@ -180,22 +180,25 @@ describe("ProjectExplorer multi-project control surface", () => {
 
   // v1.107：「源码」内嵌文件树已迁右区源码树，项目行仅存「移除」操作。
 
-  // v1.114：源码入口收为分组行尾 hover 图标开关——默认任务，切源码显文件树，per-project 记忆。
+  // v1.118：源码入口收敛为项目名后常驻文字钮（钮面显示目标视图名）——默认任务，切源码显文件树，per-project 记忆。
   it("toggles per-project task/source views and renders the file tree", async () => {
     renderExplorer([project("open-a")]);
     // 默认任务视图：会话列表可见，无文件树。
     await waitFor(() => expect(screen.getByTestId("chat-list-open-a")).toBeInTheDocument());
     expect(screen.queryByTestId("file-tree")).not.toBeInTheDocument();
-    // 切「源码」（图标开关 aria-label）：文件树出现，选择记忆于 tenon:peView。
+    // 切「源码」（文字钮，钮面 = 目标视图名）：文件树出现，选择记忆于 tenon:peView。
+    const tasksLabel = screen.getByTestId("pe-source-open-a").textContent ?? "";
     fireEvent.click(screen.getByTestId("pe-source-open-a"));
     await waitFor(() => expect(screen.getByTestId("file-tree")).toBeInTheDocument());
     expect(JSON.parse(localStorage.getItem("tenon:peView") ?? "{}")).toEqual({
       "open-a": "files",
     });
-    // 切回「任务」：文件树收起，会话列表回归。
+    // 钮面文字随切换变化，切回后复原。
+    expect(screen.getByTestId("pe-source-open-a").textContent).not.toBe(tasksLabel);
     fireEvent.click(screen.getByTestId("pe-source-open-a"));
     await waitFor(() => expect(screen.queryByTestId("file-tree")).not.toBeInTheDocument());
     expect(screen.getByTestId("chat-list-open-a")).toBeInTheDocument();
+    expect(screen.getByTestId("pe-source-open-a").textContent).toBe(tasksLabel);
   });
 
   // v1.114：新任务入口重排——标题行「＋ 新任务」作用 active 项目，分组行尾 hover ⎡。
@@ -247,7 +250,8 @@ describe("ProjectExplorer multi-project control surface", () => {
     vi.setSystemTime(new Date("2026-10-05T01:00:00Z"));
     try {
       renderExplorer([dated]);
-      const row = screen.getByTestId("project-item-open-a");
+      // v1.118：「最近更新」时间移出主按钮到行级，改在分组行容器上断言。
+      const row = screen.getByTestId("project-item-open-a").closest(".pe-group-row");
       expect(row).toHaveTextContent("relative.hours_ago");
     } finally {
       vi.useRealTimers();

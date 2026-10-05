@@ -475,12 +475,13 @@ button:disabled { opacity: 0.45; cursor: default; }
 .pe-group-row:hover { background: var(--raised); }
 .pe-group-row.active { background: var(--accent-soft); }
 .pe-group-btn {
-  flex: 1;
+  /* v1.118：主按钮收为内容宽，行内余下空间交给视图切换钮与更新时间 */
+  flex: 0 1 auto;
   min-width: 0;
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 6px;
+  padding: 4px 0 4px 6px;
   border: none;
   background: transparent;
   font-size: 11px;
@@ -498,7 +499,7 @@ button:disabled { opacity: 0.45; cursor: default; }
 }
 .pe-group-btn[aria-expanded="true"] .pe-caret { transform: rotate(90deg); }
 .pe-group-name {
-  max-width: 46%;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -518,6 +519,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   flex-shrink: 0;
   margin-left: auto;
   min-width: 52px;
+  padding-right: 6px;
   color: var(--muted);
   font-size: 10.5px;
   font-weight: 400;
@@ -526,7 +528,20 @@ button:disabled { opacity: 0.45; cursor: default; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* 分组行尾 hover 操作区（v1.114）：源码树开关 / worktree 新任务 / 移除登记 */
+/* 项目名后「任务 / 源码」视图切换（v1.118）：常驻文字钮，显示目标视图名 */
+.pe-view-toggle {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  font-size: 10.5px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.pe-view-toggle:hover { background: var(--raised); color: var(--fg); }
+.pe-group-row.active .pe-view-toggle { color: var(--accent-text); }
+/* 分组行尾 hover 操作区（v1.118）：worktree 新任务 / 移除登记 */
 .pe-group-actions {
   position: absolute;
   top: 50%;
@@ -556,7 +571,6 @@ button:disabled { opacity: 0.45; cursor: default; }
   cursor: pointer;
 }
 .pe-gact:hover:not(:disabled) { background: var(--surface); color: var(--fg); }
-.pe-gact.on { color: var(--accent-text); }
 .pe-gact.danger:hover:not(:disabled) { color: var(--error, #d43d3d); }
 .pe-gact:disabled { opacity: 0.4; cursor: not-allowed; }
 /* 列表底部常驻添加项目行（v1.114 回归 v1.43 语义） */

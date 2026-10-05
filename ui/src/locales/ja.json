@@ -27,6 +27,7 @@
   "panel.bottom.toggle": "下部パネルの切り替え",
   "projects.new_task": "新しいタスク",
   "projects.tab_source": "ソース",
+  "projects.tab_tasks": "タスク",
   "editor.close": "エディターを閉じる",
   "panel.diagnostics": "診断とエビデンス",
   "diagnostic.title": "アクティブファイルの診断",

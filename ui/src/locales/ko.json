@@ -27,6 +27,7 @@
   "panel.bottom.toggle": "하단 패널 전환",
   "projects.new_task": "새 작업",
   "projects.tab_source": "소스",
+  "projects.tab_tasks": "작업",
   "editor.close": "에디터 닫기",
   "panel.diagnostics": "진단 및 증거",
   "diagnostic.title": "활성 파일 진단",

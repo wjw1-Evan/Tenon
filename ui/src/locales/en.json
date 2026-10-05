@@ -27,6 +27,7 @@
   "panel.bottom.toggle": "Toggle bottom panel",
   "projects.new_task": "New task",
   "projects.tab_source": "Source",
+  "projects.tab_tasks": "Tasks",
   "editor.close": "Close editor",
   "panel.diagnostics": "Diagnostics & Evidence",
   "diagnostic.title": "Active file diagnostics",

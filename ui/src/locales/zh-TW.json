@@ -27,6 +27,7 @@
   "panel.bottom.toggle": "切換底部面板",
   "projects.new_task": "新任務",
   "projects.tab_source": "原始碼",
+  "projects.tab_tasks": "任務",
   "editor.close": "關閉編輯器",
   "panel.diagnostics": "診斷與證據",
   "diagnostic.title": "當前檔案診斷",

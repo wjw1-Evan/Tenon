@@ -27,6 +27,7 @@
   "panel.bottom.toggle": "切换底部面板",
   "projects.new_task": "新任务",
   "projects.tab_source": "源码",
+  "projects.tab_tasks": "任务",
   "editor.close": "关闭编辑器",
   "panel.diagnostics": "诊断与证据",
   "diagnostic.title": "活动文件诊断",

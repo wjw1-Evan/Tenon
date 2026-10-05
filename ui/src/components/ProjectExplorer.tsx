@@ -636,28 +636,26 @@ export function ProjectExplorer({
                     <ChevronIcon />
                     <span className="pe-group-name">{project.display_name}</span>
                     {badges && <span className="pe-group-meta">{badges}</span>}
-                    <span
-                      className="pe-updated"
-                      title={updatedAt ? new Date(updatedAt).toLocaleString(localeTag) : undefined}
-                    >
-                      {formatUpdatedAt(updatedAt, t, localeTag)}
-                    </span>
                   </button>
-                  {/* 分组行尾 hover 操作区（v1.114）：源码树开关 / worktree 新任务 / 移除登记。 */}
+                  {/* 项目名后「任务 / 源码」视图切换（v1.118 文字钮，显示目标视图名）。 */}
+                  <button
+                    type="button"
+                    className="pe-view-toggle"
+                    data-testid={`pe-source-${project.id}`}
+                    aria-label={t(sourceOn ? "projects.tab_tasks" : "projects.tab_source")}
+                    title={t(sourceOn ? "projects.tab_tasks" : "projects.tab_source")}
+                    onClick={() => setPeView(project.id, sourceOn ? "tasks" : "files")}
+                  >
+                    {t(sourceOn ? "projects.tab_tasks" : "projects.tab_source")}
+                  </button>
+                  <span
+                    className="pe-updated"
+                    title={updatedAt ? new Date(updatedAt).toLocaleString(localeTag) : undefined}
+                  >
+                    {formatUpdatedAt(updatedAt, t, localeTag)}
+                  </span>
+                  {/* 分组行尾 hover 操作区（v1.118）：worktree 新任务 / 移除登记。 */}
                   <div className="pe-group-actions" data-testid={`pe-view-${project.id}`}>
-                    <button
-                      type="button"
-                      className={sourceOn ? "pe-gact on" : "pe-gact"}
-                      data-testid={`pe-source-${project.id}`}
-                      aria-label={t("projects.tab_source")}
-                      aria-pressed={sourceOn}
-                      title={t("projects.tab_source")}
-                      onClick={() => setPeView(project.id, sourceOn ? "tasks" : "files")}
-                    >
-                      <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                        <path d="M3 7V5a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-                      </svg>
-                    </button>
                     <button
                       type="button"
                       className="pe-gact"
