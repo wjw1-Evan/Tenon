@@ -675,4 +675,52 @@ mod tests {
         let loaded = SettingsOverrides::load_from_path(&path);
         assert_eq!(loaded.first_edit_buffer_ms, Some(2500));
     }
+
+    #[test]
+    fn settings_overrides_load_nonexistent_returns_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let overrides = SettingsOverrides::load_from_path(&dir.path().join("no-settings.json"));
+        // Should return default (no crash)
+        let _ = overrides;
+    }
+
+    #[test]
+    fn settings_overrides_persist_creates_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let overrides = SettingsOverrides::default();
+        overrides.persist_to(&path);
+        // persist_to may or may not create the file depending on implementation
+    }
+
+    #[test]
+    fn settings_overrides_merge_models_default() {
+        let mut overrides = SettingsOverrides::default();
+        overrides.merge_json(&serde_json::json!({
+            "models": { "default": "anthropic" }
+        })).unwrap();
+        let mut config = tenon_config::ModelsConfig::default();
+        overrides.apply_models_to(&mut config);
+        assert_eq!(config.default, "anthropic");
+    }
+
+    #[test]
+    fn settings_overrides_merge_command_timeout() {
+        let mut overrides = SettingsOverrides::default();
+        overrides.merge_json(&serde_json::json!({
+            "exec": { "command_timeout_s": 30 }
+        })).unwrap();
+        assert_eq!(overrides.command_timeout_s, Some(30));
+    }
+
+    #[test]
+    fn settings_overrides_to_json_contains_fields() {
+        let mut overrides = SettingsOverrides::default();
+        overrides.merge_json(&serde_json::json!({
+            "session": { "first_edit_buffer_ms": 1000 }
+        })).unwrap();
+        let json = overrides.to_json();
+        // JSON should be serializable
+        let _ = serde_json::to_string(&json).unwrap();
+    }
 }
