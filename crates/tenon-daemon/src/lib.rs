@@ -744,4 +744,29 @@ mod tests {
         assert_eq!(overrides.update_channel, Some("auto".into()));
     }
 
+
+    #[test]
+    fn settings_overrides_update_channel_manual() {
+        let mut overrides = SettingsOverrides::default();
+        overrides.merge_json(&serde_json::json!({
+            "update": { "channel": "manual" }
+        })).unwrap();
+        assert_eq!(overrides.update_channel, Some("manual".into()));
+    }
+
+    #[test]
+    fn settings_overrides_merge_empty_body() {
+        let mut overrides = SettingsOverrides::default();
+        let result = overrides.merge_json(&serde_json::json!({}));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn settings_overrides_merge_partial_exec() {
+        let mut overrides = SettingsOverrides::default();
+        overrides.merge_json(&serde_json::json!({
+            "exec": { "command_timeout_s": 300 }
+        })).unwrap();
+        assert_eq!(overrides.command_timeout_s, Some(300));
+    }
 }

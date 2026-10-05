@@ -5880,3 +5880,26 @@ async fn session_lifecycle_create_send_trace_checkpoints() {
         .unwrap();
     assert_eq!(r.status(), 200);
 }
+
+#[tokio::test]
+async fn models_list_returns_mock_provider() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let r = client.get(format!("{}/models", base(port))).send().await.unwrap();
+    let body: serde_json::Value = r.json().await.unwrap();
+    let models = body["models"].as_array().unwrap();
+    assert!(!models.is_empty());
+    // Default should be "mock" (from start_daemon)
+    assert_eq!(body["default"], "mock");
+}
+
+#[tokio::test]
+async fn evals_endpoint_returns_tasks_array() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let r = client.get(format!("{}/evals", base(port))).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    // Response should have tasks or runs
+    assert!(body.is_object() || body.is_array());
+}

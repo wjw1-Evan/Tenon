@@ -192,4 +192,5 @@ mod tests {
         let op2: PatchOp = serde_json::from_str(r#"{"file":"new.txt","content":"x"}"#).unwrap();
         assert_eq!(op2.range, None, "缺省追加到文件尾");
     }
+
 }
