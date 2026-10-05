@@ -30,12 +30,21 @@ pub struct SessionMemory {
     pub recent_turns: Vec<String>,
 }
 
+/// L2 压缩保留的最近目标条数（§10.2 v1.105：有界记忆——系统提示的 L2 段
+/// 不随会话长度线性膨胀，早期目标被窗口裁剪）。
+pub const MAX_L2_GOALS: usize = 8;
+
 impl SessionMemory {
-    /// 压缩（§10.2）：保留目标 / 决策 / 未完成步骤，丢弃最近原始回合。
-    /// 压缩事件由调用方写入 Trace（events `compaction`）。
+    /// 压缩（§10.2）：目标只保留最近 [`MAX_L2_GOALS`] 条，保留决策 / 未完成步骤，
+    /// 丢弃最近原始回合。历史压缩事件由调用方写入 Trace（events `compaction`）。
     pub fn compact(&self) -> SessionMemory {
+        let goals = if self.goals.len() > MAX_L2_GOALS {
+            self.goals[self.goals.len() - MAX_L2_GOALS..].to_vec()
+        } else {
+            self.goals.clone()
+        };
         SessionMemory {
-            goals: self.goals.clone(),
+            goals,
             decisions: self.decisions.clone(),
             pending_steps: self.pending_steps.clone(),
             recent_turns: Vec::new(),
@@ -229,6 +238,25 @@ mod tests {
         assert_eq!(compacted.decisions, mem.decisions);
         assert_eq!(compacted.pending_steps, mem.pending_steps);
         assert!(compacted.recent_turns.is_empty(), "原始回合被丢弃");
+    }
+
+    #[test]
+    fn compaction_trims_goals_to_recent_window() {
+        // §10.2 v1.105：goals 超窗裁剪到最近 MAX_L2_GOALS 条，系统提示不随会话膨胀
+        let mem = SessionMemory {
+            goals: (0..MAX_L2_GOALS as u64 + 3)
+                .map(|i| format!("goal-{i}"))
+                .collect(),
+            ..SessionMemory::default()
+        };
+        let compacted = mem.compact();
+        assert_eq!(compacted.goals.len(), MAX_L2_GOALS);
+        assert_eq!(compacted.goals[0], "goal-3", "最早的目标被裁剪");
+        assert_eq!(
+            compacted.goals[MAX_L2_GOALS - 1],
+            format!("goal-{}", MAX_L2_GOALS as u64 + 2),
+            "最近的目标保留"
+        );
     }
 
     #[test]

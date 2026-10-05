@@ -1015,49 +1015,53 @@ impl DaemonState {
     }
 
     /// Laya 自动下载并启用（§9.8 v1.71）：`enabled` + `auto_download` 时后台拉取
-    /// 官方静态 registry 签名清单，版本新于已装即下载安装热装载；全程无确认卡
-    /// （产品自管签名资产、推理不出网，非代理动作）。失败静默回退：仅日志，
-    /// 下次启动重试；未启用 / 已是最新即跳过。
+    /// 官方静态 registry 签名清单（v1.102 多镜像链顺序尝试；显式 registry_url
+    /// 为测试注入，单地址），版本新于已装即按清单镜像列表下载安装热装载；
+    /// 全程无确认卡（产品自管签名资产、推理不出网，非代理动作）。
+    /// 失败静默回退：本地未装载时安装内置 starter 模型兜底（v1.102，保证可用），
+    /// 否则仅日志，下次启动重试；未启用 / 已是最新即跳过。
     pub fn spawn_laya_auto_download(self: &Arc<Self>, registry_url: Option<String>) {
         if !self.config.models.laya.enabled || !self.config.models.laya.auto_download {
             return;
         }
         let state = self.clone();
         tokio::spawn(async move {
-            let manifest = match tenon_laya::registry::fetch_manifest(registry_url.as_deref()).await
-            {
-                Ok(m) => m,
-                Err(e) => {
-                    tracing::info!("Laya 自动下载跳过：registry 不可达（{e}）；下次启动重试");
-                    return;
+            let outcome = async {
+                let manifest =
+                    tenon_laya::registry::fetch_manifest(registry_url.as_deref()).await?;
+                let plan = tenon_laya::registry::plan_install_with_key(
+                    &manifest,
+                    state.laya_public_key.as_deref(),
+                )?;
+                if state
+                    .laya
+                    .version()
+                    .await
+                    .map(|(_, v)| v >= plan.version)
+                    .unwrap_or(false)
+                {
+                    tracing::info!("Laya 已是最新（v{}），跳过自动下载", plan.version);
+                    return Ok(());
                 }
-            };
-            let plan = match tenon_laya::registry::plan_install_with_key(
-                &manifest,
-                state.laya_public_key.as_deref(),
-            ) {
-                Ok(p) => p,
-                Err(e) => {
-                    tracing::warn!("Laya 自动下载跳过：清单校验失败（{e}）");
-                    return;
-                }
-            };
-            if state
-                .laya
-                .version()
-                .await
-                .map(|(_, v)| v >= plan.version)
-                .unwrap_or(false)
-            {
-                tracing::info!("Laya 已是最新（v{}），跳过自动下载", plan.version);
-                return;
+                let bytes = tenon_laya::registry::download_model(&plan).await?;
+                state.laya.install(&bytes).await?;
+                tracing::info!("Laya 自动下载完成：v{} 已启用", plan.version);
+                Ok::<(), tenon_laya::LayaError>(())
             }
-            match tenon_laya::registry::download_model(&plan).await {
-                Ok(bytes) => match state.laya.install(&bytes).await {
-                    Ok(()) => tracing::info!("Laya 自动下载完成：v{} 已启用", plan.version),
-                    Err(e) => tracing::warn!("Laya 自动下载安装失败：{e}"),
-                },
-                Err(e) => tracing::warn!("Laya 自动下载失败：{e}；下次启动重试"),
+            .await;
+            if let Err(e) = outcome {
+                // 兜底（v1.102）：在线链路全部失败且本地无模型 → 内置 starter 热装载，
+                // 离线首启同样可用；registry 日后可达按版本比较升级覆盖。
+                if !state.laya.is_loaded().await {
+                    match state.laya.install(tenon_laya::STARTER_MODEL).await {
+                        Ok(()) => {
+                            tracing::info!("Laya 在线下载不可用（{e}），已启用内置 starter 模型；下次启动重试在线更新")
+                        }
+                        Err(e2) => tracing::warn!("Laya starter 兜底安装失败：{e2}；在线错误：{e}"),
+                    }
+                } else {
+                    tracing::warn!("Laya 自动下载失败：{e}；下次启动重试");
+                }
             }
         });
     }

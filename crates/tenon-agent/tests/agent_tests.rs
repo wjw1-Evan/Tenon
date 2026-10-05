@@ -800,3 +800,65 @@ async fn circuit_breaker_pauses_on_token_budget() {
         "熔断后不得继续执行后续工具步"
     );
 }
+
+#[tokio::test]
+async fn history_compaction_stubs_stale_tool_outputs_and_emits_trace_event() {
+    // §10.2 v1.105：6 次读取同一大文件，第 5 条起更早的工具输出成为陈旧项——
+    // 保留最近 4 条原文、更早的存根化，压缩事件入 Trace
+    let (dir, session, store, provider) = setup(
+        (0..6)
+            .map(|_| ScriptedReply::Tool {
+                name: "read_file".into(),
+                args: serde_json::json!({"path": "big.txt"}),
+            })
+            .chain(std::iter::once(ScriptedReply::Text("完成".into())))
+            .collect(),
+    )
+    .await;
+    // 80k 字符 ≈ 26.7k 估算 token > 24k 阈值：首个工具输出后即进入压缩触发区间
+    std::fs::write(dir.path().join("big.txt"), "x".repeat(80_000)).unwrap();
+    let outcome = session.run_task("读取大文件").await;
+    assert!(matches!(outcome, TaskOutcome::Done(_)));
+
+    // 末次请求：6 条工具输出 → 最早 2 条存根化，最近 4 条保留原文
+    let calls = provider.calls();
+    let last = calls.last().expect("mock 记录了全部请求");
+    let stubs = last
+        .messages
+        .iter()
+        .filter(|m| m.content.contains("[工具输出已省略：read_file"))
+        .count();
+    assert_eq!(stubs, 2, "陈旧工具输出被存根化");
+    let verbatim = last
+        .messages
+        .iter()
+        .filter(|m| m.role == Role::Tool && m.content.starts_with('x'))
+        .count();
+    assert_eq!(verbatim, 4, "最近 4 条工具输出保留原文");
+    assert!(
+        last.messages
+            .iter()
+            .any(|m| m.role == Role::User && m.content.contains("读取大文件")),
+        "首条 user（任务文本）永不省略"
+    );
+    // 压缩后请求体积受控：只有保留窗内的原文全文驻留
+    let total_chars: usize = last
+        .messages
+        .iter()
+        .map(|m| m.content.chars().count())
+        .sum();
+    assert!(
+        total_chars < 80_000 * 5,
+        "压缩后请求体积应远小于无压缩累积（实际 {total_chars}）"
+    );
+
+    // 压缩事件入 Trace：第 5、6 条工具输出各触发一次省略
+    let mut st = store.lock().await;
+    let events = st.events(&session.session_id).unwrap();
+    let elided_total: u64 = events
+        .iter()
+        .filter(|e| e.kind == EventKind::Compaction)
+        .map(|e| e.payload["elided_tool_results"].as_u64().unwrap_or(0))
+        .sum();
+    assert_eq!(elided_total, 2, "压缩事件累计省略条数入 Trace");
+}

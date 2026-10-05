@@ -2600,12 +2600,19 @@ async fn spawn_laya_registry() -> (String, String) {
     let sk = laya_test_signer();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    // 模型体内部版本同步升 2：/models 上报的是模型文件版本，须与清单版本一致
+    // 才能区分「registry v2」与「starter 兜底 v1」；清单对其 sha256 签名（v1.102）。
+    let mut model: serde_json::Value = serde_json::from_slice(&model).unwrap();
+    model["version"] = serde_json::json!(2);
+    let model = serde_json::to_vec(&model).unwrap();
+    // urls 首位为不可达镜像（v1.102）：常规路径即覆盖模型镜像回退。
     let manifest = serde_json::json!({
         "laya": {
-            "version": 1,
+            "version": 2,
             "sha256": sha,
             "signature": hex::encode(sk.sign(sha.as_bytes()).to_bytes()),
             "url": format!("http://{addr}/model.json"),
+            "urls": ["http://127.0.0.1:1/model.json", format!("http://{addr}/model.json")],
         }
     });
     let public_key = hex::encode(sk.verifying_key().to_bytes());
@@ -2660,9 +2667,10 @@ async fn laya_auto_downloads_and_enables_on_startup() {
     let handle = serve(options).await.unwrap();
 
     let models = wait_laya_downloaded(handle.port, &handle.token).await;
-    assert!(
-        models["laya"]["version"].as_array().is_some(),
-        "装载后应有模型版本：{models}"
+    assert_eq!(
+        models["laya"]["version"],
+        serde_json::json!(["laya-starter", 2]),
+        "应为 registry 清单 v2（镜像回退后命中，非 starter 兜底 v1）：{models}"
     );
 }
 
@@ -2693,6 +2701,60 @@ async fn laya_auto_download_disabled_stays_unloaded() {
         serde_json::json!(false),
         "auto_download=false 不得自动下载：{models}"
     );
+}
+
+#[tokio::test]
+async fn laya_falls_back_to_bundled_starter_when_registry_unreachable() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut options = DaemonOptions::in_memory();
+    options.endpoint_path = Some(dir.path().join("daemon.endpoint"));
+    options.settings_path = Some(dir.path().join("settings.json"));
+    let models_dir = dir.path().join("models/laya");
+    options.laya_models_dir = Some(models_dir.clone());
+    // 不可达 registry（连接拒绝）：在线链路全失败 → 内置 starter 兜底（v1.102）
+    options.laya_registry_url = Some("http://127.0.0.1:1/registry/laya.json".into());
+    options.config.models.laya.auto_download = true;
+    let handle = serve(options).await.unwrap();
+
+    let models = wait_laya_downloaded(handle.port, &handle.token).await;
+    assert_eq!(
+        models["laya"]["version"],
+        serde_json::json!(["laya-starter", 1]),
+        "registry 不可达应兜底内置 starter v1：{models}"
+    );
+    // 已落盘：下次启动直接装载，不重写
+    assert!(models_dir.join("model.json").exists());
+}
+
+#[tokio::test]
+async fn laya_upgrades_installed_starter_from_registry_when_reachable() {
+    let (registry, public_key) = spawn_laya_registry().await;
+    let dir = tempfile::tempdir().unwrap();
+    let models_dir = dir.path().join("models/laya");
+    std::fs::create_dir_all(&models_dir).unwrap();
+    // 预装 starter v1（模拟离线首启兜底产物）；registry 可达（v2）→ 自动升级覆盖
+    std::fs::write(models_dir.join("model.json"), tenon_laya::STARTER_MODEL).unwrap();
+    let mut options = DaemonOptions::in_memory();
+    options.endpoint_path = Some(dir.path().join("daemon.endpoint"));
+    options.settings_path = Some(dir.path().join("settings.json"));
+    options.laya_models_dir = Some(models_dir);
+    options.laya_registry_url = Some(registry);
+    options.laya_public_key = Some(public_key);
+    options.config.models.laya.auto_download = true;
+    let handle = serve(options).await.unwrap();
+
+    let client = client_with_token(&handle.token);
+    for _ in 0..50 {
+        if let Ok(r) = client.get(format!("{}/models", base(handle.port))).send().await {
+            if let Ok(v) = r.json::<serde_json::Value>().await {
+                if v["laya"]["version"] == serde_json::json!(["laya-starter", 2]) {
+                    return;
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("已装 starter v1 未在 5s 内升级到 registry v2");
 }
 
 // ---------- 受管 worktree 并行会话（v1.87 §9.7） ----------
@@ -3984,4 +4046,141 @@ async fn language_packs_endpoint_returns_detection() {
     assert_eq!(r.status(), 200);
     let body: serde_json::Value = r.json().await.unwrap();
     assert!(body["packs"].is_array() || body["languages"].is_array());
+}
+
+// v1.103：会话归档 / 还原 / 删除（§14.2 / §15）——摘要过滤、未收尾 worktree 守卫、confirm 门。
+#[tokio::test]
+async fn session_archive_unarchive_and_delete_over_http() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    let (_tmp, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    let registered: serde_json::Value = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({"path": project.to_string_lossy()}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let pid = registered["id"].as_str().unwrap().to_string();
+
+    let make_session = || {
+        let url = format!("{}/session", base(port));
+        let client = client.clone();
+        let pid = pid.clone();
+        async move {
+            let r = client
+                .post(url)
+                .json(&serde_json::json!({"project_id": pid}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(r.status(), 200);
+            r.json::<serde_json::Value>()
+                .await
+                .unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        }
+    };
+    let a = make_session().await;
+    let b = make_session().await;
+    // 受管 worktree 会话（未收尾）：归档 / 删除应 409。
+    let worktree: serde_json::Value = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({"project_id": pid, "worktree": "managed"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let wt_id = worktree["id"].as_str().unwrap().to_string();
+
+    let summary = || {
+        let url = format!("{}/projects", base(port));
+        let client = client.clone();
+        let pid = pid.clone();
+        async move {
+            client
+                .get(url)
+                .send()
+                .await
+                .unwrap()
+                .json::<serde_json::Value>()
+                .await
+                .unwrap()["projects"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p["id"] == serde_json::Value::String(pid.clone()))
+                .unwrap()
+                .clone()
+        }
+    };
+
+    // 初始：三会话都在 sessions，无归档。
+    let s = summary().await;
+    assert_eq!(s["sessions"].as_array().unwrap().len(), 3);
+    assert_eq!(s["archived_sessions"].as_array().unwrap().len(), 0);
+
+    // 归档 a：sessions 排除、archived_sessions 收录。
+    let r = client
+        .post(format!("{}/session/{}/archive", base(port), a))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let s = summary().await;
+    assert_eq!(s["sessions"].as_array().unwrap().len(), 2);
+    assert_eq!(s["archived_sessions"].as_array().unwrap().len(), 1);
+    assert_eq!(s["archived_sessions"][0]["id"], serde_json::Value::String(a.clone()));
+
+    // 未收尾受管 worktree：归档 409。
+    let r = client
+        .post(format!("{}/session/{}/archive", base(port), wt_id))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 409);
+
+    // 还原 a：回到 sessions。
+    let r = client
+        .post(format!("{}/session/{}/unarchive", base(port), a))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let s = summary().await;
+    assert_eq!(s["sessions"].as_array().unwrap().len(), 3);
+    assert_eq!(s["archived_sessions"].as_array().unwrap().len(), 0);
+
+    // 删除门：无 confirm 400；confirm 后 404 且摘要移除。
+    let r = client
+        .delete(format!("{}/session/{}", base(port), b))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
+    let r = client
+        .delete(format!("{}/session/{}", base(port), b))
+        .json(&serde_json::json!({"confirm": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let r = client
+        .get(format!("{}/session/{}", base(port), b))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
+    let s = summary().await;
+    assert_eq!(s["sessions"].as_array().unwrap().len(), 2);
 }

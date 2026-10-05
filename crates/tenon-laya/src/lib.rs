@@ -19,8 +19,22 @@ pub use primitives::{DecisionKind, Feature, IntentLabel, LayaOutcome};
 pub use runtime::LayaRuntime;
 
 /// 静态 registry 默认地址（附录 C Q1：静态清单 + 对象存储 / CDN，
-/// GitHub Pages 起步）。
+/// GitHub Pages 起步）。保留为首镜像，供日志与文档引用。
 pub const DEFAULT_REGISTRY_URL: &str = "https://tenonide.dev/registry/laya.json";
+
+/// 静态 registry 多镜像链（v1.102）：顺序尝试，任一可达且解析成功即用。
+/// 官方域名 → GitHub Pages 静态托管 → jsDelivr CDN（同一 GitHub 仓库源，
+/// 清单经签名钉扎，镜像只影响可达性不影响信任）。
+pub const DEFAULT_REGISTRY_URLS: &[&str] = &[
+    DEFAULT_REGISTRY_URL,
+    "https://tenon-project.github.io/laya-registry/laya.json",
+    "https://cdn.jsdelivr.net/gh/tenon-project/laya-registry@main/laya.json",
+];
+
+/// 内置 starter 模型（v1.102 兜底，§9.8）：所有 registry / 模型镜像不可达且
+/// 本地未装载时安装热装载——与二进制同分发同完整性，版本锁定 1；registry
+/// 日后可达时按版本比较正常升级覆盖。
+pub const STARTER_MODEL: &[u8] = include_bytes!("../models/laya-starter-v1.json");
 
 /// 产品发布签名公钥（hex ed25519）。解析顺序：
 /// 1. 环境变量 `TENON_LAYA_PUBLIC_KEY`（CI / 部署覆盖）；

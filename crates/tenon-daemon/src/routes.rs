@@ -41,6 +41,9 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
             "/session/{id}/worktree/discard",
             post(discard_session_worktree),
         )
+        .route("/session/{id}/archive", post(archive_session))
+        .route("/session/{id}/unarchive", post(unarchive_session))
+        .route("/session/{id}", delete(delete_session))
         .route("/session/{id}/trace", get(session_trace))
         .route("/session/{id}/checkpoints", get(session_checkpoints))
         .route("/checkpoint/{id}/rollback", post(checkpoint_rollback))
@@ -1002,6 +1005,98 @@ async fn discard_session_worktree(
     match result {
         Ok(Ok(())) => Json(json!({"discarded": true})).into_response(),
         Ok(Err(message)) => api_err(StatusCode::CONFLICT, message),
+        Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+/// v1.103 归档 / 删除共用守卫：运行中（含挂起）或未收尾受管 worktree 的会话不可变更。
+async fn session_housekeeping_guard(
+    state: &Arc<DaemonState>,
+    id: &str,
+) -> Result<tenon_store::Session, Response> {
+    let session = {
+        let mut store = state.store.lock().await;
+        match store.session(id) {
+            Ok(Some(s)) => s,
+            Ok(None) => return Err(api_err(StatusCode::NOT_FOUND, "会话不存在")),
+            Err(e) => return Err(api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+        }
+    };
+    if matches!(
+        session.status,
+        SessionStatus::Sensing
+            | SessionStatus::Deciding
+            | SessionStatus::Executing
+            | SessionStatus::Verifying
+            | SessionStatus::Fixing
+            | SessionStatus::Paused
+    ) {
+        return Err(api_err(StatusCode::CONFLICT, "会话正在运行，请先停止"));
+    }
+    // 受管 worktree 目录仍在 = 未收尾（合并 / 丢弃后目录已删，store 路径残留仅为记录）。
+    if !session.worktree_path.is_empty()
+        && tokio::fs::metadata(&session.worktree_path).await.is_ok()
+    {
+        return Err(api_err(
+            StatusCode::CONFLICT,
+            "受管 worktree 未收尾，请先合并或丢弃",
+        ));
+    }
+    Ok(session)
+}
+
+async fn archive_session(State(state): State<Arc<DaemonState>>, Path(id): Path<String>) -> Response {
+    if let Err(resp) = session_housekeeping_guard(&state, &id).await {
+        return resp;
+    }
+    let res = {
+        let mut store = state.store.lock().await;
+        store.archive_session(&id)
+    };
+    match res {
+        Ok(()) => Json(json!({"archived": true})).into_response(),
+        Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+async fn unarchive_session(
+    State(state): State<Arc<DaemonState>>,
+    Path(id): Path<String>,
+) -> Response {
+    let res = {
+        let mut store = state.store.lock().await;
+        store.unarchive_session(&id)
+    };
+    match res {
+        Ok(()) => Json(json!({"unarchived": true})).into_response(),
+        Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+#[derive(Deserialize)]
+struct SessionDeleteBody {
+    confirm: bool,
+}
+
+async fn delete_session(
+    State(state): State<Arc<DaemonState>>,
+    Path(id): Path<String>,
+    Json(body): Json<SessionDeleteBody>,
+) -> Response {
+    if !body.confirm {
+        return api_err(StatusCode::BAD_REQUEST, "需要 confirm=true");
+    }
+    if let Err(resp) = session_housekeeping_guard(&state, &id).await {
+        return resp;
+    }
+    // 空闲 runtime 一并逐出：删除后其后台写路径（标题回填 / 模型切换）不再有意义。
+    state.sessions.lock().await.remove(&id);
+    let res = {
+        let mut store = state.store.lock().await;
+        store.delete_session(&id)
+    };
+    match res {
+        Ok(()) => Json(json!({"deleted": true})).into_response(),
         Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }
@@ -2033,6 +2128,7 @@ async fn list_projects(State(state): State<Arc<DaemonState>>) -> Response {
                 with_sessions.push((
                     project.clone(),
                     store.list_sessions(&project.id).unwrap_or_default(),
+                    store.list_archived_sessions(&project.id).unwrap_or_default(),
                     store.project_usage_totals(&project.id).unwrap_or_default(),
                 ));
             }
@@ -2048,7 +2144,7 @@ async fn list_projects(State(state): State<Arc<DaemonState>>) -> Response {
     let session_runtimes: Vec<String> = state.sessions.lock().await.keys().cloned().collect();
     let summaries: Vec<Value> = projects
         .into_iter()
-        .map(|(project, sessions, usage)| {
+        .map(|(project, sessions, archived, usage)| {
             let active = sessions
                 .iter()
                 .filter(|s| {
@@ -2080,6 +2176,14 @@ async fn list_projects(State(state): State<Arc<DaemonState>>) -> Response {
                     "cost_usd": usage.2,
                 },
                 "sessions": sessions.iter().map(|s| json!({
+                    "id": s.id,
+                    "status": s.status.as_str(),
+                    "model": s.model,
+                    "title": s.title,
+                    "worktree_path": s.worktree_path,
+                    "updated_at": s.updated_at,
+                })).collect::<Vec<_>>(),
+                "archived_sessions": archived.iter().map(|s| json!({
                     "id": s.id,
                     "status": s.status.as_str(),
                     "model": s.model,

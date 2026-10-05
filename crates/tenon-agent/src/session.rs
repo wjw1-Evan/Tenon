@@ -17,13 +17,13 @@ use tokio::sync::{broadcast, mpsc, Mutex, Notify, RwLock};
 use futures::StreamExt;
 use tenon_core::circuit::{CircuitBreaker, CircuitLimits, CircuitStatus, PatchFootprint};
 use tenon_core::context::{
-    render_working_set, ContextSlice, ProjectRules, SessionMemory, WorkingSet,
+    render_working_set, ContextSlice, ProjectRules, SessionMemory, WorkingSet, MAX_L2_GOALS,
 };
 use tenon_core::machine::{Limits as MachineLimits, State, StateMachine};
 use tenon_core::policy::{Action, Decision, Level, Policy};
 use tenon_core::tools::Tool;
 use tenon_models::{
-    ChatMessage, ChatRequest, ChatStreamEvent, ModelProvider, PriceTable, ToolSpec, Usage,
+    ChatMessage, ChatRequest, ChatStreamEvent, ModelProvider, PriceTable, Role, ToolSpec, Usage,
     TITLE_MARKER,
 };
 use tenon_snapshot::SnapshotStore;
@@ -258,6 +258,89 @@ fn tool_specs_read_only() -> Vec<ToolSpec> {
             )
         })
         .collect()
+}
+
+/// 历史压缩触发阈值（§10.2 v1.105）：任务内请求输入 token 的估算值或上一回合
+/// provider 权威 usage 超过阈值即触发压缩（真实计数由 usage 回填，估算为兜底信号）。
+const COMPACTION_INPUT_TOKENS: u64 = 24_000;
+/// 压缩时保留原文的最近工具输出条数；更早的替换为存根。
+const KEEP_RECENT_TOOL_RESULTS: usize = 4;
+
+/// 任务内请求输入 token 估算（§10.2）：正文 + tool_calls 参数，字符近似。
+fn estimate_messages_tokens(messages: &[ChatMessage]) -> u64 {
+    messages
+        .iter()
+        .map(|m| {
+            tenon_core::context::estimate_tokens(&m.content)
+                + m.tool_calls
+                    .iter()
+                    .map(|tc| tenon_core::context::estimate_tokens(&tc.arguments.to_string()))
+                    .sum::<u64>()
+        })
+        .sum()
+}
+
+/// 历史压缩（§10.2 v1.105）：确定性省略——工具输出是任务内历史的主要膨胀源，
+/// 保留最近 `KEEP_RECENT_TOOL_RESULTS` 条原文，更早的 tool 消息替换为存根。
+/// 只替换内容、不增删消息，tool_call_id 配对保持完整；首条 user（任务 + L1
+/// 工作集）与 assistant 消息原样保留。无可省略条目时返回 None。
+fn elide_stale_tool_outputs(messages: &[ChatMessage]) -> Option<(Vec<ChatMessage>, usize)> {
+    // 已存根化的消息不算新陈旧项（幂等：重复触发不重写、不重复计数）
+    let tool_positions: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.role == Role::Tool && !m.content.starts_with("[工具输出已省略："))
+        .map(|(i, _)| i)
+        .collect();
+    if tool_positions.len() <= KEEP_RECENT_TOOL_RESULTS {
+        return None;
+    }
+    let stale_count = tool_positions.len() - KEEP_RECENT_TOOL_RESULTS;
+    let stale: std::collections::HashSet<usize> =
+        tool_positions[..stale_count].iter().copied().collect();
+    // 工具名按 call id 反查（登记于前置 assistant 消息的 tool_calls），存根标明来源工具
+    let mut names: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    for m in messages {
+        for tc in &m.tool_calls {
+            names.insert(tc.id.as_str(), tc.name.as_str());
+        }
+    }
+    let mut out = Vec::with_capacity(messages.len());
+    for (i, m) in messages.iter().enumerate() {
+        if stale.contains(&i) {
+            let id = m.tool_call_id.clone().unwrap_or_default();
+            let name = names.get(id.as_str()).copied().unwrap_or("tool");
+            out.push(ChatMessage::tool_result(
+                id,
+                format!(
+                    "[工具输出已省略：{name} 原约 {} 字符——需要时重新调用该工具获取]",
+                    m.content.chars().count()
+                ),
+            ));
+        } else {
+            out.push(m.clone());
+        }
+    }
+    Some((out, stale_count))
+}
+
+/// 压缩后确定性自检（§10.2 v1.105）：每条 tool 消息的 call id 都能在前置
+/// assistant 的 tool_calls 中找到配对。省略式压缩不产生摘要失真，结构完整性
+/// 由本校验兜底（替代原「自检问答」——省一次模型调用）。
+fn tool_call_pairs_intact(messages: &[ChatMessage]) -> bool {
+    let mut issued: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for m in messages {
+        for tc in &m.tool_calls {
+            issued.insert(tc.id.as_str());
+        }
+        if m.role == Role::Tool {
+            match m.tool_call_id.as_deref() {
+                Some(id) if issued.contains(id) => {}
+                _ => return false,
+            }
+        }
+    }
+    true
 }
 
 impl AgentSession {
@@ -651,7 +734,14 @@ impl AgentSession {
         let _guard = scope_lock.lock().await;
         self.first_edit_done.store(false, Ordering::SeqCst);
         self.touched_files.lock().await.clear();
-        self.memory.lock().await.goals.push(user_text.to_string());
+        {
+            let mut mem = self.memory.lock().await;
+            mem.goals.push(user_text.to_string());
+            if mem.goals.len() > MAX_L2_GOALS {
+                // L2 有界（§10.2 v1.105）：目标只保留最近窗口，系统提示不随会话膨胀
+                *mem = mem.compact();
+            }
+        }
 
         // ---- IDLE → SENSING ----
         self.emit(
@@ -741,6 +831,7 @@ impl AgentSession {
             ChatMessage::system(tenon_core::prompt::build_system_prompt(
                 &self.rules.lock().await.clone(),
                 &self.memory.lock().await.clone(),
+                &[],
             )),
             ChatMessage::user(user_message),
         ];
@@ -756,11 +847,37 @@ impl AgentSession {
         let mut error_msg: Option<String> = None;
         // §9.1 v1.53：截断续跑——截断的中间输出不是回答，连续多次才按模型失败处理
         let mut consecutive_truncations = 0u32;
+        // 上一回合 provider 权威输入 token（§10.2 v1.105 压缩触发信号之一）
+        let mut last_input_tokens: u64 = 0;
 
         // ---- 模型回合循环（SENSING / DECIDING / EXECUTING 在回合内展开）----
         'rounds: for _round in 0..self.config.max_tool_rounds {
             self.force_state(State::Deciding).await;
             self.set_status(SessionStatus::Deciding).await;
+
+            // ---- 历史压缩（§10.2 v1.105）：输入预算超限即省略陈旧工具输出。
+            // 压缩后自检配对完整性，失败则本回合放弃压缩（保持原历史）----
+            let est_tokens = estimate_messages_tokens(&messages);
+            if est_tokens > COMPACTION_INPUT_TOKENS || last_input_tokens > COMPACTION_INPUT_TOKENS {
+                if let Some((compacted, elided)) = elide_stale_tool_outputs(&messages) {
+                    if tool_call_pairs_intact(&compacted) {
+                        let after_tokens = estimate_messages_tokens(&compacted);
+                        messages = compacted;
+                        self.emit(
+                            EventKind::Compaction,
+                            &serde_json::json!({
+                                "round": _round,
+                                "before_est_tokens": est_tokens,
+                                "after_est_tokens": after_tokens,
+                                "elided_tool_results": elided,
+                            }),
+                        )
+                        .await;
+                    } else {
+                        tracing::error!("历史压缩自检失败：tool_call_id 配对破损，本回合跳过压缩");
+                    }
+                }
+            }
 
             // 只读先验：首轮仅开放 A 级工具（§9.8 预筛语义，只收窄不放宽）；
             // 模型判断确需改动 → 后续回合恢复全目录
@@ -793,6 +910,7 @@ impl AgentSession {
                     break 'rounds;
                 }
             };
+            last_input_tokens = resp.usage.input_tokens;
             self.record_usage(resp.usage).await;
             steps += 1;
 
@@ -1591,8 +1709,6 @@ mod agent_config_tests {
         assert_eq!(cfg.first_edit_buffer_ms, 500);
     }
 
-
-
     #[test]
     fn evidence_card_serialization() {
         let card = EvidenceCard {
@@ -1607,5 +1723,112 @@ mod agent_config_tests {
         let parsed: EvidenceCard = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.answer, "done");
     }
+}
 
+#[cfg(test)]
+mod compaction_tests {
+    //! 历史压缩纯函数（§10.2 v1.105）。
+
+    use super::*;
+    use tenon_models::ToolCallReq;
+
+    /// assistant(工具调用) + tool(结果) 一对。
+    fn tool_round(id: &str, name: &str, output: &str) -> Vec<ChatMessage> {
+        let mut assistant = ChatMessage::assistant(format!("意图：{name}"));
+        assistant.tool_calls = vec![ToolCallReq {
+            id: id.to_string(),
+            name: name.to_string(),
+            arguments: serde_json::json!({}),
+        }];
+        vec![
+            assistant,
+            ChatMessage::tool_result(id.to_string(), output.to_string()),
+        ]
+    }
+
+    fn base_history(rounds: usize) -> Vec<ChatMessage> {
+        let mut messages = vec![
+            ChatMessage::system("sys"),
+            ChatMessage::user("任务 + L1 工作集"),
+        ];
+        for i in 0..rounds {
+            messages.extend(tool_round(
+                &format!("call_{i}"),
+                "read_file",
+                &format!("out-{i}"),
+            ));
+        }
+        messages
+    }
+
+    #[test]
+    fn elide_keeps_recent_four_and_stubs_older_with_tool_name() {
+        let messages = base_history(6);
+        let (compacted, elided) = elide_stale_tool_outputs(&messages).unwrap();
+        assert_eq!(elided, 2);
+        // 最早两条被存根化：标明来源工具与原文规模，call id 配对保持
+        assert!(
+            compacted[3]
+                .content
+                .contains("[工具输出已省略：read_file 原约 5 字符"),
+            "存根含工具名与原字符数：{}",
+            compacted[3].content
+        );
+        assert_eq!(compacted[3].tool_call_id.as_deref(), Some("call_0"));
+        assert_eq!(compacted[5].tool_call_id.as_deref(), Some("call_1"));
+        assert!(compacted[5].content.contains("工具输出已省略"));
+        // 最近四条保留原文
+        assert_eq!(compacted[7].content, "out-2");
+        assert_eq!(compacted[9].content, "out-3");
+        assert_eq!(compacted[11].content, "out-4");
+        assert_eq!(compacted[13].content, "out-5");
+        // 系统提示、首条 user（任务 + L1 工作集）与 assistant 消息原样
+        assert_eq!(compacted[0].content, "sys");
+        assert_eq!(compacted[1].content, "任务 + L1 工作集");
+        assert_eq!(compacted[2].content, "意图：read_file");
+        assert_eq!(compacted[2].tool_calls.len(), 1);
+        // 压缩后配对自检通过
+        assert!(tool_call_pairs_intact(&compacted));
+    }
+
+    #[test]
+    fn elide_noop_within_keep_window() {
+        assert!(elide_stale_tool_outputs(&base_history(4)).is_none());
+        assert!(elide_stale_tool_outputs(&base_history(0)).is_none());
+    }
+
+    #[test]
+    fn elide_is_idempotent_over_already_stubbed_history() {
+        let messages = base_history(6);
+        let (once, _) = elide_stale_tool_outputs(&messages).unwrap();
+        // 再次压缩：原文只剩 4 条（≤保留窗），已存根消息不重写、不重复计数
+        assert!(elide_stale_tool_outputs(&once).is_none());
+    }
+
+    #[test]
+    fn pairs_intact_detects_broken_pairing() {
+        let mut messages = base_history(1);
+        // 篡改 tool 消息的 call id → 配对破损
+        messages[3].tool_call_id = Some("call_missing".to_string());
+        assert!(!tool_call_pairs_intact(&messages));
+        // 删除 call id → 配对破损
+        messages[3].tool_call_id = None;
+        assert!(!tool_call_pairs_intact(&messages));
+    }
+
+    #[test]
+    fn estimate_covers_tool_call_arguments() {
+        let mut m = ChatMessage::assistant("hi");
+        let bare = estimate_messages_tokens(std::slice::from_ref(&m));
+        m.tool_calls = vec![ToolCallReq {
+            id: "c".into(),
+            name: "apply_patch".into(),
+            arguments: serde_json::json!({"content": "x".repeat(3_000)}),
+        }];
+        let with_args = estimate_messages_tokens(std::slice::from_ref(&m));
+        assert!(
+            with_args > bare + 500,
+            "apply_patch 参数（新文件内容）必须计入输入估算"
+        );
+    }
 }
