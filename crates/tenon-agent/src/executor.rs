@@ -2107,4 +2107,44 @@ mod tests {
         let out = execute_tool(&c, "list_dir", &serde_json::json!({}));
         assert!(!out.ok);
     }
+
+    #[test]
+    fn apply_patch_and_list_dir_see_new_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "visible.txt", "range": null, "content": "see me"
+        }));
+        let out = execute_tool(&c, "list_dir", &serde_json::json!({}));
+        assert!(out.content.contains("visible.txt"));
+    }
+
+    #[test]
+    fn apply_patch_deeply_nested_and_read_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let content = "pub mod deep {\n    pub fn nested() {}\n}\n";
+        execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "src/core/deep/nested.rs", "range": null, "content": content
+        }));
+        let out = execute_tool(&c, "read_file", &serde_json::json!({"path": "src/core/deep/nested.rs"}));
+        assert!(out.ok);
+        assert_eq!(out.content, content);
+    }
+
+    #[test]
+    fn grep_after_multiple_writes_finds_all() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        for (name, content) in [("one.rs", "fn one()"), ("two.rs", "fn two()"), ("three.rs", "fn three()")] {
+            execute_tool(&c, "apply_patch", &serde_json::json!({
+                "file": name, "range": null, "content": format!("{}\n", content)
+            }));
+        }
+        let out = execute_tool(&c, "grep", &serde_json::json!({"pattern": "fn "}));
+        assert!(out.ok);
+        assert!(out.content.contains("one.rs"));
+        assert!(out.content.contains("two.rs"));
+        assert!(out.content.contains("three.rs"));
+    }
 }
