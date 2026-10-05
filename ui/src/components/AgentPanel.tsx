@@ -362,7 +362,11 @@ export function AgentPanel({
           const active = idx === turns.length - 1;
           return (
             <section className="turn" key={turn.id} data-testid="turn">
-              {turn.task !== null && <div className="turn-task">{turn.task}</div>}
+              {turn.task !== null && (
+                <div className="turn-task" data-testid="turn-user">
+                  {turn.task}
+                </div>
+              )}
               <div className="turn-body">
                 {turn.items.map((ev) => (
                   <EventNode key={ev.id} ev={ev} t={t} />
