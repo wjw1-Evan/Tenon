@@ -2771,4 +2771,30 @@ mod managed_worktree_tests {
         assert_eq!(session.id, custom_id);
         assert_eq!(session.model, "gpt-4");
     }
+
+    #[test]
+    fn l4_stats_after_multiple_replaces() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let emb = vec![0.5; 8];
+        // Replace 3 files
+        for name in ["f1.rs", "f2.rs", "f3.rs"] {
+            s.replace_l4_file(&p.id, name, &[L4ChunkRecord {
+                symbol: None, start_line: 1, end_line: 5,
+                text: format!("fn {}()", name), embedding: emb.clone(),
+            }]).unwrap();
+        }
+        assert_eq!(s.l4_chunk_count(&p.id).unwrap(), 3);
+    }
+
+    #[test]
+    fn upsert_project_same_path_returns_same() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_str().unwrap();
+        let p1 = s.upsert_project(path).unwrap();
+        let p2 = s.upsert_project(path).unwrap();
+        assert_eq!(p1.id, p2.id);
+    }
 }

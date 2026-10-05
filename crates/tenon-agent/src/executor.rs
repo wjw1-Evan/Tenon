@@ -2373,4 +2373,36 @@ mod tests {
         let deps = execute_tool(&c, "install_deps", &serde_json::json!({"command": "echo deps"}));
         let _ = deps; // sandbox may or may not be available
     }
+
+    #[test]
+    fn apply_patch_typescript_project_structure() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let files = [
+            ("package.json", r#"{"name": "my-app", "version": "1.0.0"}"#),
+            ("tsconfig.json", r#"{"compilerOptions": {"strict": true}}"#),
+            ("src/index.ts", "export { App } from './App';\n"),
+            ("src/App.tsx", "export default function App() { return null; }\n"),
+            ("src/components/Header.tsx", "export function Header() { return null; }\n"),
+        ];
+        for (path, content) in files {
+            let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+                "file": path, "range": null, "content": content
+            }));
+            assert!(out.ok, "failed: {}", path);
+        }
+        // Verify all files exist
+        for (path, _) in files {
+            assert!(dir.path().join(path).exists(), "missing: {}", path);
+        }
+    }
+
+    #[test]
+    fn grep_pattern_with_anchors() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("anchored.txt"), "start of line\nnot at start").unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "grep", &serde_json::json!({"pattern": "^start"}));
+        assert!(out.ok);
+    }
 }
