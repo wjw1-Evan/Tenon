@@ -324,7 +324,7 @@ mod tests {
         for i in 0..100 {
             ctx.push_str(&format!("line {}\n", i));
         }
-        assert!(!ctx.is_empty());
+        assert!(ctx.len() > 0);
     }
 
     #[test]

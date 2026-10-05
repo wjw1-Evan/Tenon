@@ -76,7 +76,6 @@ const KNOWN_TOOLS = new Set([
   "grep",
   "git_read",
   "lsp_query",
-  "laya_decide",
   "apply_patch",
   "run_tests",
   "run_build",
@@ -364,7 +363,8 @@ export function AgentPanel({
     await api.control(sessionId, "resume");
   }
 
-  // v1.111 消息级撤销：恢复到该消息（回合）首个改动写入前状态；unrevert 可撤销本次回滚。
+  // v1.127 消息级撤销：每个含改动的回合都可撤销——恢复到发送该消息前的工作区状态
+  //（checkpoint 树级快照；该消息之后其他回合的改动随树一并回退）。unrevert 可撤销本次回滚。
   async function undoTurn(turn: Turn) {
     if (!sessionId || turn.firstPatchSeq === null || running) return;
     if (!window.confirm(t("thread.undo_confirm"))) return;
@@ -376,7 +376,7 @@ export function AgentPanel({
         return;
       }
       await api.rollbackCheckpoint(cp.id);
-      setCanRedo(true);
+      setUndoneTurnId(turn.id);
     } catch {
       window.alert(t("thread.undo_failed"));
     }
@@ -384,16 +384,16 @@ export function AgentPanel({
 
   // v1.123 重做：撤销的逆操作（§10.3 unrollback——恢复到最近一次回滚前状态）。
   // 仅本会话生命周期内撤销过才可用；重载后保守禁用，不对未知回滚状态误触。
-  const [canRedo, setCanRedo] = useState(false);
+  const [undoneTurnId, setUndoneTurnId] = useState<number | null>(null);
   const [copiedTurnId, setCopiedTurnId] = useState<number | null>(null);
   const copyTimer = useRef<number | null>(null);
-  useEffect(() => setCanRedo(false), [sessionId]);
+  useEffect(() => setUndoneTurnId(null), [sessionId]);
 
   async function redoTurn() {
-    if (!sessionId || running || !canRedo) return;
+    if (!sessionId || running || undoneTurnId === null) return;
     try {
       await api.control(sessionId, "unrollback");
-      setCanRedo(false);
+      setUndoneTurnId(null);
     } catch {
       window.alert(t("thread.undo_failed"));
     }
@@ -435,14 +435,7 @@ export function AgentPanel({
     return list;
   }, [events]);
 
-  // v1.111：仅最后一个含改动的回合提供撤销——恢复是树级快照，撤销更早回合会连带丢弃后续回合改动
-  //（时间旅行场景由 checkpoint 时间轴覆盖）。
-  const undoableTurnId = useMemo(() => {
-    for (let i = turns.length - 1; i >= 0; i -= 1) {
-      if (turns[i].firstPatchSeq !== null) return turns[i].id;
-    }
-    return null;
-  }, [turns]);
+  // v1.127：每个含改动的回合（firstPatchSeq 非空）都提供撤销；重做钮挂在最近被撤销的回合上。
 
   // 运行态「正在做什么」：取最后一个 decision 的意图；first_edit 无意图则显示执行中态。
   const runningLabel = useMemo(() => {
@@ -496,7 +489,7 @@ export function AgentPanel({
               {turn.task !== null && (
                 <div className="turn-user" data-testid="turn-user">
                   <div className="turn-task">{turn.task}</div>
-                  {/* v1.123 气泡下功能按钮组：复制（恒可用）/ 撤销（v1.111 条件）/ 重做（撤销后可用） */}
+                  {/* v1.127 气泡下功能按钮组：复制（恒可用）/ 撤销（每个含改动回合）/ 重做（挂最近被撤销回合） */}
                   <div className="turn-actions">
                     <button
                       type="button"
@@ -508,11 +501,11 @@ export function AgentPanel({
                     >
                       {copiedTurnId === turn.id ? t("thread.copied") : t("thread.copy")}
                     </button>
-                    {turn.id === undoableTurnId && (
+                    {turn.firstPatchSeq !== null && (
                       <button
                         type="button"
                         className="turn-action"
-                        data-testid="turn-undo"
+                        data-testid={`turn-undo-${turn.id}`}
                         disabled={running}
                         title={t("thread.undo_confirm")}
                         aria-label={t("thread.undo")}
@@ -521,12 +514,12 @@ export function AgentPanel({
                         ↩ {t("thread.undo")}
                       </button>
                     )}
-                    {turn.id === undoableTurnId && (
+                    {turn.id === undoneTurnId && (
                       <button
                         type="button"
                         className="turn-action"
-                        data-testid="turn-redo"
-                        disabled={running || !canRedo}
+                        data-testid={`turn-redo-${turn.id}`}
+                        disabled={running}
                         title={t("thread.redo")}
                         aria-label={t("thread.redo")}
                         onClick={() => void redoTurn()}
@@ -703,7 +696,6 @@ function ReadOnlySummary({ items, t }: { items: EventItem[]; t: Translate }) {
     </div>
   );
 }
-
 
 /** §9.8 #4（v1.124）：agent 主动调用的 Laya 判定 → 单行轻量徽标（类型 → 结果 · 耗时）；
  * daemon 自动集成点（无 origin）维持不渲染，仅入「轨迹」。 */

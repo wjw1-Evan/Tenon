@@ -1292,12 +1292,6 @@ button:disabled { opacity: 0.45; cursor: default; }
   color: var(--muted);
   padding: 1px 0;
 }
-/* Laya 判定轻量徽标（v1.124 §9.8 #4）：与只读聚合同级的弱化单行 */
-.turn-laya {
-  font-size: 11px;
-  color: var(--muted);
-  padding: 1px 0;
-}
 /* 用户气泡下功能按钮组（v1.123）：复制 / 撤销 / 重做——撤销 hover 用错误色提示破坏性 */
 .turn-actions { display: flex; gap: 4px; margin-top: 2px; }
 .turn-action {

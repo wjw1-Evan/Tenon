@@ -4854,7 +4854,7 @@ async fn session_created_returns_project_id() {
         .await
         .unwrap();
     let body: serde_json::Value = r.json().await.unwrap();
-    assert!(!body["session_id"].as_str().unwrap().is_empty());
+    assert!(body["session_id"].as_str().unwrap().len() > 0);
 }
 
 #[tokio::test]
@@ -5065,7 +5065,7 @@ async fn create_session_empty_provider_uses_default() {
         .unwrap();
     assert_eq!(r.status(), 200);
     let body: serde_json::Value = r.json().await.unwrap();
-    assert!(!body["session_id"].as_str().unwrap().is_empty());
+    assert!(body["session_id"].as_str().unwrap().len() > 0);
 }
 
 #[tokio::test]
@@ -5134,7 +5134,7 @@ async fn open_project_and_get_pairing() {
     let r = client.get(format!("{}/pairing", base(port))).send().await.unwrap();
     let body: serde_json::Value = r.json().await.unwrap();
     assert!(body["port"].as_u64().unwrap() > 0);
-    assert!(!body["token"].as_str().unwrap().is_empty());
+    assert!(body["token"].as_str().unwrap().len() > 0);
 }
 
 #[tokio::test]
@@ -5812,8 +5812,8 @@ async fn open_project_snapshot_infrastructure() {
         .unwrap();
     assert_eq!(r.status(), 200);
     let body: serde_json::Value = r.json().await.unwrap();
-    assert!(!body["id"].as_str().unwrap().is_empty());
-    assert!(!body["path"].as_str().unwrap().is_empty());
+    assert!(body["id"].as_str().unwrap().len() > 0);
+    assert!(body["path"].as_str().unwrap().len() > 0);
 }
 
 #[tokio::test]

@@ -2,7 +2,7 @@
 //!
 //! | 级 | 工具 |
 //! |---|---|
-//! | A | read_file / list_dir / grep / git_read / lsp_query / laya_decide（v1.124） |
+//! | A | read_file / list_dir / grep / git_read / lsp_query |
 //! | B | apply_patch / run_tests / run_build / install_deps |
 //! | C | http_fetch |
 //! | D | git_commit / git_push / create_pr |
@@ -18,8 +18,6 @@ pub enum Tool {
     Grep,
     GitRead,
     LspQuery,
-    /// Laya 本地判定（§9.8 #4，v1.124）：本地 CPU 推理，只读零副作用。
-    LayaDecide,
     ApplyPatch,
     RunTests,
     RunBuild,
@@ -40,7 +38,6 @@ impl Tool {
             Tool::Grep => "grep",
             Tool::GitRead => "git_read",
             Tool::LspQuery => "lsp_query",
-            Tool::LayaDecide => "laya_decide",
             Tool::ApplyPatch => "apply_patch",
             Tool::RunTests => "run_tests",
             Tool::RunBuild => "run_build",
@@ -57,12 +54,9 @@ impl Tool {
     pub fn level(self) -> Option<crate::policy::Level> {
         use crate::policy::Level;
         Some(match self {
-            Tool::ReadFile
-            | Tool::ListDir
-            | Tool::Grep
-            | Tool::GitRead
-            | Tool::LspQuery
-            | Tool::LayaDecide => Level::A,
+            Tool::ReadFile | Tool::ListDir | Tool::Grep | Tool::GitRead | Tool::LspQuery => {
+                Level::A
+            }
             Tool::ApplyPatch | Tool::RunTests | Tool::RunBuild | Tool::InstallDeps => Level::B,
             Tool::HttpFetch => Level::C,
             Tool::GitCommit | Tool::GitPush => Level::D,
@@ -78,7 +72,6 @@ impl Tool {
             "grep" => Tool::Grep,
             "git_read" => Tool::GitRead,
             "lsp_query" => Tool::LspQuery,
-            "laya_decide" => Tool::LayaDecide,
             "apply_patch" => Tool::ApplyPatch,
             "run_tests" => Tool::RunTests,
             "run_build" => Tool::RunBuild,
@@ -199,4 +192,5 @@ mod tests {
         let op2: PatchOp = serde_json::from_str(r#"{"file":"new.txt","content":"x"}"#).unwrap();
         assert_eq!(op2.range, None, "缺省追加到文件尾");
     }
+
 }

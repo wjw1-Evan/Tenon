@@ -248,29 +248,30 @@ describe("v1.111 消息级撤销", () => {
     { id: 4, seq: 4, type: "patch_applied", payload: { tool: "apply_patch", args: { file: "b.rs" }, output: { ok: true, content: "", changed_files: ["b.rs"] } } },
   ];
 
-  it("仅最后一个含改动的回合显示撤销钮", async () => {
+  // v1.127：每个含改动的回合都提供撤销（恢复到该消息发送前状态）。
+  it("每个含改动的回合显示撤销钮", async () => {
     render(<AgentPanel api={mockUndoApi(twoTurnEvents)} t={t} sessionId="s1" />);
     await screen.findByText("任务二");
     const turns = screen.getAllByTestId("turn");
-    expect(turns[0].querySelector('[data-testid="turn-undo"]')).toBeNull();
-    expect(turns[1].querySelector('[data-testid="turn-undo"]')).toBeTruthy();
-  });
-
-  it("无改动回合不显示撤销钮", async () => {
+    expect(turns[0].querySelector("[data-testid^=\"turn-undo-\"]")).toBeTruthy();
+    expect(turns[1].querySelector("[data-testid^=\"turn-undo-\"]")).toBeTruthy();
+    // 纯问答无改动回合仍无撤销钮
     const events = [
       { id: 1, seq: 1, type: "user_input", payload: { text: "纯问答" } },
       { id: 2, seq: 2, type: "decision", payload: { intent: "答案" } },
     ];
-    render(<AgentPanel api={mockUndoApi(events)} t={t} sessionId="s1" />);
+    const { container: qaContainer } = render(
+      <AgentPanel api={mockUndoApi(events)} t={t} sessionId="s1" />
+    );
     await screen.findByText("答案");
-    expect(screen.queryByTestId("turn-undo")).toBeNull();
+    expect(qaContainer.querySelector("[data-testid^=\"turn-undo-\"]")).toBeNull();
   });
 
   it("点击撤销：确认后按回合首步 seq 匹配 checkpoint 并回滚", async () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     const api = mockUndoApi(twoTurnEvents);
     render(<AgentPanel api={api} t={t} sessionId="s1" />);
-    const undo = await screen.findByTestId("turn-undo");
+    const undo = await screen.findByTestId("turn-undo-3");
     fireEvent.click(undo);
     await waitFor(() => expect(api.rollbackCheckpoint).toHaveBeenCalledWith("cp2"));
     expect(confirmSpy).toHaveBeenCalled();
@@ -281,7 +282,7 @@ describe("v1.111 消息级撤销", () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
     const api = mockUndoApi(twoTurnEvents);
     render(<AgentPanel api={api} t={t} sessionId="s1" />);
-    const undo = await screen.findByTestId("turn-undo");
+    const undo = await screen.findByTestId("turn-undo-3");
     fireEvent.click(undo);
     // 取消即中止：checkpoints 与 rollback 均不调用
     await new Promise((r) => setTimeout(r, 30));
@@ -292,22 +293,20 @@ describe("v1.111 消息级撤销", () => {
 
   it("运行态撤销钮禁用", async () => {
     render(<AgentPanel api={mockUndoApi(twoTurnEvents, "executing")} t={t} sessionId="s1" />);
-    const undo = await screen.findByTestId("turn-undo");
+    const undo = await screen.findByTestId("turn-undo-3");
     expect(undo).toBeDisabled();
   });
 
-  // v1.123 气泡下按钮组：复制恒可用（写剪贴板 + 已复制回弹）；重做与撤销配对、撤销后可用。
+  // v1.123 气泡下按钮组：复制恒可用；重做初始不存在，撤销后挂在被撤销回合上（v1.127）。
   it("每回合渲染复制钮，点击写入剪贴板并回显已复制", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
     try {
       render(<AgentPanel api={mockUndoApi(twoTurnEvents)} t={t} sessionId="s1" />);
       await screen.findByText("任务二");
-      // 无改动回合也有复制钮；撤销/重做只在最后含改动回合
+      // 无改动回合也有复制钮；初始无重做钮
       expect(screen.getByTestId("turn-copy-1")).toBeTruthy();
-      expect(screen.queryByTestId("turn-redo")?.closest(".turn-user")).toBe(
-        screen.getAllByTestId("turn-user")[1]
-      );
+      expect(screen.queryByTestId(/^turn-redo-/)).toBeNull();
       fireEvent.click(screen.getByTestId("turn-copy-3"));
       await waitFor(() => expect(writeText).toHaveBeenCalledWith("任务二"));
       expect(await screen.findByText("thread.copied")).toBeTruthy();
@@ -316,17 +315,18 @@ describe("v1.111 消息级撤销", () => {
     }
   });
 
-  it("重做钮默认禁用，撤销成功后可用并调 unrollback，成功即收", async () => {
+  it("撤销成功后重做钮出现在被撤销回合并调 unrollback，成功即收", async () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     const api = mockUndoApi(twoTurnEvents);
     render(<AgentPanel api={api} t={t} sessionId="s1" />);
-    const redo = await screen.findByTestId("turn-redo");
-    expect(redo).toBeDisabled();
-    fireEvent.click(await screen.findByTestId("turn-undo"));
-    await waitFor(() => expect(redo).toBeEnabled());
+    expect(screen.queryByTestId(/^turn-redo-/)).toBeNull();
+    fireEvent.click(await screen.findByTestId("turn-undo-3"));
+    const redo = await screen.findByTestId("turn-redo-3");
+    // 重做挂在被撤销的回合（最后一个含改动回合）上
+    expect(redo.closest(".turn-user")).toBe(screen.getAllByTestId("turn-user")[1]);
     fireEvent.click(redo);
     await waitFor(() => expect(api.control).toHaveBeenCalledWith("s1", "unrollback"));
-    await waitFor(() => expect(redo).toBeDisabled());
+    await waitFor(() => expect(screen.queryByTestId(/^turn-redo-/)).toBeNull());
     confirmSpy.mockRestore();
   });
 });

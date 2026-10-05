@@ -157,7 +157,6 @@
 | **v1.121** | **设置信息架构重排（用户令「重新设计打开设置“设置”功能……参考 Codex」；双参考方案选定 Codex 设置形态——模态框 + 左侧分类导航，ZCode 侧栏常驻形态备选未采用）：① 分类导航——General / Models / Permissions / Plugins / Updates 五类，右侧只渲染当前分类，替代单页长表单；General 承载编辑器保存方式与代理参数（首改缓冲、命令超时）；② 语义不变式——保存模式仍即时写 ui_prefs，其余设置仍由底部全局 Save 原子持久化，全部既有 API、testid 与密钥不变式保留；新增 settings-nav / settings-panel-* 导航接线 testid；③ 五语言键新增 settings.categories.* 与 settings.general.title，设置主标题仍由五语言承载** |
 | **v1.122** | **任务完成语音提示（用户令「AI对话 任务执行完成 添加 语音提示」）：Agent 回合自运行态（§9.1 感知→修复五态）转入 done 时播放应用内双音提示——WebAudio 运行时正弦双音合成（上行两音，总长 <400ms），零音频资源文件；autoplay 无用户激活时静默跳过；error / paused / 会话切换不响；偏好 daemon `ui_prefs` 键 `sound.done`（on 默认 / off，即时生效，与保存方式 v1.75 同法），命令面板 `toggle.sound_done` 切换（设置面板项待 v1.121 重排落地后并入 General）；仅 active 会话触发；§7.1 边界不变式同步修订（应用内提示音非系统级推送）** |
 | **v1.123** | **用户气泡下功能按钮组：撤销 / 复制 / 重做（用户令「气泡下面 添加功能按钮：撤销、复制、重做」）：① v1.111 的「撤销」钮扩为三钮组（`.turn-actions`）——撤销条件不变（仅最后含改动回合、运行态禁用、confirm 门）；② 复制——写回合任务文本入剪贴板，点击后短暂显「已复制」回弹；③ 重做——撤销的逆操作（§10.3 unrollback 语义：恢复到最近一次回滚前状态），撤销成功后可用、重做成功即收、运行态禁用、会话切换重置（页面重载后保守禁用，不对未知回滚状态误触）；新键 `thread.copy` / `thread.copied` / `thread.redo` 五语言。附：v1.109-112 漂浮工作树的孤儿前端实现随本功能补入（AgentPanel 撤销实现 / api.ts checkpoints `event_seq` / turn-* 样式 / 对应测试用例——v1.113 起多轮按 hunk 提交均漏带，此前仅存工作树）** |
-| **v1.124** | **Laya 日常对话工具面：agent 可调用判定工具 `laya_decide`（§9.8 集成点 #4；用户定位「laya 融入日常对话是产品重要工具与特色」，形态参照 ZCode——模型在循环内自主咨询本地决策器，而非仅 daemon 侧隐形钩子）：三原语按现有模型任务头暴露——`kind=intent`（choice，文本→意图标签）/ `kind=risk`（score，命令→0..1 风险）/ `kind=route`（bool，任务文本→轻模型建议）；A 级只读（本地 CPU 推理、不出网不写盘、无审批），`[models.laya].features` 增 `agent_tool` 逐项开关（默认开）；判定仅作排序 / 预筛 / 提示参考（置信未校准），不改变 A/B/C/D 分级、不构成跳过验证的理由，输出按不可信数据处理；团队策略 `denied_tools` 与只读开关同轨约束；Trace 复用 `decider_call` 增 `origin: "agent_tool"`；UI 轻量可见化——`laya_decide` 步骤并入只读聚合降噪，判定结果另渲染单行轻量徽标（类型 → 结果 · 耗时）；§18.3 门径细化——「token 不升」约束 daemon 侧自动集成点，工具面以固定目录开销 + 按需调用单独度量（通过率不降、无滥用）；附录 E / §14.2 / 术语表 / 需求表同步** |
 | **v1.125** | **分组行尾「新建受管 worktree 会话」图标换为线性 git-branch SVG（用户报「按钮显示不完整」）：U+23A1「⎡」是数学多行括号的上半块字符，系统字体栈 12px 下仅渲染左上角、呈残缺角括号状被误读为渲染缺陷——换为与 §7.5 图标同规格的 stroke SVG（currentColor，随行 hover 变色，与字体回退解耦）；行为 / testid（session-new-worktree-*）/ aria（`projects.new_worktree_session` 五语言）不变，零新增语言键；§7.1 同步** |
 | **v1.126** | **任务输入区上下文条——草稿任务的项目 / 工作区归属可见可改（用户报「点击新建任务，有多个项目时对话框没有项目名称选择；codex / zcode 输入框上面都有项目选择和分支选择」，形态参照 Codex / ZCode 输入上方选择器）：① 任务输入框（textarea）上方新增常驻上下文条（无 active 项目不渲染）——**草稿态**（v1.116）为两个原生 `<select>`：项目选择（列全部已打开项目，切换 = 激活目标项目并保持 / 进入其草稿，与侧栏点项目行同语义）+ 工作区选择（主工作区 / 新受管 worktree，映射 `draftByProject` 布尔意图——「分支选择」在 Tenon 的对应物即会话级受管 worktree（v1.87 §9.7，`worktree: "managed"`），非 git 仓库项目选受管项在首发建会话时经 daemon 错误呈现）；**会话态**为只读标识（项目名 + ⎇ 受管 worktree 徽标）——会话强绑定 `project_id` 不可切换（§6-7 多项目边界不变式）；② 草稿输入文本 per-project 持有（多项目并行草稿互不串扰；发送成功随草稿清除，弃草稿重进「＋ 新任务」文本恢复）；③ 注入类入口（诊断「AI 修复」injectedTask / 行内指令 Cmd+I）在主根草稿态改走草稿首发链路（建会话再发），不再静默丢弃——受管 worktree 草稿不接（编辑器 / 诊断为项目主根上下文，注入 worktree 会话会写副本而非用户所见文件）；侧栏 worktree hover 入口与「＋ 新任务」语义不变；新增 `workspace.main / workspace.managed / context.project / context.workspace` 五语言键；§7.5 同步** |
 
@@ -317,7 +316,7 @@ Codex CLI 已开源且核心为 Rust 实现（codex-rs 工作区，另有遗留 
 | 安全 | 动作四级分级、沙箱三态、直执审计、密钥拦截 | P0(P1 完整沙箱) |
 | 安全 | checkpoint（独立 shadow git 快照库，§10.3）、回滚 / 撤销回滚、TOFU、崩溃恢复 | P0/P1 |
 | 模型 | OpenAI / Anthropic / DeepSeek / Ollama + OpenAI 兼容端点；显式路由；成本显示 | P0/P1 |
-| 模型 | 本地决策模型 Laya：自动下载 + 意图预判 / 命令风险辅助 / 路由启发（§9.8 集成点 #1-3）+ agent 可调用判定工具 laya_decide（#4，v1.124） | P0（M1 后段核心）/ P1（深化） |
+| 模型 | 本地决策模型 Laya：自动下载 + 意图预判 / 命令风险辅助 / 路由启发（§9.8 三集成点） | P0（M1 后段核心）/ P1（深化） |
 | 插件 | 外部进程插件 + MCP；官方 registry、签名、权限 diff | P1 |
 | 治理 | AgentTrace、本地报告；团队策略文件、AI Evals | P1/P2 |
 | 平台 | 浏览器访问（本机 127.0.0.1 为 P1；局域网配对后移 M3，Q4）；Windows WSL2 安装包 | P1/P2 |
@@ -696,16 +695,13 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 
 **定位**：产品自管的小型本地分类模型（Laya），只做结构化判定——选项分类（choice）/ 量表打分（score）/ 布尔判断（noul）三类原语；本地 CPU 推理（~30ms 级）、零 token 成本；**不生成代码、不做开放问答**。价值：把代理循环中不值得动用大模型的结构化判定下沉到本地——缩短回合延迟、压缩进入大模型的上下文、降低云端 token 开销。
 
-**集成点**（全部为辅助判定，`[models.laya].features` 逐项开关；v1.92 收敛为三点且全部接线——上下文预筛与批量 triage 因无消费方移除，需要时另行设计；**v1.124 增 #4 agent 可调用判定工具**；daemon 按 `models.laya.enabled` 把 LayaRuntime 注入会话配置，未下载 / 未启用各点回退现状）：
+**集成点**（全部为辅助判定，`[models.laya].features` 逐项开关；v1.92 收敛为三点且全部接线——上下文预筛与批量 triage 因无消费方移除，需要时另行设计；daemon 按 `models.laya.enabled` 把 LayaRuntime 注入会话配置，未下载 / 未启用各点回退现状）：
 
 | # | 用途 | 说明 | 收益 |
 |---|---|---|---|
 | 1 | 意图预判 | DECIDING 前对用户消息分类（纯问答 / 需改动 / 只读分析 / 需出网），为大模型提供先验与路由建议；不改变 §9.1 状态机转移 | 减少无效轮次，辅助 #3 |
 | 2 | 命令风险辅助 | §12.2 规则引擎为主、Laya 为规则库外命令补盲区（借鉴 codex execpolicy 思路，§3.1）；打分用于风险说明与执行前提示，**不改变 A/B/C/D 分级语义、不替代只读开关 / 工具黑名单**（v1.89 铁律不受影响） | 高风险早暴露，减少事后回滚 |
 | 3 | 路由启发式 | 承接 §11「纯读任务提示轻模型」的轻量启发式（展示建议、一键采纳；auto 路由仍为实验特性默认关，§5 非目标 8） | 云端 token 成本下降 |
-| 4 | agent 可调用判定工具（v1.124） | `laya_decide` 进模型工具目录（A 级只读）：模型在对话中自主咨询本地决策器——`kind=intent`（choice，意图标签）/ `kind=risk`（score 0..1）/ `kind=route`（bool 轻模型建议）；判定结果仅作参考，边界见下 | 本地零 token 结构化判定对模型开放；决策能力随 registry 模型升级（starter → 完整模型）自动增强，工具契约稳定 |
-
-**agent 可调用工具面（#4，v1.124）**：`laya_decide` 参数 `{kind, text}`，按现有模型任务头暴露三原语（固定头线性分类器不做任意 criteria 零样本分类，故不照搬 ZCode MCP 形态的开放 criteria 参数——契约随模型升级保持稳定）。执行走会话循环内联分发（LayaRuntime 异步推理，不经 `execute_tool` 同步面），团队策略 `denied_tools` 命中即拒绝、与全目录同轨；每次调用入 Trace `decider_call`（`origin: "agent_tool"`，类型 / 结果 / 耗时，不含输入原文）。工具描述向模型写明边界：仅结构化判定（分类 / 打分 / 布尔），非开放问答与生成；结果未校准仅作排序 / 预筛 / 提示参考——**线性分类器 zero-shot 精度有限（实测会高置信误分），输出永不直接产生动作、不构成跳过测试 / 验证的理由、不改 A/B/C/D 分级**。
 
 **分发与生命周期**：完整模型文件不进安装包（保包体，同 §8.4 运行时分发原则；**v1.102 修订**：KB 级 starter 兜底模型内嵌，见下）；**daemon 启动即自动下载并启用（v1.71，用户决策）**——`models.laya.enabled` 且 `models.laya.auto_download`（默认开）时后台按**多镜像链（v1.102）**拉取官方静态 registry（附录 C Q1）签名清单：`DEFAULT_REGISTRY_URLS` 顺序尝试（官方域名 tenonide.dev → GitHub Pages 静态托管 → jsDelivr CDN），任一可达且解析成功即用；版本锁定 + ed25519 签名校验 + SHA-256 校验通过后按清单 `urls` 镜像列表（`url` 为首镜像，可选字段兼容旧清单）顺序下载安装至 `~/.tenon/models/laya/`（§14.1）并热装载——SHA-256 钉扎保证任一镜像字节一致；清单版本新于已装即自动升级、相同即跳过；**全程无确认卡**——决策模型是产品自管、版本锁定、签名钉扎的静态资产，经官方 registry 分发、推理不出网，不是代理动作。**内置 starter 兜底（v1.102，保证可用）**：所有 registry 镜像不可达 / 清单校验失败 / 模型镜像全部下载失败，且本地未装载时，安装编译期内嵌 starter 模型（与二进制同分发同完整性，版本锁定 1）并热装载——离线首启同样可用；registry 日后可达时按版本比较正常升级覆盖。下载失败静默回退现状（日志留痕、下次启动重试，不做重试风暴），不阻塞任何功能。`auto_download = false` 时不自动下载（重新开启后下次启动拉取；手动下载端点已随 v1.92 移除）。由 daemon 内置 Rust 推理运行时加载（不额外进程、不进 WebView）；中英输入自动路由对应语言变体（模型随发双变体，与 Q5 中英同期一致）。
 
@@ -713,7 +709,6 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 
 - 判定输出只用于**排序、提示、预筛**，绝不直接产生动作、绝不放宽只读开关或工具黑名单；
 - 置信度未校准，仅作排序参考；zero-shot 精度有限——判定准则须具体化，关键集成点（#1 / #2）上线前须在领域语料上验证；
-- agent 工具面（#4）判定结果对模型可见，同样按不可信数据处理：不得作为跳过测试 / 验证、放宽只读开关或黑名单的依据；`laya_decide` 经团队策略 `denied_tools` 与工具目录同轨约束（v1.124）；
 - 模型输入含仓库文本（不可信数据，§12.1）→ 判定结果同样按数据处理，最坏影响仅为排序失真；
 - **整体可回退**：未下载 / 加载失败 / 单次推理超时（默认 200ms）→ 对应集成点回退现状（大模型直判 / 纯规则 / 全量上下文），任何功能不阻塞；
 - 判定调用入 Trace（events `decider_call`：判定类型 / 结果 / 耗时，不含输入原文，§14.2）；集成点与判定阈值变更视同提示词变更，触发 Evals 门（§18.3），验收「基准通过率不降、token 消耗下降」。
@@ -918,7 +913,7 @@ registry 检索 → 展示**权限 diff**（相对已装版本新增权限高亮
 | l4_chunks | id, project_id, path, symbol, start_line, end_line, text, embedding | L4 检索切片、行区间、文本与本地向量（sqlite-vec 演进路径，§10.1） |
 | memories | id, scope, project_id, kind, content, importance, embedding, source_session, created_at, updated_at, last_seen_at | L5 跨会话对话记忆（§10.1，v1.104）：project 层按 project_id 隔离；global 层仅 kind=preference，永不承载仓库内容 |
 
-事件类型枚举：`user_input / sensing / decision / model_delta / patch_applied / command_run / direct_action / diagnostics / checkpoint / compaction / rollback / unrollback / model_fallback / decider_call / error / session_title / memory_saved`（direct_action 是 v1.89 C/D 直执审计：工具 / 级别 / 关键参数；rollback / unrollback 对应 §10.3 回滚与撤销回滚；model_delta 为 §9.6 合并后的模型增量（Final 的 usage / tool calls 仍只按权威 Final 入账）；decider_call 为 §9.8 Laya 本地判定：类型 / 结果 / 耗时，不含输入原文（v1.124 起 `origin` 标记来源：缺省 = daemon 自动集成点，`agent_tool` = 模型经 `laya_decide` 工具主动调用）；session_title 为 v1.59 对话标题生成完成（payload `{title}`，UI 据此即时刷新对话列表）；memory_saved 为 v1.104 L5 记忆提取入库完成（payload `{count, ids}`，不含记忆原文）；均入 Trace 可审计）。旧库中的 `approval_request / approval_decision / approval_timeout` 只读回放兼容，新运行不再产生。
+事件类型枚举：`user_input / sensing / decision / model_delta / patch_applied / command_run / direct_action / diagnostics / checkpoint / compaction / rollback / unrollback / model_fallback / decider_call / error / session_title / memory_saved`（direct_action 是 v1.89 C/D 直执审计：工具 / 级别 / 关键参数；rollback / unrollback 对应 §10.3 回滚与撤销回滚；model_delta 为 §9.6 合并后的模型增量（Final 的 usage / tool calls 仍只按权威 Final 入账）；decider_call 为 §9.8 Laya 本地判定：类型 / 结果 / 耗时，不含输入原文；session_title 为 v1.59 对话标题生成完成（payload `{title}`，UI 据此即时刷新对话列表）；memory_saved 为 v1.104 L5 记忆提取入库完成（payload `{count, ids}`，不含记忆原文）；均入 Trace 可审计）。旧库中的 `approval_request / approval_decision / approval_timeout` 只读回放兼容，新运行不再产生。
 
 **增长治理**（v1.93 接线）：events / tool_calls 冷热分层——热数据留 SQLite，关闭超 `archive.events_days`（默认 90 天，daemon 每日定时执行）的会话压缩归档至 `~/.tenon/archive/`（仍全本地、可检索回载）；model_usage 明细随会话归档，项目 / 会话聚合经 `project_usage_totals` / `session_usage_totals` 即时查询（按月 / 按日聚合表无消费方，已删）；approvals 表仅作 v1.89 前旧库兼容。**手动归档（v1.103）**：`sessions.archived_at` 非空即在侧栏隐藏、可随时还原，数据不出库；自动压缩归档扫描含已手动归档会话（老归档按 `events_days` 最终压缩出库）；手动删除为事务级联硬删（events / tool_calls / checkpoints / model_usage / approvals / session 行），shadow 快照不随删（gc 老化）。
 
@@ -1051,7 +1046,7 @@ WS 事件与会话 events 表一一对应，均含 `project_id`；断线重连�
 
 ### 18.3 Agent Evals（升级门禁）
 
-任务集 = 仓库快照 + 自然语言任务 + 验收测试 / 参考补丁（M0 基准任务集已定稿于**附录 D**——10 个内部任务；基线指标随 M0 结束记录）；触发：内核 / 模型 / 提示词 / 语言包 / Laya 集成点与判定阈值变更（§9.8）；指标：通过率、成本、步数、风险动作数、安全违规（=0 一票否决）；报告本地生成，M3 起可视化。 L4 上下文质量（v1.34）同入门禁：Evals 夹具自动按生产同源 `scan_root → chunk → embed` 入库；任务可声明 `expected_l4_path` 或使用 `L4RecallPath` 断言；SENSING Trace 聚合为召回数 / 均分 / 期望命中，期望路径未命中即用例失败并使套件 verdict 失败；报告面板同步展示命中率与均分。 Laya 门径细化（v1.124）：「token 不升、通过率不降」约束 daemon 侧自动集成点（§9.8 #1-3）；agent 可调用工具面（#4）以固定目录开销 + 按需调用单独度量——报告记录 `laya_decide` 调用率，验收 = 通过率不降、无滥用（调用率显著异常即关 `agent_tool` 开关回收）。
+任务集 = 仓库快照 + 自然语言任务 + 验收测试 / 参考补丁（M0 基准任务集已定稿于**附录 D**——10 个内部任务；基线指标随 M0 结束记录）；触发：内核 / 模型 / 提示词 / 语言包 / Laya 集成点与判定阈值变更（§9.8）；指标：通过率、成本、步数、风险动作数、安全违规（=0 一票否决）；报告本地生成，M3 起可视化。 L4 上下文质量（v1.34）同入门禁：Evals 夹具自动按生产同源 `scan_root → chunk → embed` 入库；任务可声明 `expected_l4_path` 或使用 `L4RecallPath` 断言；SENSING Trace 聚合为召回数 / 均分 / 期望命中，期望路径未命中即用例失败并使套件 verdict 失败；报告面板同步展示命中率与均分。
 
 ### 18.4 性能与兼容
 
@@ -1123,7 +1118,7 @@ WS 事件与会话 events 表一一对应，均含 `project_id`；断线重连�
 | ProjectRuntime | daemon 内某个已登记项目的内部缓存资源组：文件服务、watcher、LSP、快照锁、沙箱边界与 L4 索引（§6.4） |
 | 项目组合任务 | 跨项目的编排容器：只聚合多条 project-scoped 子会话的状态 / 成本，不共享代码上下文（§6.4 / §9.7） |
 | 受管 worktree | daemon 在 `~/.tenon/worktrees/` 托管的会话级独立工作树：写边界 / 沙箱 / 快照按 worktree 隔离，支持同项目并行会话，收尾为合并或丢弃（§9.7，v1.87） |
-| Laya | 产品自管本地决策模型：分类 / 打分 / 布尔三原语，CPU ~30ms 级、零 token，承接代理循环结构化判定（§9.8）；v1.124 起经 `laya_decide` 工具对 agent 开放（A 级只读） |
+| Laya | 产品自管本地决策模型：分类 / 打分 / 布尔三原语，CPU ~30ms 级、零 token，承接代理循环结构化判定（§9.8） |
 | 对话记忆（L5） | 跨会话持久化的对话沉淀：用户偏好 / 项目事实 / 决策 / 工作流要点；project 层按 project_id 隔离，global 层仅用户偏好，注入提示按不可信数据对待（§10.1，v1.104） |
 
 ### 附录 B · 关键决策记录（ADR 摘要）
@@ -1243,7 +1238,7 @@ price_out_per_mtok = 0.0          # 可选：美元 / 百万输出 token
 [models.laya]
 enabled       = true              # 本地决策模型总开关（§9.8；false = 各集成点回退现状）
 auto_download = true              # daemon 启动自动下载并热装载（v1.71：无审批卡；v1.102：registry 多镜像 + 内置 starter 兜底，失败静默回退）；false = 不自动下载
-features      = ["intent", "risk", "routing", "agent_tool"]  # 集成点逐项开关（§9.8 表 #1-4；#4 = agent 可调用 laya_decide 工具，v1.124）
+features      = ["intent", "risk", "routing"]  # 集成点逐项开关（§9.8 表 #1-3，v1.92 收敛）
 
 [memories]                        # L5 跨会话对话记忆（§10.1，v1.104）
 enabled = true                    # false = 不提取不注入（手动 API 与既有数据不受影响）
