@@ -633,7 +633,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   padding: 0 0 3px 12px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
 }
 .pe-chat-row {
   display: flex;
@@ -641,7 +641,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   align-items: center;
   justify-content: flex-start;
   width: 100%;
-  padding: 4px 6px;
+  padding: 6px 6px;
   border: none;
   background: transparent;
   border-radius: 6px;
