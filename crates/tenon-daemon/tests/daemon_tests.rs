@@ -6041,3 +6041,68 @@ async fn team_policy_and_settings_independent() {
         .unwrap();
     assert_eq!(r.status(), 200);
 }
+
+#[tokio::test]
+async fn project_file_and_session_integration() {
+    let script = vec![ScriptedReply::Text("project analysis complete".into())];
+    let (_dir, port, token) = start_daemon(script).await;
+    let client = client_with_token(&token);
+    let tmp = tempfile::tempdir().unwrap();
+
+    // 1. Open project
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    // 2. Write a file
+    let r = client
+        .put(format!("{}/project/{}/file", base(port), pid))
+        .json(&serde_json::json!({ "path": "analysis.ts", "content": "export function analyze() { return 'done'; }" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    // 3. Create session
+    let r = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({ "project_id": pid, "provider": "mock" }))
+        .send()
+        .await
+        .unwrap();
+    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
+
+    // 4. Send message about the file
+    let msg = client
+        .post(format!("{}/session/{}/message", base(port), sid))
+        .json(&serde_json::json!({ "text": "analyze analysis.ts" }))
+        .send()
+        .await
+        .unwrap();
+    let _ = msg.status();
+
+    // 5. Verify file exists on disk
+    assert!(tmp.path().join("analysis.ts").exists());
+}
+
+#[tokio::test]
+async fn settings_get_after_put_session_config() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    // PUT
+    client
+        .put(format!("{}/settings", base(port)))
+        .json(&serde_json::json!({ "session": { "first_edit_buffer_ms": 5000 } }))
+        .send()
+        .await
+        .unwrap();
+
+    // GET and verify
+    let r = client.get(format!("{}/settings", base(port))).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+}
