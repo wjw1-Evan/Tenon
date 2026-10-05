@@ -190,9 +190,8 @@ export function AgentPanel({
   const [streamText, setStreamText] = useState("");
   const [status, setStatus] = useState<AgentStateName>("idle");
   const [input, setInput] = useState("");
-  // v1.135：撤销截断后整流重载（递增触发轮询 effect 以 after=0 重拉）与被撤销回合原文。
+  // v1.135：撤销截断后整流重载（递增触发轮询 effect 以 after=0 重拉）。
   const [traceEpoch, setTraceEpoch] = useState(0);
-  const [undoneText, setUndoneText] = useState("");
   // 草稿输入文本 per-project（v1.126）：多项目并行草稿互不串扰——
   // 发送成功随草稿清除；弃草稿重进「＋ 新任务」时文本恢复（草稿意图 v1.116 同语义）。
   const [draftInputs, setDraftInputs] = useState<Record<string, string>>({});
@@ -356,8 +355,6 @@ export function AgentPanel({
     try {
       await api.sendMessage(sessionId, text);
       setInput("");
-      // v1.135：新消息发出后「已撤销」提示条（重做入口）完成使命即收。
-      setUndoneTurnId(null);
     } finally {
       setBusy(false);
     }
@@ -394,11 +391,10 @@ export function AgentPanel({
         return;
       }
       // v1.135 撤销三合一：①任务文本回填输入框；②文件修改随树回滚；③线程截断
-      //（服务端水位过滤，气泡及其后信息消失），整流重载后重做改挂「已撤销」提示条。
+      //（服务端水位过滤，气泡及其后信息消失），整流重载。v1.136：撤销即终态，
+      // 重做功能移除（检查点时间轴与 API 的 unrollback 能力保留）。
       await api.rollbackCheckpoint(cp.id, true);
-      setUndoneText(turn.task ?? "");
       setInputValue(turn.task ?? "");
-      setUndoneTurnId(turn.id);
       setEvents([]);
       setStreamText("");
       setTraceEpoch((e) => e + 1);
@@ -407,28 +403,8 @@ export function AgentPanel({
     }
   }
 
-  // v1.123 重做：撤销的逆操作（§10.3 unrollback——恢复到最近一次回滚前状态）。
-  // 仅本会话生命周期内撤销过才可用；重载后保守禁用，不对未知回滚状态误触。
-  const [undoneTurnId, setUndoneTurnId] = useState<number | null>(null);
   const [copiedTurnId, setCopiedTurnId] = useState<number | null>(null);
   const copyTimer = useRef<number | null>(null);
-  useEffect(() => setUndoneTurnId(null), [sessionId]);
-
-  async function redoTurn() {
-    if (!sessionId || running || undoneTurnId === null) return;
-    try {
-      // v1.135：重做 = unrollback 清截断水位，被隐藏回合随气泡恢复；整流重载。
-      await api.control(sessionId, "unrollback");
-      setUndoneTurnId(null);
-      setEvents([]);
-      setStreamText("");
-      setTraceEpoch((e) => e + 1);
-      // 撤销时已把原消息放回输入框；恢复回合后若输入框仍是原文则清空防重复发送。
-      if (inputValue === undoneText) setInput("");
-    } catch {
-      window.alert(t("thread.undo_failed"));
-    }
-  }
 
   function copyTurn(turn: Turn) {
     if (copiedTurnId === turn.id) return;
@@ -633,22 +609,6 @@ export function AgentPanel({
             </section>
           );
         })}
-        {undoneTurnId !== null && (
-          <div className="turn-undo-chip" data-testid="undo-notice">
-            <span>{t("thread.undo_notice")}</span>
-            <button
-              type="button"
-              className="turn-action"
-              data-testid="undo-redo"
-              disabled={running}
-              title={t("thread.redo")}
-              aria-label={t("thread.redo")}
-              onClick={() => void redoTurn()}
-            >
-              ↪ {t("thread.redo")}
-            </button>
-          </div>
-        )}
       </div>
 
       <div

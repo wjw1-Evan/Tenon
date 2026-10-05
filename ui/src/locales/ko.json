@@ -258,8 +258,6 @@
   "thread.undo_failed": "실행 취소 실패: 일치하는 스냅샷을 찾을 수 없습니다",
   "thread.copy": "복사",
   "thread.copied": "복사됨",
-  "thread.redo": "다시 실행",
-  "thread.undo_notice": "실행 취소: 변경이 롤백되고 메시지가 입력창으로 돌아갔습니다",
   "tool.read_file": "읽기",
   "tool.list_dir": "나열",
   "tool.grep": "검색",

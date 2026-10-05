@@ -1344,15 +1344,6 @@ button:disabled { opacity: 0.45; cursor: default; }
   color: var(--muted);
   padding: 1px 0;
 }
-/* 「已撤销」提示条（v1.135）：重做入口随气泡截断改挂线程尾部 */
-.turn-undo-chip {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 11px;
-  color: var(--muted);
-  padding: 4px 0;
-}
 /* 模型用量徽标（v1.129 §11）：回合页脚单行弱化展示，与只读 / Laya 聚合同级 */
 .turn-usage {
   font-size: 11px;

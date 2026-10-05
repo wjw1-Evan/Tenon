@@ -258,8 +258,6 @@
   "thread.undo_failed": "撤銷失敗：未找到對應快照",
   "thread.copy": "複製",
   "thread.copied": "已複製",
-  "thread.redo": "重做",
-  "thread.undo_notice": "已撤銷：修改已回滾，原訊息已放回輸入框",
   "tool.read_file": "讀取",
   "tool.list_dir": "列出",
   "tool.grep": "搜尋",

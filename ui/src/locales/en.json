@@ -258,8 +258,6 @@
   "thread.undo_failed": "Undo failed: matching snapshot not found",
   "thread.copy": "Copy",
   "thread.copied": "Copied",
-  "thread.redo": "Redo",
-  "thread.undo_notice": "Undone: changes rolled back; the message is back in the input box",
   "tool.read_file": "Read",
   "tool.list_dir": "List",
   "tool.grep": "Search",
