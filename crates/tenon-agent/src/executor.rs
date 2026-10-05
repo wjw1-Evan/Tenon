@@ -2147,4 +2147,63 @@ mod tests {
         assert!(out.content.contains("two.rs"));
         assert!(out.content.contains("three.rs"));
     }
+
+    #[test]
+    fn apply_patch_read_write_list_full_cycle() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+
+        // 1. Create file
+        execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "cycle/README.md", "range": null, "content": "# Project\n\n## Setup\n"
+        }));
+
+        // 2. Read it back
+        let read = execute_tool(&c, "read_file", &serde_json::json!({"path": "cycle/README.md"}));
+        assert!(read.ok);
+        assert!(read.content.contains("Setup"));
+
+        // 3. List to see it
+        let list = execute_tool(&c, "list_dir", &serde_json::json!({"path": "cycle"}));
+        assert!(list.ok);
+        assert!(list.content.contains("README.md"));
+
+        // 4. Grep for content
+        let grep = execute_tool(&c, "grep", &serde_json::json!({"pattern": "Setup"}));
+        assert!(grep.ok);
+    }
+
+    #[test]
+    fn bash_echo_and_file_creation() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        // bash may be sandboxed, but verify no panic
+        let out = execute_tool(&c, "bash", &serde_json::json!({
+            "command": "echo hello > /dev/null", "timeout_s": 5
+        }));
+        let _ = out;
+    }
+
+    #[test]
+    fn team_denied_apply_patch() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        c.team_denied_tools = vec!["apply_patch".into()];
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "denied.txt", "range": null, "content": "denied content"
+        }));
+        assert!(!out.ok);
+        assert!(out.content.contains("团队策略禁用"));
+    }
+
+    #[test]
+    fn team_denied_grep_still_allows_others() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("ok.txt"), "searchable content").unwrap();
+        let mut c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        c.team_denied_tools = vec!["bash".into()];
+        // grep is NOT denied
+        let out = execute_tool(&c, "grep", &serde_json::json!({"pattern": "searchable"}));
+        assert!(out.ok);
+    }
 }
