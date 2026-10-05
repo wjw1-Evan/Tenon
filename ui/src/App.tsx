@@ -1473,6 +1473,10 @@ export default function App({
           settings={settings}
           saveMode={saveMode}
           onSaveModeChange={changeSaveMode}
+          projects={projects.map((p) => ({
+            id: p.id,
+            label: p.display_name || p.path.split("/").filter(Boolean).pop() || p.path,
+          }))}
           onClose={() => setSettingsOpen(false)}
           onSaved={setSettings}
         />

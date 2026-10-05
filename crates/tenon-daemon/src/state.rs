@@ -137,6 +137,8 @@ pub struct SettingsOverrides {
     /// v1.40 模型分区：默认 provider 名与 provider 覆盖表（整体替换语义）。
     pub models_default: Option<String>,
     pub models_providers: std::collections::BTreeMap<String, ProviderOverride>,
+    /// v1.130 技能分区：停用名单（§13.4，整体替换；新会话生效）。
+    pub skills_disabled: Option<Vec<String>>,
 }
 
 impl SettingsOverrides {
@@ -214,6 +216,23 @@ impl SettingsOverrides {
             self.models_default = next_default;
             self.models_providers = next_providers;
         }
+        if let Some(skills) = body.get("skills") {
+            if let Some(v) = skills.get("disabled") {
+                // 整体替换（§13.4 v1.130）：名称数组，元素须为合法技能 id
+                let arr = v.as_array().ok_or("skills.disabled 须为字符串数组")?;
+                let mut names = Vec::with_capacity(arr.len());
+                for item in arr {
+                    let s = item.as_str().ok_or("skills.disabled 须为字符串数组")?;
+                    if !tenon_core::skills::is_valid_skill_name(s) {
+                        return Err(format!("skills.disabled 含非法技能名: {s}"));
+                    }
+                    if !names.contains(&s.to_string()) {
+                        names.push(s.to_string());
+                    }
+                }
+                self.skills_disabled = Some(names);
+            }
+        }
         Ok(())
     }
 
@@ -241,11 +260,15 @@ impl SettingsOverrides {
                 .collect();
             models.insert("providers".into(), serde_json::Value::Object(providers));
         }
+        let skills = serde_json::json!({
+            "disabled": self.skills_disabled.clone().unwrap_or_default(),
+        });
         serde_json::json!({
             "session": session,
             "exec": exec,
             "update": update,
             "models": models,
+            "skills": skills,
         })
     }
 
@@ -345,6 +368,8 @@ pub struct DaemonOptions {
     pub laya_public_key: Option<String>,
     /// Laya 模型目录覆盖（§9.8；None = ~/.tenon/models/laya；测试注入临时目录）。
     pub laya_models_dir: Option<std::path::PathBuf>,
+    /// 技能全局目录覆盖（§13.4 v1.130；None = ~/.tenon/skills；测试注入临时目录）。
+    pub skills_dir: Option<std::path::PathBuf>,
     /// 文件监听轮询后端间隔（v1.128 测试确定性通道）；None = 原生后端
     ///（FSEvents/inotify，注册握手 2s 就绪预算 + 后台补注册）。
     pub watch_poll_interval: Option<std::time::Duration>,
@@ -376,6 +401,7 @@ impl DaemonOptions {
             laya_registry_url: None,
             laya_public_key: None,
             laya_models_dir: None,
+            skills_dir: None,
             watch_poll_interval: None,
         }
     }
@@ -639,6 +665,8 @@ pub struct DaemonState {
     /// L4 状态变化进程内广播；WS 订阅者可全量或按 project_id 过滤。
     pub l4_status_events: tokio::sync::broadcast::Sender<L4StatusEvent>,
     pub snapshots_root: std::path::PathBuf,
+    /// 技能全局目录（§13.4 v1.130：`~/.tenon/skills/`；测试隔离注入）。
+    pub skills_root: std::path::PathBuf,
     /// 设置面板运行时覆盖（§15 /settings；新会话生效）。
     pub settings_overrides: std::sync::Mutex<SettingsOverrides>,
     /// 设置覆盖权威文件；测试显式隔离。
@@ -781,6 +809,10 @@ impl DaemonState {
         let snapshots_root = options
             .snapshots_root
             .unwrap_or_else(|| Config::data_dir().join("snapshots"));
+        let skills_root = options
+            .skills_dir
+            .clone()
+            .unwrap_or_else(|| Config::data_dir().join("skills"));
         let worktrees_root = options
             .worktrees_root
             .clone()
@@ -841,6 +873,7 @@ impl DaemonState {
             file_events,
             l4_status_events,
             snapshots_root,
+            skills_root,
             settings_path,
             policy_path,
             updates_staging_dir,

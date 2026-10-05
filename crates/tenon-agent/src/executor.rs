@@ -85,6 +85,10 @@ pub struct ToolContext {
     pub team_denied_tools: Vec<String>,
     /// 共享 LSP 宿主（§8.5 / §9.2；None = 内核未接入 daemon）。
     pub lsp: Option<std::sync::Arc<tenon_lsp::LspManager>>,
+    /// 技能全局目录（§13.4 v1.130；None = daemon 未接入，skill_use 仅项目级可见）。
+    pub skills_global_dir: Option<PathBuf>,
+    /// 停用技能名单（settings.json `skills.disabled`，会话创建时快照）。
+    pub skills_disabled: Vec<String>,
 }
 
 impl ToolContext {
@@ -103,6 +107,8 @@ impl ToolContext {
             mcp_policy: tenon_mcp::McpLevelPolicy::default(),
             team_denied_tools: Vec::new(),
             lsp: None,
+            skills_global_dir: None,
+            skills_disabled: Vec::new(),
         }
     }
 }
@@ -186,6 +192,43 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                     ToolOutput::ok(content)
                 }
                 Err(e) => ToolOutput::err(format!("读取失败: {e}")),
+            }
+        }
+        // 代理技能读取（§13.4 v1.130）：A 级只读——项目同名覆盖全局，停用即拒。
+        "skill_use" => {
+            let Some(name) = args.get("name").and_then(|n| n.as_str()) else {
+                return ToolOutput::err("缺少 name 参数");
+            };
+            if !tenon_core::skills::is_valid_skill_name(name) {
+                return ToolOutput::err(format!("非法技能名: {name}"));
+            }
+            if ctx.skills_disabled.iter().any(|d| d == name) {
+                return ToolOutput::err(format!(
+                    "技能已停用: {name}（可在设置面板 Skills 分区启用）"
+                ));
+            }
+            let project_skill = ctx
+                .root
+                .join(".tenon")
+                .join("skills")
+                .join(name)
+                .join("SKILL.md");
+            let global_skill = ctx
+                .skills_global_dir
+                .as_deref()
+                .map(|g| g.join(name).join("SKILL.md"));
+            let path = if project_skill.is_file() {
+                project_skill
+            } else if global_skill.as_ref().is_some_and(|p| p.is_file()) {
+                global_skill.expect("is_some_and 已判定存在")
+            } else {
+                return ToolOutput::err(format!(
+                    "未找到技能: {name}（目录见系统提示「可用技能」节）"
+                ));
+            };
+            match tenon_core::skills::load_skill_text(&path) {
+                Ok(text) => ToolOutput::ok(text),
+                Err(e) => ToolOutput::err(e),
             }
         }
         "list_dir" => {
@@ -886,6 +929,59 @@ mod tests {
         let out = execute_tool(&c, "grep", &serde_json::json!({"pattern": "find_me"}));
         assert!(out.ok);
         assert!(out.content.contains("code.rs"));
+    }
+
+    // §13.4 v1.130：skill_use——项目同名覆盖全局、停用拒绝、缺参 / 非法名拒绝。
+    #[test]
+    fn skill_use_reads_global_and_project_overrides() {
+        let (d, mut c) = ctx();
+        let global = tempfile::tempdir().unwrap();
+        let dir = global.path().join("note-writer");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: 写作助手\ndescription: 全局版\n---\n全局正文",
+        )
+        .unwrap();
+        c.skills_global_dir = Some(global.path().to_path_buf());
+
+        let out = execute_tool(&c, "skill_use", &serde_json::json!({"name": "note-writer"}));
+        assert!(out.ok);
+        assert!(out.content.contains("全局正文"));
+
+        // 项目同名覆盖全局（会话工作根 .tenon/skills/）
+        let project_dir = d.path().join(".tenon").join("skills").join("note-writer");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(project_dir.join("SKILL.md"), "项目版正文").unwrap();
+        let out = execute_tool(&c, "skill_use", &serde_json::json!({"name": "note-writer"}));
+        assert!(out.ok);
+        assert!(out.content.contains("项目版正文"));
+        assert!(!out.content.contains("全局正文"), "项目同名覆盖全局");
+    }
+
+    #[test]
+    fn skill_use_rejects_disabled_missing_and_invalid_names() {
+        let (d, mut c) = ctx();
+        c.skills_disabled = vec!["archived-skill".into()];
+        let out = execute_tool(
+            &c,
+            "skill_use",
+            &serde_json::json!({"name": "archived-skill"}),
+        );
+        assert!(!out.ok, "停用即拒");
+        assert!(out.content.contains("已停用"));
+
+        let out = execute_tool(&c, "skill_use", &serde_json::json!({"name": "nope"}));
+        assert!(!out.ok, "未注册技能拒绝");
+        assert!(out.content.contains("未找到技能"));
+
+        let out = execute_tool(&c, "skill_use", &serde_json::json!({"name": "../escape"}));
+        assert!(!out.ok, "路径穿越名拒绝");
+
+        let out = execute_tool(&c, "skill_use", &serde_json::json!({}));
+        assert!(!out.ok, "缺 name 参数拒绝");
+
+        let _ = d;
     }
 
     #[test]

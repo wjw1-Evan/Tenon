@@ -76,6 +76,11 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
         .route("/project/{id}/lsp/apply", post(apply_lsp_workspace_edit))
         .route("/plugins", get(list_plugins).put(search_registry))
         .route("/plugins/install", post(install_plugin))
+        .route("/skills", get(list_skills).post(create_skill))
+        .route(
+            "/skills/{name}",
+            get(get_skill).put(put_skill).delete(delete_skill),
+        )
         // ---------- 管理（§15） ----------
         .route("/project/trust", put(set_project_trust))
         .route(
@@ -190,6 +195,9 @@ async fn create_agent_session(
     }
     // §10.1 v1.104 接线：L5 跨会话记忆开关（[memories].enabled，默认开）。
     agent_cfg.memories_enabled = state.config.memories.enabled;
+    // §13.4 v1.130 接线：技能全局目录 + 停用名单（settings 快照，新会话生效）。
+    agent_cfg.skills_global_dir = state.skills_root.clone();
+    agent_cfg.skills_disabled = skills_disabled_list(state);
     // §13.3 v1.92 接线：AGENTS.md「直读，只能收窄」——读取会话工作根的
     // AGENTS.md，解析 `<!-- tenon:rules -->` 限制块并入策略（缺文件即默认）。
     let project_rules = std::fs::read_to_string(snapshot_workspace.join("AGENTS.md"))
@@ -1894,6 +1902,207 @@ async fn inline_complete(
     }
 }
 
+// ---------- 代理技能（Skills，§13.4 v1.130） ----------
+
+#[derive(Deserialize)]
+struct SkillsQuery {
+    /// 项目 id；缺省 / 空串 = 仅全局作用域。
+    project: Option<String>,
+}
+
+fn skills_disabled_list(state: &DaemonState) -> Vec<String> {
+    state
+        .settings_overrides
+        .lock()
+        .expect("settings lock")
+        .skills_disabled
+        .clone()
+        .unwrap_or_default()
+}
+
+/// 技能合并清单（项目同名覆盖全局后的生效集 + enabled 标记，供设置面板展示）。
+async fn list_skills(
+    State(state): State<Arc<DaemonState>>,
+    Query(query): Query<SkillsQuery>,
+) -> Response {
+    let workspace = match skills_workspace(&state, query.project).await {
+        Ok(w) => w,
+        Err((code, msg)) => return api_err(code, msg),
+    };
+    let disabled = skills_disabled_list(&state);
+    let skills_root = state.skills_root.clone();
+    let entries = tokio::task::spawn_blocking(move || {
+        tenon_core::skills::scan_skills_merged(&skills_root, workspace.as_deref())
+    })
+    .await
+    .unwrap_or_default();
+    let skills: Vec<Value> = entries
+        .into_iter()
+        .map(|e| {
+            json!({
+                "name": e.name,
+                "display_name": e.display_name,
+                "description": e.description,
+                "scope": e.scope,
+                "dir": e.path.parent().map(|p| p.to_string_lossy()).unwrap_or_default(),
+                "enabled": !disabled.iter().any(|d| d == &e.name),
+            })
+        })
+        .collect();
+    Json(json!({ "skills": skills })).into_response()
+}
+
+/// 读 SKILL.md 原文（全局 / 项目均可；设置面板编辑器数据源）。
+async fn get_skill(
+    State(state): State<Arc<DaemonState>>,
+    Path(name): Path<String>,
+    Query(query): Query<SkillsQuery>,
+) -> Response {
+    if !tenon_core::skills::is_valid_skill_name(&name) {
+        return api_err(StatusCode::BAD_REQUEST, format!("非法技能名: {name}"));
+    }
+    let workspace = match skills_workspace(&state, query.project).await {
+        Ok(w) => w,
+        Err((code, msg)) => return api_err(code, msg),
+    };
+    let skills_root = state.skills_root.clone();
+    let needle = name.clone();
+    let entry = tokio::task::spawn_blocking(move || {
+        tenon_core::skills::scan_skills_merged(&skills_root, workspace.as_deref())
+            .into_iter()
+            .find(|e| e.name == needle)
+    })
+    .await
+    .unwrap_or(None);
+    let Some(entry) = entry else {
+        return api_err(StatusCode::NOT_FOUND, format!("未找到技能: {name}"));
+    };
+    match tenon_core::skills::load_skill_text(&entry.path) {
+        Ok(content) => Json(json!({
+            "name": entry.name,
+            "scope": entry.scope,
+            "path": entry.path.to_string_lossy(),
+            "content": content,
+        }))
+        .into_response(),
+        Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+#[derive(Deserialize)]
+struct SkillCreateBody {
+    name: String,
+    content: String,
+}
+
+/// 新建全局技能（重名 409；项目技能经 /project/:id/file 创建）。
+async fn create_skill(State(state): State<Arc<DaemonState>>, Json(body): Json<Value>) -> Response {
+    let Ok(payload) = serde_json::from_value::<SkillCreateBody>(body) else {
+        return api_err(StatusCode::BAD_REQUEST, "须提供 name 与 content");
+    };
+    if !tenon_core::skills::is_valid_skill_name(&payload.name) {
+        return api_err(
+            StatusCode::BAD_REQUEST,
+            format!("非法技能名: {}", payload.name),
+        );
+    }
+    if payload.content.len() > tenon_core::skills::MAX_SKILL_BYTES {
+        return api_err(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "技能内容超限（>{}KB）",
+                tenon_core::skills::MAX_SKILL_BYTES / 1024
+            ),
+        );
+    }
+    let dir = state.skills_root.join(&payload.name);
+    if dir.exists() {
+        return api_err(
+            StatusCode::CONFLICT,
+            format!("技能已存在: {}", payload.name),
+        );
+    }
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return api_err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建失败: {e}"));
+    }
+    if let Err(e) = std::fs::write(dir.join("SKILL.md"), payload.content) {
+        return api_err(StatusCode::INTERNAL_SERVER_ERROR, format!("写入失败: {e}"));
+    }
+    Json(json!({ "ok": true, "name": payload.name })).into_response()
+}
+
+#[derive(Deserialize)]
+struct SkillUpdateBody {
+    content: String,
+}
+
+/// 写全局技能原文（项目技能经 /project/:id/file 写守卫路径）。
+async fn put_skill(
+    State(state): State<Arc<DaemonState>>,
+    Path(name): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    if !tenon_core::skills::is_valid_skill_name(&name) {
+        return api_err(StatusCode::BAD_REQUEST, format!("非法技能名: {name}"));
+    }
+    let Ok(payload) = serde_json::from_value::<SkillUpdateBody>(body) else {
+        return api_err(StatusCode::BAD_REQUEST, "须提供 content");
+    };
+    if payload.content.len() > tenon_core::skills::MAX_SKILL_BYTES {
+        return api_err(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "技能内容超限（>{}KB）",
+                tenon_core::skills::MAX_SKILL_BYTES / 1024
+            ),
+        );
+    }
+    let file = state.skills_root.join(&name).join("SKILL.md");
+    if !file.is_file() {
+        return api_err(
+            StatusCode::NOT_FOUND,
+            format!("未找到全局技能: {name}（项目技能经项目文件 API 写入）"),
+        );
+    }
+    if let Err(e) = std::fs::write(&file, payload.content) {
+        return api_err(StatusCode::INTERNAL_SERVER_ERROR, format!("写入失败: {e}"));
+    }
+    Json(json!({ "ok": true, "name": name })).into_response()
+}
+
+/// 删除全局技能目录（项目技能删除走 /project/:id/file/ops）。
+async fn delete_skill(State(state): State<Arc<DaemonState>>, Path(name): Path<String>) -> Response {
+    if !tenon_core::skills::is_valid_skill_name(&name) {
+        return api_err(StatusCode::BAD_REQUEST, format!("非法技能名: {name}"));
+    }
+    let dir = state.skills_root.join(&name);
+    if !dir.is_dir() {
+        return api_err(StatusCode::NOT_FOUND, format!("未找到全局技能: {name}"));
+    }
+    if let Err(e) = std::fs::remove_dir_all(&dir) {
+        return api_err(StatusCode::INTERNAL_SERVER_ERROR, format!("删除失败: {e}"));
+    }
+    Json(json!({ "ok": true, "name": name })).into_response()
+}
+
+/// 项目根解析（?project= 缺省 = 仅全局；只读登记信息，不激活 runtime）。
+async fn skills_workspace(
+    state: &DaemonState,
+    project: Option<String>,
+) -> Result<Option<std::path::PathBuf>, (StatusCode, String)> {
+    let Some(id) = project.filter(|p| !p.is_empty()) else {
+        return Ok(None);
+    };
+    let stored = {
+        let mut store = state.store.lock().await;
+        store.project(&id).ok().flatten()
+    };
+    match stored {
+        Some(p) => Ok(Some(std::path::PathBuf::from(p.path))),
+        None => Err((StatusCode::NOT_FOUND, "project not found".into())),
+    }
+}
+
 // ---------- 插件 registry（§13 / M2） ----------
 
 /// 已装插件列表（store plugins 表，§14.2）。
@@ -2443,6 +2652,7 @@ async fn l4_rebuild(
 }
 
 /// 成本归因（§15 v1.92 收敛）：会话级查询，`?session=` 必带（月度聚合无消费方）。
+/// v1.129：返回体携 cached_tokens / duration_ms，命中率与均速由消费方派生。
 async fn costs(
     State(state): State<Arc<DaemonState>>,
     Query(q): Query<std::collections::HashMap<String, String>>,
@@ -2584,6 +2794,10 @@ async fn get_settings(State(state): State<Arc<DaemonState>>) -> Response {
             obj.insert("command_timeout_s".into(), serde_json::json!(v));
         }
     }
+    // skills 合并视图（§13.4 v1.130）：停用名单回显（启停经 PUT /settings）
+    let skills = json!({
+        "disabled": ov.skills_disabled.clone().unwrap_or_default(),
+    });
     Json(json!({
         "session": session,
         "exec": exec,
@@ -2591,6 +2805,7 @@ async fn get_settings(State(state): State<Arc<DaemonState>>) -> Response {
         "agent": state.config.agent,
         "checkpoint": state.config.checkpoint,
         "update": update,
+        "skills": skills,
         "team_policy": state.team_policy.read().expect("team policy lock").clone(),
     }))
     .into_response()

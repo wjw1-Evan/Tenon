@@ -6583,3 +6583,234 @@ async fn file_tree_after_multiple_writes() {
         .unwrap();
     assert_eq!(r.status(), 200);
 }
+
+// ---------- 代理技能管理（§13.4 v1.130） ----------
+
+/// 技能测试专用 daemon：skills 目录隔离注入（其余走 in_memory 默认）。
+async fn start_skills_daemon() -> (tempfile::TempDir, u16, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut options = DaemonOptions::in_memory();
+    options.endpoint_path = Some(dir.path().join("daemon.endpoint"));
+    options.settings_path = Some(dir.path().join("settings.json"));
+    options.policy_path = Some(dir.path().join("policy.toml"));
+    options.skills_dir = Some(dir.path().join("skills"));
+    let handle = tenon_daemon::serve(options).await.unwrap();
+    (dir, handle.port, handle.token)
+}
+
+#[tokio::test]
+async fn skills_crud_and_disabled_roundtrip() {
+    let (_dir, port, token) = start_skills_daemon().await;
+    let client = client_with_token(&token);
+
+    // 初始为空
+    let r = client
+        .get(format!("{base}/skills", base = base(port)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(
+        r.json::<serde_json::Value>().await.unwrap()["skills"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+
+    // 新建（含 frontmatter）→ 重复 409 → 非法名 400
+    let content = "---\nname: 提交助手\ndescription: 生成中文提交信息\n---\n正文";
+    let r = client
+        .post(format!("{base}/skills", base = base(port)))
+        .json(&serde_json::json!({ "name": "commit-helper", "content": content }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let r = client
+        .post(format!("{base}/skills", base = base(port)))
+        .json(&serde_json::json!({ "name": "commit-helper", "content": "x" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 409);
+    let r = client
+        .post(format!("{base}/skills", base = base(port)))
+        .json(&serde_json::json!({ "name": "../escape", "content": "x" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
+
+    // 清单：frontmatter 解析 + enabled 默认开
+    let r = client
+        .get(format!("{base}/skills", base = base(port)))
+        .send()
+        .await
+        .unwrap();
+    let skills = r.json::<serde_json::Value>().await.unwrap()["skills"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(skills.len(), 1);
+    assert_eq!(skills[0]["name"], "commit-helper");
+    assert_eq!(skills[0]["scope"], "global");
+    assert_eq!(skills[0]["description"], "生成中文提交信息");
+    assert_eq!(skills[0]["enabled"], true);
+
+    // 读原文 → 更新 → 读回
+    let r = client
+        .get(format!("{base}/skills/commit-helper", base = base(port)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert!(r.json::<serde_json::Value>().await.unwrap()["content"]
+        .as_str()
+        .unwrap()
+        .contains("生成中文提交信息"));
+    let r = client
+        .put(format!("{base}/skills/commit-helper", base = base(port)))
+        .json(&serde_json::json!({ "content": "---\ndescription: 更新版\n---\n新正文" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let r = client
+        .get(format!("{base}/skills/commit-helper", base = base(port)))
+        .send()
+        .await
+        .unwrap();
+    assert!(r.json::<serde_json::Value>().await.unwrap()["content"]
+        .as_str()
+        .unwrap()
+        .contains("新正文"));
+
+    // 启停经 PUT /settings skills.disabled（合并视图回显，清单 enabled 翻转）
+    let r = client
+        .put(format!("{base}/settings", base = base(port)))
+        .json(&serde_json::json!({ "skills": { "disabled": ["commit-helper"] } }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let view = r.json::<serde_json::Value>().await.unwrap();
+    assert_eq!(view["skills"]["disabled"].as_array().unwrap().len(), 1);
+    let r = client
+        .get(format!("{base}/skills", base = base(port)))
+        .send()
+        .await
+        .unwrap();
+    let skills = r.json::<serde_json::Value>().await.unwrap()["skills"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(
+        skills[0]["enabled"], false,
+        "停用条目仍在清单、enabled=false"
+    );
+
+    // settings 持久化：非法技能名 400
+    let r = client
+        .put(format!("{base}/settings", base = base(port)))
+        .json(&serde_json::json!({ "skills": { "disabled": ["../bad"] } }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
+
+    // 删除 → 清单回空
+    let r = client
+        .delete(format!("{base}/skills/commit-helper", base = base(port)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let r = client
+        .get(format!("{base}/skills", base = base(port)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.json::<serde_json::Value>().await.unwrap()["skills"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn skills_project_scope_overrides_global() {
+    let (dir, port, token) = start_skills_daemon().await;
+    let client = client_with_token(&token);
+
+    // 全局技能
+    client
+        .post(format!("{base}/skills", base = base(port)))
+        .json(
+            &serde_json::json!({ "name": "shared", "content": "---\ndescription: 全局版\n---\n" }),
+        )
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+
+    // 登记项目并在其 .tenon/skills/ 放同名技能
+    let ws = dir.path().join("ws");
+    std::fs::create_dir_all(ws.join(".tenon/skills/shared")).unwrap();
+    std::fs::write(
+        ws.join(".tenon/skills/shared/SKILL.md"),
+        "---\ndescription: 项目版覆盖\n---\n项目正文",
+    )
+    .unwrap();
+    let r = client
+        .post(format!("{base}/projects/open", base = base(port)))
+        .json(&serde_json::json!({ "path": ws.to_string_lossy() }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // 带项目查询：同名项目覆盖全局
+    let r = client
+        .get(format!("{base}/skills?project={pid}", base = base(port)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let skills = r.json::<serde_json::Value>().await.unwrap()["skills"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(skills.len(), 1, "项目同名覆盖全局后仅一条");
+    assert_eq!(skills[0]["scope"], "project");
+    assert_eq!(skills[0]["description"], "项目版覆盖");
+
+    // 项目技能读原文走同端点
+    let r = client
+        .get(format!(
+            "{base}/skills/shared?project={pid}",
+            base = base(port)
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body = r.json::<serde_json::Value>().await.unwrap();
+    assert_eq!(body["scope"], "project");
+    assert!(body["content"].as_str().unwrap().contains("项目正文"));
+
+    // 未登记项目 → 404
+    let r = client
+        .get(format!("{base}/skills?project=nope", base = base(port)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
+}

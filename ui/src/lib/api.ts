@@ -161,6 +161,11 @@ export interface SettingsData {
     laya?: Record<string, unknown>;
     [k: string]: unknown;
   };
+  /** 代理技能（§13.4 v1.130）：停用名单（新会话生效）。 */
+  skills?: {
+    disabled?: string[];
+    [k: string]: unknown;
+  };
   team_policy?: TeamPolicySettings;
   [k: string]: unknown;
 }
@@ -766,6 +771,56 @@ export class TenonApi {
       { method: "POST" }
     );
     return r.ticket;
+  }
+
+  /** 代理技能合并清单（§13.4 / §15 v1.130）：项目同名覆盖全局后的生效集。 */
+  listSkills(projectId?: string) {
+    const q = projectId ? `?project=${encodeURIComponent(projectId)}` : "";
+    return this.request<{
+      skills: Array<{
+        name: string;
+        display_name: string;
+        description: string;
+        scope: "global" | "project";
+        dir: string;
+        enabled: boolean;
+      }>;
+    }>(`/skills${q}`);
+  }
+
+  /** 读 SKILL.md 原文（§13.4：设置面板编辑器数据源）。 */
+  getSkill(name: string, projectId?: string) {
+    const q = projectId ? `?project=${encodeURIComponent(projectId)}` : "";
+    return this.request<{
+      name: string;
+      scope: "global" | "project";
+      path: string;
+      content: string;
+    }>(`/skills/${encodeURIComponent(name)}${q}`);
+  }
+
+  /** 新建全局技能（§13.4：目录名即 id；项目技能经项目文件 API 创建）。 */
+  createSkill(name: string, content: string) {
+    return this.request<{ ok: boolean; name: string }>("/skills", {
+      method: "POST",
+      json: { name, content },
+    });
+  }
+
+  /** 写全局技能原文（§13.4）。 */
+  updateSkill(name: string, content: string) {
+    return this.request<{ ok: boolean; name: string }>(
+      `/skills/${encodeURIComponent(name)}`,
+      { method: "PUT", json: { content } }
+    );
+  }
+
+  /** 删除全局技能（§13.4：项目技能删除走项目文件操作）。 */
+  deleteSkill(name: string) {
+    return this.request<{ ok: boolean; name: string }>(
+      `/skills/${encodeURIComponent(name)}`,
+      { method: "DELETE" }
+    );
   }
 
   /** 连接事件流：先换票；等待 auth ok 后才交给调用方（ADR-10）。 */

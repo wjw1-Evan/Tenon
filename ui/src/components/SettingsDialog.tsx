@@ -14,6 +14,7 @@ import {
   type ThemePreference,
 } from "../lib/theme";
 import { PluginSettings } from "./PluginSettings";
+import { SkillsSettings, type SkillsProjectOption } from "./SkillsSettings";
 
 export type { SettingsData } from "../lib/api";
 
@@ -56,13 +57,14 @@ function rowsFromSettings(settings: SettingsData | null): ProviderRow[] {
 }
 
 /** v1.121：Codex 式设置信息架构——左栏分类，右栏只渲染当前分类。 */
-type SettingsSection = "general" | "models" | "permissions" | "plugins" | "updates";
+type SettingsSection = "general" | "models" | "permissions" | "plugins" | "skills" | "updates";
 
 const SETTINGS_SECTIONS: SettingsSection[] = [
   "general",
   "models",
   "permissions",
   "plugins",
+  "skills",
   "updates",
 ];
 
@@ -73,11 +75,13 @@ interface Props {
   /** 保存方式（§8.2 v1.75）：App 持有权威状态（ui_prefs 回填 + 即时切换）。 */
   saveMode: "auto" | "manual";
   onSaveModeChange: (mode: "auto" | "manual") => void;
+  /** 已打开项目（v1.130 技能分区项目作用域选择器；缺省 = 仅全局作用域可用）。 */
+  projects?: SkillsProjectOption[];
   onClose: () => void;
   onSaved: (s: SettingsData) => void;
 }
 
-export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, onClose, onSaved }: Props) {
+export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, projects = [], onClose, onSaved }: Props) {
   const [bufferMs, setBufferMs] = useState(2000);
   const [commandTimeout, setCommandTimeout] = useState(120);
   const [deniedTools, setDeniedTools] = useState("");
@@ -92,6 +96,8 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, o
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [section, setSection] = useState<SettingsSection>("general");
+  /** 技能停用名单（§13.4 v1.130）：Skills 分区即时 PUT，App 侧经 onSaved 回写。 */
+  const [skillsDisabled, setSkillsDisabled] = useState<string[]>([]);
 
   // 从已拉取的全局设置回填（外观 / 语言为本地即时项，不入 daemon）
   useEffect(() => {
@@ -104,6 +110,7 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, o
     setUpdateChannel(settings.update?.channel === "auto" ? "auto" : "manual");
     setDefaultModel(String(settings.models?.default ?? ""));
     setProviders(rowsFromSettings(settings));
+    setSkillsDisabled(settings.skills?.disabled ?? []);
   }, [settings]);
 
   // Laya 状态（§15 GET /models）只读展示
@@ -436,6 +443,17 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, o
             )}
 
             {section === "plugins" && <PluginSettings api={api} t={t} />}
+
+            {section === "skills" && (
+              <SkillsSettings
+                api={api}
+                t={t}
+                projects={projects}
+                disabled={skillsDisabled}
+                onDisabledChange={setSkillsDisabled}
+                onSaved={onSaved}
+              />
+            )}
 
             {section === "updates" && (
               <div className="settings-section" data-testid="settings-updates-section">
