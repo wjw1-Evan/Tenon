@@ -5968,3 +5968,76 @@ async fn file_write_and_verify_on_disk() {
     let disk_content = std::fs::read_to_string(tmp.path().join("on-disk.txt")).unwrap();
     assert_eq!(disk_content, "persisted content");
 }
+
+#[tokio::test]
+async fn settings_roundtrip_full_config() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    let full_config = serde_json::json!({
+        "session": { "first_edit_buffer_ms": 3000 },
+        "exec": { "command_timeout_s": 60 },
+        "models": {
+            "default": "anthropic",
+            "providers": {
+                "anthropic": {
+                    "kind": "anthropic",
+                    "base_url": "https://api.anthropic.com",
+                    "model": "claude-3"
+                }
+            }
+        },
+        "checkpoint": { "keep_days": 3 },
+        "agent": {
+            "circuit": { "max_files": 20, "max_lines": 2000 },
+            "fix_loop": { "max_rounds": 2 },
+            "exec": { "command_timeout_s": 45 }
+        }
+    });
+
+    let r = client
+        .put(format!("{}/settings", base(port)))
+        .json(&full_config)
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_success());
+
+    let r = client.get(format!("{}/settings", base(port))).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert!(body.is_object());
+}
+
+#[tokio::test]
+async fn team_policy_and_settings_independent() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    // Set team policy
+    let r = client
+        .put(format!("{}/team-policy", base(port)))
+        .json(&serde_json::json!({ "denied_tools": ["git_push"] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    // Settings are independent
+    let r = client
+        .put(format!("{}/settings", base(port)))
+        .json(&serde_json::json!({ "session": { "first_edit_buffer_ms": 1000 } }))
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_success());
+
+    // Team policy still in effect
+    let r = client
+        .put(format!("{}/team-policy", base(port)))
+        .json(&serde_json::json!({ "denied_tools": ["git_push", "bash"] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+}

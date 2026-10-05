@@ -2463,4 +2463,70 @@ mod tests {
         assert!(!out.ok);
         assert!(out.content.contains("团队策略禁用"));
     }
+
+    #[test]
+    fn apply_patch_and_read_json_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let json_content = r#"{"name": "test", "version": "1.0.0", "dependencies": {}}"#;
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "package.json", "range": null, "content": json_content
+        }));
+        assert!(out.ok);
+        let read = execute_tool(&c, "read_file", &serde_json::json!({"path": "package.json"}));
+        assert!(read.ok);
+        assert!(read.content.contains("test"));
+    }
+
+    #[test]
+    fn readonly_denied_and_team_interactions_full() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("data.txt"), "safe to read").unwrap();
+        let mut c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        c.readonly.store(true, Ordering::Relaxed);
+        c.team_denied_tools = vec!["bash".into(), "run_tests".into()];
+
+        // read_file: readonly OK + not denied → works
+        let read = execute_tool(&c, "read_file", &serde_json::json!({"path": "data.txt"}));
+        assert!(read.ok);
+
+        // apply_patch: readonly → blocked
+        let patch = execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "new.txt", "range": null, "content": "no"
+        }));
+        assert!(!patch.ok);
+
+        // bash: denied → blocked
+        let bash = execute_tool(&c, "bash", &serde_json::json!({"command": "echo", "timeout_s": 5}));
+        assert!(!bash.ok);
+
+        // run_tests: denied → blocked
+        let test = execute_tool(&c, "run_tests", &serde_json::json!({"command": "echo"}));
+        assert!(!test.ok);
+
+        // list_dir: readonly OK + not denied → works
+        let list = execute_tool(&c, "list_dir", &serde_json::json!({}));
+        assert!(list.ok);
+    }
+
+    #[test]
+    fn grep_and_apply_patch_integration() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+
+        // Create files
+        for (name, content) in [
+            ("model.rs", "pub struct Model { id: u32 }"),
+            ("view.rs", "pub struct View { model: Model }"),
+        ] {
+            execute_tool(&c, "apply_patch", &serde_json::json!({
+                "file": name, "range": null, "content": content
+            }));
+        }
+
+        // Grep for Model struct
+        let out = execute_tool(&c, "grep", &serde_json::json!({"pattern": "struct Model"}));
+        assert!(out.ok);
+        assert!(out.content.contains("model.rs"));
+    }
 }
