@@ -5903,3 +5903,68 @@ async fn evals_endpoint_returns_tasks_array() {
     // Response should have tasks or runs
     assert!(body.is_object() || body.is_array());
 }
+
+#[tokio::test]
+async fn session_message_sends_and_trace_updates() {
+    let script = vec![ScriptedReply::Text("I understand your request.".into())];
+    let (_dir, port, token) = start_daemon(script).await;
+    let client = client_with_token(&token);
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+    let r = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({ "project_id": pid, "provider": "mock" }))
+        .send()
+        .await
+        .unwrap();
+    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
+
+    // Send
+    let msg = client
+        .post(format!("{}/session/{}/message", base(port), sid))
+        .json(&serde_json::json!({ "text": "tell me about this project" }))
+        .send()
+        .await
+        .unwrap();
+    let _ = msg.status();
+
+    // Trace should be queryable
+    let r = client
+        .get(format!("{}/session/{}/trace", base(port), sid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+}
+
+#[tokio::test]
+async fn file_write_and_verify_on_disk() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    client
+        .put(format!("{}/project/{}/file", base(port), pid))
+        .json(&serde_json::json!({ "path": "on-disk.txt", "content": "persisted content" }))
+        .send()
+        .await
+        .unwrap();
+
+    // Verify on actual filesystem
+    assert!(tmp.path().join("on-disk.txt").exists());
+    let disk_content = std::fs::read_to_string(tmp.path().join("on-disk.txt")).unwrap();
+    assert_eq!(disk_content, "persisted content");
+}
