@@ -256,4 +256,8 @@ mod tests {
         assert_eq!(b.status(), CircuitStatus::Tripped(TripReason::OutOfTokens));
         assert_eq!(b.tokens_used(), 1001);
     }
+
+
+
+
 }
