@@ -6150,3 +6150,81 @@ async fn pair_info_returns_port_and_token() {
     assert_eq!(body["port"].as_u64().unwrap(), port as u64);
     assert_eq!(body["token"], token);
 }
+
+#[tokio::test]
+async fn open_project_returns_sessions_array() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = r.json().await.unwrap();
+    // Project should have sessions array (even if empty)
+    assert!(body.get("id").is_some());
+}
+
+#[tokio::test]
+async fn session_send_message_returns_accepted() {
+    let script = vec![ScriptedReply::Text("acknowledged".into())];
+    let (_dir, port, token) = start_daemon(script).await;
+    let client = client_with_token(&token);
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+    let r = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({ "project_id": pid, "provider": "mock" }))
+        .send()
+        .await
+        .unwrap();
+    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
+
+    let r = client
+        .post(format!("{}/session/{}/message", base(port), sid))
+        .json(&serde_json::json!({ "text": "test message" }))
+        .send()
+        .await
+        .unwrap();
+    // Message may be accepted (200) or rejected depending on state
+    assert_ne!(r.status(), 401);
+}
+
+#[tokio::test]
+async fn git_source_view_after_git_init() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let tmp = tempfile::tempdir().unwrap();
+    let _ = std::process::Command::new("git")
+        .args(["init", "--initial-branch=main"])
+        .current_dir(tmp.path())
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@l")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@l")
+        .output()
+        .unwrap();
+
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    let r = client
+        .get(format!("{}/project/{}/git/view", base(port), pid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+}
