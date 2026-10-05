@@ -2629,4 +2629,48 @@ mod tests {
             assert!(out.ok, "failed: {}", path);
         }
     }
+
+    #[test]
+    fn apply_patch_java_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let files = [
+            ("pom.xml", r#"<?xml version="1.0"?><project><modelVersion>4.0.0</modelVersion></project>"#),
+            ("src/main/java/com/example/App.java", "public class App {\n    public static void main(String[] args) {}\n}\n"),
+        ];
+        for (path, content) in files {
+            let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+                "file": path, "range": null, "content": content
+            }));
+            assert!(out.ok, "failed: {}", path);
+        }
+    }
+
+    #[test]
+    fn apply_patch_csharp_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let files = [
+            ("MyApp.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>"),
+            ("Program.cs", "var builder = WebApplication.CreateBuilder(args);\n"),
+        ];
+        for (path, content) in files {
+            let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+                "file": path, "range": null, "content": content
+            }));
+            assert!(out.ok, "failed: {}", path);
+        }
+    }
+
+    #[test]
+    fn grep_in_java_and_csharp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("App.java"), "public class App {}").unwrap();
+        std::fs::write(dir.path().join("Program.cs"), "class Program {}").unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "grep", &serde_json::json!({"pattern": "class"}));
+        assert!(out.ok);
+        assert!(out.content.contains("App.java"));
+        assert!(out.content.contains("Program.cs"));
+    }
 }
