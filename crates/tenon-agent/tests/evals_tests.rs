@@ -537,3 +537,63 @@ async fn eval_summary_reports_aggregated() {
     let report = runner.summarize(vec![r1, r2], "mock").await;
     assert!(report.total_tokens > 0 || report.total_steps > 0);
 }
+
+#[tokio::test]
+async fn eval_budget_zero_immediately_fails() {
+    let runner = EvalRunner::new(store());
+    let provider = Arc::new(MockProvider::new(
+        "mock",
+        "mock-1",
+        vec![ScriptedReply::Text("response".into())],
+    ));
+    let task = EvalTask {
+        id: "T-ZERO".into(),
+        instruction: "test".into(),
+        assertions: vec![],
+        budget: EvalBudget { max_steps: 0, max_tokens: 0 },
+        expected_l4_path: None,
+    };
+    let result = runner.run_task(&task, provider, &[("f.rs", "")]).await;
+    assert_eq!(result.verdict(), "fail");
+}
+
+#[tokio::test]
+async fn eval_answer_contains_multiple_keywords() {
+    let runner = EvalRunner::new(store());
+    let provider = Arc::new(MockProvider::new(
+        "mock",
+        "mock-1",
+        vec![ScriptedReply::Text("我完成了代码修复并通过了测试".into())],
+    ));
+    let task = EvalTask {
+        id: "T-MULTI".into(),
+        instruction: "test".into(),
+        assertions: vec![
+            Assertion::AnswerContains { text: "修复".into() },
+            Assertion::AnswerContains { text: "测试".into() },
+        ],
+        budget: EvalBudget { max_steps: 12, max_tokens: 200_000 },
+        expected_l4_path: None,
+    };
+    let result = runner.run_task(&task, provider, &[("f.rs", "")]).await;
+    assert_eq!(result.verdict(), "pass", "{result:?}");
+}
+
+#[tokio::test]
+async fn eval_empty_assertions_pass_immediately() {
+    let runner = EvalRunner::new(store());
+    let provider = Arc::new(MockProvider::new(
+        "mock",
+        "mock-1",
+        vec![ScriptedReply::Text("anything".into())],
+    ));
+    let task = EvalTask {
+        id: "T-EMPTY".into(),
+        instruction: "test".into(),
+        assertions: vec![],
+        budget: EvalBudget { max_steps: 12, max_tokens: 200_000 },
+        expected_l4_path: None,
+    };
+    let result = runner.run_task(&task, provider, &[("f.rs", "")]).await;
+    assert_eq!(result.verdict(), "pass", "{result:?}");
+}

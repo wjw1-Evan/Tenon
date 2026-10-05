@@ -2567,4 +2567,63 @@ mod managed_worktree_tests {
             assert_eq!(sess.status, status);
         }
     }
+
+    #[test]
+    fn l4_delete_file_removes_chunks() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let emb = vec![0.3; 8];
+        s.replace_l4_file(&p.id, "rem.rs", &[L4ChunkRecord {
+            symbol: None, start_line: 1, end_line: 5, text: "fn rem()".into(), embedding: emb,
+        }]).unwrap();
+        assert_eq!(s.l4_chunk_count(&p.id).unwrap(), 1);
+        s.delete_l4_file(&p.id, "rem.rs");
+        assert_eq!(s.l4_chunk_count(&p.id).unwrap(), 0);
+    }
+
+    #[test]
+    fn model_usage_session_scoped() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let sid = s.create_session(&p.id, "mock").unwrap().id;
+        s.record_model_usage(&sid, "mock", "mock-1", 50, 75, 0.01).unwrap();
+        s.record_model_usage(&sid, "mock", "mock-1", 50, 75, 0.02).unwrap();
+        let (inp, out, cost) = s.project_usage_totals(&p.id).unwrap();
+        assert_eq!(inp, 100);
+        assert_eq!(out, 150);
+        assert!((cost - 0.03).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn ui_pref_overwrite() {
+        let mut s = mem();
+        s.set_ui_pref("theme", "dark").unwrap();
+        s.set_ui_pref("theme", "light").unwrap();
+        let prefs = s.ui_prefs().unwrap();
+        let theme = prefs.iter().find(|(k, _)| k == "theme").unwrap();
+        assert_eq!(theme.1, "light");
+    }
+
+    #[test]
+    fn insert_memory_and_list() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let sid = s.create_session(&p.id, "mock").unwrap().id;
+        let rec = MemoryRecord {
+            scope: "project".into(),
+            project_id: p.id.clone(),
+            kind: "fact".into(),
+            content: "Uses TypeScript strict mode".into(),
+            importance: 4,
+            embedding: vec![0.5; 8],
+            source_session: sid,
+        };
+        let (mem, _created) = s.upsert_memory(&rec, 0.90).unwrap();
+        assert_eq!(mem.kind, "fact");
+        let all = s.list_memories(&p.id, None, 10).unwrap();
+        assert!(!all.is_empty());
+    }
 }
