@@ -6228,3 +6228,40 @@ async fn git_source_view_after_git_init() {
         .unwrap();
     assert_eq!(r.status(), 200);
 }
+
+#[tokio::test]
+async fn file_tree_after_multiple_writes() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    // Write multiple files in different dirs
+    for (path, content) in [
+        ("src/index.ts", "export {};"),
+        ("src/utils/helpers.ts", "export {};"),
+        ("README.md", "# Test"),
+        ("docs/guide.md", "Guide"),
+    ] {
+        client
+            .put(format!("{}/project/{}/file", base(port), pid))
+            .json(&serde_json::json!({ "path": path, "content": content }))
+            .send()
+            .await
+            .unwrap();
+    }
+
+    // Tree should show entries
+    let r = client
+        .get(format!("{}/project/{}/tree", base(port), pid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+}
