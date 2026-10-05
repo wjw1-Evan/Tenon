@@ -96,6 +96,13 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
         .route("/updates", get(get_updates))
         .route("/updates/check", post(check_updates))
         .route("/updates/apply", post(apply_updates))
+        // 对话记忆（L5，§10.1 v1.104）：项目层 + global preference 层的
+        // 列表 / 手动写入 / 删除
+        .route(
+            "/project/{id}/memories",
+            get(list_project_memories).post(create_project_memory),
+        )
+        .route("/memories/{id}", delete(delete_memory))
         // UI 偏好（§7.5 外观档）：daemon 端口动态导致 localStorage 按 origin
         // 隔离不可跨启动——此处为跨启动 / 跨端权威存储
         .route("/ui-prefs", get(get_ui_prefs).put(put_ui_prefs))
@@ -181,6 +188,8 @@ async fn create_agent_session(
     if state.config.models.laya.enabled {
         agent_cfg.laya = Some(state.laya.clone());
     }
+    // §10.1 v1.104 接线：L5 跨会话记忆开关（[memories].enabled，默认开）。
+    agent_cfg.memories_enabled = state.config.memories.enabled;
     // §13.3 v1.92 接线：AGENTS.md「直读，只能收窄」——读取会话工作根的
     // AGENTS.md，解析 `<!-- tenon:rules -->` 限制块并入策略（缺文件即默认）。
     let project_rules = std::fs::read_to_string(snapshot_workspace.join("AGENTS.md"))

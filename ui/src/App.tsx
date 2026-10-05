@@ -1074,6 +1074,14 @@ export default function App({
                         setOpenError(String(error))
                       )}
                     onRefreshProjects={() => void refreshProjects()}
+                    onSessionRemoved={(removedProjectId, removedSessionId) => {
+                      setSessionsByProject((prev) => {
+                        if (prev[removedProjectId] !== removedSessionId) return prev;
+                        const next = { ...prev };
+                        delete next[removedProjectId];
+                        return next;
+                      });
+                    }}
                     onOpenFile={openFile}
                     onFileTreeChange={handleFileTreeChange}
                   />
