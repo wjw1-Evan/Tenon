@@ -495,6 +495,7 @@ fn hex_encode(bytes: [u8; 32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::{SettingsOverrides, load_team_policy, validate_team_policy};
 
     #[test]
     fn signing_keypair_self_verifies() {
@@ -585,5 +586,93 @@ mod tests {
         assert_eq!(read_live_endpoint(&path), None, "陈旧 endpoint 拒绝");
         std::fs::write(&path, "not json").unwrap();
         assert_eq!(read_live_endpoint(&path), None, "畸形内容拒绝");
+    }
+
+    #[test]
+    fn settings_overrides_merge_json() {
+        let mut overrides = SettingsOverrides::default();
+        overrides.merge_json(&serde_json::json!({
+            "session": { "first_edit_buffer_ms": 3000 },
+            "exec": { "command_timeout_s": 60 }
+        })).unwrap();
+        assert_eq!(overrides.first_edit_buffer_ms, Some(3000));
+        assert_eq!(overrides.command_timeout_s, Some(60));
+    }
+
+    #[test]
+    fn settings_overrides_to_json_roundtrip() {
+        let mut overrides = SettingsOverrides::default();
+        overrides.merge_json(&serde_json::json!({
+            "session": { "first_edit_buffer_ms": 1500 }
+        })).unwrap();
+        let json = overrides.to_json();
+        assert!(json.is_object());
+    }
+
+    #[test]
+    fn settings_overrides_models_merge() {
+        let mut overrides = SettingsOverrides::default();
+        overrides.merge_json(&serde_json::json!({
+            "models": { "default": "openai" }
+        })).unwrap();
+        let mut config = tenon_config::ModelsConfig::default();
+        overrides.apply_models_to(&mut config);
+        assert_eq!(config.default, "openai");
+    }
+
+    #[test]
+    fn settings_overrides_invalid_mode_rejected() {
+        let mut overrides = SettingsOverrides::default();
+        let result = overrides.merge_json(&serde_json::json!({
+            "session": { "mode": "invalid_mode" }
+        }));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn settings_overrides_update_channel() {
+        let mut overrides = SettingsOverrides::default();
+        overrides.merge_json(&serde_json::json!({
+            "update": { "channel": "auto" }
+        })).unwrap();
+        assert_eq!(overrides.update_channel, Some("auto".into()));
+    }
+
+    #[test]
+    fn load_team_policy_default_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let _policy = load_team_policy(&dir.path().join("nonexistent-policy.toml"));
+        // 默认策略加载不崩溃
+    }
+
+    #[test]
+    fn validate_team_policy_valid_input() {
+        let policy = validate_team_policy(&serde_json::json!({
+            "denied_tools": ["git_push"],
+            "max_cost_usd": 10.0
+        }));
+        assert!(policy.is_ok());
+    }
+
+    #[test]
+    fn validate_team_policy_rejects_invalid_cost() {
+        let result = validate_team_policy(&serde_json::json!({
+            "max_cost_usd": -1
+        }));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn settings_overrides_load_and_persist() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let mut overrides = SettingsOverrides::default();
+        overrides.merge_json(&serde_json::json!({
+            "session": { "first_edit_buffer_ms": 2500 }
+        })).unwrap();
+        overrides.persist_to(&path);
+        assert!(path.exists());
+        let loaded = SettingsOverrides::load_from_path(&path);
+        assert_eq!(loaded.first_edit_buffer_ms, Some(2500));
     }
 }
