@@ -53,6 +53,8 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
         .route("/projects", get(list_projects))
         .route("/projects/open", post(open_project))
         .route("/projects/{id}", delete(delete_project))
+        // 目录浏览（v1.133 §15）：添加项目对话框浏览器模式目录选择器的数据源
+        .route("/fs/dirs", get(fs_dirs))
         // ---------- 编辑器与文件（§15） ----------
         .route("/project/{id}/tree", get(project_tree))
         .route("/project/{id}/files/fuzzy", get(fuzzy_files))
@@ -364,6 +366,65 @@ async fn open_project(
         }))
         .into_response(),
         Err((status, message)) => api_err(status, message),
+    }
+}
+
+/// GET /fs/dirs 查询参数（v1.133 §15）。
+#[derive(Deserialize)]
+struct FsDirsQuery {
+    /// 绝对路径；缺省 / 空 = 用户主目录。
+    #[serde(default)]
+    path: Option<String>,
+}
+
+/// GET /fs/dirs（v1.133 §15）：目录浏览——列绝对路径的直接子目录，驱动添加项目
+/// 对话框浏览器模式目录选择器（§7.1）。鉴权走全局中间件（token + Host/Origin，
+/// 局域网须已配对），与 /projects/open 同一信任级别（§12.6）。
+async fn fs_dirs(Query(query): Query<FsDirsQuery>) -> Response {
+    let raw = match query.path.as_deref() {
+        None | Some("") => match std::env::var("HOME") {
+            Ok(home) if !home.is_empty() => home,
+            _ => match std::env::var("USERPROFILE") {
+                Ok(home) if !home.is_empty() => home,
+                _ => return api_err(StatusCode::BAD_REQUEST, "home directory unavailable"),
+            },
+        },
+        Some(path) => path.to_string(),
+    };
+    let requested = std::path::PathBuf::from(&raw);
+    if !requested.is_absolute() {
+        return api_err(StatusCode::BAD_REQUEST, "path must be absolute");
+    }
+    let dir = match std::fs::canonicalize(&requested) {
+        Ok(dir) => dir,
+        Err(e) => return api_err(StatusCode::BAD_REQUEST, e.to_string()),
+    };
+    if !dir.is_dir() {
+        return api_err(StatusCode::BAD_REQUEST, "not a directory");
+    }
+    let parent = dir
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .filter(|p| !p.is_empty());
+    match tenon_fs::tree::list_subdirs(&dir) {
+        Ok(names) => {
+            let entries: Vec<serde_json::Value> = names
+                .into_iter()
+                .map(|name| {
+                    json!({
+                        "name": name,
+                        "path": dir.join(&name).to_string_lossy(),
+                    })
+                })
+                .collect();
+            Json(json!({
+                "path": dir.to_string_lossy(),
+                "parent": parent,
+                "entries": entries,
+            }))
+            .into_response()
+        }
+        Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }
 

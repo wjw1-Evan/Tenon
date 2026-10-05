@@ -256,6 +256,15 @@ export class TenonApi {
     });
   }
 
+  /** 目录浏览（v1.133 §15）：列绝对路径直接子目录（只含目录），path 缺省 = 主目录。 */
+  listDirs(path?: string) {
+    return this.request<{
+      path: string;
+      parent: string | null;
+      entries: Array<{ name: string; path: string }>;
+    }>(path ? `/fs/dirs?path=${encodeURIComponent(path)}` : "/fs/dirs");
+  }
+
   removeProject(projectId: string) {
     return this.request<{ removed: boolean; disk_contents_deleted: boolean }>(`/projects/${projectId}`, {
       method: "DELETE",

@@ -461,3 +461,86 @@ describe("Session archive & delete (v1.103)", () => {
     await waitFor(() => expect(unarchiveSession).toHaveBeenCalledWith("s-arc"));
   });
 });
+
+// ---------- 目录选择浮层（v1.133 §7.1：浏览器模式 GET /fs/dirs） ----------
+
+describe("ProjectExplorer folder picker (v1.133)", () => {
+  beforeEach(() => {
+    const backing = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => (backing.has(k) ? backing.get(k)! : null),
+      setItem: (k: string, v: string) => void backing.set(k, v),
+      removeItem: (k: string) => void backing.delete(k),
+      clear: () => backing.clear(),
+    });
+    treeMock.mockReset();
+    treeMock.mockResolvedValue({ entries: [] });
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("browse button is always visible and the picker fills the path on choose", async () => {
+    // jsdom 无 __TAURI_INTERNALS__ = 浏览器模式：浏览不再依赖桌面壳
+    const listDirs = vi
+      .fn()
+      .mockResolvedValueOnce({
+        path: "/home/u",
+        parent: "/home",
+        entries: [{ name: "proj", path: "/home/u/proj" }],
+      })
+      .mockResolvedValueOnce({ path: "/home/u/proj", parent: "/home/u", entries: [] });
+    const { onOpenProject } = renderExplorer([project("active")], { listDirs });
+    fireEvent.click(screen.getByTestId("project-add"));
+    expect(screen.getByTestId("project-add-browse")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("project-add-browse"));
+    await waitFor(() =>
+      expect(screen.getByTestId("project-add-picker")).toBeInTheDocument()
+    );
+    expect(listDirs).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("picker-dir-proj")).toBeInTheDocument();
+    // 点击子目录逐层进入
+    fireEvent.click(screen.getByTestId("picker-dir-proj"));
+    await waitFor(() => expect(listDirs).toHaveBeenCalledWith("/home/u/proj"));
+    await waitFor(() =>
+      expect(screen.getByTestId("project-add-picker-path").textContent).toBe("/home/u/proj")
+    );
+    // 「选择当前目录」回填路径 + 自动项目名，并收浮层
+    fireEvent.click(screen.getByTestId("project-add-picker-choose"));
+    await waitFor(() =>
+      expect(screen.getByTestId("project-add-path")).toHaveValue("/home/u/proj")
+    );
+    expect(screen.getByTestId("project-add-name")).toHaveValue("proj");
+    expect(screen.queryByTestId("project-add-picker")).not.toBeInTheDocument();
+    // 提交仍走既有 onOpenProject 链路
+    fireEvent.click(screen.getByRole("button", { name: "projects.open" }));
+    await waitFor(() =>
+      expect(onOpenProject).toHaveBeenCalledWith("/home/u/proj", "proj")
+    );
+  });
+
+  it("cancel closes the picker but keeps the add dialog", async () => {
+    const listDirs = vi.fn().mockResolvedValue({ path: "/home/u", parent: "/home", entries: [] });
+    renderExplorer([project("active")], { listDirs });
+    fireEvent.click(screen.getByTestId("project-add"));
+    fireEvent.click(screen.getByTestId("project-add-browse"));
+    await waitFor(() =>
+      expect(screen.getByTestId("project-add-picker")).toBeInTheDocument()
+    );
+    fireEvent.click(screen.getByTestId("project-add-picker-cancel"));
+    expect(screen.queryByTestId("project-add-picker")).not.toBeInTheDocument();
+    expect(screen.getByTestId("project-add-form")).toBeInTheDocument();
+  });
+
+  it("renders a load error and Escape returns to the add dialog", async () => {
+    const listDirs = vi.fn().mockRejectedValue(new Error("403: forbidden"));
+    renderExplorer([project("active")], { listDirs });
+    fireEvent.click(screen.getByTestId("project-add"));
+    fireEvent.click(screen.getByTestId("project-add-browse"));
+    await waitFor(() =>
+      expect(screen.getByTestId("project-add-picker-error")).toBeInTheDocument()
+    );
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByTestId("project-add-picker")).not.toBeInTheDocument();
+    expect(screen.getByTestId("project-add-form")).toBeInTheDocument();
+  });
+});

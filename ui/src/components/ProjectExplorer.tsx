@@ -299,6 +299,40 @@ export function ProjectExplorer({
   const [archivedOpen, setArchivedOpen] = useState<Set<string>>(new Set());
   /** 超过最近 10 条的项目的显式展开集合；不落盘，保持项目列表轻量。 */
   const [allSessionsOpen, setAllSessionsOpen] = useState<Set<string>>(new Set());
+  // 浏览器模式目录选择浮层（v1.133）：GET /fs/dirs 逐层进入——桌面壳走 Tauri 原生目录对话框。
+  // 开合（pickerOpen）与数据（picker）分离：加载失败时浮层仍可呈现错误态。
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [picker, setPicker] = useState<{
+    path: string;
+    parent: string | null;
+    entries: Array<{ name: string; path: string }>;
+  } | null>(null);
+  const [pickerLoading, setPickerLoading] = useState(false);
+  const [pickerError, setPickerError] = useState<string | null>(null);
+
+  const loadDirs = async (path?: string) => {
+    setPickerLoading(true);
+    setPickerError(null);
+    try {
+      setPicker(await api.listDirs(path));
+    } catch (e) {
+      setPickerError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPickerLoading(false);
+    }
+  };
+  const closePicker = () => {
+    setPickerOpen(false);
+    setPicker(null);
+    setPickerError(null);
+  };
+  // 「选择当前目录」：回填路径输入框并自动项目名（nameEdited 语义与手输一致）。
+  const choosePicked = () => {
+    if (!picker || pickerLoading) return;
+    setPath(picker.path);
+    if (!nameEdited) setName(basenameOf(picker.path));
+    closePicker();
+  };
 
   const runProjectAction = async (
     project: ProjectSummary,
@@ -394,16 +428,19 @@ export function ProjectExplorer({
     });
   }, [projectId]);
 
-  // Esc 仅关闭添加模态（打开中 busy 时不关）。
+  // Esc 先收目录选择浮层（v1.133），再收添加模态（打开中 busy 时不关）。
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
-      if (adding && busyId !== "__add__") closeAddDialog();
+      if (adding && busyId !== "__add__") {
+        if (pickerOpen) closePicker();
+        else closeAddDialog();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [adding, busyId]);
+  }, [adding, busyId, pickerOpen]);
 
   const browseForDirectory = async () => {
     const picked = await pickDirectory();
@@ -780,16 +817,22 @@ export function ProjectExplorer({
                     if (!nameEdited) setName(basenameOf(next));
                   }}
                 />
-                {window.__TAURI_INTERNALS__ !== undefined && (
-                  <button
-                    type="button"
-                    className="pe-action"
-                    data-testid="project-add-browse"
-                    onClick={() => void browseForDirectory()}
-                  >
-                    {t("projects.browse")}
-                  </button>
-                )}
+                {/* v1.133：浏览按钮恒显示——桌面壳走 Tauri 原生目录对话框，
+                    浏览器模式打开应用内目录选择浮层（GET /fs/dirs）。 */}
+                <button
+                  type="button"
+                  className="pe-action"
+                  data-testid="project-add-browse"
+                  onClick={() => {
+                    if (window.__TAURI_INTERNALS__ !== undefined) void browseForDirectory();
+                    else {
+                      setPickerOpen(true);
+                      void loadDirs();
+                    }
+                  }}
+                >
+                  {t("projects.browse")}
+                </button>
               </div>
             </label>
             <label className="pe-dialog-field">
@@ -825,6 +868,111 @@ export function ProjectExplorer({
             </div>
           </div>
         </form>
+      )}
+
+      {/* 目录选择浮层（v1.133）：浏览器模式经 GET /fs/dirs 逐层进入本地目录；
+          叠于添加模态之上（后渲染同级覆盖），Esc / 遮罩仅收浮层回到模态。 */}
+      {adding && pickerOpen && (
+        <div
+          className="pe-overlay pe-overlay-picker"
+          data-testid="project-add-picker"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) closePicker();
+          }}
+        >
+          <div
+            className="pe-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label={t("projects.folder_picker_title")}
+          >
+            <div className="pe-dialog-head">
+              <strong>{t("projects.folder_picker_title")}</strong>
+            </div>
+            {picker && (
+              <>
+                <div
+                  className="pe-picker-path"
+                  data-testid="project-add-picker-path"
+                  title={picker.path}
+                >
+                  {picker.path}
+                </div>
+                <div className="pe-picker-toolbar">
+                  <button
+                    type="button"
+                    className="pe-action"
+                    data-testid="project-add-picker-up"
+                    disabled={picker.parent === null || pickerLoading}
+                    aria-label={t("projects.folder_up")}
+                    title={t("projects.folder_up")}
+                    onClick={() => void loadDirs(picker.parent ?? undefined)}
+                  >
+                    ↑ {t("projects.folder_up")}
+                  </button>
+                  <button
+                    type="button"
+                    className="pe-action"
+                    data-testid="project-add-picker-home"
+                    disabled={pickerLoading}
+                    aria-label={t("projects.folder_home")}
+                    title={t("projects.folder_home")}
+                    onClick={() => void loadDirs()}
+                  >
+                    ⌂ {t("projects.folder_home")}
+                  </button>
+                </div>
+                <ul className="pe-picker-list" data-testid="project-add-picker-list">
+                  {picker.entries.map((entry) => (
+                    <li key={entry.path}>
+                      <button
+                        type="button"
+                        className="pe-picker-row"
+                        data-testid={`picker-dir-${entry.name}`}
+                        disabled={pickerLoading}
+                        title={entry.path}
+                        onClick={() => void loadDirs(entry.path)}
+                      >
+                        {entry.name}
+                      </button>
+                    </li>
+                  ))}
+                  {!pickerLoading && picker.entries.length === 0 && (
+                    <li className="pe-picker-empty">{t("projects.folder_empty")}</li>
+                  )}
+                </ul>
+              </>
+            )}
+            {pickerLoading && (
+              <div className="pe-picker-state" data-testid="project-add-picker-loading">
+                {t("projects.folder_loading")}
+              </div>
+            )}
+            {pickerError && (
+              <div className="tree-error" role="alert" data-testid="project-add-picker-error">
+                {t("projects.folder_error")} · {pickerError}
+              </div>
+            )}
+            <div className="pe-dialog-actions">
+              <button
+                type="button"
+                className="pe-action"
+                data-testid="project-add-picker-cancel"
+                onClick={closePicker}
+              >
+                {t("projects.cancel")}
+              </button>
+              <button
+                type="button"
+                data-testid="project-add-picker-choose"
+                disabled={pickerLoading || !picker}
+                onClick={choosePicked}
+              >
+                {t("projects.folder_choose")}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

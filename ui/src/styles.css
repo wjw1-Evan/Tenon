@@ -440,6 +440,52 @@ button:disabled { opacity: 0.45; cursor: default; }
   padding: 6px 12px;
   font-size: 12px;
 }
+/* 目录选择浮层（v1.133）：叠于添加模态之上，路径行 + 上级/主目录 + 子目录列表。 */
+.pe-overlay-picker { z-index: 90; }
+.pe-picker-path {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--muted, var(--fg));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+.pe-picker-toolbar { display: flex; gap: 6px; }
+.pe-picker-toolbar .pe-action { padding: 4px 10px; font-size: 11px; }
+.pe-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 2px;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--overlay);
+}
+.pe-picker-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: none;
+  color: var(--fg);
+  font-size: 12px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pe-picker-row:hover:not(:disabled) { background: var(--hover, rgba(128, 128, 128, 0.15)); }
+.pe-picker-empty,
+.pe-picker-state {
+  font-size: 12px;
+  color: var(--muted, var(--fg));
+  padding: 8px;
+}
 /* 视图标题行（v1.101；v1.114 新任务主按钮——作用 active 项目，添加项目移列表底部） */
 .pe-head {
   flex-shrink: 0;

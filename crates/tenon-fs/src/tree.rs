@@ -85,6 +85,36 @@ pub fn list_dir(
     Ok(entries)
 }
 
+/// 列出某目录的直接子目录（§15 `GET /fs/dirs`，v1.133 目录选择器数据源）：
+/// 只含目录——符号链接经 metadata 跟随判定（指向目录的链接入选，断链跳过），
+/// 跳过 `.git` / `.DS_Store`，名称不区分大小写升序。
+pub fn list_subdirs(dir: &Path) -> Result<Vec<String>> {
+    if !dir.is_dir() {
+        return Err(FsError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("not a directory: {}", dir.display()),
+        )));
+    }
+    let mut names = Vec::new();
+    for item in std::fs::read_dir(dir)? {
+        let item = item?;
+        let name = item.file_name().to_string_lossy().into_owned();
+        if name == ".git" || name == ".DS_Store" {
+            continue;
+        }
+        // DirEntry::metadata 是 lstat 语义（不跟随符号链接），这里须用
+        // std::fs::metadata 跟随判定——目录选择器需要看见指向目录的符号链接。
+        if std::fs::metadata(item.path())
+            .map(|m| m.is_dir())
+            .unwrap_or(false)
+        {
+            names.push(name);
+        }
+    }
+    names.sort_by_key(|a| a.to_lowercase());
+    Ok(names)
+}
+
 /// 递归全树（忽略 .gitignore 与 .git；UI 侧也可按层懒加载）。
 pub fn full_tree(root: &Path) -> Result<Vec<TreeEntry>> {
     let mut out = Vec::new();
@@ -154,6 +184,41 @@ mod tests {
         statuses.insert("src/main.rs".to_string(), GitStatus::Modified);
         let entries = list_dir(d.path(), "src", &statuses).unwrap();
         assert_eq!(entries[0].git_status, GitStatus::Modified);
+    }
+
+    #[test]
+    fn list_subdirs_only_dirs_following_symlinks() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("zz")).unwrap();
+        std::fs::create_dir_all(d.path().join("AA")).unwrap();
+        std::fs::create_dir_all(d.path().join(".git")).unwrap();
+        std::fs::write(d.path().join("file.txt"), "x").unwrap();
+        std::fs::write(d.path().join(".DS_Store"), "x").unwrap();
+        let target = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(d.path().join("zz"), d.path().join("dir_link")).unwrap();
+            std::os::unix::fs::symlink(d.path().join("nope"), d.path().join("broken")).unwrap();
+        }
+        let names = list_subdirs(d.path()).unwrap();
+        // 名称不区分大小写升序；文件 / .git / .DS_Store / 断链不进，指向目录的符号链接进
+        #[cfg(unix)]
+        assert_eq!(
+            names,
+            vec!["AA".to_string(), "dir_link".to_string(), "zz".to_string()]
+        );
+        #[cfg(not(unix))]
+        assert_eq!(names, vec!["AA".to_string(), "zz".to_string()]);
+        let _ = target; // 保活符号链接目标
+    }
+
+    #[test]
+    fn list_subdirs_rejects_non_directory() {
+        let d = tempfile::tempdir().unwrap();
+        let file = d.path().join("f.txt");
+        std::fs::write(&file, "x").unwrap();
+        assert!(list_subdirs(&file).is_err());
+        assert!(list_subdirs(&d.path().join("missing")).is_err());
     }
 
     #[test]
