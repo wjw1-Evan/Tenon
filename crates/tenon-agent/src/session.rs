@@ -414,9 +414,11 @@ impl AgentSession {
         Ok(text)
     }
 
-    /// 对话标题自动生成（v1.58）：单轮、无工具目录、小 max_tokens，请求带
+    /// 对话标题自动生成（v1.59；v1.91 质量修复）：单轮、无工具目录，请求带
     /// `TITLE_MARKER` 供测试替身识别；只发送首条消息开头，不外发完整任务文本。
-    /// 失败由调用方回退本地截断，不阻塞任务循环。
+    /// `reasoning_effort=low` 是质量关键：推理型 GLM 默认可消耗数百 reasoning
+    /// token；`max_tokens=48` 且不带力度时曾以 `finish_reason=length` 结束且
+    /// 正文为空，导致看似模型失败、实际全量退回本地截断。失败仍由调用方回退。
     pub async fn generate_title(&self, user_text: &str) -> Result<String, AgentError> {
         let provider = self.provider.read().await.clone();
         let excerpt: String = user_text.chars().take(2000).collect();
@@ -424,21 +426,25 @@ impl AgentSession {
             provider.default_model(),
             vec![
                 ChatMessage::system(format!(
-                    "{TITLE_MARKER} 你是对话标题生成器：根据用户首条消息输出一个简短对话标题——\
-                     使用用户消息的语言、不超过 16 个字符、不加引号 / 句号 / 「标题：」类前缀，\
-                     只输出标题本身。"
+                    "{TITLE_MARKER} Generate a concise title for the user's first request. \
+                     Write it in the same language as the request. \
+                     Name the user's task goal (for example: 修复登录超时 / Fix login timeout / 运行项目). \
+                     Use 2-12 words, no more than 16 characters for CJK, 32 characters for Latin text. \
+                     Do not explain, quote, wrap in markdown, or use a Title: prefix. \
+                     Output only the title."
                 )),
                 ChatMessage::user(excerpt),
             ],
         );
-        request.max_tokens = 48;
+        request.max_tokens = 128;
         request.temperature = 0.2;
+        request.reasoning_effort = Some("low".into());
         let response = provider
             .chat(&request)
             .await
             .map_err(|e| AgentError::Model(e.to_string()))?;
         self.record_usage(response.usage).await;
-        let title = sanitize_title(&response.content, 24);
+        let title = sanitize_title(&response.content, 32);
         if title.is_empty() {
             return Err(AgentError::Model("empty session title".into()));
         }
@@ -742,6 +748,7 @@ impl AgentSession {
                 tools,
                 max_tokens: 16_384,
                 temperature: 0.2,
+                reasoning_effort: None,
             };
             let resp = match self.stream_model_turn(&provider, &request).await {
                 Ok(r) => r,
@@ -1458,7 +1465,15 @@ pub fn sanitize_title(input: &str, max_chars: usize) -> String {
         .strip_prefix(['"', '“', '‘'])
         .unwrap_or(unwrapped)
         .trim();
-    unwrapped.chars().take(max_chars).collect()
+    if unwrapped.chars().count() <= max_chars {
+        return unwrapped.to_string();
+    }
+    let mut cut: String = unwrapped.chars().take(max_chars).collect();
+    // 拉丁标题避免截到半个词；CJK 无空格时保留定长截断。
+    if let Some(pos) = cut.rfind(char::is_whitespace) {
+        cut.truncate(pos);
+    }
+    cut.trim_end().to_string()
 }
 
 #[cfg(test)]

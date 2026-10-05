@@ -617,6 +617,10 @@ fn sanitize_title_takes_first_line_and_strips_wrappers() {
         tenon_agent::sanitize_title("很长的标题很长的标题很长的标题很长的标题超出", 10),
         "很长的标题很长的标题"
     );
+    assert_eq!(
+        tenon_agent::sanitize_title("Refactor checkout flow and add discount tests", 32),
+        "Refactor checkout flow and add"
+    );
     assert_eq!(tenon_agent::sanitize_title("  \n ", 24), "");
 }
 
@@ -672,7 +676,9 @@ async fn generate_title_is_single_turn_marked_and_keeps_script_intact() {
         request.tools.is_empty(),
         "title generation stays out of tool loop"
     );
-    assert_eq!(request.max_tokens, 48);
+    // low effort 避免 reasoning 吃光预算；128 足够输出短标题。
+    assert_eq!(request.max_tokens, 128);
+    assert_eq!(request.reasoning_effort.as_deref(), Some("low"));
     // 标题请求不进任务调用记录，脚本化断言零扰动。
     assert!(provider.calls().is_empty());
 }

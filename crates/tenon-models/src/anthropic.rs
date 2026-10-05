@@ -232,6 +232,11 @@ impl ModelProvider for AnthropicProvider {
             "temperature": req.temperature,
             "messages": messages,
         });
+        // 标题等 low-effort 调用关闭扩展思考；GLM Anthropic 端点实测在
+        // enabled-by-default 下会用 128 token 只产出 thinking。
+        if req.reasoning_effort.as_deref() == Some("low") {
+            body["thinking"] = serde_json::json!({"type": "disabled"});
+        }
         if !system.is_empty() {
             body["system"] = serde_json::json!(system);
         }

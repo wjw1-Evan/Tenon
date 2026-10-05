@@ -143,6 +143,9 @@ pub struct ChatRequest {
     pub tools: Vec<ToolSpec>,
     pub max_tokens: u32,
     pub temperature: f32,
+    /// 可选推理力度：标题等低复杂度调用用 `low` 关闭/收窄推理，防止
+    /// reasoning token 吃光 `max_tokens` 后正文为空。None = 供应商默认。
+    pub reasoning_effort: Option<String>,
 }
 
 impl ChatRequest {
@@ -153,6 +156,7 @@ impl ChatRequest {
             tools: vec![],
             max_tokens: 4096,
             temperature: 0.2,
+            reasoning_effort: None,
         }
     }
 }

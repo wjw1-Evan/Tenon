@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v1.90** |
-| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.90） |
+| 版本 | **v1.91** |
+| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.91） |
 | 状态 | 定稿（v1.10 决策闭环），M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 | 历史评审 | v0.1 / v0.3 两轮共 41 项、v1.0 复审 21 项问题的结论已全部并入本方案（过程文档已清理） |
@@ -124,6 +124,7 @@
 | **v1.88** | **§7.1 / §7.2 左栏「项目」视图内容布局 Codex 化（用户决策：与 Codex projects sidebar 对齐）：移除仪表盘式顶部计数胶囊，改为项目索引结构——顶部紧凑搜索 + 添加入口，`Name / Updated` 列头统一密度；项目行采用两行内容（项目名 + 状态摘要 / 最近更新时间），展开后默认显示最近 10 条会话并显式展开全部；全局活动降为同构「All activity」列表组（筛选 chips / 跨项目平铺 / 跳转 / 停止能力不变），不再占据仪表盘首屏；文件夹展开、源码内嵌、隐式激活、受管 worktree 收尾、审批决策唯一在代理面板等语义不变；中英文案与 UI 测试同步** |
 | **v1.89** | **移除审批功能（用户决策）：Agent 不再进入 `AWAITING_APPROVAL`，也不再有请求 / 决策 / 超时与 `POST /approval/:id`；A/B/C/D 只保留风险分级、沙箱与审计语义，非只读动作直接执行——C 级按 URL 自动放行域名，D 级直接落 Trace；安全边界改为只读开关、工具黑名单、沙箱、熔断器与对话节点快照。插件 / 语言包安装取消两阶段确认，一步执行；历史 `approvals` 表只作旧库兼容审计，不新增记录。每个 B 级写前仍建对话节点快照，Checkpoint 时间轴可回滚任一节点并可撤销最近回滚** |
 | **v1.90** | **GitHub Release 发布与桌面壳自动更新：tag 推送触发三平台矩阵构建 daemon sidecar 与 Tauri 安装包，聚合签名 `latest.json` 到 GitHub Release；桌面壳在用户选择 auto 后用 Tauri Updater 从 `releases/latest/download/latest.json` 检查 / 下载 / 校验 / 安装完整包并重启，manual 默认不出网。v1.86 的 daemon-only 执行器继续服务无壳 Web / headless，桌面壳内禁用 auto 以避免双通道** |
+| **v1.91** | **对话标题质量修复（对齐 Codex 短标题体验）：标题必须由模型基于首条用户请求生成；系统提示要求同语言、2-12 词、CJK ≤16 字符 / 拉丁 ≤32 字符、只输出任务目标标题。请求带 `reasoning_effort=low`（OpenAI 兼容端点映射 `reasoning_effort`；Anthropic 兼容端点关闭 thinking）并设 `max_tokens=128`。实测推理型 GLM 默认可消耗上百 reasoning token，48 会以 `length` 结束且正文为空，导致全量退回本地截断。模型失败仍回退本地截断，不阻塞任务循环** |
 
 
 
@@ -847,7 +848,7 @@ registry 检索 → 展示**权限 diff**（相对已装版本新增权限高亮
 | 表 | 关键字段 | 说明 |
 |---|---|---|
 | projects | id, canonical_path, display_name, trusted, status, language_packs, settings_json, last_opened_at | 项目登记 / TOFU / 打开状态与项目覆盖配置；canonical path 唯一 |
-| sessions | id, project_id, cwd, worktree_id, model, status, title | 会话；project_id 不可空，cwd 必须位于项目根或登记 worktree；title 为首条消息自动生成的对话标题（v1.58，可空，UI 回退模型名 / 短 id） |
+| sessions | id, project_id, cwd, worktree_id, model, status, title | 会话；project_id 不可空，cwd 必须位于项目根或登记 worktree；title 为模型基于首条请求生成的对话标题（v1.91 质量口径，可空，模型失败 UI 回退模型名 / 短 id） |
 | events | id, session_id, project_id, seq, type, payload | 事件溯源（只追加；project_id 供跨项目聚合） |
 | checkpoints | id, session_id, tree, files, created_at | 快照点（tree oid + 该步改动文件集，§10.3） |
 | tool_calls | id, event_id, tool, level, cost_tokens | AgentTrace 明细 |
@@ -881,7 +882,7 @@ registry 检索 → 展示**权限 diff**（相对已装版本新增权限高亮
 | 方法 | 路径 | 用途 |
 |---|---|---|
 | POST | `/session` | 创建会话；body 必须带 `project_id`，可附项目内 `cwd` / `worktree_id`（模型、档位）；可附 `worktree: "managed"` 创建会话级受管 worktree 并行执行（v1.87，§9.7），响应携带 worktree 路径 |
-| POST | `/session/:id/message` | 发送任务；会话首条消息触发对话标题后台生成（v1.59：单轮带标记调用，失败 / 历史遗留会话回退首条消息本地截断，不阻塞任务） |
+| POST | `/session/:id/message` | 发送任务；会话首条消息触发模型生成对话标题（v1.91：单轮带标记、low reasoning、`max_tokens=128`，失败 / 历史遗留会话回退首条消息本地截断，不阻塞任务） |
 | POST | `/session/:id/control` | pause / resume / stop / rollback（快捷回滚至最近 checkpoint，等价于 `/checkpoint/:id/rollback` 最近点，勿单独实现第二条路径）/ unrollback（撤销最近回滚，§10.3）/ set_readonly |
 | POST | `/session/:id/worktree/merge` | 受管 worktree 会话收尾·合并（v1.87）：先 checkpoint 项目根，再按会话改动文件集三方合入；冲突返回 §8.6 合并预览，不静默覆盖（B 级，可回滚） |
 | POST | `/session/:id/worktree/discard` | 受管 worktree 会话收尾·丢弃（v1.87）：显式确认后删除受管 worktree 与其快照分片，不动用户根 |

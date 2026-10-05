@@ -220,6 +220,9 @@ impl ModelProvider for OpenAiCompatProvider {
             "max_tokens": req.max_tokens,
             "temperature": req.temperature,
         });
+        if let Some(effort) = &req.reasoning_effort {
+            body["reasoning_effort"] = serde_json::json!(effort);
+        }
         if !req.tools.is_empty() {
             body["tools"] = serde_json::json!(req
                 .tools
@@ -345,6 +348,9 @@ impl ModelProvider for OpenAiCompatProvider {
             "stream": true,
             "stream_options": { "include_usage": true },
         });
+        if let Some(effort) = &req.reasoning_effort {
+            body["reasoning_effort"] = serde_json::json!(effort);
+        }
         if !req.tools.is_empty() {
             body["tools"] = serde_json::json!(req
                 .tools

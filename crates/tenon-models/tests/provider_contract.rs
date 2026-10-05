@@ -210,6 +210,45 @@ async fn anthropic_chat_maps_messages_auth_and_blocks() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn low_effort_title_requests_control_reasoning_per_protocol() {
+    let openai_response = serde_json::json!({
+        "model": "model-a",
+        "choices": [{"message": {"content": "Fix login timeout"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 2}
+    })
+    .to_string();
+    let (openai_base, openai_server) =
+        serve_http("200 OK", "application/json", &openai_response).await;
+    let mut req = ChatRequest::new("model-a", vec![ChatMessage::user("修复登录超时")]);
+    req.max_tokens = 128;
+    req.reasoning_effort = Some("low".into());
+    tenon_models::OpenAiCompatProvider::new("openai", &openai_base, "", None)
+        .chat(&req)
+        .await
+        .unwrap();
+    let sent: serde_json::Value = serde_json::from_str(&openai_server.await.unwrap().body).unwrap();
+    assert_eq!(sent["reasoning_effort"], "low");
+    assert_eq!(sent["max_tokens"], 128);
+
+    let anthropic_response = serde_json::json!({
+        "model": "model-b",
+        "stop_reason": "end_turn",
+        "content": [{"type": "text", "text": "Fix login timeout"}],
+        "usage": {"input_tokens": 1, "output_tokens": 2}
+    })
+    .to_string();
+    let (anthropic_base, anthropic_server) =
+        serve_http("200 OK", "application/json", &anthropic_response).await;
+    tenon_models::AnthropicProvider::new("anthropic", &anthropic_base, "", None)
+        .chat(&req)
+        .await
+        .unwrap();
+    let sent: serde_json::Value =
+        serde_json::from_str(&anthropic_server.await.unwrap().body).unwrap();
+    assert_eq!(sent["thinking"]["type"], "disabled");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn provider_http_errors_map_to_status_and_body() {
     for provider in ["openai", "anthropic"] {
         let (base, server) =
