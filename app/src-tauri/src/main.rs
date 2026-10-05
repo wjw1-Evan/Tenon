@@ -68,38 +68,34 @@ fn spawn_daemon(app: &tauri::AppHandle) -> Result<(Child, Handshake), String> {
     let project = std::env::var("TENON_PROJECT").unwrap_or_else(|_| ".".into());
     let target_triple = std::env::var("TARGET_TRIPLE")
         .unwrap_or_else(|_| format!("{}-apple-darwin", std::env::consts::ARCH));
-    let sidecar_name = if cfg!(windows) {
-        format!("tenon-daemon-{target_triple}.exe")
-    } else {
-        format!("tenon-daemon-{target_triple}")
-    };
+    let exe_suffix = std::env::consts::EXE_SUFFIX;
+    let packaged_sidecar = format!("tenon-daemon{exe_suffix}");
+    let source_sidecar = format!("tenon-daemon-{target_triple}{exe_suffix}");
     let mut candidates = Vec::new();
-    // 打包后 externalBin 与主程序同级（macOS Contents/MacOS、Linux/Windows bin 目录）。
+    // Tauri 安装后会把带 target 后缀的 externalBin 重命名为裸名，
+    // 并与主程序同级（macOS Contents/MacOS、Linux/Windows bin 目录）。
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            candidates.push(dir.join(&sidecar_name).display().to_string());
+            candidates.push(dir.join(&packaged_sidecar));
+            candidates.push(dir.join(&source_sidecar));
         }
     }
-    candidates.extend([
-        format!(
-            "{}/binaries/tenon-daemon-{target_triple}",
-            env!("CARGO_MANIFEST_DIR")
-        ),
-        // 开发态回退
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../target/release/tenon-daemon"
-        )
-        .to_string(),
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../target/debug/tenon-daemon"
-        )
-        .to_string(),
-    ]);
+    let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    candidates.push(source_root.join("binaries").join(&source_sidecar));
+    // 开发态回退。
+    candidates.push(
+        source_root
+            .join("../../target/release")
+            .join(format!("tenon-daemon{exe_suffix}")),
+    );
+    candidates.push(
+        source_root
+            .join("../../target/debug")
+            .join(format!("tenon-daemon{exe_suffix}")),
+    );
     let bin = candidates
         .iter()
-        .find(|p| std::path::Path::new(p).exists())
+        .find(|p| p.exists())
         .ok_or_else(|| "tenon-daemon sidecar 未找到".to_string())?;
 
     let mut cmd = Command::new(bin);
