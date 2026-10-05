@@ -1688,4 +1688,59 @@ mod tests {
         assert!(out.ok);
         assert!(dir.path().join("src/deeply/nested/module.rs").exists());
     }
+
+    #[test]
+    fn apply_patch_unicode_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "unicode.md",
+            "range": null,
+            "content": "# 标题\n\n## 中文段落\n\n日本語テキスト\n"
+        }));
+        assert!(out.ok);
+        let content = std::fs::read_to_string(dir.path().join("unicode.md")).unwrap();
+        assert!(content.contains("中文段落"));
+    }
+
+    #[test]
+    fn read_file_dotfile() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".env"), "SECRET=test").unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "read_file", &serde_json::json!({"path": ".env"}));
+        assert!(out.ok);
+        assert!(out.content.contains("SECRET"));
+    }
+
+    #[test]
+    fn apply_patch_dotfile() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": ".gitignore", "range": null, "content": "node_modules/\ntarget/\n"
+        }));
+        assert!(out.ok);
+        assert!(dir.path().join(".gitignore").exists());
+    }
+
+    #[test]
+    fn list_dir_empty_dir_returns_empty_string() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "list_dir", &serde_json::json!({}));
+        assert!(out.ok);
+        assert_eq!(out.content, "");
+    }
+
+    #[test]
+    fn apply_patch_then_read_back_binary_like() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let content = "\u{0}\u{1}\u{2}binary\u{ff}\u{fe}";
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "bin.dat", "range": null, "content": content
+        }));
+        assert!(out.ok);
+    }
 }

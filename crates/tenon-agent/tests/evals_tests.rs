@@ -624,3 +624,66 @@ async fn eval_empty_assertions_pass_immediately() {
     let result = runner.run_task(&task, provider, &[("f.rs", "")]).await;
     assert_eq!(result.verdict(), "pass", "{result:?}");
 }
+
+#[tokio::test]
+async fn eval_tool_tool_call_sequence() {
+    let runner = EvalRunner::new(store());
+    let provider = Arc::new(MockProvider::new(
+        "mock",
+        "mock-1",
+        vec![
+            ScriptedReply::Tool {
+                name: "read_file".into(),
+                args: serde_json::json!({"path": "src/lib.rs"}),
+            },
+            ScriptedReply::Tool {
+                name: "apply_patch".into(),
+                args: serde_json::json!({"file": "src/lib.rs", "range": null, "content": "// improved\\nfn main() {}\\n"}),
+            },
+            ScriptedReply::Text("改进完成".into()),
+        ],
+    ));
+    let task = EvalTask {
+        id: "T-SEQ".into(),
+        instruction: "read then improve".into(),
+        assertions: vec![
+            Assertion::FileContains { path: "src/lib.rs".into(), text: "improved".into() },
+            Assertion::AnswerContains { text: "完成".into() },
+        ],
+        budget: EvalBudget { max_steps: 24, max_tokens: 400_000 },
+        expected_l4_path: None,
+    };
+    let result = runner
+        .run_task(&task, provider, &[("src/lib.rs", "fn main() {}\\n")])
+        .await;
+    assert_eq!(result.verdict(), "pass", "{result:?}");
+}
+
+#[tokio::test]
+async fn eval_fixture_with_subdirectories() {
+    let runner = EvalRunner::new(store());
+    let provider = Arc::new(MockProvider::new(
+        "mock",
+        "mock-1",
+        vec![
+            ScriptedReply::Tool {
+                name: "apply_patch".into(),
+                args: serde_json::json!({"file": "src/deep/nested/mod.rs", "range": null, "content": "pub struct Nested;"}),
+            },
+            ScriptedReply::Text("done".into()),
+        ],
+    ));
+    let task = EvalTask {
+        id: "T-SUB".into(),
+        instruction: "create nested".into(),
+        assertions: vec![
+            Assertion::FileContains { path: "src/deep/nested/mod.rs".into(), text: "Nested".into() },
+        ],
+        budget: EvalBudget { max_steps: 24, max_tokens: 400_000 },
+        expected_l4_path: None,
+    };
+    let result = runner
+        .run_task(&task, provider, &[("src/existing.rs", "// existing\\n")])
+        .await;
+    assert_eq!(result.verdict(), "pass", "{result:?}");
+}
