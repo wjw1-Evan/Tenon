@@ -369,3 +369,79 @@ async fn eval_runner_summarize_suite_report() {
     let report = runner.summarize(vec![result], "mock").await;
     assert!(report.total_tokens > 0 || report.total_steps > 0);
 }
+
+#[tokio::test]
+async fn eval_runner_with_git_init_pass() {
+    let runner = EvalRunner::new(store());
+    let provider = Arc::new(MockProvider::new(
+        "mock",
+        "mock-1",
+        vec![
+            ScriptedReply::Tool {
+                name: "apply_patch".into(),
+                args: serde_json::json!({"file": "src/main.rs", "range": null, "content": "// fixed\\nfn main() {}\\n"}),
+            },
+            ScriptedReply::Text("修复完成".into()),
+        ],
+    ));
+    let task = EvalTask {
+        id: "T-GIT".into(),
+        instruction: "修复".into(),
+        assertions: vec![
+            Assertion::FileContains { path: "src/main.rs".into(), text: "fixed".into() },
+        ],
+        budget: EvalBudget { max_steps: 12, max_tokens: 200_000 },
+        expected_l4_path: None,
+    };
+    let result = runner
+        .run_task_with_git(&task, provider, &[("src/main.rs", "fn main() {}\\n")], true)
+        .await;
+    assert_eq!(result.verdict(), "pass", "{result:?}");
+}
+
+#[tokio::test]
+async fn eval_runner_truncated_reply_fails() {
+    let runner = EvalRunner::new(store());
+    let provider = Arc::new(MockProvider::new(
+        "mock",
+        "mock-1",
+        vec![ScriptedReply::Truncated("partial answer".into())],
+    ));
+    let task = EvalTask {
+        id: "T-TRUNC".into(),
+        instruction: "修复".into(),
+        assertions: vec![
+            Assertion::FileContains { path: "f.rs".into(), text: "fixed".into() },
+        ],
+        budget: EvalBudget { max_steps: 12, max_tokens: 200_000 },
+        expected_l4_path: None,
+    };
+    let result = runner
+        .run_task(&task, provider, &[("f.rs", "fn main() {}\\n")])
+        .await;
+    assert_eq!(result.verdict(), "fail");
+}
+
+
+#[tokio::test]
+async fn eval_runner_answer_not_contains_fails() {
+    let runner = EvalRunner::new(store());
+    let provider = Arc::new(MockProvider::new(
+        "mock",
+        "mock-1",
+        vec![ScriptedReply::Text("回答里没有关键字".into())],
+    ));
+    let task = EvalTask {
+        id: "T-ANS-NEG".into(),
+        instruction: "回答".into(),
+        assertions: vec![
+            Assertion::AnswerContains { text: "不存在的内容".into() },
+        ],
+        budget: EvalBudget { max_steps: 12, max_tokens: 200_000 },
+        expected_l4_path: None,
+    };
+    let result = runner
+        .run_task(&task, provider, &[("f.rs", "fn main() {}\\n")])
+        .await;
+    assert_eq!(result.verdict(), "fail");
+}
