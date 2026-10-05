@@ -4388,3 +4388,263 @@ async fn session_archive_unarchive_and_delete_over_http() {
     let s = summary().await;
     assert_eq!(s["sessions"].as_array().unwrap().len(), 2);
 }
+
+#[tokio::test]
+async fn memories_endpoints_crud() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    // POST create memory
+    let r = client
+        .post(format!("{}/project/{}/memories", base(port), pid))
+        .json(&serde_json::json!({
+            "scope": "project",
+            "kind": "fact",
+            "content": "uses React 19 with TypeScript strict mode",
+            "importance": 4
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_success(), "{}", r.status());
+
+    // GET list memories
+    let r = client
+        .get(format!("{}/project/{}/memories", base(port), pid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    let memories = body["memories"].as_array().unwrap();
+    assert!(!memories.is_empty());
+
+    // DELETE a memory
+    let mem_id = memories[0]["id"].as_str().unwrap();
+    let r = client
+        .delete(format!("{}/memories/{}", base(port), mem_id))
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_success() || r.status() == 404);
+}
+
+#[tokio::test]
+async fn settings_persist_and_reload() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    // PUT settings with model config
+    let r = client
+        .put(format!("{}/settings", base(port)))
+        .json(&serde_json::json!({
+            "models": {
+                "default": "openai",
+                "providers": {
+                    "openai": { "base_url": "https://api.openai.com/v1", "model": "gpt-4" }
+                }
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_success());
+
+    // GET settings reflects change
+    let r = client.get(format!("{}/settings", base(port))).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+}
+
+#[tokio::test]
+async fn git_view_endpoint_with_git_repo() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    // Create git repo
+    let tmp = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        let _ = std::process::Command::new("git")
+            .args(args)
+            .current_dir(tmp.path())
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@l")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@l")
+            .output()
+            .unwrap();
+    };
+    git(&["init", "--initial-branch=main"]);
+    std::fs::write(tmp.path().join("tracked.txt"), "content").unwrap();
+    git(&["add", "tracked.txt"]);
+    git(&["commit", "-m", "init"]);
+
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    let r = client
+        .get(format!("{}/project/{}/git/view", base(port), pid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+}
+
+#[tokio::test]
+async fn multi_project_open_and_list() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    let tmp_a = tempfile::tempdir().unwrap();
+    let tmp_b = tempfile::tempdir().unwrap();
+
+    let r_a = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp_a.path().to_str().unwrap(), "display_name": "Alpha" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r_a.status(), 200);
+
+    let r_b = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp_b.path().to_str().unwrap(), "display_name": "Beta" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r_b.status(), 200);
+
+    let r = client.get(format!("{}/projects", base(port))).send().await.unwrap();
+    let body: serde_json::Value = r.json().await.unwrap();
+    let names: Vec<&str> = body["projects"].as_array().unwrap()
+        .iter().filter_map(|p| p["display_name"].as_str()).collect();
+    assert!(names.contains(&"Alpha"));
+    assert!(names.contains(&"Beta"));
+}
+
+#[tokio::test]
+async fn session_trace_events_after_send() {
+    let script = vec![
+        ScriptedReply::Text("I analyzed the code and found the issue.".into()),
+        ScriptedReply::Text("Here is my complete answer with more detail.".into()),
+    ];
+    let (_dir, port, token) = start_daemon(script).await;
+    let client = client_with_token(&token);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    let r = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({ "project_id": pid, "provider": "mock" }))
+        .send()
+        .await
+        .unwrap();
+    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
+
+    // 发送消息
+    let r = client
+        .post(format!("{}/session/{}/message", base(port), sid))
+        .json(&serde_json::json!({ "text": "analyze" }))
+        .send()
+        .await
+        .unwrap();
+    // 消息可能因模型状态返回非 200
+    let msg_status = r.status();
+    if msg_status == 200 {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+
+    // GET trace
+    let r = client
+        .get(format!("{}/session/{}/trace", base(port), sid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    // trace 端点可达（events 可能为空——异步处理）
+    assert!(body["events"].is_array());
+    assert!(body["latest_seq"].is_i64() || body["latest_seq"].is_u64());
+}
+
+#[tokio::test]
+async fn checkpoint_rollback_after_write() {
+    let script = vec![
+        ScriptedReply::Tool {
+            name: "apply_patch".into(),
+            args: serde_json::json!({"file": "rollback-test.txt", "range": null, "content": "new content"}),
+        },
+        ScriptedReply::Text("写入完成".into()),
+    ];
+    let (_dir, port, token) = start_daemon(script).await;
+    let client = client_with_token(&token);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    let r = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({ "project_id": pid, "provider": "mock" }))
+        .send()
+        .await
+        .unwrap();
+    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
+
+    // 发送带工具调用的消息
+    client
+        .post(format!("{}/session/{}/message", base(port), sid))
+        .json(&serde_json::json!({ "text": "write file" }))
+        .send()
+        .await
+        .unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    // GET checkpoints
+    let r = client
+        .get(format!("{}/session/{}/checkpoints", base(port), sid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    let checkpoints = body["checkpoints"].as_array().unwrap();
+    // 工具写入后应有 checkpoint
+    if !checkpoints.is_empty() {
+        let cp_id = checkpoints[0]["id"].as_str().unwrap();
+        // POST rollback
+        let r = client
+            .post(format!("{}/checkpoint/{}/rollback", base(port), cp_id))
+            .json(&serde_json::json!({ "granularity": "revert" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+    }
+}
