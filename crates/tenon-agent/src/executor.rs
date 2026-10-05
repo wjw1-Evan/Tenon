@@ -1471,4 +1471,102 @@ mod tests {
         let out = execute_tool(&c, "read_file", &serde_json::json!({"path": "../../../etc/passwd"}));
         assert!(!out.ok);
     }
+
+    #[test]
+    fn apply_patch_overwrites_and_preserves_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "nl.txt", "range": null, "content": "line1\nline2\nline3\n"
+        })).ok;
+        let content = std::fs::read_to_string(dir.path().join("nl.txt")).unwrap();
+        assert!(content.ends_with('\n'));
+    }
+
+    #[test]
+    fn read_file_returns_exact_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "exact\ncontent\nwith\nlines\n";
+        std::fs::write(dir.path().join("exact.txt"), content).unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "read_file", &serde_json::json!({"path": "exact.txt"}));
+        assert!(out.ok);
+        assert_eq!(out.content, content);
+    }
+
+    #[test]
+    fn list_dir_nonexistent_returns_error() {
+        let (_d, c) = ctx();
+        let out = execute_tool(&c, "list_dir", &serde_json::json!({"path": "nonexistent-dir"}));
+        assert!(!out.ok);
+    }
+
+    #[test]
+    fn bash_tool_denied_by_team_policy() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        c.team_denied_tools = vec!["bash".into()];
+        let out = execute_tool(&c, "bash", &serde_json::json!({"command": "echo hi", "timeout_s": 5}));
+        assert!(!out.ok);
+        assert!(out.content.contains("团队策略禁用"));
+    }
+
+    #[test]
+    fn readonly_blocks_install_deps() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        c.readonly.store(true, Ordering::Relaxed);
+        let out = execute_tool(&c, "install_deps", &serde_json::json!({"command": "npm install"}));
+        assert!(!out.ok);
+    }
+
+    #[test]
+    fn readonly_blocks_run_build() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        c.readonly.store(true, Ordering::Relaxed);
+        let out = execute_tool(&c, "run_build", &serde_json::json!({"command": "make"}));
+        assert!(!out.ok);
+    }
+
+    #[test]
+    fn readonly_blocks_apply_patch() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        c.readonly.store(true, Ordering::Relaxed);
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "blocked.txt", "range": null, "content": "blocked"
+        }));
+        assert!(!out.ok);
+    }
+
+    #[test]
+    fn readonly_allows_read_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("readable.txt"), "safe to read").unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        c.readonly.store(true, Ordering::Relaxed);
+        let out = execute_tool(&c, "read_file", &serde_json::json!({"path": "readable.txt"}));
+        assert!(out.ok, "readonly should allow A-level read");
+    }
+
+    #[test]
+    fn readonly_allows_list_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("visible.txt"), "").unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        c.readonly.store(true, Ordering::Relaxed);
+        let out = execute_tool(&c, "list_dir", &serde_json::json!({}));
+        assert!(out.ok);
+    }
+
+    #[test]
+    fn readonly_allows_grep() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("grep-target.txt"), "findable").unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        c.readonly.store(true, Ordering::Relaxed);
+        let out = execute_tool(&c, "grep", &serde_json::json!({"pattern": "findable"}));
+        assert!(out.ok);
+    }
 }
