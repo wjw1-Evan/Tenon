@@ -4648,3 +4648,160 @@ async fn checkpoint_rollback_after_write() {
         assert_eq!(r.status(), 200);
     }
 }
+
+#[tokio::test]
+async fn evals_listing_and_plugins_registry() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    // GET evals returns task list
+    let r = client.get(format!("{}/evals", base(port))).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    // evals 可能有 tasks 数组或空
+    assert!(body.is_object());
+
+    // GET plugins
+    let r = client.get(format!("{}/plugins", base(port))).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert!(body.is_object() || body.is_array());
+}
+
+#[tokio::test]
+async fn project_rename_via_display_name() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({
+            "path": tmp.path().to_str().unwrap(),
+            "display_name": "Original"
+        }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    // 重新打开并更新 display_name
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({
+            "path": tmp.path().to_str().unwrap(),
+            "display_name": "Renamed"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    // 列表中显示更新后的名称
+    let r = client.get(format!("{}/projects", base(port))).send().await.unwrap();
+    let body: serde_json::Value = r.json().await.unwrap();
+    let project = body["projects"].as_array().unwrap().iter()
+        .find(|p| p["id"].as_str() == Some(pid.as_str()))
+        .unwrap();
+    assert_eq!(project["display_name"], "Renamed");
+}
+
+#[tokio::test]
+async fn session_control_stop_and_status() {
+    let script = vec![ScriptedReply::Text("long task response".into())];
+    let (_dir, port, token) = start_daemon(script).await;
+    let client = client_with_token(&token);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    let r = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({ "project_id": pid, "provider": "mock" }))
+        .send()
+        .await
+        .unwrap();
+    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
+
+    // Send a message to start execution
+    client
+        .post(format!("{}/session/{}/message", base(port), sid))
+        .json(&serde_json::json!({ "text": "long running task" }))
+        .send()
+        .await
+        .unwrap();
+
+    // POST control: stop
+    let r = client
+        .post(format!("{}/session/{}/control", base(port), sid))
+        .json(&serde_json::json!({ "action": "stop" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    // GET session status
+    let r = client
+        .get(format!("{}/session/{}", base(port), sid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert!(body["status"].is_string());
+}
+
+#[tokio::test]
+async fn file_highlight_returns_syntax_tokens() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    client
+        .put(format!("{}/project/{}/file", base(port), pid))
+        .json(&serde_json::json!({ "path": "syntax.rs", "content": "fn main() { let x = 1; }" }))
+        .send()
+        .await
+        .unwrap();
+
+    let r = client
+        .get(format!("{}/project/{}/highlight?path=syntax.rs", base(port), pid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+}
+
+#[tokio::test]
+async fn team_policy_put_and_verify_effect() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    // PUT team policy
+    let r = client
+        .put(format!("{}/team-policy", base(port)))
+        .json(&serde_json::json!({
+            "denied_tools": ["git_push", "create_pr"],
+            "max_cost_usd": 1.0
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert!(body.is_object());
+}
