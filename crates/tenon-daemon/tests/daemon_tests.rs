@@ -5119,3 +5119,105 @@ async fn checkpoint_rollback_nonexistent_returns_error() {
         .unwrap();
     assert_ne!(r.status(), 401);
 }
+
+#[tokio::test]
+async fn open_project_and_get_pairing() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let tmp = tempfile::tempdir().unwrap();
+    client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let r = client.get(format!("{}/pairing", base(port))).send().await.unwrap();
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert!(body["port"].as_u64().unwrap() > 0);
+    assert!(body["token"].as_str().unwrap().len() > 0);
+}
+
+#[tokio::test]
+async fn session_checkpoints_after_patch() {
+    let script = vec![
+        ScriptedReply::Tool {
+            name: "apply_patch".into(),
+            args: serde_json::json!({"file": "cp.txt", "range": null, "content": "checkpoint test"}),
+        },
+        ScriptedReply::Text("done".into()),
+    ];
+    let (_dir, port, token) = start_daemon(script).await;
+    let client = client_with_token(&token);
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+    let r = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({ "project_id": pid, "provider": "mock" }))
+        .send()
+        .await
+        .unwrap();
+    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
+
+    client
+        .post(format!("{}/session/{}/message", base(port), sid))
+        .json(&serde_json::json!({ "text": "write" }))
+        .send()
+        .await
+        .unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let r = client
+        .get(format!("{}/session/{}/checkpoints", base(port), sid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert!(body["checkpoints"].is_array());
+}
+
+#[tokio::test]
+async fn multiple_sessions_same_project() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    // Create two sessions for the same project
+    let r1 = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({ "project_id": pid, "provider": "mock" }))
+        .send()
+        .await
+        .unwrap();
+    let s1 = r1.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
+
+    let r2 = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({ "project_id": pid, "provider": "mock" }))
+        .send()
+        .await
+        .unwrap();
+    let s2 = r2.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
+
+    assert_ne!(s1, s2, "两个会话应有不同 ID");
+
+    // Both sessions should be queryable
+    let r1 = client.get(format!("{}/session/{}", base(port), s1)).send().await.unwrap();
+    assert_eq!(r1.status(), 200);
+    let r2 = client.get(format!("{}/session/{}", base(port), s2)).send().await.unwrap();
+    assert_eq!(r2.status(), 200);
+}

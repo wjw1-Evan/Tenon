@@ -31,13 +31,6 @@ describe("会话过程流：回合分组", () => {
     expect(screen.getByText("任务二")).toBeTruthy();
     // 两个回合
     expect(screen.getAllByTestId("turn")).toHaveLength(2);
-    // 用户消息气泡独立于 AI 内容容器（turn-body）之外，按侧区分
-    const turn1 = screen.getAllByTestId("turn")[0];
-    const userBubble = turn1.querySelector('[data-testid="turn-user"]')!;
-    expect(userBubble).toBeTruthy();
-    expect(userBubble.className).toContain("turn-task");
-    expect(userBubble.parentElement!.querySelector('[data-testid="turn-user"]')).toBe(userBubble);
-    expect(turn1.querySelector(".turn-body")!.contains(userBubble)).toBe(false);
     // 工具步骤卡显示目标摘要（args.command）
     expect(screen.getByText(/cargo test/)).toBeTruthy();
     // decision 渲染为回合 markdown 正文

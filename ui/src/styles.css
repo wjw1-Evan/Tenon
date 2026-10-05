@@ -1410,13 +1410,11 @@ button:disabled { opacity: 0.45; cursor: default; }
   padding-bottom: 0;
 }
 .turn-task {
-  /* v1.109 用户消息气泡：居右（max-width 限宽），与居左 AI 回复按侧区分 */
-  align-self: flex-end;
-  max-width: 85%;
-  background: var(--accent-soft-strong);
+  border-left: 3px solid var(--accent);
+  background: var(--accent-soft);
   color: var(--fg-strong);
-  border-radius: var(--radius-m);
-  padding: 7px 11px;
+  border-radius: var(--radius-s);
+  padding: 7px 10px;
   font-size: 12.5px;
   line-height: 1.55;
   white-space: pre-wrap;
