@@ -475,4 +475,13 @@ mod tests {
         assert!(!command_on_path(""));
         assert!(!command_on_path("fake_cmd_12345"));
     }
+
+    #[tokio::test]
+    async fn lsp_manager_new_is_empty() {
+        let manager = LspManager::new();
+        let root = std::env::temp_dir().join("tenon-lsp-nonexistent");
+        let closed = manager.close_project(&root).await;
+        assert_eq!(closed, 0);
+    }
+
 }

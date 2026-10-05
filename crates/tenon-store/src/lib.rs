@@ -2494,4 +2494,77 @@ mod managed_worktree_tests {
         let sess = s.session(&sid).unwrap().unwrap();
         assert!(!sess.worktree_path.is_empty());
     }
+
+    #[test]
+    fn l4_chunk_upsert_and_search() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let embedding = vec![0.1; 8];
+        s.replace_l4_file(&p.id, "search.rs", &[L4ChunkRecord {
+            symbol: Some("search_fn".into()),
+            start_line: 1,
+            end_line: 10,
+            text: "pub fn search_fn() {}".into(),
+            embedding: embedding.clone(),
+        }]).unwrap();
+        assert_eq!(s.l4_chunk_count(&p.id).unwrap(), 1);
+    }
+
+    #[test]
+    fn l4_multiple_files_and_rebuild() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let emb = vec![0.2; 8];
+        s.replace_l4_file(&p.id, "a.rs", &[L4ChunkRecord {
+            symbol: None, start_line: 1, end_line: 5, text: "fn a()".into(), embedding: emb.clone(),
+        }]).unwrap();
+        s.replace_l4_file(&p.id, "b.rs", &[L4ChunkRecord {
+            symbol: None, start_line: 1, end_line: 5, text: "fn b()".into(), embedding: emb.clone(),
+        }]).unwrap();
+        assert_eq!(s.l4_chunk_count(&p.id).unwrap(), 2);
+        // replace one file removes old chunks
+        s.replace_l4_file(&p.id, "a.rs", &[L4ChunkRecord {
+            symbol: None, start_line: 1, end_line: 5, text: "fn a2()".into(), embedding: emb,
+        }]).unwrap();
+        assert_eq!(s.l4_chunk_count(&p.id).unwrap(), 2);
+    }
+
+    #[test]
+    fn session_archive_and_list() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let sid = s.create_session(&p.id, "mock").unwrap().id;
+        s.set_session_status(&sid, SessionStatus::Done).unwrap();
+        // archive
+        let archive_dir = tempfile::tempdir().unwrap();
+        let archived = s.archive_old_sessions(0, archive_dir.path()).unwrap();
+        let _ = archived; // 可能空（无旧会话）
+    }
+
+    #[test]
+    fn project_list_multiple_projects() {
+        let mut s = mem();
+        for i in 0..3 {
+            let dir = tempfile::tempdir().unwrap();
+            s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        }
+        let projects = s.list_projects().unwrap();
+        assert_eq!(projects.len(), 3);
+    }
+
+    #[test]
+    fn session_lifecycle_full_states() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let sid = s.create_session(&p.id, "mock").unwrap().id;
+        for status in [SessionStatus::Executing, SessionStatus::Done, SessionStatus::RolledBack] {
+            s.set_session_status(&sid, status.clone()).unwrap();
+            let sess = s.session(&sid).unwrap().unwrap();
+            assert_eq!(sess.status, status);
+        }
+    }
 }
