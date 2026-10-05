@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v1.126** |
-| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.126） |
+| 版本 | **v1.130** |
+| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.130） |
 | 状态 | 定稿（v1.10 决策闭环），M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 | 历史评审 | v0.1 / v0.3 两轮共 41 项、v1.0 复审 21 项问题的结论已全部并入本方案（过程文档已清理） |
@@ -160,12 +160,10 @@
 | **v1.124** | **Laya 日常对话工具面：agent 可调用判定工具 `laya_decide`（§9.8 集成点 #4；用户定位「laya 融入日常对话是产品重要工具与特色」，形态参照 ZCode——模型在循环内自主咨询本地决策器，而非仅 daemon 侧隐形钩子）：三原语按现有模型任务头暴露——`kind=intent`（choice，文本→意图标签）/ `kind=risk`（score，命令→0..1 风险）/ `kind=route`（bool，任务文本→轻模型建议）；A 级只读（本地 CPU 推理、不出网不写盘、无审批），`[models.laya].features` 增 `agent_tool` 逐项开关（默认开）；判定仅作排序 / 预筛 / 提示参考（置信未校准），不改变 A/B/C/D 分级、不构成跳过验证的理由，输出按不可信数据处理；团队策略 `denied_tools` 与只读开关同轨约束；Trace 复用 `decider_call` 增 `origin: "agent_tool"`；UI 轻量可见化——`laya_decide` 步骤并入只读聚合降噪，判定结果另渲染单行轻量徽标（类型 → 结果 · 耗时）；§18.3 门径细化——「token 不升」约束 daemon 侧自动集成点，工具面以固定目录开销 + 按需调用单独度量（通过率不降、无滥用）；附录 E / §14.2 / 术语表 / 需求表同步** |
 | **v1.125** | **分组行尾「新建受管 worktree 会话」图标换为线性 git-branch SVG（用户报「按钮显示不完整」）：U+23A1「⎡」是数学多行括号的上半块字符，系统字体栈 12px 下仅渲染左上角、呈残缺角括号状被误读为渲染缺陷——换为与 §7.5 图标同规格的 stroke SVG（currentColor，随行 hover 变色，与字体回退解耦）；行为 / testid（session-new-worktree-*）/ aria（`projects.new_worktree_session` 五语言）不变，零新增语言键；§7.1 同步** |
 | **v1.126** | **任务输入区上下文条——草稿任务的项目 / 工作区归属可见可改（用户报「点击新建任务，有多个项目时对话框没有项目名称选择；codex / zcode 输入框上面都有项目选择和分支选择」，形态参照 Codex / ZCode 输入上方选择器）：① 任务输入框（textarea）上方新增常驻上下文条（无 active 项目不渲染）——**草稿态**（v1.116）为两个原生 `<select>`：项目选择（列全部已打开项目，切换 = 激活目标项目并保持 / 进入其草稿，与侧栏点项目行同语义）+ 工作区选择（主工作区 / 新受管 worktree，映射 `draftByProject` 布尔意图——「分支选择」在 Tenon 的对应物即会话级受管 worktree（v1.87 §9.7，`worktree: "managed"`），非 git 仓库项目选受管项在首发建会话时经 daemon 错误呈现）；**会话态**为只读标识（项目名 + ⎇ 受管 worktree 徽标）——会话强绑定 `project_id` 不可切换（§6-7 多项目边界不变式）；② 草稿输入文本 per-project 持有（多项目并行草稿互不串扰；发送成功随草稿清除，弃草稿重进「＋ 新任务」文本恢复）；③ 注入类入口（诊断「AI 修复」injectedTask / 行内指令 Cmd+I）在主根草稿态改走草稿首发链路（建会话再发），不再静默丢弃——受管 worktree 草稿不接（编辑器 / 诊断为项目主根上下文，注入 worktree 会话会写副本而非用户所见文件）；侧栏 worktree hover 入口与「＋ 新任务」语义不变；新增 `workspace.main / workspace.managed / context.project / context.workspace` 五语言键；§7.5 同步** |
-
-
-
-
-
-
+| **v1.127** | **气泡按钮组修订：撤销扩为每个含改动的回合（用户反馈「我只看到了 复制功能，未看到 撤销、重做功能，撤销就是恢复到后面修改的文件到发送该消息之前的状态」）——撤销 v1.123 沿用的「仅最后含改动回合」条件撤销：每条引发过文件修改的消息都可撤销，语义 = 该消息发送后修改的文件恢复到发送前状态（checkpoint 树级快照按回合回滚，该消息之后其他回合的改动随树一并回退，confirm 门不变）；重做（unrollback）挂在最近被撤销的回合气泡下、成功即收、会话切换重置、重载保守不现** |
+| **v1.128** | **文件监听激活不再阻塞 daemon 内核线程（全量测试在重载开发机上暴露 daemon 集成测试批量超时：`/session`、`/projects/open` 等激活类端点 10s 客户端超时）：v1.79 原生 watcher 后端的注册握手把 FSEvents 初始化交给 setup 线程，但调用方仍同步 `recv_timeout` 等就绪——预算 10s 且与代码注释承诺的 2s 不符；`activate_project` 又在 async 上下文持有 `open_projects` 锁直调，单线程测试 runtime 整体冻结、多线程 runtime 白占 worker。macOS fseventsd 高负载（并行测试 / 多 daemon / 海量 FSEvents 流）时 `FSEventStreamStart` 可超 10s，连锁拖垮全部激活请求。修复（三件套）：① 就绪预算按既有契约收敛为 **2s**（`FileWatcher::watch_with_budget` 参数化），超时显式失败、按「无 watcher」降级（v1.79 既定语义）；② `ProjectRuntime::open` 移入 `spawn_blocking`——async runtime 不再被同步等待占住，锁内 `await` 保持并发激活去重语义；③ 降级并非终态——后台 `tenon-watch-retry` 线程以 10s 宽预算指数退避补注册（最多 5 次），成功即热接回事件泵，runtime 被回收 / 已接回即退出；补注册期间发生的变更不入事件流（FSEvents `SinceNow` 语义，文件树手动刷新兜底）；④ `ProjectRuntime` 补 Drop 兜底——未经显式关闭的释放（测试 teardown 等）也停流，防 FSEvents 流跨 daemon 生命周期累积拖垮系统 fseventsd；⑤ `DaemonOptions.watch_poll_interval` 测试确定性通道——断言文件事件流转的用例走 PollWatcher 内容比对后端，不再依赖系统 FSEvents 态势；§8.1 同步** |
+| **v1.129** | **模型用量可观测：缓存命中率与输出速度（用户令「统计大模型的缓存命中率 / 显示缓存命中率和 token 输出速度」；GLM coding 端点实测 OpenAI 兼容 usage 回填 `prompt_tokens_details.cached_tokens`）：① 采集——`Usage` 增 `cached_input_tokens`（OpenAI 兼容 = `prompt_tokens_details.cached_tokens`；Anthropic = `cache_read_input_tokens`；未报告 / 本地模型 = 0），流式 / 非流式双路解析；回合耗时自 provider 流建立计时至权威 Final 到达，记入 `model_usage.duration_ms`；② 口径——命中率 = cached / input（OpenAI 系 cached ⊆ prompt_tokens；Anthropic 系不打 `cache_control` 断点则缓存不启用，恒 0 显示「—」不虚报）；③ 落库与 API——store schema v9→v10 两列（ALTER TABLE 默认 0 兼容旧库），`session_usage_totals` / `project_usage_totals` 返回结构体携 cached 与 duration，`/costs` 与 `/projects` 摘要透出；④ UI——回合页脚单行轻量徽标（↑input tok · 缓存命中 N% · N tok/s，回合内多模型回合聚合，无数据不渲染），「轨迹」tab token 汇总行同加命中率与均速（既有 1.5s 轮询差值速度保留为流中近似）；decision 事件 payload 增 `usage` 明细（全量轨迹可审计）；新增键 `thread.cached` 五语言；§11 / §14.2 / §15 同步 |
+| **v1.130** | **代理技能（Skills）管理第一期（§13.4 新增；用户令「开发 skills 管理的功能」，管理界面双参考方案选定 Codex 设置形态——设置面板新增分类，ZCode 轻管理浮层未采用）：SKILL.md 格式可复用方法指令集，双作用域目录——全局 `~/.tenon/skills/<name>/SKILL.md`（§14.1 预留目录接线）+ 项目 `<workspace>/.tenon/skills/<name>/SKILL.md`（随仓库分发），目录名即规范 id，frontmatter 轻解析（name / description，缺省回退目录名），项目同名覆盖全局，settings.json `skills.disabled` 按名称停用；agent 集成参照 ZCode 形态（v1.124 laya_decide 同例）——系统提示新增「可用技能」节（名称 + 描述，条目上限 64），新增 A 级工具 `skill_use` 按需读取 SKILL.md 全文（≤256KB；渐进披露、目录注入 token 恒定小开销），每任务扫描一次 + 调用时重扫（改文件即时生效），扫描跟随会话工作根（主根 / 受管 worktree，与 AGENTS.md L3 读取同规）；安全边界（§12.1 不变式）：技能正文按不可信数据处理——只提供方法指引，不产生任何权限、不得放宽只读开关 / 黑名单 / 分级或跳过验证，与铁律冲突以铁律为准；调用经常规工具路径入 Trace 不新增事件类型；管理 API——GET /skills（合并清单）/ GET /skills/:name（读原文）/ POST /skills / PUT /skills/:name / DELETE /skills/:name（全局 CRUD），项目技能经既有 /project/:id/file 写守卫路径，启停经 PUT /settings `skills.disabled`（新会话生效）；UI——设置面板 Skills 分类：合并清单（作用域徽标 + 启停）、源码编辑（新建含 frontmatter 模板预填 / 删除 confirm 门）、项目作用域经项目选择器；§4.1 / §7.2 / §9.2 / §9.6 / §13.3 / §14.1 / §15 / 术语表同步 |
 
 ---
 
@@ -319,6 +317,7 @@ Codex CLI 已开源且核心为 Rust 实现（codex-rs 工作区，另有遗留 
 | 模型 | OpenAI / Anthropic / DeepSeek / Ollama + OpenAI 兼容端点；显式路由；成本显示 | P0/P1 |
 | 模型 | 本地决策模型 Laya：自动下载 + 意图预判 / 命令风险辅助 / 路由启发（§9.8 集成点 #1-3）+ agent 可调用判定工具 laya_decide（#4，v1.124） | P0（M1 后段核心）/ P1（深化） |
 | 插件 | 外部进程插件 + MCP；官方 registry、签名、权限 diff | P1 |
+| 插件 | 代理技能（Skills）：SKILL.md 双作用域目录、技能目录注入提示 + `skill_use` 按需加载、设置面板管理（§13.4） | P1（v1.130） |
 | 治理 | AgentTrace、本地报告；团队策略文件、AI Evals | P1/P2 |
 | 平台 | 浏览器访问（本机 127.0.0.1 为 P1；局域网配对后移 M3，Q4）；Windows WSL2 安装包 | P1/P2 |
 
@@ -444,7 +443,7 @@ GlobalScheduler（全局并发 / 成本 / 通知）
 | 直执风险事件 | C/D 级动作 | 级别、动作详情、目标域名 / 参数、执行结果；不等待确认 |
 | Checkpoint 时间轴 | 侧栏 | 事件流 + 快照点，任意回滚 / 撤销回滚（unrevert） |
 | 语言包安装向导 | 检测到语言缺包 | 一键安装、运行时检测与官方指引 |
-| 设置 | 全局（Cmd/Ctrl+, 或命令面板） | **v1.121 起为 Codex 式模态框：左侧 General / Models / Permissions / Plugins / Updates 分类导航，右侧只渲染当前分类**；General 承载编辑器保存方式（v1.75）与代理参数（首改缓冲 / 命令超时）；Models / Permissions / Plugins / Updates 分别承载模型（v1.40）、权限策略（v1.85：工具黑名单、单任务成本上限；强制交互档随 v1.89 审批移除而删除）、插件管理（v1.84）、更新执行器（v1.83：更新通道 manual \| auto；遥测 / 崩溃报告无采集端，不设无效开关，v1.92）；外观档与语言仅保留顶栏入口（v1.92 去重） |
+| 设置 | 全局（Cmd/Ctrl+, 或命令面板） | **v1.121 起为 Codex 式模态框：左侧 General / Models / Permissions / Plugins / Skills / Updates 分类导航，右侧只渲染当前分类**；General 承载编辑器保存方式（v1.75）与代理参数（首改缓冲 / 命令超时）；Models / Permissions / Plugins / Updates 分别承载模型（v1.40）、权限策略（v1.85：工具黑名单、单任务成本上限；强制交互档随 v1.89 审批移除而删除）、插件管理（v1.84）、技能管理（v1.130，§13.4）、更新执行器（v1.83：更新通道 manual \| auto；遥测 / 崩溃报告无采集端，不设无效开关，v1.92）；外观档与语言仅保留顶栏入口（v1.92 去重） |
 | 命令面板 | Cmd+Shift+P | 全部命令可达（无障碍要求） |
 | Evals 报告 | M3 | 五指标 + 对比版本 |
 
@@ -497,7 +496,7 @@ GlobalScheduler（全局并发 / 成本 / 通知）
 
 - **状态色**：感知（蓝）、执行（黄）、验证（紫）、风险直执（橙）、失败（红）、完成（绿）；
 - **核心组件**：会话流卡片、证据卡片、直执风险卡、诊断条、AI 修改高亮区、时间轴节点、语言包安装卡；
-- **会话过程流（v1.109，Codex 形态；v1.112 降噪）**：线程主视图内事件流按 `user_input` 切分回合——用户任务气泡（**居右**，accent 底色圆角，与居左 AI 内容按侧区分；气泡下功能按钮组（v1.123：复制恒可用 / 撤销 / 重做；撤销条件 v1.111 不变——最后含改动回合气泡下、运行态禁用；重做 = 撤销后恢复该回合改动，unrollback 语义、撤销成功后可用）→ 步骤卡（**仅写类 / 风险类工具**：编辑、运行、安装、请求、git 写操作折叠卡：状态图标 + 动词摘要 + 目标摘要，展开看 args 与输出，失败红显默认展开；A 级只读工具不落卡，按回合聚合为单行 muted 摘要「读取 2 · 搜索 1」）→ 风险直执卡（级别徽标）→ 验证证据卡（verification 非空才渲染）→ 助手 markdown 正文（居左、左缘竖线贯穿；受限渲染器 `markdownLite`，零依赖、全量转义）；运行态活跃回合底部 spinner 行承接「正在做什么」与流式草稿；信息行仅保留回滚 / 撤销回滚（降级 / 压缩 / 记忆更新不显示，轨迹面板可见）；完整事件表仍由底部「轨迹」tab 承载，会话流只渲染面向用户的子集；
+- **会话过程流（v1.109，Codex 形态；v1.112 降噪）**：线程主视图内事件流按 `user_input` 切分回合——用户任务气泡（**居右**，accent 底色圆角，与居左 AI 内容按侧区分；气泡下功能按钮组（v1.123 引入；v1.127 修订：复制恒可用 / 撤销挂**每个含改动的回合**——恢复到发送该消息前的工作区状态，该消息之后其他回合改动随树回退 / 重做挂最近被撤销回合、unrollback、成功即收）→ 步骤卡（**仅写类 / 风险类工具**：编辑、运行、安装、请求、git 写操作折叠卡：状态图标 + 动词摘要 + 目标摘要，展开看 args 与输出，失败红显默认展开；A 级只读工具不落卡，按回合聚合为单行 muted 摘要「读取 2 · 搜索 1」）→ 风险直执卡（级别徽标）→ 验证证据卡（verification 非空才渲染）→ 助手 markdown 正文（居左、左缘竖线贯穿；受限渲染器 `markdownLite`，零依赖、全量转义）；运行态活跃回合底部 spinner 行承接「正在做什么」与流式草稿；信息行仅保留回滚 / 撤销回滚（降级 / 压缩 / 记忆更新不显示，轨迹面板可见）；完整事件表仍由底部「轨迹」tab 承载，会话流只渲染面向用户的子集；
 - **任务输入区上下文条（v1.126，参照 Codex / ZCode 输入上方选择器）**：任务输入框（textarea，v1.51 组合容器之上）新增常驻上下文条（无 active 项目不渲染）——**草稿态**（v1.116）为两个原生 `<select>`：项目选择（全部已打开项目；切换 = 激活目标项目并保持 / 进入其草稿，同侧栏点项目行语义）+ 工作区选择（主工作区 / 新受管 worktree——「分支选择」在 Tenon 的对应物即会话级受管 worktree（v1.87），映射 `draftByProject` 意图；非 git 仓库项目选受管项在首发建会话时经 daemon 错误呈现）；**会话态**为只读标识（项目名 + ⎇ 受管 worktree 徽标，会话强绑定 `project_id` 不可切换）；草稿输入文本 per-project 持有（并行草稿互不串扰，发送成功随草稿清除，弃草稿重进恢复）；注入类入口（诊断 AI 修复 / 行内指令）在主根草稿态走草稿首发链路，受管 worktree 草稿不接（主根上下文不注入 worktree 副本）；
 - **AI 改动可视**：所有代理写入的行带「AI」角标，直到用户编辑该区域或确认；
 - **外观档**：深色（默认）/ 浅色 / 跟随系统（`prefers-color-scheme`）三档；顶栏为**单图标按钮三态循环**（v1.119：跟随系统 🖥 → 浅色 ☀ → 深色 ☾，点击推进下一档、末端回绕，图标与 aria-label / tooltip 随当前档位），切换即时生效，`data-theme` 属性驱动 CSS 变量整套换色，状态色两套均可读；偏好双写——`localStorage` 为快路径，daemon `ui_prefs` 存储（§14.1）为跨启动 / 跨端（桌面 + 浏览器）权威（daemon 端口动态，localStorage 按 origin 隔离不可跨启动）；
@@ -518,7 +517,7 @@ GlobalScheduler（全局并发 / 成本 / 通知）
 - **项目内 CRUD**：文件树提供重命名 / 删除（v1.72 移除新建文件 / 新建目录——项目内创建一律由会话大模型决策执行，AI 经自身工具建文件不涉 `/file/ops`）；操作走 `/file/ops` 写守卫与 watcher 同步；重命名用可访问 modal，删除显式确认；打开的 tab、unsaved 标记与 AI 行标记随路径变化同步；
 - **拖拽移动**：文件可拖入目录或根目录；禁止拖入自身 / 子树；HTML5 drag data 使用私有 MIME，drop 后仍走 `/file/ops move` 写守卫；成功后同步 open tab / active path / unsaved / AI 标记；
 - **懒加载层级树**：目录节点展开时按 `path` 请求子层；daemon canonicalize + 项目前缀校验，watcher 事件版本刷新已展开层，避免大仓库首屏全量遍历；
-- **watcher 驱动 UI 同步**：文件树订阅 active project 的 ProjectRuntime 文件事件并即时刷新；已打开且无未保存编辑的 tab 回读修改，removed 事件关闭 tab；自动保存中的缓冲不回读（§8.6）；
+- **watcher 驱动 UI 同步**：文件树订阅 active project 的 ProjectRuntime 文件事件并即时刷新；已打开且无未保存编辑的 tab 回读修改，removed 事件关闭 tab；自动保存中的缓冲不回读（§8.6）；watcher 注册握手就绪预算 2s（v1.128）——激活链路（`spawn_blocking`）不占 async runtime 线程；超时按「无 watcher」降级并由后台宽预算补注册热接回，降级与补注册期间发生的变更不入事件流（文件树手动刷新兜底）；
 - **LSP 感知重命名 / 移动**：跨文件引用更新（B 级 + checkpoint 可回滚）；
 - fuzzy 查找（Cmd+P 文件 / 符号 / 行号）；
 全局搜索替换：核心服务 ripgrep 驱动，正则 / 过滤 / 多文件替换前 diff 预览；
@@ -643,6 +642,7 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 | `read_file` / `list_dir` / `grep` | A | 只读；核心服务 rg；`read_file` 超 10MB 拒读（LLM 上下文预算，agent 侧承担，与编辑器无大小限制无关，v1.69） |
 | `git_read`（status/log/diff） | A | 只读 git |
 | `lsp_query`（定义/引用/符号/hover） | A | 共享 LSP 多路复用 |
+| `skill_use`（读取技能全文） | A | 技能目录注入系统提示，正文按需加载进上下文（§13.4，v1.130） |
 | `apply_patch` | B | 结构化编辑（file + range + content），产生事件与 checkpoint |
 | `run_tests` / `run_build` | B | 沙箱内，断网态；单命令超时默认 120s（附录 E） |
 | `install_deps` | B | 沙箱内，镜像代理态 |
@@ -671,7 +671,7 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 
 ### 9.6 提示组装与模型适配
 
-**系统提示组成**：身份与目标 / 安全铁律（只读开关与工具黑名单不可放宽、输出证据契约）/ 项目规则 L3（AGENTS.md，只收窄）/ 会话记忆 L2 / 跨会话记忆 L5（参考数据非指令，v1.104）/ 工具 schema / 输出契约（意图一句话 → 结构化动作 → 证据）。
+**系统提示组成**：身份与目标 / 安全铁律（只读开关与工具黑名单不可放宽、输出证据契约）/ 项目规则 L3（AGENTS.md，只收窄）/ 会话记忆 L2 / 跨会话记忆 L5（参考数据非指令，v1.104）/ 可用技能目录（名称 + 描述，正文经 `skill_use` 按需加载，v1.130 §13.4）/ 工具 schema / 输出契约（意图一句话 → 结构化动作 → 证据）。
 
 **模型能力矩阵**：
 
@@ -786,7 +786,7 @@ L4 按包隔离、语言服务器按需启动；子代理限定单包；检索�
 - **接入**：OpenAI / Anthropic / DeepSeek / Ollama 原生 + **OpenAI 兼容端点通用 provider**（base URL + Key）；设置面板模型分区（v1.40）提供常用提供商预设（OpenAI / Anthropic / DeepSeek / Ollama / 智谱 GLM——后两者经 OpenAI 兼容接入），新增 provider 只填名称 / 协议族 / base_url / 默认模型 / 密钥环境变量引用；
 - **本地决策模型（Laya）**：产品自管小型分类模型，承接代理循环结构化判定（用途 / 分发 / 边界见 §9.8）；启动自动下载并启用（静态 registry + 签名 + 版本锁定，无确认卡，v1.71）、本地 CPU 推理零 token 成本；不可用即整体回退，不阻塞任何功能；
 - **路由**：v1 显式（`/model` 与设置面板）+ 轻量启发式（纯读任务提示轻模型）；auto 路由实验特性默认关（置信度展示、一键改派、可反馈）；
-- **成本**（v1.93 接线）：价格表来源 = provider 配置可选 `price_in_per_mtok` / `price_out_per_mtok`（美元 / 百万 token，缺省 0 = 未知模型不计、宁少报不虚报）；daemon 按默认模型构建价格表注入会话，每回合计价累计入 `model_usage.cost_usd` 并作为熔断预算输入（§9.3）；本地模型（含 Laya）显示「本地 · 0 成本」，token 单独统计；任务级 / 会话级 / 项目级归因；
+- **成本**（v1.93 接线）：价格表来源 = provider 配置可选 `price_in_per_mtok` / `price_out_per_mtok`（美元 / 百万 token，缺省 0 = 未知模型不计、宁少报不虚报）；daemon 按默认模型构建价格表注入会话，每回合计价累计入 `model_usage.cost_usd` 并作为熔断预算输入（§9.3）；本地模型（含 Laya）显示「本地 · 0 成本」，token 单独统计；任务级 / 会话级 / 项目级归因；**缓存与速度观测（v1.129）**：usage 增缓存命中输入 token 采集（OpenAI 兼容 = `prompt_tokens_details.cached_tokens`，Anthropic = `cache_read_input_tokens`，未报告 / 本地模型 = 0），命中率 = cached / input——OpenAI 系 cached ⊆ prompt_tokens 口径自洽，Anthropic 系不打 `cache_control` 断点则缓存不启用、恒 0 不虚报；每回合模型流耗时（provider 流建立 → 权威 Final 到达）记入 `model_usage.duration_ms`，输出速度 = output / duration 为权威实测（区别于 UI 轮询差值的流中近似）；
 - **密钥存储**：`api_key_env` 名先查 daemon 环境变量，缺失时读取操作系统凭据库（macOS Keychain / Linux libsecret / Windows PasswordVault）；持久写入只进入 OS 凭据库，不落盘明文；
 - **降级**：供应商不可用时可切换会话模型，任务上下文随迁。
 
@@ -877,7 +877,30 @@ registry 检索 → 展示**权限 diff**（相对已装版本新增权限高亮
 |---|---|
 | MCP | 外部进程插件直连；工具映射动作分级，默认 C/D |
 | AGENTS.md | 直读，只能收窄权限（v1.92 接线：会话创建读取项目根 `<!-- tenon:rules -->` 块） |
-| Skills | 尽力兼容主流格式，实验特性 |
+| Skills | 代理技能（SKILL.md）：双作用域目录 + 技能目录注入 + `skill_use` 按需加载，管理与安全边界见 §13.4（v1.130 落地第一期） |
+
+### 13.4 代理技能（Skills，v1.130）
+
+**定位**：SKILL.md 格式的可复用方法指令集——模型按需加载的「如何做」知识（工作流 / 规范 / 工具用法），兼容主流 agent skills 格式（§13.3 兼容承诺的落地）；**目录即真源**，不落数据库表。
+
+**存储与发现**：
+
+- 全局 `~/.tenon/skills/<name>/SKILL.md`（用户自建，§14.1）；项目 `<workspace>/.tenon/skills/<name>/SKILL.md`（随仓库分发，克隆即得）；
+- SKILL.md = 可选 YAML frontmatter（`name` / `description` 两键，轻量行解析，不引 YAML 依赖）+ markdown 正文；展示名取 frontmatter `name`（缺省回退目录名）；**目录名为规范 id**（`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`，拒绝 `..` 与路径分隔符——`skill_use` 参数与文件写入都以它定位，无穿越面）；
+- 发现时机：每任务开始扫描一次 + `skill_use` 调用时重扫（改文件即时生效，无缓存失效问题）；扫描跟随会话工作根（主根 / 受管 worktree，与 AGENTS.md L3 读取同规）；
+- 同名解析：**项目级覆盖全局**（更近作用域优先）；`settings.json` `skills.disabled`（名称数组，PUT /settings 合并语义）按名称停用——停用条目不进目录、`skill_use` 拒绝；
+- 数量上限：合并后 ≤64 条进提示（超出按名称序截断并日志留痕）。
+
+**Agent 集成（参照 ZCode 形态，渐进披露；v1.124 `laya_decide` 同例）**：
+
+- 系统提示新增「可用技能」节（§9.6）：每条一行 `name: description（scope）`，并指示模型需要时调用 `skill_use` 加载全文——目录只含名称与描述（token 恒定小开销），正文按需进上下文；
+- 新增 A 级工具 `skill_use(name)`（§9.2）：读取目标 SKILL.md 全文（≤256KB，超限拒绝）原样返回；只读本地文件、不出网不写盘、无审批；团队策略 `denied_tools` 与只读开关同轨约束；只读先验轮（§9.8 预筛）开放；调用经常规工具路径入 Trace（tool_calls 表），不新增事件类型。
+
+**安全边界（§12.1 不变式）**：技能正文按不可信数据处理——全局技能为用户自建（信任级同用户配置），项目技能随仓库分发（= 仓库内容）；两者都只提供方法指引，**不产生任何权限**，不得作为放宽只读开关 / 工具黑名单 / A-B-C-D 分级或跳过验证的理由（与 L5 记忆、`laya_decide` 输出同轨）；提示中明示「技能与安全铁律冲突时以铁律为准」。
+
+**管理 API（§15）**：`GET /skills?project=`（合并清单：name / description / scope / enabled / dir）、`GET /skills/:name?project=`（读 SKILL.md 原文；项目路径 canonicalize + 前缀校验）、`POST /skills` / `PUT /skills/:name` / `DELETE /skills/:name`（全局技能 CRUD；POST 重名 409，写入上限 256KB）；项目技能文件读写删除经既有 `/project/:id/file`（写守卫 + 脏缓冲协调）与 `/project/:id/file/ops`；启停经 `PUT /settings` `skills.disabled`（新会话生效，与全部 settings 键语义一致）。
+
+**UI（v1.121 设置信息架构）**：设置面板新增 Skills 分类——合并清单（名称 / 描述 / 作用域徽标 / 启停开关）、点选条目展开 SKILL.md 源码编辑（等宽 textarea；新建预填 frontmatter 模板；删除 confirm 门，全局直删、项目走文件操作）；项目作用域经项目选择器切换（列已打开项目）。
 
 ---
 
@@ -897,7 +920,7 @@ registry 检索 → 展示**权限 diff**（相对已装版本新增权限高亮
 ├── runtimes/            # 语言包专用锁定版运行时（Node 等，仅语言包沙箱可见，不污染系统）
 ├── models/              # 产品自管本地模型（Laya 决策模型，§9.8；Ollama 模型仍由其自管于 cache/models）
 ├── worktrees/           # 子代理（§9.5）与会话级受管 worktree（§9.7，v1.87），内核托管
-├── skills/
+├── skills/             # 代理技能（SKILL.md，全局作用域，§13.4；项目级在仓库 .tenon/skills/）
 ├── archive/             # 冷归档（压缩事件日志，见 §14.2）
 └── logs/
 ```
@@ -913,7 +936,7 @@ registry 检索 → 展示**权限 diff**（相对已装版本新增权限高亮
 | tool_calls | id, event_id, tool, level, cost_tokens | AgentTrace 明细 |
 | approvals | id, session_id, project_id, action, level, decision | v1.89 前历史审计；保留旧库兼容，不新增记录 |
 | plugins | id, version, permissions, signature | 安装记录 |
-| model_usage | id, session_id, project_id, provider, tokens, cost | 成本归因；支持会话 / 项目 / 日级 |
+| model_usage | id, session_id, project_id, provider, tokens, cached_tokens, duration_ms, cost | 成本归因 + 缓存命中率 / 输出速度观测（v1.129）；支持会话 / 项目聚合 |
 | eval_runs | id, target, metrics_json, verdict | Evals 报告 |
 | l4_chunks | id, project_id, path, symbol, start_line, end_line, text, embedding | L4 检索切片、行区间、文本与本地向量（sqlite-vec 演进路径，§10.1） |
 | memories | id, scope, project_id, kind, content, importance, embedding, source_session, created_at, updated_at, last_seen_at | L5 跨会话对话记忆（§10.1，v1.104）：project 层按 project_id 隔离；global 层仅 kind=preference，永不承载仓库内容 |
@@ -980,9 +1003,14 @@ registry 检索 → 展示**权限 diff**（相对已装版本新增权限高亮
 | 方法 | 路径 | 用途 |
 |---|---|---|
 | GET / POST | `/plugins` | 插件与语言包管理（权限 diff、安装、升级） |
-| GET / PUT | `/settings` | 全局设置。GET 返回合并后的生效值；PUT 接受已知键子集（`session.first_edit_buffer_ms` / `exec.command_timeout_s`；v1.40 增 `models.default` / `models.providers.<name>.{kind,base_url,wire_api,model,api_key_env}`），校验后写入 `~/.tenon/settings.json`（0600）并即时生效——**新会话**按新值构建（既有会话保持各自配置）；`session.mode` 与 `privacy.*` 键已随 v1.92 移除（无行为消费方，不设无效开关）。models 校验（v1.40）：provider 名 `^[a-z][a-z0-9_-]{0,63}$`、kind ∈ openai / anthropic / openai_responses、base_url 须 http(s)、`models.default` 须指向已配置 provider；`models.providers` 整体替换覆盖表（UI 每次保存发全量，支持删除；同名单条目按字段合并，未覆盖字段保留配置文件值）；GET 合并视图 provider 条目带 `overridden` 标记（纯配置文件条目不可经设置删除，只能编辑生成覆盖），`models.default=""` 清除覆盖回退配置值；**含 `api_key` 明文的请求 400 拒绝**——密钥仅以 `api_key_env` 引用（§11：daemon 环境变量优先，缺失读取 OS 凭据库），PUT 成功即重建 provider 表 |
+| GET | `/skills?project=` | 代理技能合并清单（§13.4，v1.130）：项目同名覆盖全局后的生效集——name / description / scope / enabled / dir；`project` 缺省仅全局 |
+| GET | `/skills/{name}?project=` | 读 SKILL.md 原文（content / scope / path）；项目路径 canonicalize + 前缀校验 |
+| POST | `/skills` | 新建全局技能 `{name, content}`（目录名即 id，重名 409，≤256KB） |
+| PUT | `/skills/{name}` | 写全局技能原文 `{content}`（≤256KB） |
+| DELETE | `/skills/{name}` | 删全局技能目录；项目技能删除走 `/project/:id/file/ops` |
+| GET / PUT | `/settings` | 全局设置。GET 返回合并后的生效值；PUT 接受已知键子集（`session.first_edit_buffer_ms` / `exec.command_timeout_s`；v1.40 增 `models.default` / `models.providers.<name>.{kind,base_url,wire_api,model,api_key_env}`），校验后写入 `~/.tenon/settings.json`（0600）并即时生效——**新会话**按新值构建（既有会话保持各自配置）；`session.mode` 与 `privacy.*` 键已随 v1.92 移除（无行为消费方，不设无效开关）；v1.130 增 `skills.disabled`（技能名称数组，整体替换——停用条目不进技能目录、`skill_use` 拒绝，新会话生效，§13.4）。models 校验（v1.40）：provider 名 `^[a-z][a-z0-9_-]{0,63}$`、kind ∈ openai / anthropic / openai_responses、base_url 须 http(s)、`models.default` 须指向已配置 provider；`models.providers` 整体替换覆盖表（UI 每次保存发全量，支持删除；同名单条目按字段合并，未覆盖字段保留配置文件值）；GET 合并视图 provider 条目带 `overridden` 标记（纯配置文件条目不可经设置删除，只能编辑生成覆盖），`models.default=""` 清除覆盖回退配置值；**含 `api_key` 明文的请求 400 拒绝**——密钥仅以 `api_key_env` 引用（§11：daemon 环境变量优先，缺失读取 OS 凭据库），PUT 成功即重建 provider 表 |
 | GET | `/models` | 模型清单与 Laya 状态（版本 / 已下载 / 加载 / 设备，§9.8）；设置面板模型分区（v1.40）消费它渲染默认模型下拉与 Laya 状态卡 |
-| GET | `/costs` | 成本归因（会话级；`?session=` 必带，v1.92 收敛——月度聚合无消费方） |
+| GET | `/costs` | 成本归因（会话级；`?session=` 必带，v1.92 收敛——月度聚合无消费方）；返回体含 `cached_tokens` / `duration_ms`（v1.129，命中率与均速由消费方派生） |
 | POST | `/ws-ticket` | 一次性 WS 票据 |
 | WS | `/ws` | 事件流（状态机、诊断、diff 流；ticket 鉴权） |
 
@@ -1125,6 +1153,7 @@ WS 事件与会话 events 表一一对应，均含 `project_id`；断线重连�
 | 受管 worktree | daemon 在 `~/.tenon/worktrees/` 托管的会话级独立工作树：写边界 / 沙箱 / 快照按 worktree 隔离，支持同项目并行会话，收尾为合并或丢弃（§9.7，v1.87） |
 | Laya | 产品自管本地决策模型：分类 / 打分 / 布尔三原语，CPU ~30ms 级、零 token，承接代理循环结构化判定（§9.8）；v1.124 起经 `laya_decide` 工具对 agent 开放（A 级只读） |
 | 对话记忆（L5） | 跨会话持久化的对话沉淀：用户偏好 / 项目事实 / 决策 / 工作流要点；project 层按 project_id 隔离，global 层仅用户偏好，注入提示按不可信数据对待（§10.1，v1.104） |
+| Skills（代理技能） | SKILL.md 格式的可复用方法指令集：全局 `~/.tenon/skills/` 与项目 `.tenon/skills/` 双作用域，技能目录注入提示、`skill_use` 按需加载正文，按不可信数据对待（§13.4，v1.130） |
 
 ### 附录 B · 关键决策记录（ADR 摘要）
 
