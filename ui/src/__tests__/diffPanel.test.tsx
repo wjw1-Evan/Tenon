@@ -10,9 +10,9 @@ describe("diff 面板（M0 交付）", () => {
     expect(screen.getByTestId("diff-panel")).toHaveTextContent("-old");
   });
 
-  it("无改动时显示占位（默认英文源语言）", () => {
+  it("无改动时显示占位", () => {
     render(<DiffPanel diff={null} />);
-    expect(screen.getByTestId("diff-panel")).toHaveTextContent("(no changes)");
+    expect(screen.getByTestId("diff-panel")).toHaveTextContent("（无改动）");
   });
 
   it("从 patch_applied 事件提取 diff", () => {
@@ -71,8 +71,8 @@ describe("DiffPanel 补充", () => {
     expect(screen.getByTestId("diff-panel")).toHaveTextContent("@@");
   });
 
-  it("empty diff shows caller-localized placeholder", () => {
-    render(<DiffPanel diff="" emptyText="（无改动）" />);
+  it("empty diff shows placeholder", () => {
+    render(<DiffPanel diff="" />);
     expect(screen.getByTestId("diff-panel")).toHaveTextContent("（无改动）");
   });
 });

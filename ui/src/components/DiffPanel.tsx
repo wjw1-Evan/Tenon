@@ -21,13 +21,10 @@ function diffLineClass(line: string) {
 export function DiffPanel({
   diff,
   title,
-  emptyText = "(no changes)",
   viewportHeight = DEFAULT_VIEWPORT_HEIGHT,
 }: {
   diff: string | null;
   title?: string;
-  /** 空态占位文案；调用方经 t("diff.no_changes") 传入（随应用语言）。 */
-  emptyText?: string;
   /** 测试 / 嵌入方可显式覆盖；运行态由 ResizeObserver 使用实际容器高度。 */
   viewportHeight?: number;
 }) {
@@ -105,7 +102,7 @@ export function DiffPanel({
           </div>
         </pre>
       ) : (
-        <pre className="diff-body muted">{emptyText}</pre>
+        <pre className="diff-body muted">（无改动）</pre>
       )}
     </div>
   );

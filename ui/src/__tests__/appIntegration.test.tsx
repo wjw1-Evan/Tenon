@@ -144,18 +144,6 @@ describe("App integration", () => {
     }
   });
 
-  it("handles global activity bar", async () => {
-    render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/proj-a" />);
-    await waitFor(() => expect(screen.getByTestId("project-list")).toBeTruthy());
-    const bar = screen.queryByTestId("global-activity-bar");
-    if (bar) {
-      fireEvent.click(bar);
-      await waitFor(() => {
-        expect(screen.queryByTestId("global-activity-list") || document.body).toBeTruthy();
-      });
-    }
-  });
-
   it("opens settings via rail gear", async () => {
     render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/proj-a" />);
     fireEvent.click(await screen.findByTestId("rail-settings"));

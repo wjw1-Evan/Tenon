@@ -1,11 +1,9 @@
 // 项目浏览器（左侧栏「项目」视图，v1.88 对齐 Codex projects sidebar 内容布局）：
-// 顶部搜索 + 添加入口，Name / Updated 列头统一项目索引密度；每项目一行可折叠文件夹
+// 添加入口常驻，Name / Updated 列头统一项目索引密度；每项目一行可折叠文件夹
 // （点击行即隐式激活并展开），默认内嵌最近 10 条会话；行尾「源码」按钮切换文件树。
-// 「All activity」为同构列表组，承接跨项目监控但不占据仪表盘式首屏。
 import { useEffect, useState } from "react";
 import type { ProjectSummary, TenonApi } from "../lib/api";
-import { useResolvedLocale, type Translate } from "../lib/i18n";
-import { RUNNING_STATES } from "../lib/stateColors";
+import type { Translate } from "../lib/i18n";
 import { FileTree, type FileTreeChange } from "./FileTree";
 
 const PE_EXPANDED_KEY = "tenon:peExpanded";
@@ -53,28 +51,6 @@ interface Props {
   onFileTreeChange: (change: FileTreeChange) => void;
 }
 
-const RUNNING = RUNNING_STATES as ReadonlySet<string>;
-const ACTIVITY_FILTERS = ["all", "running", "done"] as const;
-type ActivityFilter = (typeof ACTIVITY_FILTERS)[number];
-
-/** 状态点配色（§7.5 状态色）：全局活动行与汇总条共用。 */
-function statusDotColor(status: string): string {
-  return (
-    ({
-      sensing: "#2f6fed",
-      deciding: "#5b6b7a",
-      executing: "#d9a514",
-      verifying: "#7d4fd3",
-      fixing: "#7d4fd3",
-      paused: "#8a8f98",
-      error: "#d43d3d",
-      done: "#2da44e",
-      rolled_back: "#8a8f98",
-      idle: "#8a8f98",
-    } as Record<string, string>)[status] ?? "#8a8f98"
-  );
-}
-
 /** 状态文案：优先使用 state.* 翻译，缺失回退原始状态。 */
 function stateLabel(t: Translate, status: string) {
   const key = `state.${status}`;
@@ -101,7 +77,7 @@ function latestUpdatedAt(project: ProjectSummary): string | null {
 }
 
 /** 相对时间只用于侧栏扫读；精确时间保留在行 title，不做 daemon 依赖。 */
-function formatUpdatedAt(value: string | null, t: Translate, locale: string): string {
+function formatUpdatedAt(value: string | null, t: Translate): string {
   if (!value) return t("projects.updated_never");
   const time = Date.parse(value);
   if (Number.isNaN(time)) return t("projects.updated_never");
@@ -113,7 +89,7 @@ function formatUpdatedAt(value: string | null, t: Translate, locale: string): st
   if (hours < 24) return t("relative.hours_ago", { count: hours });
   const days = Math.floor(hours / 24);
   if (days < 30) return t("relative.days_ago", { count: days });
-  return new Date(time).toLocaleDateString(locale);
+  return new Date(time).toLocaleDateString();
 }
 
 /** 会话显示名：自动标题优先（v1.58）；无标题回退模型名，同名多会话附短 id 后缀。 */
@@ -210,7 +186,6 @@ export function ProjectExplorer({
   onOpenFile,
   onFileTreeChange,
 }: Props) {
-  const localeTag = useResolvedLocale();
   const [expanded, setExpanded] = useState<Set<string>>(() => loadSet(PE_EXPANDED_KEY));
   // 行内嵌源码文件树的展开集合（v1.70），与文件夹展开互不影响。
   const [filesOpen, setFilesOpen] = useState<Set<string>>(() => loadSet(PE_FILES_KEY));
@@ -220,10 +195,6 @@ export function ProjectExplorer({
   /** 用户手动改过项目名后，路径变更不再覆盖名称。 */
   const [nameEdited, setNameEdited] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
-  // 全局活动条（v1.87 §7.2）：跨项目聚合监控。
-  const [activityOpen, setActivityOpen] = useState(false);
-  const [activityFilter, setActivityFilter] = useState<ActivityFilter>("all");
-  const [stoppingId, setStoppingId] = useState<string | null>(null);
   const [worktreeBusyId, setWorktreeBusyId] = useState<string | null>(null);
   /** 超过最近 10 条的项目的显式展开集合；不落盘，保持项目列表轻量。 */
   const [allSessionsOpen, setAllSessionsOpen] = useState<Set<string>>(new Set());
@@ -271,36 +242,6 @@ export function ProjectExplorer({
     setPath("");
     setName("");
     setNameEdited(false);
-  };
-
-  const globalRows = projects
-    .flatMap((project) =>
-      project.sessions.map((session) => ({
-        project,
-        session
-      }))
-    )
-    .sort((a, b) => (b.session.updated_at ?? "").localeCompare(a.session.updated_at ?? ""));
-  const runningCount = globalRows.filter((row) => RUNNING.has(row.session.status)).length;
-  const doneCount = globalRows.filter((row) => row.session.status === "done").length;
-  const visibleRows = globalRows.filter((row) => {
-    if (activityFilter === "running") return RUNNING.has(row.session.status);
-    if (activityFilter === "done") return row.session.status === "done";
-    return true;
-  });
-
-  const jumpToSession = (row: (typeof globalRows)[number]) => {
-    if (row.project.id !== projectId) onSwitchProject(row.project);
-    onSelectSession(row.project.id, row.session.id);
-  };
-
-  const stopSession = async (sessionId: string) => {
-    setStoppingId(sessionId);
-    try {
-      await api.control(sessionId, "stop");
-    } finally {
-      setStoppingId(null);
-    }
   };
 
   const mergeWorktree = async (sessionId: string) => {
@@ -494,79 +435,6 @@ export function ProjectExplorer({
       </div>
       <section className="pe-section pe-chats">
         <ul className="pe-tree" data-testid="project-list">
-          {/* All activity 与项目行同构，跨项目监控不再用首屏胶囊打断项目索引。 */}
-          <li className="pe-activity-group">
-            <section className="pe-section pe-activity" data-testid="global-activity">
-              <button
-                type="button"
-                className="pe-activity-bar"
-                data-testid="global-activity-bar"
-                aria-expanded={activityOpen}
-                onClick={() => setActivityOpen((open) => !open)}
-              >
-                <span
-                  className="pe-dot"
-                  style={{ background: runningCount ? "#d9a514" : "#8a8f98" }}
-                />
-                <span className="pe-activity-label">{t("activity.title")}</span>
-                <span className="pe-activity-counts">
-                  <span className="pe-activity-count">{t("activity.running")} {runningCount}</span>
-                  <span className="pe-activity-count">{t("activity.done")} {doneCount}</span>
-                </span>
-                <ChevronIcon />
-              </button>
-              {activityOpen && (
-                <div className="pe-activity-panel" data-testid="global-activity-list">
-                  <div className="pe-activity-filters">
-                    {ACTIVITY_FILTERS.map((filter) => (
-                      <button
-                        key={filter}
-                        type="button"
-                        className={activityFilter === filter ? "active" : ""}
-                        onClick={() => setActivityFilter(filter)}
-                      >
-                        {t(`activity.filter.${filter}`)}
-                      </button>
-                    ))}
-                  </div>
-                  {visibleRows.length === 0 && <div className="pe-empty">{t("activity.empty")}</div>}
-                  <ul className="pe-activity-list">
-                    {visibleRows.map(({ project, session }) => (
-                      <li key={session.id} className="pe-activity-item">
-                        <button
-                          type="button"
-                          className="pe-activity-row"
-                          onClick={() => jumpToSession({ project, session })}
-                          title={session.id}
-                        >
-                          <span
-                            className="pe-dot"
-                            style={{ background: statusDotColor(session.status) }}
-                          />
-                          <span className="pe-activity-project">{project.display_name}</span>
-                          <span className="pe-activity-title">
-                            {sessionDisplayName(session)}
-                            {session.worktree_path ? " ⎇" : ""}
-                          </span>
-                          <span className="pe-chat-status">{stateLabel(t, session.status)}</span>
-                        </button>
-                        {RUNNING.has(session.status) && (
-                          <button
-                            type="button"
-                            className="pe-action danger"
-                            disabled={stoppingId === session.id}
-                            onClick={() => void stopSession(session.id)}
-                          >
-                            {t("activity.stop")}
-                          </button>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </section>
-          </li>
           {projects.map((project) => {
             const isOpen = expanded.has(project.id);
             const showFiles = filesOpen.has(project.id);
@@ -595,9 +463,9 @@ export function ProjectExplorer({
                     </span>
                     <span
                       className="pe-updated"
-                      title={updatedAt ? new Date(updatedAt).toLocaleString(localeTag) : undefined}
+                      title={updatedAt ? new Date(updatedAt).toLocaleString() : undefined}
                     >
-                      {formatUpdatedAt(updatedAt, t, localeTag)}
+                      {formatUpdatedAt(updatedAt, t)}
                     </span>
                   </button>
                   <div className="pe-row-actions">

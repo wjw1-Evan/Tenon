@@ -542,12 +542,12 @@ export function EditorPane({
         isWholeLine: true,
         className: "ai-line",
         glyphMarginClassName: "ai-glyph",
-        glyphMarginHoverMessage: { value: t("editor.ai_glyph") },
+        glyphMarginHoverMessage: { value: "AI 修改区（§8.6）" },
       },
     }));
     decorationsRef.current?.clear();
     decorationsRef.current = editor.createDecorationsCollection(ranges);
-  }, [aiModifiedLines, activePath, t]);
+  }, [aiModifiedLines, activePath]);
   useEffect(() => {
     const editor = editorRef.current;
     if (!editor || typeof editor.createDecorationsCollection !== "function") return;
@@ -633,7 +633,7 @@ export function EditorPane({
             height="100%"
             theme={resolvedTheme === "light" ? "tenon-light" : "tenon-dark"}
             beforeMount={defineTenonThemes}
-            loading={<div className="editor-loading">{t("editor.loading")}</div>}
+            loading={<div className="editor-loading">加载中…</div>}
             options={{
               // 简洁大方的编辑面（§7.5）：minimap 在 WebView 渲染错位（E2E
               // 实测）且非必需，禁用；其余为阅读体验微调。
@@ -717,7 +717,7 @@ export function EditorPane({
               height="100%"
               theme={resolvedTheme === "light" ? "tenon-light" : "tenon-dark"}
               beforeMount={defineTenonThemes}
-              loading={<div className="editor-loading">{t("editor.loading")}</div>}
+              loading={<div className="editor-loading">加载中…</div>}
               options={{
                 minimap: { enabled: false },
                 fontSize: 13,

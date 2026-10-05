@@ -1,7 +1,7 @@
 // Git source view（§8.1）：branch / changes / commits / inline blame。
 import { useEffect, useState } from "react";
 import type { TenonApi } from "../lib/api";
-import { useResolvedLocale, type Translate } from "../lib/i18n";
+import type { Translate } from "../lib/i18n";
 
 interface GitView {
   repository: boolean;
@@ -44,9 +44,9 @@ interface Props {
   onOpenFile: (path: string, line?: number) => void;
 }
 
-function formatTime(timestamp: number, locale: string) {
+function formatTime(timestamp: number) {
   if (!timestamp) return "";
-  return new Date(timestamp * 1000).toLocaleString(locale);
+  return new Date(timestamp * 1000).toLocaleString();
 }
 
 export function GitSourcePanel({
@@ -57,7 +57,6 @@ export function GitSourcePanel({
   refreshToken,
   onOpenFile,
 }: Props) {
-  const localeTag = useResolvedLocale();
   const [view, setView] = useState<GitView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -154,7 +153,7 @@ export function GitSourcePanel({
                     <span>{commit.summary}</span>
                   </div>
                   <div className="muted">
-                    {commit.author} · {formatTime(commit.timestamp, localeTag)}
+                    {commit.author} · {formatTime(commit.timestamp)}
                   </div>
                 </li>
               ))}

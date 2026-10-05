@@ -1,7 +1,7 @@
 // Checkpoint 时间轴（设计方案 §7.1 / §10.3）：事件 + 快照点；回滚 / 撤销回滚。
 import { useEffect, useState } from "react";
 import type { TenonApi } from "../lib/api";
-import { useResolvedLocale, type Translate } from "../lib/i18n";
+import type { Translate } from "../lib/i18n";
 
 interface Checkpoint {
   id: string;
@@ -17,7 +17,6 @@ interface Props {
 }
 
 export function CheckpointTimeline({ api, t, sessionId }: Props) {
-  const localeTag = useResolvedLocale();
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
   const [busy, setBusy] = useState(false);
 
@@ -79,9 +78,9 @@ export function CheckpointTimeline({ api, t, sessionId }: Props) {
             <time
               className="timeline-time"
               dateTime={cp.created_at}
-              title={new Date(cp.created_at).toLocaleString(localeTag)}
+              title={new Date(cp.created_at).toLocaleString()}
             >
-              {new Date(cp.created_at).toLocaleTimeString(localeTag)}
+              {new Date(cp.created_at).toLocaleTimeString()}
             </time>
             <span className="files">{cp.files.join(", ") || "—"}</span>
             <button disabled={busy} onClick={() => rollback(cp.id)}>

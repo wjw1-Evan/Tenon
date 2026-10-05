@@ -409,15 +409,16 @@ export default function App({
       if (existing) {
         setSessionsByProject((prev) => ({ ...prev, [project.id]: existing }));
       } else {
-        // v1.92 移除会话默认档后此处不再传档位；provider 留空由 daemon 取默认。
-        // 断链修复（v1.97）：此前误把 "interactive" 传入 createSession 的 provider 位，
-        // 未知 provider 使建会话恒失败、切项目永远建不出会话（多项目 E2E 挂死根因）。
-        const session = await api.createSession(project.id);
+        const session = await api.createSession(
+          project.id,
+          (settings?.session?.mode as "interactive" | "auto" | "" | undefined) ??
+          "interactive"
+        );
         setSessionsByProject((prev) => ({ ...prev, [project.id]: session.session_id }));
       }
       projectUiStateLoaded.current.add(project.id);
     },
-    [api]
+    [api, settings]
   );
 
   const setActivePath = useCallback((path: string | null) => {
@@ -498,32 +499,25 @@ export default function App({
   );
 
   /** T4 一键修复：诊断详情转成机器可验证任务并注入当前项目会话。 */
-  const fixDiagnostic = useCallback(
-    (diagnostic: EditorDiagnostic) => {
-      setInjectedTask({
-        token: Date.now(),
-        text: [
-          t("diagnostic.fix_head", {
-            path: diagnostic.path,
-            line: diagnostic.line,
-            column: diagnostic.column,
-          }),
-          t("diagnostic.fix_info", { message: diagnostic.message }),
-          t("diagnostic.fix_constraint"),
-        ].join(" "),
-      });
-    },
-    [t]
-  );
+  const fixDiagnostic = useCallback((diagnostic: EditorDiagnostic) => {
+    setInjectedTask({
+      token: Date.now(),
+      text: [
+        `修复 ${diagnostic.path}:${diagnostic.line}:${diagnostic.column} 的诊断。`,
+        `诊断信息：${diagnostic.message}`,
+        "修复后确认该诊断清零，且不引入新诊断或回归。",
+      ].join(" "),
+    });
+  }, []);
 
   /** 行内指令（§8.5 / S2 / T8）：选区上下文组装后直接发送当前项目会话。 */
   const sendInline = useCallback(
     (instruction: string, target: InlineTarget) => {
       const sid = sessionId;
       if (!sid) return;
-      void api.sendMessage(sid, buildInlineTask(instruction, target, t)).catch(() => {});
+      void api.sendMessage(sid, buildInlineTask(instruction, target)).catch(() => {});
     },
-    [api, sessionId, t]
+    [api, sessionId]
   );
 
   const switchProject = useCallback(async (project: ProjectSummary) => {
@@ -1131,7 +1125,7 @@ export default function App({
             injectedTask={injectedTask ?? undefined}
             onModelSwitched={(m) => {
               // 切换提示（§11：上下文随迁，model_fallback 事件入 Trace）
-              setRouteNote(t("model.switched", { model: m }));
+              setRouteNote(`已切换模型：${m}（上下文随迁）`);
               window.setTimeout(() => setRouteNote(null), 4000);
             }}
           />
@@ -1344,7 +1338,7 @@ export default function App({
                 onOpenFile={(path, line) => void openFile(path, line)}
                 onFix={fixDiagnostic}
               />
-              <DiffPanel diff={latestDiff} title={t("panel.patch_diff")} emptyText={t("diff.no_changes")} />
+              <DiffPanel diff={latestDiff} title={t("panel.patch_diff")} />
               <L4StatusPanel api={api} t={t} projectId={projectId} />
             </div>
           )}

@@ -1,7 +1,7 @@
 // L4 索引诊断（§10.1 / v1.35）：WS 状态推送 + 权威 stats 快照，不再固定轮询。
 import { useCallback, useEffect, useState } from "react";
 import type { TenonApi } from "../lib/api";
-import { useResolvedLocale, type Translate } from "../lib/i18n";
+import type { Translate } from "../lib/i18n";
 
 interface L4Status {
   project_id: string;
@@ -20,7 +20,6 @@ interface Props {
 }
 
 export function L4StatusPanel({ api, t, projectId }: Props) {
-  const localeTag = useResolvedLocale();
   const [status, setStatus] = useState<L4Status | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [rebuilding, setRebuilding] = useState(false);
@@ -111,7 +110,7 @@ export function L4StatusPanel({ api, t, projectId }: Props) {
           {t("l4.chunks")}: {status?.chunks ?? "—"}
         </span>
         {status?.status?.updated_at && (
-          <span className="muted">{new Date(status.status.updated_at).toLocaleTimeString(localeTag)}</span>
+          <span className="muted">{new Date(status.status.updated_at).toLocaleTimeString()}</span>
         )}
       </div>
       {status?.status?.error && (

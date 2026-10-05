@@ -64,14 +64,6 @@ test("concurrent projects keep writes and rollbacks isolated", async ({ page }) 
     timeout: 10_000,
   }).toContain("written by project A");
 
-  // v1.87 全局活动列表：跨项目会话平铺（无需展开项目文件夹），状态点 + 项目名。
-  await page.getByTestId("global-activity-bar").click();
-  const activityList = page.getByTestId("global-activity-list");
-  await expect(activityList).toBeVisible();
-  await expect(activityList).toContainText("project-a");
-  await expect(activityList).toContainText("project-b");
-  await page.getByTestId("global-activity-bar").click();
-
   // B 执行上下文仍可操作，且磁盘未被 A 任务污染。
   await page.getByTestId("project-list").getByText("project-b", { exact: true }).click();
   await page.getByTestId("task-input").fill("summarize project B without edits");
