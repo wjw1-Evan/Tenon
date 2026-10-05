@@ -1019,6 +1019,9 @@ async fn discard_session_worktree(
 }
 
 /// v1.103 归档 / 删除共用守卫：运行中（含挂起）或未收尾受管 worktree 的会话不可变更。
+// Session 随 v1.103 archived_at 等字段增长后超过 clippy 大小阈值；
+// 错误臂本就是即时构造的 Response，装箱无收益，就地豁免。
+#[allow(clippy::result_large_err)]
 async fn session_housekeeping_guard(
     state: &Arc<DaemonState>,
     id: &str,
@@ -1054,7 +1057,10 @@ async fn session_housekeeping_guard(
     Ok(session)
 }
 
-async fn archive_session(State(state): State<Arc<DaemonState>>, Path(id): Path<String>) -> Response {
+async fn archive_session(
+    State(state): State<Arc<DaemonState>>,
+    Path(id): Path<String>,
+) -> Response {
     if let Err(resp) = session_housekeeping_guard(&state, &id).await {
         return resp;
     }
@@ -2137,7 +2143,9 @@ async fn list_projects(State(state): State<Arc<DaemonState>>) -> Response {
                 with_sessions.push((
                     project.clone(),
                     store.list_sessions(&project.id).unwrap_or_default(),
-                    store.list_archived_sessions(&project.id).unwrap_or_default(),
+                    store
+                        .list_archived_sessions(&project.id)
+                        .unwrap_or_default(),
                     store.project_usage_totals(&project.id).unwrap_or_default(),
                 ));
             }
@@ -2444,6 +2452,87 @@ async fn costs(
         json!({"session": session_id, "input_tokens": inp, "output_tokens": out, "cost_usd": cost}),
     )
     .into_response()
+}
+
+// ---------- 对话记忆（L5，§10.1 v1.104） ----------
+
+/// L5 记忆列表：项目层全部 + global 层 preference；`?q=` 过滤、`?limit=` 默认 100。
+async fn list_project_memories(
+    State(state): State<Arc<DaemonState>>,
+    Path(project_id): Path<String>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let limit = q
+        .get("limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(100)
+        .clamp(1, 500);
+    let mut store = state.store.lock().await;
+    match store.project(&project_id) {
+        Ok(Some(_)) => {}
+        _ => return api_err(StatusCode::NOT_FOUND, "project not found"),
+    }
+    match store.list_memories(&project_id, q.get("q").map(|s| s.as_str()), limit) {
+        Ok(items) => Json(json!({"project_id": project_id, "memories": items})).into_response(),
+        Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+/// 手动写入 L5 记忆（同一 store 去重合并路径）；scope=global 仅 kind=preference。
+async fn create_project_memory(
+    State(state): State<Arc<DaemonState>>,
+    Path(project_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    let Some(content) = body.get("content").and_then(|v| v.as_str()) else {
+        return api_err(StatusCode::BAD_REQUEST, "content 必填");
+    };
+    let kind = body
+        .get("kind")
+        .and_then(|v| v.as_str())
+        .unwrap_or("fact")
+        .to_string();
+    let scope = body
+        .get("scope")
+        .and_then(|v| v.as_str())
+        .unwrap_or("project")
+        .to_string();
+    let importance = body.get("importance").and_then(|v| v.as_i64()).unwrap_or(4);
+    let mut store = state.store.lock().await;
+    match store.project(&project_id) {
+        Ok(Some(_)) => {}
+        _ => return api_err(StatusCode::NOT_FOUND, "project not found"),
+    }
+    let record = tenon_store::MemoryRecord {
+        scope: scope.clone(),
+        project_id: if scope == "global" {
+            String::new()
+        } else {
+            project_id.clone()
+        },
+        kind,
+        content: content.to_string(),
+        importance,
+        embedding: tenon_fs::l4::embed("", content),
+        source_session: String::new(),
+    };
+    match store.upsert_memory(&record, 0.90) {
+        Ok((mem, merged)) => {
+            let _ = store.prune_memories(&project_id, 200);
+            Json(json!({"memory": mem, "merged": merged})).into_response()
+        }
+        Err(e) => api_err(StatusCode::BAD_REQUEST, e.to_string()),
+    }
+}
+
+/// 删除一条 L5 记忆；404 = 不存在。
+async fn delete_memory(State(state): State<Arc<DaemonState>>, Path(id): Path<String>) -> Response {
+    let mut store = state.store.lock().await;
+    match store.delete_memory(&id) {
+        Ok(true) => Json(json!({"ok": true})).into_response(),
+        Ok(false) => api_err(StatusCode::NOT_FOUND, "memory not found"),
+        Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
 }
 
 async fn get_settings(State(state): State<Arc<DaemonState>>) -> Response {
