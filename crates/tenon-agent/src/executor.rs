@@ -2809,4 +2809,24 @@ mod tests {
         // grep 可能只匹配部分文件（rg 行为差异）
         assert!(!grep.content.is_empty());
     }
+
+    #[test]
+    fn apply_patch_sql_and_shell_scripts() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let files = [
+            ("migrations/001_init.sql", "CREATE TABLE users (id SERIAL PRIMARY KEY, name TEXT);\n"),
+            ("scripts/setup.sh", "#!/bin/bash\nset -e\necho 'setup complete'\n"),
+        ];
+        for (path, content) in files {
+            let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+                "file": path, "range": null, "content": content
+            }));
+            assert!(out.ok, "write {}", path);
+        }
+        // List migrations dir
+        let list = execute_tool(&c, "list_dir", &serde_json::json!({"path": "migrations"}));
+        assert!(list.ok);
+        assert!(list.content.contains("001_init.sql"));
+    }
 }
