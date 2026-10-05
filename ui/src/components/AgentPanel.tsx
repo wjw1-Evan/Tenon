@@ -5,7 +5,7 @@
 // §8.6 人机共编：dirty_conflict 事件 → 三栏合并预览；补丁 → 行级 AI 角标。
 // v1.51：模型选择入口内嵌任务输入框底行（参考 ZCode 客户端输入区）。
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { TenonApi } from "../lib/api";
+import type { ProjectSummary, TenonApi } from "../lib/api";
 import type { Translate } from "../lib/i18n";
 import { RUNNING_STATES, STATE_COLORS, type AgentStateName } from "../lib/stateColors";
 import { renderMarkdownLite } from "../lib/markdownLite";
@@ -27,6 +27,17 @@ interface Props {
   sessionId: string | null;
   /** 新任务草稿态（v1.116 §7.2）：sessionId 为空时输入仍可用，首发经 onDraftSend 建会话。 */
   draft?: boolean;
+  /** 草稿工作区意图（v1.126）：true = 受管 worktree（上下文条工作区选择映射 draftByProject）。 */
+  draftWorktree?: boolean;
+  /** 已打开项目清单 + active 项目（v1.126）：输入区上方上下文条——草稿态选择目标项目 / 工作区。 */
+  projects?: ProjectSummary[];
+  projectId?: string | null;
+  /** 草稿切换目标项目（v1.126）：激活目标项目并保持 / 进入其草稿（同侧栏点项目行语义）。 */
+  onSwitchDraftProject?: (project: ProjectSummary) => void;
+  /** 草稿工作区意图切换（v1.126）：主根 ↔ 受管 worktree。 */
+  onChangeDraftWorktree?: (worktree: boolean) => void;
+  /** 当前会话是否受管 worktree（v1.126）：会话态上下文条 ⎇ 徽标。 */
+  sessionWorktree?: boolean;
   /** 草稿首发回调：App 落库建会话（按草稿意图附 worktree）后发送并回填激活会话。 */
   onDraftSend?: (text: string) => Promise<void>;
   onStateChange?: (s: AgentStateName) => void;
@@ -146,6 +157,12 @@ export function AgentPanel({
   t,
   sessionId,
   draft,
+  draftWorktree,
+  projects,
+  projectId,
+  onSwitchDraftProject,
+  onChangeDraftWorktree,
+  sessionWorktree,
   onDraftSend,
   onStateChange,
   onLatestDiff,
@@ -160,6 +177,9 @@ export function AgentPanel({
   const [streamText, setStreamText] = useState("");
   const [status, setStatus] = useState<AgentStateName>("idle");
   const [input, setInput] = useState("");
+  // 草稿输入文本 per-project（v1.126）：多项目并行草稿互不串扰——
+  // 发送成功随草稿清除；弃草稿重进「＋ 新任务」时文本恢复（草稿意图 v1.116 同语义）。
+  const [draftInputs, setDraftInputs] = useState<Record<string, string>>({});
   // 文件拖入对话框（v1.110）：dragover 高亮 + 落下插入 @path 引用。
   const [inputDrop, setInputDrop] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -177,6 +197,18 @@ export function AgentPanel({
   useEffect(() => {
     markWorkspaceInputReady();
   }, []);
+
+  // 草稿态（v1.116）：无会话但持有待启动意图——输入可用，首发建会话。
+  const isDraft = !sessionId && draft === true;
+  const draftKey = projectId ?? "";
+  // 草稿文本 per-project（v1.126）；会话态沿用单份输入缓冲（现状语义）。
+  const inputValue = isDraft ? (draftInputs[draftKey] ?? "") : input;
+  const setInputValue = (v: string) => {
+    if (isDraft) setDraftInputs((prev) => ({ ...prev, [draftKey]: v }));
+    else setInput(v);
+  };
+  const activeProject = projects?.find((p) => p.id === projectId);
+  const showContext = Boolean(projectId && projects && projects.length > 0 && (isDraft || sessionId));
 
   // 会话切换即清空本地事件流：轮询按 after=0 重新拉取，若不清空，
   // 上一会话的事件残留会导致新会话线程显示旧会话消息（实测缺陷）。
@@ -197,19 +229,27 @@ export function AgentPanel({
   }, [events.length, streamText, status]);
 
   // §8.1 / §8.5 诊断「AI 修复」：直接发起当前项目会话任务（T4 入口）。
+  // v1.126：主根草稿态改走草稿首发链路（建会话再发），不再静默丢弃；
+  // 受管 worktree 草稿不接——诊断属项目主根上下文，注入 worktree 会话会写副本而非用户所见文件。
   useEffect(() => {
     const text = injectedTask?.text.trim();
-    if (!text || !sessionId) return;
-    let alive = true;
-    void api
-      .sendMessage(sessionId, text)
-      .catch(() => {})
-      .finally(() => {
-        if (alive) setInput("");
-      });
-    return () => {
-      alive = false;
-    };
+    if (!text) return;
+    if (sessionId) {
+      let alive = true;
+      void api
+        .sendMessage(sessionId, text)
+        .catch(() => {})
+        .finally(() => {
+          if (alive) setInput("");
+        });
+      return () => {
+        alive = false;
+      };
+    }
+    if (isDraft && draftWorktree !== true && onDraftSend) {
+      void onDraftSend(text).catch(() => {});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api, sessionId, injectedTask]);
 
   // 事件流轮询（M0：/trace 增量拉取；M1 切 WS 推流）
@@ -273,7 +313,7 @@ export function AgentPanel({
   }, [api, sessionId, onStateChange, onLatestDiff, onDirtyConflict]);
 
   async function send() {
-    const text = input.trim();
+    const text = inputValue.trim();
     if (!text) return;
     // 草稿任务首发（v1.116）：此刻才建会话（App 落库后回填激活会话），随后的
     // 发送经既有路径；失败保留输入可重试，错误经 App 层呈现。
@@ -282,6 +322,13 @@ export function AgentPanel({
         setBusy(true);
         try {
           await onDraftSend(text);
+          // 草稿文本随草稿清除（v1.126 per-project）。
+          setDraftInputs((prev) => {
+            if (!(draftKey in prev)) return prev;
+            const next = { ...prev };
+            delete next[draftKey];
+            return next;
+          });
           setInput("");
         } finally {
           setBusy(false);
@@ -531,15 +578,70 @@ export function AgentPanel({
           setInputDrop(false);
           if (!path) return;
           e.preventDefault();
-          setInput((prev) => (prev.trimEnd() ? `${prev.trimEnd()} @${path} ` : `@${path} `));
+          setInputValue(inputValue.trimEnd() ? `${inputValue.trimEnd()} @${path} ` : `@${path} `);
           inputRef.current?.focus();
         }}
       >
+        {/* 任务上下文条（v1.126，参照 Codex / ZCode 输入上方选择器）：草稿态 = 项目 +
+            工作区（主根 / 受管 worktree，即「分支选择」的 Tenon 对应物）两个选择器；
+            会话态 = 只读标识（会话强绑定 project_id 不可切换）。 */}
+        {showContext && (
+          <div className="agent-context" data-testid="agent-context">
+            {isDraft ? (
+              <>
+                <select
+                  className="agent-context-select"
+                  data-testid="draft-project-select"
+                  aria-label={t("context.project")}
+                  title={activeProject?.path}
+                  value={projectId ?? ""}
+                  disabled={!onSwitchDraftProject}
+                  onChange={(e) => {
+                    const target = projects?.find((p) => p.id === e.target.value);
+                    if (target && target.id !== projectId) onSwitchDraftProject?.(target);
+                  }}
+                >
+                  {projects!.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.display_name}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="agent-context-select"
+                  data-testid="draft-workspace-select"
+                  aria-label={t("context.workspace")}
+                  value={draftWorktree ? "managed" : "main"}
+                  disabled={!onChangeDraftWorktree}
+                  onChange={(e) => onChangeDraftWorktree?.(e.target.value === "managed")}
+                >
+                  <option value="main">{t("workspace.main")}</option>
+                  <option value="managed">{t("workspace.managed")}</option>
+                </select>
+              </>
+            ) : (
+              <>
+                <span
+                  className="agent-context-project"
+                  data-testid="session-project-label"
+                  title={activeProject?.path}
+                >
+                  {activeProject?.display_name ?? projectId}
+                </span>
+                {sessionWorktree && (
+                  <span className="agent-context-wt" data-testid="session-worktree-badge">
+                    ⎇ {t("workspace.managed")}
+                  </span>
+                )}
+              </>
+            )}
+          </div>
+        )}
         <textarea
           ref={inputRef}
-          value={input}
+          value={inputValue}
           placeholder={t("message.placeholder")}
-          onChange={(e) => setInput(e.target.value)}
+          onChange={(e) => setInputValue(e.target.value)}
           onKeyDown={(e) => {
             if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
               e.preventDefault();

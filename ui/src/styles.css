@@ -1568,6 +1568,43 @@ button:disabled { opacity: 0.45; cursor: default; }
   border-color: var(--accent-text);
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
+/* 任务上下文条（v1.126）：输入区顶部——草稿态项目 / 工作区（主根 / 受管 worktree）选择器，
+   会话态只读归属标识（项目名 + ⎇ 徽标） */
+.agent-context {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.agent-context-select {
+  max-width: 46%;
+  padding: 2px 6px;
+  font-size: 11px;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  cursor: pointer;
+}
+.agent-context-select:hover:not(:disabled) { border-color: var(--border-strong); }
+.agent-context-select:disabled { cursor: default; }
+.agent-context-project {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-context-wt {
+  font-size: 10px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  padding: 1px 5px;
+  white-space: nowrap;
+}
 .agent-input textarea {
   flex: 1;
   min-height: 46px;

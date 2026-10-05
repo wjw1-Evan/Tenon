@@ -52,8 +52,9 @@ Rust 内核 / daemon · Tauri 2 桌面壳 · React + TS + Monaco · tree-sitter 
 
 测试：**Rust 367 + performance gates 3 + Vitest 144 全绿**；clippy 0 警告；Playwright 真 daemon E2E 覆盖多项目隔离与冷启动预算。
 
-各版本变更明细见设计方案「版本演进」表（当前 v1.125），要点摘录（新 → 旧）：
+各版本变更明细见设计方案「版本演进」表（当前 v1.126），要点摘录（新 → 旧）：
 
+- **v1.126**：任务输入区上下文条——多项目下新任务归属可见可改（参照 Codex / ZCode 输入上方选择器）：草稿态输入框上方为项目选择（全部已打开项目，切换即激活目标项目并保持草稿）+ 工作区选择（主工作区 / 新受管 worktree——「分支选择」的 Tenon 对应物）；会话态为只读标识（项目名 + ⎇ 受管 worktree 徽标，会话强绑定项目不可切换）；草稿输入文本 per-project 隔离（发送随草稿清除、弃草稿重进恢复）；诊断「AI 修复」与行内指令在主根草稿态改走草稿首发链路不再静默丢弃（受管 worktree 草稿不接——主根上下文不注入副本）；workspace.* / context.* 五语言键新增。
 - **v1.125**：分组行尾「新建受管 worktree 会话」图标换为线性 git-branch SVG——U+23A1「⎡」是数学多行括号的上半块字符，12px 下仅渲染左上角、呈残缺角括号状被误读为渲染缺陷；stroke SVG 与字体回退解耦，行为 / testid / aria 不变，零新增语言键。
 - **v1.123**：用户气泡下功能按钮组 撤销 / 复制 / 重做——撤销沿用 v1.111 条件（最后含改动回合、运行态禁用）；复制写回合文本入剪贴板（短暂「已复制」回弹）；重做 = unrollback 撤销逆操作（撤销成功后可用、运行态禁用、会话切换重置）；thread.copy / copied / redo 五语言键新增；v1.109-112 漂浮工作树的孤儿前端实现（AgentPanel 撤销 / api event_seq / turn-* 样式 / 测试用例）随本功能补入。
 - **v1.122**：任务完成语音提示——Agent 回合自运行态转入 done 播放应用内 WebAudio 双音（零音频资源文件，autoplay 未解锁静默跳过；error / paused / 会话切换不响，仅 active 会话触发；v1.98「不做系统级推送」不变式同步修订——应用内提示音非系统通知）；偏好 daemon ui_prefs 键 sound.done（默认开、即时生效）；命令面板「任务完成提示音 开 / 关」切换；palette.sound_done_on / off 五语言键新增。

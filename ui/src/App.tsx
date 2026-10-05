@@ -342,6 +342,18 @@ export default function App({
   const activePath = projectId ? activePathByProject[projectId] ?? null : null;
   const splitPath = projectId ? splitPathByProject[projectId] ?? null : null;
   const sessionId = projectId ? sessionsByProject[projectId] ?? null : null;
+  // 当前会话是否受管 worktree（v1.126）：上下文条 ⎇ 徽标（worktree_path 非空即受管）。
+  const sessionWorktree = useMemo(
+    () =>
+      Boolean(
+        sessionId &&
+          projects
+            .find((p) => p.id === projectId)
+            ?.sessions.find((s) => s.id === sessionId)
+            ?.worktree_path
+      ),
+    [projects, projectId, sessionId]
+  );
 
   // 渲染期尺寸 clamp（§7.2 v1.74）：只作用渲染，记忆值与项目 ui-state 不改写。
   const effLeft = effectiveLeft(leftWidth, viewport.width);
@@ -539,6 +551,13 @@ export default function App({
     [api, refreshProjects]
   );
 
+  /** 上下文条工作区切换（v1.126）：改写草稿意图（false=主根 / true=受管 worktree）。 */
+  const changeDraftWorktree = useCallback((worktree: boolean) => {
+    const pid = projectIdRef.current;
+    if (!pid) return;
+    setDraftByProject((prev) => (pid in prev ? { ...prev, [pid]: worktree } : prev));
+  }, []);
+
   // 打开项目 + 建会话（§7.3：v1.67 打开即静默信任，不再弹 TOFU 确认卡）
   const openProject = useCallback(async (path: string, displayName?: string) => {
     const opened = await api.openProject(path, displayName);
@@ -593,14 +612,22 @@ export default function App({
     [t]
   );
 
-  /** 行内指令（§8.5 / S2 / T8）：选区上下文组装后直接发送当前项目会话。 */
+  /** 行内指令（§8.5 / S2 / T8）：选区上下文组装后直接发送当前项目会话。
+   *  v1.126：主根草稿态改走草稿首发链路（建会话再发），不再静默丢弃；
+   *  受管 worktree 草稿不接——编辑器选区属项目主根上下文，注入 worktree 会话会写副本。 */
   const sendInline = useCallback(
     (instruction: string, target: InlineTarget) => {
-      const sid = sessionId;
-      if (!sid) return;
-      void api.sendMessage(sid, buildInlineTask(instruction, target, t)).catch(() => {});
+      const task = buildInlineTask(instruction, target, t);
+      if (sessionId) {
+        void api.sendMessage(sessionId, task).catch(() => {});
+        return;
+      }
+      const pid = projectIdRef.current;
+      if (pid && draftByProjectRef.current[pid] === false) {
+        void sendDraftMessage(task).catch(() => {});
+      }
     },
-    [api, sessionId, t]
+    [api, sessionId, t, sendDraftMessage]
   );
 
   const switchProject = useCallback(async (project: ProjectSummary) => {
@@ -1195,6 +1222,12 @@ export default function App({
             t={t}
             sessionId={sessionId}
             draft={projectId ? draftByProject[projectId] !== undefined : false}
+            draftWorktree={projectId ? draftByProject[projectId] === true : false}
+            projects={projects}
+            projectId={projectId}
+            onSwitchDraftProject={(project) => void switchProject(project)}
+            onChangeDraftWorktree={changeDraftWorktree}
+            sessionWorktree={sessionWorktree}
             onDraftSend={sendDraftMessage}
             onStateChange={onStateChange}
             onLatestDiff={setLatestDiff}
