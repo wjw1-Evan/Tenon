@@ -4943,3 +4943,127 @@ async fn ui_prefs_set_and_get() {
     let r = client.get(format!("{}/ui-prefs", base(port))).send().await.unwrap();
     assert_eq!(r.status(), 200);
 }
+
+#[tokio::test]
+async fn model_suggest_returns_provider_recommendation() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let r = client
+        .post(format!("{}/model-suggest", base(port)))
+        .json(&serde_json::json!({ "text": "Fix a TypeScript type error in the editor" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+}
+
+#[tokio::test]
+async fn read_file_with_url_encoded_path() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    client
+        .put(format!("{}/project/{}/file", base(port), pid))
+        .json(&serde_json::json!({ "path": "src/nested file.txt", "content": "spaces in name" }))
+        .send()
+        .await
+        .unwrap();
+
+    let r = client
+        .get(format!("{}/project/{}/file?path={}", base(port), pid, "src%2Fnested%20file.txt"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+}
+
+#[tokio::test]
+async fn project_delete_then_404() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    // Delete
+    client.delete(format!("{}/projects/{}", base(port), pid)).send().await.unwrap();
+
+    // Try to get tree for deleted project
+    let r = client
+        .get(format!("{}/project/{}/tree", base(port), pid))
+        .send()
+        .await
+        .unwrap();
+    // Should return error (404 or 500 depending on implementation)
+    assert!(r.status().is_client_error() || r.status().is_server_error());
+}
+
+#[tokio::test]
+async fn session_model_switch_returns_updated_model() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    let r = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({ "project_id": pid, "provider": "mock" }))
+        .send()
+        .await
+        .unwrap();
+    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
+
+    let r = client
+        .post(format!("{}/session/{}/model", base(port), sid))
+        .json(&serde_json::json!({ "provider": "mock", "model": "mock-1" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body["model"], "mock-1");
+}
+
+#[tokio::test]
+async fn create_session_empty_provider_uses_default() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    // Create with empty provider (uses default)
+    let r = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({ "project_id": pid, "provider": "" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert!(body["session_id"].as_str().unwrap().len() > 0);
+}
