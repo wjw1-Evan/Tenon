@@ -233,4 +233,37 @@ mod tests {
         .unwrap();
         assert_eq!(t.name, "query");
     }
+
+    #[test]
+    fn mcp_error_display() {
+        let e = McpError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "not found"));
+        assert!(e.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn mcp_tool_level_all_variants() {
+        let policy = McpLevelPolicy { net_tools: Default::default() };
+        assert_eq!(policy.level_for("mcp:any"), McpToolLevel::D);
+    }
+
+    #[test]
+    fn mcp_tool_deserialize_minimal() {
+        let t: McpTool = serde_json::from_value(serde_json::json!({
+            "name": "minimal"
+        }))
+        .unwrap();
+        assert_eq!(t.name, "minimal");
+        assert!(t.description.is_empty());
+    }
+
+    #[test]
+    fn mcp_tool_deserialize_full() {
+        let t: McpTool = serde_json::from_value(serde_json::json!({
+            "name": "full",
+            "description": "A full tool",
+            "inputSchema": {"type": "object", "properties": {}}
+        }))
+        .unwrap();
+        assert_eq!(t.description, "A full tool");
+    }
 }
