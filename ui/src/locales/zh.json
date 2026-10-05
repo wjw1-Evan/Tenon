@@ -274,8 +274,6 @@
   "message.resume": "恢复",
   "palette.toggle_sidebar": "切换侧栏",
   "palette.toggle_source": "切换源码区",
-  "palette.collapse_sidebar": "收起侧栏",
-  "palette.expand_sidebar": "展开侧栏",
   "panel.patch_diff": "最新补丁 Diff",
   "palette.readonly_on": "只读模式：开（拒绝写操作）",
   "palette.readonly_off": "只读模式：关（允许写操作）",
