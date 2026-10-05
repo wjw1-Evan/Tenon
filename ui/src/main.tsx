@@ -2,7 +2,15 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import { TenonApi } from "./lib/api";
-import { createTranslator, type Locale, type Translate } from "./lib/i18n";
+import {
+  createTranslator,
+  isLocale,
+  loadLocaleResource,
+  readLocalePreference,
+  resolveLocale,
+  saveLocalePreference,
+  type Translate,
+} from "./lib/i18n";
 import { applyTheme, isThemePreference, loadThemePreference, saveThemePreference } from "./lib/theme";
 import "./styles.css";
 
@@ -60,19 +68,12 @@ function escapeHtml(s: string): string {
 }
 
 /** 启动屏文案随应用语言（§4.2）：React 挂载前直用纯函数翻译器，
- *  偏好源与 App 一致——localStorage `tenon:locale`，缺省 auto 跟随系统。 */
+ *  偏好源与 App 一致——localStorage `tenon:locale`（ui-prefs 为跨启动权威，boot 内对齐）。 */
 function bootTranslator(): Translate {
-  let pref: Locale = "auto";
-  try {
-    const raw = localStorage.getItem("tenon:locale");
-    if (raw === "en" || raw === "zh-CN" || raw === "auto") pref = raw;
-  } catch {
-    // 存储不可用：维持 auto
-  }
-  return createTranslator(pref);
+  return createTranslator(readLocalePreference());
 }
 
-const t = bootTranslator();
+let t = bootTranslator();
 
 /** 品牌启动屏：握手轮询期间即渲染（桌面端最多等 10s，不再白屏）。 */
 function renderSplash(): void {
@@ -165,11 +166,20 @@ async function boot() {
     // 外观（§7.5）：先按本地缓存应用避免闪烁；daemon 端口动态导致
     // localStorage 按 origin 隔离，跨启动以 /ui-prefs 为权威再对齐
     applyTheme(loadThemePreference());
+    // 语言（v1.100）：按本地偏好懒加载对应语言包后再渲染启动屏（分块仅几 KB）；
+    // 握手后以 ui-prefs 为权威对齐，下一行渲染的 App 经 localStorage 读到最终偏好
+    await loadLocaleResource(resolveLocale(readLocalePreference()));
+    t = bootTranslator();
     renderSplash();
     const handshake = await discoverHandshake();
     const prefs = await new TenonApi(handshake).getUiPrefs();
     if (isThemePreference(prefs.theme) && prefs.theme !== loadThemePreference()) {
       saveThemePreference(prefs.theme);
+    }
+    if (isLocale(prefs.locale) && prefs.locale !== readLocalePreference()) {
+      saveLocalePreference(prefs.locale);
+      await loadLocaleResource(resolveLocale(prefs.locale));
+      t = bootTranslator();
     }
     applyTheme(loadThemePreference());
     rootEl.innerHTML = "";

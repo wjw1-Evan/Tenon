@@ -3,7 +3,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ResizeHandle } from "./components/ResizeHandle";
 import { TenonApi } from "./lib/api";
 import type { ProjectSummary } from "./lib/api";
-import { createTranslator, LOCALE_CHANGE, type Locale, type Translate } from "./lib/i18n";
+import {
+  LOCALES,
+  LOCALE_CHANGE,
+  readLocalePreference,
+  resolveLocale,
+  saveLocalePreference,
+  useLocaleTranslator,
+  type Locale,
+  type Translate,
+} from "./lib/i18n";
 import {
   applyTheme,
   loadThemePreference,
@@ -108,30 +117,28 @@ export default function App({
   projectPath: string;
   locale?: Locale;
 }) {
-  /** 语言偏好：prop 为初值；订阅 LOCALE_CHANGE（顶栏 / 设置面板派发）
-   *  即时切换并记忆（E2E 实测缺陷修复：事件派发后无人订阅，切换无效）。 */
+  /** 语言偏好（v1.100 多语言）：prop 为初值；订阅 LOCALE_CHANGE（顶栏派发）即时切换，
+   *  偏好双写——localStorage 快路径 + daemon ui-prefs 跨启动权威（§7.5，与外观档同法）。 */
   const [localePref, setLocalePref] = useState<Locale>(locale);
+  const api = useMemo(() => new TenonApi(handshake), [handshake]);
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem("tenon:locale");
-      if (raw === "en" || raw === "zh-CN" || raw === "auto") setLocalePref(raw);
-    } catch {
-      // 存储不可用：维持 prop / auto
-    }
+    const stored = readLocalePreference();
+    if (stored !== locale) setLocalePref(stored);
     const onLocaleChange = (event: Event) => {
       const next = (event as CustomEvent).detail as Locale;
       setLocalePref(next);
-      try {
-        localStorage.setItem("tenon:locale", next);
-      } catch {
-        // 仅当前会话生效
-      }
+      saveLocalePreference(next);
+      api.setUiPrefs({ locale: next });
     };
     window.addEventListener(LOCALE_CHANGE, onLocaleChange);
     return () => window.removeEventListener(LOCALE_CHANGE, onLocaleChange);
-  }, []);
-  const t = useMemo(() => createTranslator(localePref), [localePref]);
-  const api = useMemo(() => new TenonApi(handshake), [handshake]);
+  }, [api, locale]);
+  /** 翻译器随偏好重建；懒加载语言（zh-TW / ja / ko）资源就绪后自动重渲染。 */
+  const t = useLocaleTranslator(localePref);
+  useEffect(() => {
+    // <html lang> 随应用语言（无障碍 / 屏幕阅读器发音）
+    document.documentElement.lang = resolveLocale(localePref);
+  }, [localePref]);
 
   const [projectId, setProjectId] = useState<string | null>(null);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
@@ -1411,9 +1418,12 @@ function LanguagePicker({ value, t }: { value: Locale; t: Translate }) {
       }}
     >
       <option value="auto">{t("language.auto")}</option>
-      {/* 语言名以各自母语显示（i18n 惯例），不经 t() */}
-      <option value="en">English</option>
-      <option value="zh-CN">中文</option>
+      {/* 语言名以各自母语显示（i18n 惯例），不经 t()；清单由 LOCALES 注册表驱动（v1.100） */}
+      {LOCALES.map((l) => (
+        <option key={l.tag} value={l.tag}>
+          {l.nativeName}
+        </option>
+      ))}
     </select>
   );
 }

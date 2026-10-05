@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v1.99** |
-| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.99） |
+| 版本 | **v1.100** |
+| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.100） |
 | 状态 | 定稿（v1.10 决策闭环），M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 | 历史评审 | v0.1 / v0.3 两轮共 41 项、v1.0 复审 21 项问题的结论已全部并入本方案（过程文档已清理） |
@@ -133,6 +133,7 @@
 | **v1.97** | **i18n 落地收尾二批（§4.2「UI 文案外置 / 日期时间本地化」余项）+ 会话创建断链修复：① 剩余硬编码文案清零——模型切换 toast（v1.51 遗留）、diff 空态占位（DiffPanel 新增 emptyText prop，默认英文源语言，App 经 t("diff.no_changes") 传入）、Monaco 加载占位与 AI 修改区 glyph hover（EditorPane 接既有 t prop）、T4 修复诊断任务模板（diagnostic.fix_*）与行内指令任务模板（buildInlineTask 增 Translate 参数，inline.task_*，双语资源化并附英文用例）；② 日期时间本地化——新增 useResolvedLocale()（localStorage `tenon:locale` 初值 + LOCALE_CHANGE 订阅，与 App 同源），ProjectExplorer / CheckpointTimeline / L4StatusPanel / GitSourcePanel 的时间格式随应用内语言切换（此前 toLocale* 无参恒随浏览器 locale）；③ 豁免留档——语言选择器语言名以母语显示（i18n 惯例）、DiagnosticsPanel 对 tenon-lsp 后端错误串的 includes 匹配属协议判断非 UI 文案；④ 断链修复——activateProject 建会话误把 `"interactive"`（v1.92 已删除的会话档位回退值）传入 createSession 的 provider 位，未知 provider 使建会话恒失败、切项目永远建不出会话（多项目 E2E 自 v1.92 起整链挂死的根因），改为 provider 留空走 daemon 默认** |
 | **v1.98** | **移除「All activity」全局活动组（用户决策：项目行徽标与行内会话列表已承载活动信息，跨项目聚合层冗余）：撤销 v1.87 引入、v1.88 降为列表组的全局活动条——`pe-activity-group` 折叠条（运行中 / 完成计数 + 筛选 chips）、跨项目平铺会话列表（跳转 / 就地停止）与 `activity.*` 双语文案 / 样式 / 单测 / E2E 步骤整链移除；项目行徽标（运行中会话 / 脏缓冲）为活动可见性唯一承载，「不做系统级推送通知、attention 一律以 UI 徽标为准」的边界不变式保留；§4.1 / §6.4 / §7.2-7.3 / §9.7 / §14.1 / §15 / §18 / 术语表同步** |
 | **v1.99** | **i18n 硬编码清扫三批（用户令「检查遗漏的硬编码」；扫描法 = 中文剥全注释 + 英文 JSX 文本节点 / 属性值 / `??` fallback 三路正则，中英双向）：① main.tsx 启动屏 5 处接入双语（boot.connecting / connect_failed / failed_title / hint / root_missing）——React 挂载前直用 createTranslator 纯函数，偏好源与 App 同一 localStorage `tenon:locale`；② Evals 列头 target / tokens / steps 与 Trace 列头 seq 接 t()（同表其余列头 v1.94 已双语，此 4 处漏网）；③ FileTree 空目录 aria-label 与 file/ops 失败 fallback（tree.empty_dir / tree.op_failed）；④ 顶栏语言选择器 Auto 项与 language / theme aria-label 双语化（language.auto / topbar.language / topbar.theme；语言名 English / 中文按 i18n 惯例以母语显示豁免）；⑤ AgentPanel 证据 error fallback 与 EditorPane LSP 写操作无会话守卫（agent.error_fallback / editor.needs_session）；⑥ 豁免留档——键盘键名（Enter / Escape / Arrow*）、git HEAD、品牌名 Tenon、L4 状态 token（经 `t(l4.state.*)` 键名插值）、DiffPanel 标题 `?? "diff"` 源语言默认（与 emptyText 同模式，App 恒传双语标题）、api.ts HTTP 错误包装与 merge.ts 哨兵串属技术层非文案** |
+| **v1.100** | **多语言支持落地（用户令「开发中英文以外的语言包，实现全站多语言，优化多语言支持」；§4.2 i18n 行改写为多语言规格）：① 社区语言包首发三件——繁體中文（zh-TW，台灣用語：專案 / 檔案 / 設定 / 儲存庫 / 套用）、日本語（ja）、한국어（ko），288 键全量翻译且与 en 键集对齐（五语言键对齐测试门禁，新增语言 = `locales/<tag>.json` + `LOCALES` 注册表一行）；② i18n 内核重构——`LOCALES` 注册表驱动顶栏选择器（语言名母语显示）、en + zh-CN 静态随包（首屏即需）、其余语言 `import()` 懒加载为独立分块（各 ~5KB gzip，主包零增量），`loadLocaleResource` 幂等 + `useLocaleTranslator` 就绪后重渲染（未载入时优雅回退英文）；③ resolveLocale 升级 BCP-47 前缀匹配——zh-Hant / TW / HK / MO → zh-TW，其余 zh → zh-CN，ja / ko 前缀直达；④ 语言偏好双写（§7.5 同外观档法）——localStorage 快路径 + `PUT /ui-prefs` `locale` 键跨启动权威，boot 握手后对齐并预载语言包再渲染启动屏（启动屏首绘即目标语言）；⑤ `<html lang>` 随语言切换（屏幕阅读器发音）；⑥ 测试：五语言键对齐 / 前缀匹配 / 懒加载幂等与回退 / 偏好读写共 +16 例；E2E 冷启动 P50 226ms 不受懒加载影响。范围注记：Monaco 编辑器 chrome（查找 / 菜单等内建 UI）本地化需 nls 语言包注入，属独立特性另行评审，本版不含** |
 
 
 
@@ -305,7 +306,7 @@ Codex CLI 已开源且核心为 Rust 实现（codex-rs 工作区，另有遗留 
 | 可靠 | daemon 崩溃自动拉起；会话状态/事件/上下文 100% 可恢复（EXECUTING 中崩溃自动回滚到最近 checkpoint，不承诺原地续跑，见 §10.3）；「自动档 = 必可回滚」不变式 |
 | 兼容 | macOS 13+；Windows 10+（WSL2；无 WSL2 时降级档运行，见 §12.3）；Ubuntu 22.04+；三平台 WebView 兼容测试 |
 | 无障碍 | 全键盘操作；对比度达标；屏幕阅读器基础支持 |
-| i18n | 中英双语同期首发（Q5）：英文为源语言（source of truth）、中文一级翻译，默认跟随系统可手动切换；UI 文案外置；日期时间本地化 |
+| i18n | 多语言（Q5 中英首发 + v1.100 社区语言包扩展）：英文为源语言（source of truth）、中文一级翻译静态随包，繁體中文 / 日本語 / 한국어 等社区语言包懒加载（按需分块，主包零增量）；默认跟随系统（BCP-47 前缀匹配，繁体区 → zh-TW）可手动切换，语言名以母语显示；UI 文案外置——全语言键集与 en 对齐有测试门禁，新增语言 = `locales/<tag>.json` + `LOCALES` 注册表一行；启动屏与日期时间随应用语言；语言偏好 localStorage + ui-prefs 双写（§7.5 同法）；`<html lang>` 随语言切换（无障碍） |
 
 ---
 
