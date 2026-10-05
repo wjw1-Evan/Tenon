@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 use crate::model::LayaModel;
-use crate::primitives::{Feature, IntentLabel, LayaOutcome};
+use crate::primitives::{DecideKind, DecideValue, Feature, IntentLabel, LayaOutcome};
 use crate::Result;
 
 /// 推理超时（§9.8：默认 200ms）。
@@ -119,6 +119,40 @@ impl LayaRuntime {
         })
         .await
     }
+
+    /// 集成点 #4（v1.124）：agent 可调用判定工具 laya_decide——按现有模型
+    /// 任务头暴露三原语；`Feature::AgentTool` 开关，未启用 / 未下载 / 超时
+    /// 各自回退（调用方得到对应 LayaOutcome，模型侧按「工具暂不可用」处理）。
+    pub async fn decide(&self, kind: DecideKind, text: String) -> LayaOutcome<DecideValue> {
+        match kind {
+            DecideKind::Intent => {
+                self.with_model(Feature::AgentTool, move |m| {
+                    m.classify_intent(&text).map(|(l, p)| DecideValue::Intent {
+                        label: l,
+                        confidence: p,
+                    })
+                })
+                .await
+            }
+            DecideKind::Risk => {
+                self.with_model(Feature::AgentTool, move |m| {
+                    m.score_risk(&text).map(|s| DecideValue::Risk { score: s })
+                })
+                .await
+            }
+            DecideKind::Route => {
+                self.with_model(Feature::AgentTool, move |m| {
+                    m.classify_intent(&text).map(|(l, _)| DecideValue::Route {
+                        suggest_light: matches!(
+                            l,
+                            IntentLabel::PureQa | IntentLabel::ReadOnlyAnalysis
+                        ),
+                    })
+                })
+                .await
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -216,6 +250,69 @@ mod tests {
         );
         let out = rt.risk("rm -rf /").await;
         assert!(matches!(out, LayaOutcome::Disabled), "{out:?}");
+    }
+
+    #[tokio::test]
+    async fn decide_serves_all_three_kinds() {
+        let rt = runtime_with_starter(
+            Path::new(&std::env::temp_dir().join("laya-t7")),
+            &["agent_tool"],
+        );
+        let intent = rt.decide(DecideKind::Intent, "请修复这个 bug".into()).await;
+        assert!(
+            matches!(
+                &intent,
+                LayaOutcome::Success {
+                    value: DecideValue::Intent { .. },
+                    ..
+                }
+            ),
+            "{intent:?}"
+        );
+        let risk = rt.decide(DecideKind::Risk, "rm -rf /".into()).await;
+        assert!(
+            matches!(
+                &risk,
+                LayaOutcome::Success {
+                    value: DecideValue::Risk { score },
+                    ..
+                } if *score > 0.5
+            ),
+            "{risk:?}"
+        );
+        let route = rt.decide(DecideKind::Route, "总结这个模块".into()).await;
+        assert!(
+            matches!(
+                &route,
+                LayaOutcome::Success {
+                    value: DecideValue::Route {
+                        suggest_light: true,
+                    },
+                    ..
+                }
+            ),
+            "{route:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn decide_respects_agent_tool_switch() {
+        let rt = runtime_with_starter(
+            Path::new(&std::env::temp_dir().join("laya-t7b")),
+            &["intent", "risk", "routing"],
+        );
+        let out = rt.decide(DecideKind::Intent, "修复 bug".into()).await;
+        assert!(matches!(out, LayaOutcome::Disabled), "{out:?}");
+    }
+
+    #[tokio::test]
+    async fn decide_falls_back_without_model() {
+        let rt = empty_runtime(&["agent_tool"]);
+        let out = rt.decide(DecideKind::Risk, "ls".into()).await;
+        assert!(
+            matches!(out, LayaOutcome::Unavailable("模型未下载")),
+            "{out:?}"
+        );
     }
 
     #[tokio::test]

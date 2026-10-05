@@ -261,7 +261,7 @@ pub struct LayaConfig {
     pub enabled: bool,
     pub auto_download: bool,
     /// cpu；gpu 预留
-    /// 集成点逐项开关（§9.8 表 #1-3，v1.92 收敛）
+    /// 集成点逐项开关（§9.8 表 #1-4；#4 = agent 可调用 laya_decide 工具，v1.124）
     pub features: Vec<String>,
 }
 
@@ -270,7 +270,12 @@ impl Default for LayaConfig {
         Self {
             enabled: true,
             auto_download: true,
-            features: vec!["intent".into(), "risk".into(), "routing".into()],
+            features: vec![
+                "intent".into(),
+                "risk".into(),
+                "routing".into(),
+                "agent_tool".into(),
+            ],
         }
     }
 }
@@ -466,7 +471,7 @@ features      = ["intent", "risk"]
         assert!(cfg.models.default.is_empty());
         assert!(cfg.models.laya.enabled);
         assert!(cfg.models.laya.auto_download);
-        assert_eq!(cfg.models.laya.features.len(), 3);
+        assert_eq!(cfg.models.laya.features.len(), 4);
     }
 
     #[test]

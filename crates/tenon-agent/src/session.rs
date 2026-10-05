@@ -31,7 +31,7 @@ use tenon_store::{
     Checkpoint, Event, EventKind, Level as StoreLevel, MemoryRecord, SessionStatus, Store,
 };
 
-use crate::executor::{execute_tool, ToolContext};
+use crate::executor::{execute_tool, ToolContext, ToolOutput};
 
 /// 每项目 L5 记忆 active 上限（§10.1 v1.104）。
 const MAX_MEMORIES_PER_PROJECT: usize = 200;
@@ -194,6 +194,14 @@ fn tool_specs() -> Vec<ToolSpec> {
         ("read_file", "读取文本文件", serde_json::json!({
             "type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]
         })),
+        ("laya_decide", "本地决策器结构化判定（Laya，零 token、毫秒级；结果未校准，仅作排序/预筛/提示参考，不作事实结论、不替代测试与验证）：kind=intent 文本→意图标签（pure_qa/needs_change/read_only_analysis/needs_network）｜kind=risk 命令→0..1 风险分｜kind=route 任务文本→是否建议轻模型；仅结构化判定，非开放问答与生成", serde_json::json!({
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "enum": ["intent", "risk", "route"]},
+                "text": {"type": "string"}
+            },
+            "required": ["kind", "text"]
+        })),
         ("list_dir", "列出目录", serde_json::json!({
             "type": "object", "properties": {"path": {"type": "string"}}
         })),
@@ -264,10 +272,34 @@ fn tool_specs_read_only() -> Vec<ToolSpec> {
         .filter(|t| {
             matches!(
                 t.name.as_str(),
-                "read_file" | "list_dir" | "grep" | "git_read"
+                "read_file" | "list_dir" | "grep" | "git_read" | "laya_decide"
             )
         })
         .collect()
+}
+
+/// laya_decide 参数解析（§9.8 #4，v1.124）：kind ∈ {intent, risk, route} + 非空 text。
+fn parse_laya_decide_args(args: &serde_json::Value) -> Option<(tenon_laya::DecideKind, String)> {
+    let kind = tenon_laya::DecideKind::parse(args.get("kind")?.as_str()?)?;
+    let text = args.get("text")?.as_str()?.trim().to_string();
+    if text.is_empty() {
+        return None;
+    }
+    Some((kind, text))
+}
+
+/// decider_call Trace 的 result 字段（不含输入原文；数值与既有 risk 事件同口径保留两位）。
+fn decider_result_summary(value: &tenon_laya::DecideValue) -> serde_json::Value {
+    match value {
+        tenon_laya::DecideValue::Intent { label, confidence } => serde_json::json!({
+            "label": label.as_str(),
+            "confidence": (f64::from(*confidence) * 100.0).round() / 100.0,
+        }),
+        tenon_laya::DecideValue::Risk { score } => {
+            serde_json::json!((f64::from(*score) * 100.0).round() / 100.0)
+        }
+        tenon_laya::DecideValue::Route { suggest_light } => serde_json::json!(suggest_light),
+    }
 }
 
 /// 历史压缩触发阈值（§10.2 v1.105）：任务内请求输入 token 的估算值或上一回合
@@ -1394,7 +1426,14 @@ impl AgentSession {
                 }
 
                 // ---- 执行 ----
-                let mut output = execute_tool(&self.tool_ctx, &call.name, &call.arguments);
+                // §9.8 #4（v1.124）：laya_decide 走会话循环内联分发（LayaRuntime
+                // 异步推理），不经 execute_tool 同步面；团队策略黑名单在
+                // exec_laya_decide 内同轨检查。
+                let mut output = if call.name == "laya_decide" {
+                    self.exec_laya_decide(&call.arguments).await
+                } else {
+                    execute_tool(&self.tool_ctx, &call.name, &call.arguments)
+                };
                 // 风险提示入工具输出（Trace 与模型可见；仅提示，不改分级）
                 if let Some(hint) = &risk_hint {
                     output.content = format!("{hint}\n{}", output.content);
@@ -1582,6 +1621,55 @@ impl AgentSession {
         TaskOutcome::Paused {
             state: "paused".into(),
             reason: format!("快照库不可用，自动档降级为交互档：{e}"),
+        }
+    }
+
+    /// §9.8 #4（v1.124）：agent 可调用判定工具 laya_decide——A 级只读、本地
+    /// CPU 推理；判定仅作排序 / 预筛 / 提示参考，并入 decider_call Trace
+    ///（origin = agent_tool，类型 / 结果 / 耗时，不含输入原文）。团队策略
+    /// 黑名单与全工具目录同轨检查；未启用 / 未下载 / 超时按「工具暂不可用」
+    /// 返回，模型回退自行判断。
+    async fn exec_laya_decide(&self, args: &serde_json::Value) -> ToolOutput {
+        if self
+            .tool_ctx
+            .team_denied_tools
+            .iter()
+            .any(|t| t == "laya_decide")
+        {
+            return ToolOutput::err("团队策略禁用工具: laya_decide（只收窄，§19/§12.2）");
+        }
+        let Some(laya) = &self.config.laya else {
+            return ToolOutput::err("laya_decide 不可用：Laya 未启用");
+        };
+        let Some((kind, text)) = parse_laya_decide_args(args) else {
+            return ToolOutput::err("参数无效：需要 kind（intent | risk | route）与非空 text");
+        };
+        match laya.decide(kind, text).await {
+            tenon_laya::LayaOutcome::Success {
+                value, duration_ms, ..
+            } => {
+                self.emit(
+                    EventKind::DeciderCall,
+                    &serde_json::json!({
+                        "feature": "agent_tool",
+                        "kind": value.kind_str(),
+                        "result": decider_result_summary(&value),
+                        "duration_ms": duration_ms,
+                        "origin": "agent_tool",
+                    }),
+                )
+                .await;
+                ToolOutput::ok(serde_json::to_string(&value).unwrap_or_default())
+            }
+            tenon_laya::LayaOutcome::Disabled => {
+                ToolOutput::err("laya_decide 已关闭（models.laya.features 未含 agent_tool）")
+            }
+            tenon_laya::LayaOutcome::Unavailable(r) => {
+                ToolOutput::err(format!("laya_decide 暂不可用：{r}（可自行判断）"))
+            }
+            tenon_laya::LayaOutcome::TimedOut => {
+                ToolOutput::err("laya_decide 推理超时（已回退），可自行判断")
+            }
         }
     }
 
@@ -1889,6 +1977,55 @@ mod agent_config_tests {
         let json = serde_json::to_string(&card).unwrap();
         let parsed: EvidenceCard = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.answer, "done");
+    }
+
+    #[test]
+    fn laya_decide_args_parse_validates_kind_and_text() {
+        let (kind, text) =
+            parse_laya_decide_args(&serde_json::json!({"kind": "risk", "text": " rm -rf / "}))
+                .unwrap();
+        assert_eq!(kind, tenon_laya::DecideKind::Risk);
+        assert_eq!(text, "rm -rf /");
+        // 空白 text / 未知 kind / 缺参均拒绝
+        assert!(
+            parse_laya_decide_args(&serde_json::json!({"kind": "risk", "text": "  "})).is_none()
+        );
+        assert!(parse_laya_decide_args(&serde_json::json!({"kind": "qa", "text": "x"})).is_none());
+        assert!(parse_laya_decide_args(&serde_json::json!({"text": "x"})).is_none());
+    }
+
+    #[test]
+    fn laya_decide_graded_a_and_in_tool_directory() {
+        // §9.8 #4：A 级只读（本地推理零副作用），进全目录与只读收窄目录
+        assert_eq!(
+            tenon_core::Tool::from_name("laya_decide").and_then(|t| t.level()),
+            Some(tenon_core::policy::Level::A)
+        );
+        assert!(tool_specs().iter().any(|t| t.name == "laya_decide"));
+        assert!(tool_specs_read_only()
+            .iter()
+            .any(|t| t.name == "laya_decide"));
+    }
+
+    #[test]
+    fn decider_result_summary_shapes_by_kind() {
+        use tenon_laya::{DecideValue, IntentLabel};
+        let intent = decider_result_summary(&DecideValue::Intent {
+            label: IntentLabel::NeedsChange,
+            confidence: 0.8712,
+        });
+        assert_eq!(intent["label"], "needs_change");
+        assert_eq!(intent["confidence"], 0.87);
+        assert_eq!(
+            decider_result_summary(&DecideValue::Risk { score: 0.834 }),
+            serde_json::json!(0.83)
+        );
+        assert_eq!(
+            decider_result_summary(&DecideValue::Route {
+                suggest_light: true
+            }),
+            serde_json::json!(true)
+        );
     }
 }
 

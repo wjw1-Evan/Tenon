@@ -40,7 +40,7 @@ pub struct DirtConflictView {
 }
 
 impl ToolOutput {
-    fn ok(content: impl Into<String>) -> Self {
+    pub(crate) fn ok(content: impl Into<String>) -> Self {
         Self {
             ok: true,
             content: content.into(),
@@ -50,7 +50,7 @@ impl ToolOutput {
             dirty_merged: None,
         }
     }
-    fn err(content: impl Into<String>) -> Self {
+    pub(crate) fn err(content: impl Into<String>) -> Self {
         Self {
             ok: false,
             content: content.into(),

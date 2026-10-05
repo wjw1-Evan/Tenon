@@ -76,6 +76,7 @@ const KNOWN_TOOLS = new Set([
   "grep",
   "git_read",
   "lsp_query",
+  "laya_decide",
   "apply_patch",
   "run_tests",
   "run_build",
@@ -674,8 +675,9 @@ export function AgentPanel({
   );
 }
 
-/** §9.2 A 级只读工具：不落步骤卡，按回合聚合为单行摘要（v1.112 降噪；明细见「轨迹」tab）。 */
-const READ_ONLY_TOOLS = new Set(["read_file", "list_dir", "grep", "git_read", "lsp_query"]);
+/** §9.2 A 级只读工具：不落步骤卡，按回合聚合为单行摘要（v1.112 降噪；明细见「轨迹」tab）。
+ * laya_decide（v1.124）仅折叠步骤卡，计数与判定详情由 turn-laya 徽标承载。 */
+const READ_ONLY_TOOLS = new Set(["read_file", "list_dir", "grep", "git_read", "lsp_query", "laya_decide"]);
 
 function isReadOnlyStep(ev: EventItem): boolean {
   if (ev.type !== "patch_applied" && ev.type !== "command_run") return false;
@@ -689,6 +691,8 @@ function ReadOnlySummary({ items, t }: { items: EventItem[]; t: Translate }) {
     if (!isReadOnlyStep(ev)) continue;
     if ((ev.payload.output as { ok?: boolean } | undefined)?.ok === false) continue;
     const tool = String(ev.payload.tool ?? "");
+    // laya_decide 不进计数：判定结果由 EventNode 的 turn-laya 徽标展示
+    if (tool === "laya_decide") continue;
     counts.set(tool, (counts.get(tool) ?? 0) + 1);
   }
   if (counts.size === 0) return null;
@@ -696,6 +700,35 @@ function ReadOnlySummary({ items, t }: { items: EventItem[]; t: Translate }) {
   return (
     <div className="turn-readonly" data-testid="turn-readonly" title={t("thread.readonly_more")}>
       ⌕ {label}
+    </div>
+  );
+}
+
+
+/** §9.8 #4（v1.124）：agent 主动调用的 Laya 判定 → 单行轻量徽标（类型 → 结果 · 耗时）；
+ * daemon 自动集成点（无 origin）维持不渲染，仅入「轨迹」。 */
+function LayaBadge({ ev, t }: { ev: EventItem; t: Translate }) {
+  if (ev.payload.origin !== "agent_tool") return null;
+  const kind = String(ev.payload.kind ?? "");
+  const duration = ev.payload.duration_ms;
+  let result: string;
+  if (ev.payload.fallback === true) {
+    result = `${t("thread.model_fallback")} · ${String(ev.payload.reason ?? "")}`;
+  } else {
+    const r = ev.payload.result;
+    result =
+      kind === "choice"
+        ? `${String((r as { label?: string })?.label ?? "")} (${Math.round(
+            Number((r as { confidence?: number })?.confidence ?? 0) * 100,
+          )}%)`
+        : String(r);
+  }
+  const detail = [`${kind} → ${result}`, typeof duration === "number" ? `${duration}ms` : ""]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <div className="turn-laya" data-testid="turn-laya">
+      ◈ {t("thread.laya_badge")} · {detail}
     </div>
   );
 }
@@ -756,8 +789,12 @@ function EventNode({ ev, t }: { ev: EventItem; t: Translate }) {
       return <div className="turn-note">↩ {t("thread.rollback")}</div>;
     case "unrollback":
       return <div className="turn-note">↪ {t("thread.unrollback")}</div>;
+    case "decider_call":
+      // §9.8 #4（v1.124）：agent 经 laya_decide 主动调用 → 轻量徽标；
+      // daemon 自动集成点与未知来源不渲染（仅「轨迹」可见）
+      return <LayaBadge ev={ev} t={t} />;
     default:
-      // sensing / decider_call / checkpoint / session_title / 降级 / 压缩 / 记忆 / 未知：不渲染
+      // sensing / checkpoint / session_title / 降级 / 压缩 / 记忆 / 未知：不渲染
       return null;
   }
 }
