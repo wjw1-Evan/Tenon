@@ -1,4 +1,5 @@
-// 主工作区（设计方案 §7.2 v1.78 Codex 形态）：项目侧栏 | 代理线程主区 | 编辑器审查窗格。
+// 主工作区（设计方案 §7.2 v1.78 Codex 形态 / v1.107 源码树入右区）：
+// 项目侧栏 | 代理线程主区 | 源码区（左缘源码树 + 编辑器审查窗格）。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ResizeHandle } from "./components/ResizeHandle";
 import { TenonApi } from "./lib/api";
@@ -24,7 +25,7 @@ import type { AgentStateName } from "./lib/stateColors";
 import { useShortcuts } from "./hooks";
 import type { FileTreeChange } from "./components/FileTree";
 import { ProjectExplorer } from "./components/ProjectExplorer";
-import { GitSourcePanel } from "./components/GitSourcePanel";
+import { SourcePanel } from "./components/SourcePanel";
 import { SearchPanel } from "./components/SearchPanel";
 import { FileFinder } from "./components/FileFinder";
 import { EditorPane, type EditorSelection, type EditorTab } from "./components/EditorPane";
@@ -264,6 +265,25 @@ export default function App({
     return () => saver.dispose();
   }, [api]);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  // 右区源码树开合（v1.107）：localStorage 记忆，默认展开；收起后经窗格左缘细条恢复。
+  const [sourceTreeOpen, setSourceTreeOpen] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("tenon:sourceTree") !== "off";
+    } catch {
+      return true;
+    }
+  });
+  const toggleSourceTree = useCallback(() => {
+    setSourceTreeOpen((v) => {
+      const next = !v;
+      try {
+        localStorage.setItem("tenon:sourceTree", next ? "on" : "off");
+      } catch {
+        // 仅当前会话生效
+      }
+      return next;
+    });
+  }, []);
   const [sideView, setSideView] = useState<SideView>(loadSideView);
   // 视口自适应（§7.2 v1.74）：三档布局；narrow 下侧栏 / 代理面板转互斥浮层。
   const viewport = useViewport();
@@ -304,9 +324,8 @@ export default function App({
   );
   const [agentState, setAgentState] = useState<AgentStateName>("idle");
   const [routeNote, setRouteNote] = useState<string | null>(null);
-  const [bottomTab, setBottomTab] = useState<
-    "source" | "timeline" | "trace" | "evals"
-  >(
+  // 底部面板 tab（v1.107 移除「源码」——Git 视图迁右区源码树）：枚举收敛为三项。
+  const [bottomTab, setBottomTab] = useState<"timeline" | "trace" | "evals">(
     "timeline"
   );
   // 可调布局（§7.2：三区可折叠可调宽；localStorage 记忆）
@@ -326,7 +345,9 @@ export default function App({
   // narrow 浮层互斥可见性（v1.78）：侧栏浮层；编辑器审查窗格窄屏转互斥浮层，
   // 最后一个 tab 关闭（含 WS removed 路径）时自动收起，防遮罩悬空。
   const sideVisible = narrow ? floatPane === "side" : sidebarOpen;
-  const editorDocked = tabs.length > 0 && (!narrow || floatPane === "editor");
+  // v1.107：源码树展开即停靠（无需先开 tab）；收起树且无 tab 才整体隐藏（v1.78 语义保留）。
+  const editorDocked =
+    (tabs.length > 0 || sourceTreeOpen) && (!narrow || floatPane === "editor");
   useEffect(() => {
     if (narrow && floatPane === "editor" && tabs.length === 0) setFloatPane(null);
   }, [narrow, floatPane, tabs.length]);
@@ -371,8 +392,8 @@ export default function App({
       }
       if (typeof saved.sidebarOpen === "boolean") setSidebarOpen(saved.sidebarOpen);
       if (typeof saved.timelineOpen === "boolean") setTimelineOpen(saved.timelineOpen);
+      // v1.107 枚举删 source：旧 ui-state 残留值不匹配任何分支，回退默认 timeline。
       if (
-        saved.bottomTab === "source" ||
         saved.bottomTab === "timeline" ||
         saved.bottomTab === "trace" ||
         saved.bottomTab === "evals"
@@ -777,7 +798,6 @@ export default function App({
 
   // 底部面板开合（v1.61）：展开态 tabs 行右端收起、收起态细条展开；标签与 tab 按钮共用一份
   const bottomTabTitles: Record<typeof bottomTab, string> = {
-    source: t("source.title"),
     timeline: t("panel.timeline"),
     trace: t("panel.trace"),
     evals: t("panel.evals"),
@@ -1110,7 +1130,6 @@ export default function App({
                     projectId={projectId}
                     sessionsByProject={sessionsByProject}
                     openError={openError}
-                    refreshToken={fileTreeVersion}
                     onSwitchProject={(project) => void switchProject(project)}
                     onOpenProject={(path, displayName) =>
                       openProject(path, displayName).catch((error) => setOpenError(String(error)))}
@@ -1130,8 +1149,6 @@ export default function App({
                         return next;
                       });
                     }}
-                    onOpenFile={openFile}
-                    onFileTreeChange={handleFileTreeChange}
                   />
                 )}
                 {sideView === "search" && (
@@ -1200,8 +1217,8 @@ export default function App({
             }}
           />
         </section>
-        {/* v1.78：编辑器转线程右侧「审查窗格」——有打开 tab 才停靠（v1.64 显隐语义
-            保留、主次互换）；窄屏转互斥浮层（§7.2 视口自适应）。 */}
+        {/* v1.78：编辑器转线程右侧「审查窗格」；v1.107 源码树展开即停靠、窗格
+            左缘为单列合并源码树；窄屏转互斥浮层（§7.2 视口自适应）。 */}
         {editorDocked && (<>
         {!narrow && (
           <ResizeHandle
@@ -1225,7 +1242,33 @@ export default function App({
               : { width: effRight, minWidth: 260, maxWidth: 720 }
           }
         >
-          <EditorPane
+          <div className="editor-dock">
+            {sourceTreeOpen ? (
+              <SourcePanel
+                api={api}
+                t={t}
+                projectId={projectId}
+                refreshToken={fileTreeVersion}
+                activePath={activePath}
+                onOpenFile={(path, line) => void openFile(path, line)}
+                onFileTreeChange={handleFileTreeChange}
+                onCollapse={toggleSourceTree}
+              />
+            ) : (
+              <button
+                type="button"
+                className="source-strip"
+                data-testid="source-open"
+                title={t("source.expand")}
+                aria-label={t("source.expand")}
+                onClick={toggleSourceTree}
+              >
+                <span aria-hidden="true">»</span>
+                <span className="source-strip-label">{t("source.title")}</span>
+              </button>
+            )}
+            <div className="editor-dock-main">
+              <EditorPane
             t={t}
             api={api}
             projectId={projectId}
@@ -1286,8 +1329,24 @@ export default function App({
               editorApiRef.current = editorApi;
             }}
           />
+            </div>
+          </div>
         </section>
         </>)}
+        {/* v1.107：源码树收起且无打开 tab 时右区整体隐藏，宽屏保留右缘细条恢复。 */}
+        {!narrow && !sourceTreeOpen && tabs.length === 0 && (
+          <button
+            type="button"
+            className="source-strip source-strip-solo"
+            data-testid="source-open"
+            title={t("source.expand")}
+            aria-label={t("source.expand")}
+            onClick={toggleSourceTree}
+          >
+            <span aria-hidden="true">»</span>
+            <span className="source-strip-label">{t("source.title")}</span>
+          </button>
+        )}
       </div>
       {dirtyConflict && (
         <div className="merge-overlay">
@@ -1347,13 +1406,6 @@ export default function App({
           <div className="bottom-head">
             <div className="bottom-tabs">
               <button
-                className={bottomTab === "source" ? "active" : ""}
-                onClick={() => setBottomTab("source")}
-                data-testid="tab-source"
-              >
-                {bottomTabTitles.source}
-              </button>
-              <button
                 className={bottomTab === "timeline" ? "active" : ""}
                 onClick={() => setBottomTab("timeline")}
               >
@@ -1385,16 +1437,6 @@ export default function App({
               <span aria-hidden="true">▾</span>
             </button>
           </div>
-          {bottomTab === "source" && (
-            <GitSourcePanel
-              api={api}
-              t={t}
-              projectId={projectId}
-              activePath={activePath}
-              refreshToken={fileTreeVersion}
-              onOpenFile={(path, line) => void openFile(path, line)}
-            />
-          )}
           {bottomTab === "timeline" && (
             <div className="bottom-grid">
               <CheckpointTimeline api={api} t={t} sessionId={sessionId} />

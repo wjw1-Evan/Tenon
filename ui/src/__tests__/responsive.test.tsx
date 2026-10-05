@@ -83,7 +83,7 @@ describe("档位与 clamp 纯函数（lib/viewport）", () => {
 });
 
 describe("三档布局（§7.2 v1.78）", () => {
-  it("宽屏：线程是主区，无打开文件时审查窗格隐藏", async () => {
+  it("宽屏：线程是主区，源码树停靠右区（v1.107），收起且无 tab 即隐藏", async () => {
     render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/nope" />);
     await waitFor(() => expect(screen.getByTestId("task-input-box")).toBeTruthy());
     const workspace = screen.getByTestId("workspace");
@@ -92,7 +92,16 @@ describe("三档布局（§7.2 v1.78）", () => {
     expect(screen.queryByTestId("float-backdrop")).toBeNull();
     expect(screen.queryByTestId("editor-float-toggle")).toBeNull();
     expect(document.querySelector(".zone-thread")).not.toBeNull();
-    expect(document.querySelector(".zone-center")).toBeNull();
+    // v1.107：源码树默认展开 → 审查窗格停靠（源码树 + 空编辑器），无需先开 tab。
+    expect(document.querySelector(".source-dock")).not.toBeNull();
+    expect(document.querySelector(".zone-center")).not.toBeNull();
+
+    // 收起源码树 → 无打开 tab 时右区整体隐藏（v1.78 显隐语义保留）。
+    fireEvent.click(screen.getByTestId("source-collapse"));
+    await waitFor(() => expect(document.querySelector(".zone-center")).toBeNull());
+    // 收起态细条可恢复。
+    fireEvent.click(screen.getByTestId("source-open"));
+    await waitFor(() => expect(document.querySelector(".source-dock")).not.toBeNull());
   });
 
   it("窄屏无线程浮层：线程留在文档流，侧栏按需唤出", async () => {
@@ -135,9 +144,11 @@ describe("三档布局（§7.2 v1.78）", () => {
     await waitFor(() => {
       const left = document.querySelector<HTMLElement>(".zone-left");
       const thread = document.querySelector<HTMLElement>(".zone-thread");
+      const center = document.querySelector<HTMLElement>(".zone-center");
       expect(left?.style.width).toBe("240px");
       expect(thread?.style.flex).toBe("1 1 0%");
-      expect(document.querySelector(".zone-center")).toBeNull();
+      // v1.107：源码树停靠右区，中屏按 clamp 收敛（500 → 34vw=340）。
+      expect(center?.style.width).toBe("340px");
     });
     setViewport(1280);
     await waitFor(() => {

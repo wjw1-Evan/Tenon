@@ -42,7 +42,6 @@ function renderExplorer(
       projectId={projects[0]?.id ?? null}
       sessionsByProject={projects[0] ? { [projects[0].id]: "session-1" } : {}}
       openError={null}
-      refreshToken={1}
       onSwitchProject={onSwitchProject}
       onOpenProject={onOpenProject}
       onRemoveProject={onRemoveProject}
@@ -50,8 +49,6 @@ function renderExplorer(
       onCreateSession={onCreateSession}
       onRefreshProjects={callbacks.onRefreshProjects}
       onSessionRemoved={callbacks.onSessionRemoved}
-      onOpenFile={() => {}}
-      onFileTreeChange={() => {}}
     />
   );
   return { onSwitchProject, onOpenProject, onRemoveProject, onSelectSession, onCreateSession, api: apiMock };
@@ -178,22 +175,7 @@ describe("ProjectExplorer multi-project control surface", () => {
     expect(screen.queryByTestId("project-add-form")).not.toBeInTheDocument();
   });
 
-  // v1.70：「源码」按钮切换该行下内嵌的该项目文件树，各项目独立展开并记忆
-  it("toggles a per-project inline file tree from the source button", async () => {
-    renderExplorer([project("open-a"), project("open-b")]);
-    expect(screen.queryByTestId("file-tree")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByTestId("project-files-open-a"));
-    await waitFor(() => expect(screen.getByTestId("file-tree")).toBeInTheDocument());
-    expect(JSON.parse(localStorage.getItem("tenon:peFiles") ?? "[]")).toContain("open-a");
-    // 各项目独立展开，互不影响
-    fireEvent.click(screen.getByTestId("project-files-open-b"));
-    await waitFor(() => expect(screen.getAllByTestId("file-tree")).toHaveLength(2));
-    fireEvent.click(screen.getByTestId("project-files-open-a"));
-    await waitFor(() => expect(screen.getAllByTestId("file-tree")).toHaveLength(1));
-    expect(JSON.parse(localStorage.getItem("tenon:peFiles") ?? "[]")).not.toContain(
-      "open-a"
-    );
-  });
+  // v1.107：「源码」内嵌文件树已迁右区源码树，项目行仅存「移除」操作。
 
   // v1.58 对话标题：对话行标题优先，无标题回退模型名。
   it("chat rows prefer generated titles and fall back to model names", () => {

@@ -527,10 +527,6 @@ button:disabled { opacity: 0.45; cursor: default; }
 }
 .pe-show-all:hover { background: var(--raised); }
 
-/* 行内嵌源码文件树（v1.70）：缩进对齐会话列表，限高内部滚动；行尾「源码」按钮切换 */
-.pe-source { padding-left: 26px; }
-.pe-source .file-tree-shell { max-height: 40vh; overflow-y: auto; }
-
 /* 会话行：受管 worktree 行内操作（合并 / 丢弃，v1.87）+ 新会话入口 */
 .pe-chat-item { display: flex; align-items: center; gap: 2px; }
 .pe-chat-item .pe-chat-row { flex: 1; min-width: 0; }
@@ -1078,28 +1074,156 @@ button:disabled { opacity: 0.45; cursor: default; }
   font-size: 11px;
 }
 
-/* ─────────────────── Git source view（§8.1） ─────────────────── */
-.git-source {
+/* ─────────────────── 右区源码树（§7.2 v1.107） ─────────────────── */
+/* 审查窗格内部布局：左缘单列源码树 + 编辑器主体 */
+.editor-dock {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+.editor-dock-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.editor-dock-main .editor-pane { flex: 1; min-width: 0; }
+.source-dock {
+  flex: none;
+  width: 176px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 10px 6px 6px 10px;
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+  font-size: 12px;
+}
+.source-dock-head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.source-dock-head .side-title { flex: 1; min-width: 0; }
+.source-filter {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.source-filter button {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+.source-filter button:hover { background: var(--raised); color: var(--fg); }
+.source-filter button.active { background: var(--accent-soft); color: var(--accent-text); }
+.source-dock-body {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 10px 12px;
+}
+.source-dock-hint { padding: 4px 2px; font-size: 11px; }
+.source-changes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  font-size: 12px;
+  gap: 2px;
 }
-.source-head {
+.source-changes button {
+  width: 100%;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  gap: 6px;
+  min-width: 0;
+  padding: 3px 5px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
 }
-.source-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 10px;
-  align-items: start;
+.source-changes button:hover { background: var(--raised); }
+.source-changes button > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.source-control {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  margin-top: 6px;
+  padding-top: 4px;
+}
+.source-control-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 3px 4px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg);
+  font-size: 11px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.source-control-toggle:hover { background: var(--raised); }
+.source-control-branch {
+  margin-left: auto;
+  font-weight: 400;
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.source-control-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 0;
+  max-height: 45vh;
+  overflow: auto;
+}
+/* 收起态：窗格左缘细条（对齐底部收起细条模式），点击恢复源码树 */
+.source-strip {
+  flex: none;
+  width: 22px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 2px;
+  border: none;
+  border-right: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--muted);
+  cursor: pointer;
+}
+.source-strip:hover { color: var(--fg); background: var(--raised); }
+.source-strip-label {
+  writing-mode: vertical-rl;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}
+/* 独立态（源码树收起且无打开 tab）：工作区右缘细条，贴边改用左边框 */
+.source-strip-solo {
+  border-right: none;
+  border-left: 1px solid var(--border);
+  flex-shrink: 0;
 }
 .source-section {
   min-width: 0;

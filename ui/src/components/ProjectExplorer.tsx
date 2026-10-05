@@ -1,15 +1,13 @@
 // 项目浏览器（左侧栏「项目」视图，v1.88 对齐 Codex projects sidebar 内容布局）：
 // 视图标题行右端常驻添加入口（v1.101 移除孤行工具行与 Name / Updated 列头）；
 // 每项目一行可折叠文件夹（点击行即隐式激活并展开），默认内嵌最近 10 条会话；
-// 行尾「源码」按钮切换文件树。
+// v1.107 移除行尾「源码」内嵌文件树——文件浏览收敛到右区源码树（§7.2）。
 import { useEffect, useState } from "react";
 import type { ProjectSummary, TenonApi } from "../lib/api";
 import { useResolvedLocale, type Translate } from "../lib/i18n";
 import { RUNNING_STATES, STATE_COLORS, type AgentStateName } from "../lib/stateColors";
-import { FileTree, type FileTreeChange } from "./FileTree";
 
 const PE_EXPANDED_KEY = "tenon:peExpanded";
-const PE_FILES_KEY = "tenon:peFiles";
 /** Codex 项目行展开后默认只物化最近会话，长列表显式展开。 */
 const RECENT_SESSION_LIMIT = 10;
 
@@ -38,8 +36,6 @@ interface Props {
   /** 各项目当前激活会话（§7.5 项目级 UI 状态）。 */
   sessionsByProject: Record<string, string>;
   openError: string | null;
-  /** ProjectRuntime 文件事件版本；透传文件树增量刷新（§6.4 / §8.1）。 */
-  refreshToken: number;
   onSwitchProject: (project: ProjectSummary) => void;
   /** displayName 提供时落库为项目显示名；空 / 缺省回退路径末段（§6.4）。 */
   onOpenProject: (path: string, displayName?: string) => Promise<void> | void;
@@ -53,8 +49,6 @@ interface Props {
   onCollapseSidebar?: () => void;
   /** 会话被归档 / 删除后回调（v1.103）：App 清理激活选择并刷新摘要。 */
   onSessionRemoved?: (projectId: string, sessionId: string) => void;
-  onOpenFile: (path: string) => void;
-  onFileTreeChange: (change: FileTreeChange) => void;
 }
 
 /** 状态文案：优先使用 state.* 翻译，缺失回退原始状态。 */
@@ -199,7 +193,6 @@ export function ProjectExplorer({
   projectId,
   sessionsByProject,
   openError,
-  refreshToken,
   onSwitchProject,
   onOpenProject,
   onRemoveProject,
@@ -208,13 +201,9 @@ export function ProjectExplorer({
   onRefreshProjects,
   onSessionRemoved,
   onCollapseSidebar,
-  onOpenFile,
-  onFileTreeChange,
 }: Props) {
   const localeTag = useResolvedLocale();
   const [expanded, setExpanded] = useState<Set<string>>(() => loadSet(PE_EXPANDED_KEY));
-  // 行内嵌源码文件树的展开集合（v1.70），与文件夹展开互不影响。
-  const [filesOpen, setFilesOpen] = useState<Set<string>>(() => loadSet(PE_FILES_KEY));
   const [adding, setAdding] = useState(false);
   const [path, setPath] = useState("");
   const [name, setName] = useState("");
@@ -237,16 +226,6 @@ export function ProjectExplorer({
     } finally {
       setBusyId(null);
     }
-  };
-
-  const toggleFiles = (projectId: string) => {
-    setFilesOpen((prev) => {
-      const next = new Set(prev);
-      if (next.has(projectId)) next.delete(projectId);
-      else next.add(projectId);
-      persistSet(PE_FILES_KEY, next);
-      return next;
-    });
   };
 
   const addProject = async () => {
@@ -603,7 +582,6 @@ export function ProjectExplorer({
         <ul className="pe-tree" data-testid="project-list">
           {projects.map((project) => {
             const isOpen = expanded.has(project.id);
-            const showFiles = filesOpen.has(project.id);
             const updatedAt = latestUpdatedAt(project);
             const badges = folderBadges(t, project);
             return (
@@ -638,17 +616,6 @@ export function ProjectExplorer({
                   <div className="pe-row-actions">
                     <button
                       type="button"
-                      className="pe-action"
-                      data-testid={`project-files-${project.id}`}
-                      aria-label={t("projects.source")}
-                      aria-pressed={showFiles}
-                      title={t("projects.source")}
-                      onClick={() => toggleFiles(project.id)}
-                    >
-                      {"</>"}
-                    </button>
-                    <button
-                      type="button"
                       className="pe-action danger"
                       data-testid={`project-remove-${project.id}`}
                       aria-label={t("projects.remove")}
@@ -665,18 +632,6 @@ export function ProjectExplorer({
                   </div>
                 </div>
                 {isOpen && renderSessions(project)}
-                {showFiles && (
-                  <div className="pe-source" data-testid={`source-tree-${project.id}`}>
-                    <FileTree
-                      api={api}
-                      t={t}
-                      projectId={project.id}
-                      refreshToken={refreshToken}
-                      onOpenFile={onOpenFile}
-                      onOperation={onFileTreeChange}
-                    />
-                  </div>
-                )}
               </li>
             );
           })}

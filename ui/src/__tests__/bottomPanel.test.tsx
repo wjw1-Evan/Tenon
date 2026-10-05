@@ -45,10 +45,12 @@ describe("底部面板开合（§7.2 v1.78）", () => {
   it("默认收起：细条显示当前 tab 名，点击展开后可折叠", async () => {
     renderApp();
     await waitFor(() => expect(screen.getByTestId("bottom-open")).toBeTruthy());
+    // v1.107：「源码」tab 迁右区源码树，底部枚举收敛为 时间轴 / 轨迹 / 评估。
     expect(screen.queryByTestId("tab-source")).toBeNull();
 
     fireEvent.click(screen.getByTestId("bottom-open"));
-    expect(screen.getByTestId("tab-source")).toBeTruthy();
+    expect(screen.getByTestId("tab-trace")).toBeTruthy();
+    expect(screen.queryByTestId("tab-source")).toBeNull();
     expect(screen.queryByTestId("bottom-open")).toBeNull();
 
     fireEvent.click(screen.getByTestId("bottom-close"));
