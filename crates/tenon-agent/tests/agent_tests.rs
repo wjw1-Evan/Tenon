@@ -1039,3 +1039,72 @@ async fn memories_disabled_skips_extract_and_inject() {
     let mut st = store.lock().await;
     assert_eq!(st.list_memories(&project_id, None, 100).unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn session_switch_provider_and_current_model() {
+    let (_d, session, _store, provider) =
+        setup(vec![ScriptedReply::Text("response".into())]).await;
+    let model_before = session.current_model().await;
+    session.switch_provider(provider.clone()).await;
+    let model_after = session.current_model().await;
+    assert_eq!(model_before, model_after, "same provider → same model");
+}
+
+#[tokio::test]
+async fn session_set_title_and_circuit_limits() {
+    let (_d, session, _store, _p) =
+        setup(vec![ScriptedReply::Text("ok".into())]).await;
+    session.set_title("My Test Session").await.unwrap();
+    session.set_circuit_limits(tenon_core::circuit::CircuitLimits {
+        max_files: 5,
+        max_lines: 100,
+        max_tokens: 50_000,
+        max_cost_usd: 1.0,
+    });
+}
+
+#[tokio::test]
+async fn session_subscribe_receives_events() {
+    let (_d, session, _store, _p) =
+        setup(vec![ScriptedReply::Text("subscribe test".into())]).await;
+    let mut rx = session.subscribe();
+    let outcome = session.run_task("test subscription").await;
+    assert!(matches!(outcome, TaskOutcome::Done(_)));
+    // At least one event should have been broadcast
+    assert!(rx.try_recv().is_ok());
+}
+
+#[tokio::test]
+async fn session_managed_worktree_is_none_by_default() {
+    let (_d, session, _store, _p) =
+        setup(vec![ScriptedReply::Text("no worktree".into())]).await;
+    assert!(session.managed_worktree().is_none());
+}
+
+#[tokio::test]
+async fn session_interrupt_first_edit_buffer_does_not_panic() {
+    let (_d, session, _store, _p) =
+        setup(vec![ScriptedReply::Text("quick response".into())]).await;
+    session.interrupt_first_edit_buffer();
+    let outcome = session.run_task("quick").await;
+    assert!(matches!(outcome, TaskOutcome::Done(_)));
+}
+
+#[tokio::test]
+async fn session_control_pause_does_not_crash() {
+    let (_d, session, _store, _p) =
+        setup(vec![ScriptedReply::Text("pause test".into())]).await;
+    session.control(ControlCommand::Pause);
+    let outcome = session.run_task("paused task").await;
+    // Should still complete (pause is advisory)
+    assert!(matches!(outcome, TaskOutcome::Done(_) | TaskOutcome::Paused { .. } | TaskOutcome::Error(_)));
+}
+
+#[tokio::test]
+async fn session_control_resume_does_not_crash() {
+    let (_d, session, _store, _p) =
+        setup(vec![ScriptedReply::Text("resume test".into())]).await;
+    session.control(ControlCommand::Resume);
+    let outcome = session.run_task("resumed task").await;
+    assert!(matches!(outcome, TaskOutcome::Done(_)));
+}
