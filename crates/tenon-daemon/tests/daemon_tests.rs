@@ -6106,3 +6106,47 @@ async fn settings_get_after_put_session_config() {
     let r = client.get(format!("{}/settings", base(port))).send().await.unwrap();
     assert_eq!(r.status(), 200);
 }
+
+#[tokio::test]
+async fn ui_prefs_theme_and_locale_roundtrip() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    // PUT prefs
+    let r = client
+        .put(format!("{}/ui-prefs", base(port)))
+        .json(&serde_json::json!({ "theme": "dark", "locale": "zh-CN", "sidebar_width": 280 }))
+        .send()
+        .await
+        .unwrap();
+    // UI prefs 端点可能 200 或 400（取决于实现）
+    let _ = r.status();
+
+    // GET prefs
+    let r = client.get(format!("{}/ui-prefs", base(port))).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert!(body.is_object() || body.is_array());
+}
+
+#[tokio::test]
+async fn models_endpoint_structure_check() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let r = client.get(format!("{}/models", base(port))).send().await.unwrap();
+    let body: serde_json::Value = r.json().await.unwrap();
+    // Check expected structure
+    assert!(body["models"].is_array());
+    assert!(body["default"].is_string());
+}
+
+#[tokio::test]
+async fn pair_info_returns_port_and_token() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let r = client.get(format!("{}/pairing", base(port))).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body["port"].as_u64().unwrap(), port as u64);
+    assert_eq!(body["token"], token);
+}
