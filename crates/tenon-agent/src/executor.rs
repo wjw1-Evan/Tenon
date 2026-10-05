@@ -2712,4 +2712,48 @@ mod tests {
         }));
         assert!(out.ok);
     }
+
+    #[test]
+    fn apply_patch_readme_md() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "README.md", "range": null,
+            "content": "# My Project\n\n## Installation\n\n```bash\nnpm install\n```\n\n## Usage\n"
+        }));
+        assert!(out.ok);
+    }
+
+    #[test]
+    fn apply_patch_license_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "LICENSE", "range": null,
+            "content": "MIT License\n\nCopyright (c) 2026\n"
+        }));
+        assert!(out.ok);
+    }
+
+    #[test]
+    fn apply_patch_gitignore() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": ".gitignore", "range": null,
+            "content": "node_modules/\ndist/\n.env\n*.log\n"
+        }));
+        assert!(out.ok);
+    }
+
+    #[test]
+    fn apply_patch_vscode_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": ".vscode/settings.json", "range": null,
+            "content": "{\n  \"editor.formatOnSave\": true,\n  \"editor.tabSize\": 2\n}\n"
+        }));
+        assert!(out.ok);
+    }
 }
