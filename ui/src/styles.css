@@ -431,37 +431,13 @@ button:disabled { opacity: 0.45; cursor: default; }
   padding: 6px 12px;
   font-size: 12px;
 }
-/* Codex projects sidebar 索引（v1.88）：搜索 / 添加入口 + Name / Updated 节奏 */
+/* Codex projects sidebar 索引（v1.88；v1.96 移除顶部搜索）：添加入口 + Name / Updated 节奏 */
 .pe-toolbar {
   flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 6px;
 }
-.pe-search {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 28px;
-  padding: 0 8px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--overlay);
-  color: var(--muted);
-}
-.pe-search:focus-within { border-color: var(--accent); color: var(--accent-text); }
-.pe-search input {
-  flex: 1;
-  min-width: 0;
-  border: none;
-  outline: none;
-  background: transparent;
-  color: var(--fg);
-  font-size: 12px;
-}
-.pe-search input::placeholder { color: var(--muted); }
 .pe-add {
   flex-shrink: 0;
   width: 28px;

@@ -116,16 +116,6 @@ function formatUpdatedAt(value: string | null, t: Translate): string {
   return new Date(time).toLocaleDateString();
 }
 
-/** Codex 式紧凑搜索图标。 */
-function SearchIcon() {
-  return (
-    <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden="true">
-      <circle cx={11} cy={11} r={7} />
-      <path d="m20 20-4-4" />
-    </svg>
-  );
-}
-
 /** 会话显示名：自动标题优先（v1.58）；无标题回退模型名，同名多会话附短 id 后缀。 */
 function sessionDisplayName(session: ProjectSummary["sessions"][number], duplicates = 1) {
   const base = session.title?.trim() || session.model || session.id;
@@ -234,8 +224,6 @@ export function ProjectExplorer({
   const [activityFilter, setActivityFilter] = useState<ActivityFilter>("all");
   const [stoppingId, setStoppingId] = useState<string | null>(null);
   const [worktreeBusyId, setWorktreeBusyId] = useState<string | null>(null);
-  /** Codex projects sidebar 索引：项目 / 会话标题本地即时过滤。 */
-  const [query, setQuery] = useState("");
   /** 超过最近 10 条的项目的显式展开集合；不落盘，保持项目列表轻量。 */
   const [allSessionsOpen, setAllSessionsOpen] = useState<Set<string>>(new Set());
 
@@ -304,21 +292,6 @@ export function ProjectExplorer({
     if (row.project.id !== projectId) onSwitchProject(row.project);
     onSelectSession(row.project.id, row.session.id);
   };
-
-  /** Codex 索引搜索：项目名 / 路径优先，会话标题与模型名兜底。 */
-  const normalizedQuery = query.trim().toLowerCase();
-  const visibleProjects = normalizedQuery
-    ? projects.filter((project) => {
-        const haystack = [
-          project.display_name,
-          project.path,
-          ...project.sessions.map((session) => `${session.title ?? ""} ${session.model}`),
-        ]
-          .join(" ")
-          .toLowerCase();
-        return haystack.includes(normalizedQuery);
-      })
-    : projects;
 
   const stopSession = async (sessionId: string) => {
     setStoppingId(sessionId);
@@ -499,18 +472,8 @@ export function ProjectExplorer({
 
   return (
     <div className="project-explorer" data-testid="project-explorer">
-      {/* Codex projects sidebar：紧凑搜索 + 常驻添加；列表用 Name / Updated 统一节奏。 */}
+      {/* Codex projects sidebar：常驻添加入口；列表用 Name / Updated 统一节奏。 */}
       <div className="pe-toolbar">
-        <label className="pe-search">
-          <SearchIcon />
-          <input
-            data-testid="project-search"
-            value={query}
-            placeholder={t("projects.search")}
-            aria-label={t("projects.search")}
-            onChange={(event) => setQuery(event.target.value)}
-          />
-        </label>
         <button
           type="button"
           className="pe-add"
@@ -603,7 +566,7 @@ export function ProjectExplorer({
               )}
             </section>
           </li>
-          {visibleProjects.map((project) => {
+          {projects.map((project) => {
             const isOpen = expanded.has(project.id);
             const showFiles = filesOpen.has(project.id);
             const updatedAt = latestUpdatedAt(project);
@@ -682,9 +645,6 @@ export function ProjectExplorer({
             );
           })}
           {projects.length === 0 && <li className="pe-empty">{t("projects.empty")}</li>}
-          {projects.length > 0 && visibleProjects.length === 0 && (
-            <li className="pe-empty">{t("projects.no_matches")}</li>
-          )}
         </ul>
       </section>
 

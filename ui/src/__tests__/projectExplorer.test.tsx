@@ -210,27 +210,6 @@ describe("ProjectExplorer multi-project control surface", () => {
     expect(screen.getByText("mock")).toBeInTheDocument();
   });
 
-  // v1.88 Codex projects sidebar：项目名 / 路径 / 会话标题即时索引过滤。
-  it("filters the project index by project and session text", () => {
-    const matching = {
-      ...project("open-a"),
-      sessions: [
-        { id: "s-a", status: "idle", model: "mock", title: "payment retry", updated_at: "now" },
-      ],
-    };
-    renderExplorer([matching, project("open-b")]);
-    fireEvent.change(screen.getByTestId("project-search"), {
-      target: { value: "payment" },
-    });
-    expect(screen.getByTestId("project-item-open-a")).toBeInTheDocument();
-    expect(screen.queryByTestId("project-item-open-b")).not.toBeInTheDocument();
-    expect(screen.queryByText("projects.no_matches")).not.toBeInTheDocument();
-    fireEvent.change(screen.getByTestId("project-search"), {
-      target: { value: "does-not-exist" },
-    });
-    expect(screen.getByText("projects.no_matches")).toBeInTheDocument();
-  });
-
   // v1.88 Codex 项目行：Updated 列取最近会话，支持侧栏快速扫读。
   it("shows the latest session timestamp in the Updated column", () => {
     const dated = {
@@ -410,12 +389,6 @@ describe("ProjectExplorer 补充", () => {
     fireEvent.click(showAll);
     // 展开后显示更多会话行
     expect(screen.getAllByTestId(/^chat-row-/).length).toBeGreaterThan(5);
-  });
-
-  it("project search filters by name", () => {
-    renderExplorer([project("alpha"), project("beta")]);
-    fireEvent.change(screen.getByTestId("project-search"), { target: { value: "beta" } });
-    expect(screen.getByTestId("project-item-beta")).toBeInTheDocument();
   });
 
 
