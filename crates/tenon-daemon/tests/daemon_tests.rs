@@ -4805,3 +4805,141 @@ async fn team_policy_put_and_verify_effect() {
     let body: serde_json::Value = r.json().await.unwrap();
     assert!(body.is_object());
 }
+
+#[tokio::test]
+async fn open_project_updates_display_name() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().to_str().unwrap();
+
+    // First open with default name
+    client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": path }))
+        .send()
+        .await
+        .unwrap();
+
+    // Re-open with display name
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": path, "display_name": "Updated" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body["display_name"], "Updated");
+}
+
+#[tokio::test]
+async fn session_created_returns_project_id() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    let r = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({ "project_id": pid, "provider": "mock" }))
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body["project_id"], pid);
+}
+
+#[tokio::test]
+async fn set_trust_updates_project() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    // Verify untrusted by default
+    let r = client.get(format!("{}/projects", base(port))).send().await.unwrap();
+    let body: serde_json::Value = r.json().await.unwrap();
+    let proj = body["projects"].as_array().unwrap().iter()
+        .find(|p| p["id"].as_str() == Some(pid.as_str())).unwrap();
+    assert_eq!(proj["trusted"], false);
+
+    // Set trusted
+    let r = client
+        .put(format!("{}/project/trust", base(port)))
+        .json(&serde_json::json!({ "project_id": pid, "trusted": true }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    // Verify trusted
+    let r = client.get(format!("{}/projects", base(port))).send().await.unwrap();
+    let body: serde_json::Value = r.json().await.unwrap();
+    let proj = body["projects"].as_array().unwrap().iter()
+        .find(|p| p["id"].as_str() == Some(pid.as_str())).unwrap();
+    assert_eq!(proj["trusted"], true);
+}
+
+#[tokio::test]
+async fn file_search_with_regex_special_chars() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    client
+        .put(format!("{}/project/{}/file", base(port), pid))
+        .json(&serde_json::json!({ "path": "regex-test.rs", "content": "let pattern = r\"abc.def\";" }))
+        .send()
+        .await
+        .unwrap();
+
+    // Search with special chars
+    let r = client
+        .get(format!("{}/project/{}/search?q=abc.def", base(port), pid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+}
+
+#[tokio::test]
+async fn ui_prefs_set_and_get() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    // PUT ui-prefs
+    let r = client
+        .put(format!("{}/ui-prefs", base(port)))
+        .json(&serde_json::json!({ "theme": "light", "locale": "zh-CN" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    // GET ui-prefs
+    let r = client.get(format!("{}/ui-prefs", base(port))).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+}
