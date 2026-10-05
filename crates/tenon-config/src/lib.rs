@@ -465,4 +465,64 @@ features      = ["intent", "risk"]
         );
         assert_eq!(cfg.models.laya.features, cfg2.models.laya.features);
     }
+
+    #[test]
+    fn parse_toml_file_nonexistent_returns_io_error() {
+        let result = Config::parse_toml_file(Path::new("/nonexistent/config.toml"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_toml_invalid_syntax_returns_parse_error() {
+        let result = Config::parse_toml("not valid toml [[[[");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn config_fields_access() {
+        let cfg = Config::parse_toml("").unwrap();
+        // 验证各分区字段可达
+        let _ = &cfg.update;
+        let _ = &cfg.session;
+        let _ = &cfg.agent;
+        let _ = &cfg.checkpoint;
+        let _ = &cfg.archive;
+        let _ = &cfg.evals;
+        let _ = &cfg.projects;
+        let _ = &cfg.models;
+    }
+
+    #[test]
+    fn evals_config_defaults_to_disabled() {
+        let cfg = Config::parse_toml("").unwrap();
+        assert_eq!(cfg.evals.interval_hours, 0);
+        assert!(cfg.evals.provider.is_empty());
+    }
+
+    #[test]
+    fn config_global_path_contains_tenon() {
+        let path = Config::global_path();
+        assert!(path.to_str().unwrap().contains(".tenon"));
+    }
+
+    #[test]
+    fn partial_config_fills_defaults() {
+        let text = r#"
+[models]
+default = "openai"
+
+[models.providers.openai]
+base_url = "https://api.openai.com/v1"
+model = "gpt-4"
+"#;
+        let cfg = Config::parse_toml(text).unwrap();
+        assert_eq!(cfg.models.default, "openai");
+        let p = cfg.models.providers.get("openai").unwrap();
+        assert_eq!(p.base_url, "https://api.openai.com/v1");
+        assert_eq!(p.model.as_deref(), Some("gpt-4"));
+        assert_eq!(p.kind, None);
+        // 其余默认
+        assert_eq!(cfg.session.first_edit_buffer_ms, 2000);
+        assert_eq!(cfg.checkpoint.keep_days, 7);
+    }
 }
