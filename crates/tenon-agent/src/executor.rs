@@ -2593,4 +2593,40 @@ mod tests {
         let git_read = execute_tool(&c, "git_read", &serde_json::json!({"sub": "log"}));
         assert!(git_read.ok);
     }
+
+    #[test]
+    fn apply_patch_go_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let files = [
+            ("go.mod", "module example.com/myapp\n\ngo 1.21\n"),
+            ("main.go", "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"hello\")\n}\n"),
+            ("internal/handler/handler.go", "package handler\n\nfunc Handle() {}\n"),
+        ];
+        for (path, content) in files {
+            let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+                "file": path, "range": null, "content": content
+            }));
+            assert!(out.ok, "failed: {}", path);
+        }
+    }
+
+    #[test]
+    fn apply_patch_rust_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let files = [
+            ("Cargo.toml", "[workspace]\nmembers = [\"core\", \"cli\"]\n"),
+            ("core/Cargo.toml", "[package]\nname = \"core\"\nversion = \"0.1.0\"\n"),
+            ("core/src/lib.rs", "pub fn core_fn() {}\n"),
+            ("cli/Cargo.toml", "[package]\nname = \"cli\"\nversion = \"0.1.0\"\n"),
+            ("cli/src/main.rs", "fn main() {}\n"),
+        ];
+        for (path, content) in files {
+            let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+                "file": path, "range": null, "content": content
+            }));
+            assert!(out.ok, "failed: {}", path);
+        }
+    }
 }
