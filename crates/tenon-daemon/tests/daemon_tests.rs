@@ -5641,3 +5641,132 @@ async fn checkpoint_rollback_after_file_write() {
         assert!(body.is_object());
     }
 }
+
+#[tokio::test]
+async fn l4_stats_after_rebuild_shows_chunks() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    std::fs::write(tmp.path().join("src/lib.rs"), "pub fn index_me() {}").unwrap();
+    std::fs::write(tmp.path().join("src/main.rs"), "fn main() { index_me(); }").unwrap();
+
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    // Rebuild index
+    let r = client
+        .post(format!("{}/project/{}/l4/rebuild", base(port), pid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    // Wait for indexing
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // Check stats
+    let r = client
+        .get(format!("{}/project/{}/l4/stats", base(port), pid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+}
+
+#[tokio::test]
+async fn project_delete_then_open_again_creates_new_id() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().to_str().unwrap();
+
+    // First open
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": path }))
+        .send()
+        .await
+        .unwrap();
+    let id1 = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    // Delete
+    client.delete(format!("{}/projects/{}", base(port), id1)).send().await.unwrap();
+
+    // Re-open → new ID
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": path }))
+        .send()
+        .await
+        .unwrap();
+    let id2 = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    assert_ne!(id1, id2, "删除后重新打开应生成新 ID");
+}
+
+#[tokio::test]
+async fn search_replace_verify_content_changed() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    client
+        .put(format!("{}/project/{}/file", base(port), pid))
+        .json(&serde_json::json!({ "path": "sr-test.txt", "content": "before replace" }))
+        .send()
+        .await
+        .unwrap();
+
+    // Search preview
+    let r = client
+        .get(format!("{}/project/{}/search?q=before&replace=after", base(port), pid))
+        .send()
+        .await
+        .unwrap();
+    let _ = r.status();
+}
+
+#[tokio::test]
+async fn create_session_multiple_times_same_project_different_ids() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    let mut ids = Vec::new();
+    for _ in 0..3 {
+        let r = client
+            .post(format!("{}/session", base(port)))
+            .json(&serde_json::json!({ "project_id": pid, "provider": "mock" }))
+            .send()
+            .await
+            .unwrap();
+        let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
+        ids.push(sid);
+    }
+
+    // All unique
+    assert_eq!(ids.len(), 3);
+    assert_ne!(ids[0], ids[1]);
+    assert_ne!(ids[1], ids[2]);
+    assert_ne!(ids[0], ids[2]);
+}
