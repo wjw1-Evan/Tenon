@@ -6,16 +6,16 @@
 
 ## 铁律：设计驱动开发
 
-**`docs/design.md` 是开发的唯一依据**，当前版本以文件头部为准（工作树常领先于 README/HEAD）：
+**`docs/design.md` 是开发的唯一依据**，当前版本以文件头部为准（工作树常领先于 README/HEAD）；全量版本演进表在 **`docs/design-changelog.md`**（v1.132 自 design.md 头部外移，只追加不改写）：
 
 1. 动手前先读 design.md 相关章节（实施：§6-18；安全：§12 全篇）；
 2. 发现设计缺陷 / 遗漏 / 与实现冲突：**先改 design.md 再写代码**，不允许代码与设计静默偏离；
-3. 每次设计变更在文档头部「版本演进」表加一行（递增版本号 + 一行要点）。
+3. 每次设计变更在 `docs/design-changelog.md` 表尾加一行（递增版本号 + 一行要点），并同步 design.md 头部「版本 / 日期」元数据。
 
 版本号与协作注意：
 
 - **并行 agent 会话共用此工作树**：design.md 版本号会被并行会话占用，加版本前必须先查工作树里的最新版本；禁用 `git stash`；提交时按 hunk 只提自己的改动；功能勿依赖他人未提交的设施；禁用脚本盲改共享在途文件；
-- README 不维护版本更新记录（版本明细由 git 历史与 design.md「版本演进」表承载），勿向 README 追加版本条目；
+- README 不维护版本更新记录（版本明细由 git 历史与 `docs/design-changelog.md` 演进表承载），勿向 README 追加版本条目；
 - 方向性 UI/UX 改动先给双参考方案（如 Codex 形态 vs ZCode 形态）供用户选择，再实现；
 - `docs/design 2.md` 是 OpenCodex 时代旧稿，非正本，勿引用。
 
