@@ -26,6 +26,11 @@ pub use routing::{is_pure_read_task, Router};
 /// 不消耗脚本队列——脚本化测试对模型调用次数 / 序列的断言不受自动标题影响。
 pub const TITLE_MARKER: &str = "TENON_TASK_TITLE";
 
+/// L5 记忆提取请求的标记（v1.104 §10.1）：任务完成后的单轮无工具提取调用，
+/// 系统提示以此开头。测试替身识别后返回固定记忆 JSON、不消耗脚本队列，
+/// 与 TITLE_MARKER 同法保证脚本化测试的调用次数 / 序列断言零扰动。
+pub const MEMORY_MARKER: &str = "TENON_MEMORY_EXTRACT";
+
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 

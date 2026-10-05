@@ -35,6 +35,8 @@ pub struct MockProvider {
     calls: std::sync::Mutex<Vec<ChatRequest>>,
     /// 标题生成请求（TITLE_MARKER，v1.58）单独记录，不进 calls / 脚本队列。
     title_calls: std::sync::Mutex<Vec<ChatRequest>>,
+    /// 记忆提取请求（MEMORY_MARKER，v1.104）单独记录，不进 calls / 脚本队列。
+    memory_calls: std::sync::Mutex<Vec<ChatRequest>>,
 }
 
 impl MockProvider {
@@ -46,6 +48,7 @@ impl MockProvider {
             loop_last: true,
             calls: std::sync::Mutex::new(Vec::new()),
             title_calls: std::sync::Mutex::new(Vec::new()),
+            memory_calls: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -55,6 +58,10 @@ impl MockProvider {
 
     pub fn title_calls(&self) -> Vec<ChatRequest> {
         self.title_calls.lock().expect("title calls lock").clone()
+    }
+
+    pub fn memory_calls(&self) -> Vec<ChatRequest> {
+        self.memory_calls.lock().expect("memory calls lock").clone()
     }
 }
 
@@ -82,6 +89,28 @@ impl ModelProvider for MockProvider {
                 .push(req.clone());
             return Ok(ChatResponse {
                 content: "Mock 会话标题".into(),
+                tool_calls: vec![],
+                usage: Usage {
+                    input_tokens: 1,
+                    output_tokens: 1,
+                },
+                model: self.model.clone(),
+                finish_reason: Some("stop".into()),
+            });
+        }
+        // 记忆提取请求（v1.104 §10.1）：固定记忆 JSON 回复，与标题同法——
+        // 单独记录、不消耗脚本队列、不进 calls。
+        if req
+            .messages
+            .iter()
+            .any(|m| m.content.contains(crate::MEMORY_MARKER))
+        {
+            self.memory_calls
+                .lock()
+                .expect("memory calls lock")
+                .push(req.clone());
+            return Ok(ChatResponse {
+                content: r#"{"memories":[{"kind":"preference","scope":"global","content":"Mock 记忆：回复用中文","importance":3}]}"#.into(),
                 tool_calls: vec![],
                 usage: Usage {
                     input_tokens: 1,

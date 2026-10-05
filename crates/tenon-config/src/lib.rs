@@ -167,6 +167,20 @@ pub struct EvalsConfig {
     pub provider: String,
 }
 
+/// L5 跨会话对话记忆（§10.1 v1.104）：false = 不提取不注入，
+/// 手动 API 与既有数据不受影响。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MemoriesConfig {
+    pub enabled: bool,
+}
+
+impl Default for MemoriesConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 /// 多项目运行模型（§6.4 / ADR-15）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -303,6 +317,7 @@ pub struct Config {
     pub checkpoint: CheckpointConfig,
     pub archive: ArchiveConfig,
     pub evals: EvalsConfig,
+    pub memories: MemoriesConfig,
     pub projects: ProjectsConfig,
     pub models: ModelsConfig,
 }
@@ -497,6 +512,15 @@ features      = ["intent", "risk"]
         let cfg = Config::parse_toml("").unwrap();
         assert_eq!(cfg.evals.interval_hours, 0);
         assert!(cfg.evals.provider.is_empty());
+    }
+
+    // v1.104：[memories] 默认开，可显式关。
+    #[test]
+    fn memories_config_defaults_enabled() {
+        let cfg = Config::parse_toml("").unwrap();
+        assert!(cfg.memories.enabled);
+        let cfg = Config::parse_toml("[memories]\nenabled = false\n").unwrap();
+        assert!(!cfg.memories.enabled);
     }
 
     #[test]
