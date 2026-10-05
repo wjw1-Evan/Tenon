@@ -111,9 +111,7 @@ impl AgentConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CheckpointConfig {
-    /// false = 无快照能力 → 强制交互档（§10.3）
-    pub enabled: bool,
-    pub keep_last: u32,
+    /// shadow 库 gc prune 天数（§10.3 v1.93；0 = 不清理）
     pub keep_days: u32,
     /// 未跟踪大文件排除阈值 MB（§10.3）
     pub max_untracked_mb: u64,
@@ -122,8 +120,6 @@ pub struct CheckpointConfig {
 impl Default for CheckpointConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
-            keep_last: 50,
             keep_days: 7,
             max_untracked_mb: 2,
         }
@@ -159,24 +155,6 @@ impl Default for SandboxConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct LspConfig {
-    /// §8.5 共享 LSP 多路复用
-    pub multiplex: bool,
-    /// 宿主命令白名单（铁律七；默认空 = 全拒）
-    pub allowed_commands: Vec<String>,
-}
-
-impl Default for LspConfig {
-    fn default() -> Self {
-        Self {
-            multiplex: true,
-            allowed_commands: Vec::new(),
-        }
-    }
-}
-
 /// AI Evals 流水线（§18.3 / M3）：定时自动触发基准套件。
 /// 派生默认 `{ interval_hours: 0, provider: "" }`——0 表示关闭定时触发，
 /// 手动 `tenon-evals` 仍可用。
@@ -200,7 +178,6 @@ pub struct ProjectsConfig {
     /// ProjectRuntime 引用归零后的空闲回收延迟。
     pub idle_runtime_ttl_seconds: u64,
     /// 最近项目列表保留数。
-    pub recent_limit: usize,
     /// 显式允许打开 monorepo + 子包等嵌套根；仍按 project_id 隔离。
     pub allow_linked_workspace: bool,
 }
@@ -211,7 +188,6 @@ impl Default for ProjectsConfig {
             max_open: 12,
             max_concurrent_agent_tasks: 2,
             idle_runtime_ttl_seconds: 600,
-            recent_limit: 20,
             allow_linked_workspace: false,
         }
     }
@@ -257,6 +233,10 @@ pub struct ProviderConfig {
     pub api_key: Option<String>,
     /// 该 provider 默认模型（v1.11）
     pub model: Option<String>,
+    /// 美元 / 百万输入 token（v1.93 §11；缺省 = 未定价不计成本）
+    pub price_in_per_mtok: Option<f64>,
+    /// 美元 / 百万输出 token
+    pub price_out_per_mtok: Option<f64>,
 }
 
 /// Laya 本地决策模型（§9.8）。
@@ -267,7 +247,6 @@ pub struct LayaConfig {
     pub enabled: bool,
     pub auto_download: bool,
     /// cpu；gpu 预留
-    pub device: String,
     /// 集成点逐项开关（§9.8 表 #1-3，v1.92 收敛）
     pub features: Vec<String>,
 }
@@ -277,7 +256,6 @@ impl Default for LayaConfig {
         Self {
             enabled: true,
             auto_download: true,
-            device: "cpu".into(),
             features: vec!["intent".into(), "risk".into(), "routing".into()],
         }
     }
@@ -302,8 +280,6 @@ pub struct UpdateConfig {
     pub public_key_hex: String,
     /// auto 周期检查间隔；0 禁用。
     pub check_interval_s: u64,
-    /// 空 = `~/.tenon/updates/staged`。
-    pub staging_dir: String,
 }
 
 impl Default for UpdateConfig {
@@ -313,7 +289,6 @@ impl Default for UpdateConfig {
             manifest_url: "https://tenonide.dev/updates/manifest.json".into(),
             public_key_hex: String::new(),
             check_interval_s: 21_600,
-            staging_dir: String::new(),
         }
     }
 }
@@ -326,8 +301,6 @@ pub struct Config {
     pub session: SessionConfig,
     pub agent: AgentConfig,
     pub checkpoint: CheckpointConfig,
-    pub sandbox: SandboxConfig,
-    pub lsp: LspConfig,
     pub archive: ArchiveConfig,
     pub evals: EvalsConfig,
     pub projects: ProjectsConfig,
@@ -368,16 +341,6 @@ impl Config {
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".tenon")
     }
-
-    /// 当前平台沙箱后端（§12.3；含 WSL2 缺失降级档判定入口）。
-    pub fn platform_sandbox(&self) -> SandboxBackend {
-        match std::env::consts::OS {
-            "macos" => self.sandbox.macos,
-            "linux" => self.sandbox.linux,
-            "windows" => self.sandbox.windows,
-            _ => SandboxBackend::Degraded,
-        }
-    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -412,19 +375,8 @@ low_verification_rounds = 1
 command_timeout_s = 60
 
 [checkpoint]
-enabled         = true
-keep_last       = 10
-keep_days       = 3
+keep_days        = 3
 max_untracked_mb = 5
-
-[sandbox]
-macos   = "seatbelt"
-linux   = "landlock_seccomp"
-windows = "wsl2"
-
-[lsp]
-multiplex        = true
-allowed_commands = ["generate"]
 
 [archive]
 events_days = 30
@@ -457,8 +409,7 @@ features      = ["intent", "risk"]
         assert_eq!(cfg.agent.circuit.max_lines, 3000);
         assert_eq!(cfg.agent.fix_loop.max_rounds, 2);
         assert_eq!(cfg.agent.exec.command_timeout_s, 60);
-        assert_eq!(cfg.checkpoint.keep_last, 10);
-        assert_eq!(cfg.lsp.allowed_commands, vec!["generate".to_string()]);
+        assert_eq!(cfg.checkpoint.keep_days, 3);
         assert_eq!(cfg.archive.events_days, 30);
         assert_eq!(cfg.models.default, "glm");
 
@@ -490,23 +441,12 @@ features      = ["intent", "risk"]
         assert_eq!(cfg.agent.fix_loop.max_rounds, 3);
         assert_eq!(cfg.agent.fix_loop.low_verification_rounds, 1);
         assert_eq!(cfg.agent.exec.command_timeout_s, 120);
-        assert!(cfg.checkpoint.enabled);
-        assert_eq!(cfg.checkpoint.keep_last, 50);
         assert_eq!(cfg.checkpoint.keep_days, 7);
         assert_eq!(cfg.checkpoint.max_untracked_mb, 2);
-        assert_eq!(cfg.sandbox.macos, SandboxBackend::Seatbelt);
-        assert_eq!(cfg.sandbox.linux, SandboxBackend::LandlockSeccomp);
-        assert_eq!(cfg.sandbox.windows, SandboxBackend::Wsl2);
-        assert!(cfg.lsp.multiplex);
-        assert!(
-            cfg.lsp.allowed_commands.is_empty(),
-            "铁律七：白名单默认空 = 全拒"
-        );
         assert_eq!(cfg.archive.events_days, 90);
         assert_eq!(cfg.projects.max_open, 12);
         assert_eq!(cfg.projects.max_concurrent_agent_tasks, 2);
         assert_eq!(cfg.projects.idle_runtime_ttl_seconds, 600);
-        assert_eq!(cfg.projects.recent_limit, 20);
         assert!(!cfg.projects.allow_linked_workspace);
         assert!(cfg.models.default.is_empty());
         assert!(cfg.models.laya.enabled);
@@ -524,17 +464,5 @@ features      = ["intent", "risk"]
             cfg2.agent.circuit.max_cost_usd
         );
         assert_eq!(cfg.models.laya.features, cfg2.models.laya.features);
-    }
-
-    #[test]
-    fn platform_sandbox_matches_os() {
-        let cfg = Config::default();
-        let backend = cfg.platform_sandbox();
-        match std::env::consts::OS {
-            "macos" => assert_eq!(backend, SandboxBackend::Seatbelt),
-            "linux" => assert_eq!(backend, SandboxBackend::LandlockSeccomp),
-            "windows" => assert_eq!(backend, SandboxBackend::Wsl2),
-            _ => assert_eq!(backend, SandboxBackend::Degraded),
-        }
     }
 }

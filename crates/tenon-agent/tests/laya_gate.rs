@@ -4,11 +4,9 @@
 //! 意图预判收窄首轮工具目录 → 输入 token 下降且任务仍通过。
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use tenon_agent::session::{AgentConfig, AgentSession, ProjectWriteLock, TaskOutcome};
 use tenon_core::context::ProjectRules;
-use tenon_core::policy::Mode;
 use tenon_laya::LayaRuntime;
 use tenon_models::{MockProvider, ScriptedReply};
 use tenon_snapshot::SnapshotStore;
@@ -32,8 +30,7 @@ async fn run_read_only_task(laya: Option<Arc<LayaRuntime>>) -> (bool, u64) {
             "认证流程：login → token → verify。".into(),
         )],
     ));
-    let mut config =
-        AgentConfig::for_project(dir.path().to_path_buf(), &project_id, true, Mode::Auto);
+    let mut config = AgentConfig::for_project(dir.path().to_path_buf(), &project_id);
     config.first_edit_buffer_ms = 5;
     config.laya = laya;
     let session = AgentSession::create(
@@ -118,8 +115,7 @@ async fn laya_needs_change_task_keeps_full_catalog() {
             ScriptedReply::Text("完成".into()),
         ],
     ));
-    let mut config =
-        AgentConfig::for_project(dir.path().to_path_buf(), &project_id, true, Mode::Auto);
+    let mut config = AgentConfig::for_project(dir.path().to_path_buf(), &project_id);
     config.first_edit_buffer_ms = 5;
     config.laya = Some(laya_runtime());
     let session = AgentSession::create(
@@ -157,8 +153,7 @@ async fn decider_call_event_recorded_without_input_text() {
         "mock-1",
         vec![ScriptedReply::Text("回答".into())],
     ));
-    let mut config =
-        AgentConfig::for_project(dir.path().to_path_buf(), &project_id, true, Mode::Auto);
+    let mut config = AgentConfig::for_project(dir.path().to_path_buf(), &project_id);
     config.first_edit_buffer_ms = 5;
     config.laya = Some(laya_runtime());
     let session = AgentSession::create(
@@ -212,24 +207,14 @@ async fn laya_risk_assist_warns_on_dangerous_commands() {
         ],
     ));
 
-    let mut ctx = tenon_agent::executor::ToolContext::new(dir.path(), Duration::from_secs(10));
-    ctx.laya = Some(laya);
-    let _ = ctx;
-
-    // 风险打分直证：危险命令 > 安全命令（await 直接调用）
-    let r_dangerous = {
-        let laya2 = ctx.laya.clone().unwrap();
-        match laya2.risk("rm -rf build && git push --force").await {
-            tenon_laya::LayaOutcome::Success { value, .. } => value,
-            other => panic!("{other:?}"),
-        }
+    // 风险打分直证：危险命令 > 安全命令（v1.93：ToolContext.laya 死字段已删，直连运行时）
+    let r_dangerous = match laya.risk("rm -rf build && git push --force").await {
+        tenon_laya::LayaOutcome::Success { value, .. } => value,
+        other => panic!("{other:?}"),
     };
-    let r_safe = {
-        let laya2 = ctx.laya.clone().unwrap();
-        match laya2.risk("cargo test --quiet").await {
-            tenon_laya::LayaOutcome::Success { value, .. } => value,
-            other => panic!("{other:?}"),
-        }
+    let r_safe = match laya.risk("cargo test --quiet").await {
+        tenon_laya::LayaOutcome::Success { value, .. } => value,
+        other => panic!("{other:?}"),
     };
     assert!(
         r_dangerous > r_safe,
@@ -261,8 +246,7 @@ async fn risk_assist_rule_hit_records_decider_call_and_hint() {
             ScriptedReply::Text("完成".into()),
         ],
     ));
-    let mut config =
-        AgentConfig::for_project(dir.path().to_path_buf(), &project_id, true, Mode::Auto);
+    let mut config = AgentConfig::for_project(dir.path().to_path_buf(), &project_id);
     config.first_edit_buffer_ms = 5;
     config.laya = Some(laya_runtime());
     let session = AgentSession::create(

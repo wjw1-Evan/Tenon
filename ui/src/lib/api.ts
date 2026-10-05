@@ -658,7 +658,6 @@ export class TenonApi {
         enabled?: boolean;
         downloaded?: boolean;
         version?: string | null;
-        device?: string;
         [k: string]: unknown;
       };
     }>("/models");

@@ -9,7 +9,6 @@ use std::time::Duration;
 use tenon_agent::session::{AgentConfig, AgentSession, ProjectWriteLock};
 use tenon_agent::subagents::WorktreePool;
 use tenon_core::context::ProjectRules;
-use tenon_core::policy::Mode;
 use tenon_models::{
     ChatRequest, ChatResponse, MockProvider, ModelProvider, ProviderResult, ScriptedReply,
 };
@@ -83,7 +82,7 @@ async fn root_and_worktree_sessions_execute_in_parallel() {
             vec![ScriptedReply::Text("answer root".into())],
         ),
     });
-    let config_a = AgentConfig::for_project(repo.clone(), &project_id, true, Mode::Interactive);
+    let config_a = AgentConfig::for_project(repo.clone(), &project_id);
     let session_a = AgentSession::create(
         store.clone(),
         Arc::new(SnapshotStore::open(&snapshots_root, &project_id, &repo, 2).unwrap()),
@@ -106,7 +105,7 @@ async fn root_and_worktree_sessions_execute_in_parallel() {
             vec![ScriptedReply::Text("answer worktree".into())],
         ),
     });
-    let mut config_b = AgentConfig::for_project(repo.clone(), &project_id, true, Mode::Interactive);
+    let mut config_b = AgentConfig::for_project(repo.clone(), &project_id);
     config_b.session_id = Some("session-wt-b".to_string());
     config_b.managed_worktree = Some(wt.clone());
     config_b.write_scope = wt.to_string_lossy().into_owned();

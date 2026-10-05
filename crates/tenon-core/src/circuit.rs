@@ -128,17 +128,17 @@ impl CircuitBreaker {
     }
 
     /// 记录一次模型回合的消耗；token 与成本先到为准。
+    /// 用量如实累计后再判定（v1.93）：超限同样记账——status() 轮询与
+    /// 返回值两种消费路径看到一致的累计值，首次超限不产生盲区。
     pub fn record_usage(&mut self, tokens: u64, cost_usd: f64) -> CircuitStatus {
-        let new_tokens = self.tokens_used + tokens;
-        let new_cost = self.cost_used + cost_usd;
-        if new_tokens > self.limits.max_tokens {
+        self.tokens_used += tokens;
+        self.cost_used += cost_usd;
+        if self.tokens_used > self.limits.max_tokens {
             return CircuitStatus::Tripped(TripReason::OutOfTokens);
         }
-        if new_cost > self.limits.max_cost_usd {
+        if self.cost_used > self.limits.max_cost_usd {
             return CircuitStatus::Tripped(TripReason::OutOfBudget);
         }
-        self.tokens_used = new_tokens;
-        self.cost_used = new_cost;
         CircuitStatus::Open
     }
 
@@ -247,14 +247,13 @@ mod tests {
         assert_eq!(b.status(), CircuitStatus::Open);
         b.record_usage(999, 0.0);
         assert_eq!(b.status(), CircuitStatus::Open);
-        // 超限的记录被拒绝（返回 Tripped 且不落账），status() 保持 Open
+        // v1.93：超限如实落账并返回 Tripped——status() 轮询同样可见，
+        // 首次超限不产生盲区（工具步检查点经 status() 消费）。
         assert_eq!(
             b.record_usage(2, 0.0),
             CircuitStatus::Tripped(TripReason::OutOfTokens)
         );
-        assert_eq!(b.status(), CircuitStatus::Open);
-        // 正常记录仍可继续累积
-        assert_eq!(b.record_usage(1, 0.0), CircuitStatus::Open);
-        assert_eq!(b.tokens_used(), 1000);
+        assert_eq!(b.status(), CircuitStatus::Tripped(TripReason::OutOfTokens));
+        assert_eq!(b.tokens_used(), 1001);
     }
 }

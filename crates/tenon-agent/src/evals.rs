@@ -16,7 +16,6 @@ use tenon_store::{EventKind, Store};
 
 use crate::session::{AgentConfig, AgentSession, ProjectWriteLock, TaskOutcome};
 use tenon_core::context::ProjectRules;
-use tenon_core::policy::Mode;
 
 /// 机器可判验收断言（附录 D 风格的最小子集）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -169,8 +168,7 @@ impl EvalRunner {
                 .expect("snapshot store"),
         );
         // 基准任务 = 受控仓库快照（附录 D）；v1.89 所有非只读动作直接执行。
-        let mut config =
-            AgentConfig::for_project(dir.path().to_path_buf(), &project_id, true, Mode::Auto);
+        let mut config = AgentConfig::for_project(dir.path().to_path_buf(), &project_id);
         config.first_edit_buffer_ms = 5; // evals 提速
         config.max_tool_rounds = task.budget.max_steps * 2;
 
@@ -238,8 +236,7 @@ impl EvalRunner {
             SnapshotStore::open(&self.snapshots_root, &project_id, dir.path(), 2)
                 .expect("snapshot store"),
         );
-        let mut config =
-            AgentConfig::for_project(dir.path().to_path_buf(), &project_id, true, Mode::Auto);
+        let mut config = AgentConfig::for_project(dir.path().to_path_buf(), &project_id);
         config.first_edit_buffer_ms = 5;
         config.max_tool_rounds = task.budget.max_steps * 3;
 

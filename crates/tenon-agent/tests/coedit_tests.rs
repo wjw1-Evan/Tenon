@@ -9,7 +9,6 @@ use tokio::sync::Mutex;
 use tenon_agent::session::{AgentConfig, AgentSession, ProjectWriteLock};
 use tenon_agent::subagents::{plan_parallel, run_parallel, SubTask, WorktreePool};
 use tenon_core::context::ProjectRules;
-use tenon_core::policy::Mode;
 use tenon_models::{MockProvider, ScriptedReply};
 use tenon_snapshot::SnapshotStore;
 use tenon_store::Store;
@@ -179,7 +178,7 @@ async fn parallel_subagents_worktree_isolation() {
             ],
         ));
         async move {
-            let mut config = AgentConfig::for_project(wt.clone(), &project_id, true, Mode::Auto);
+            let mut config = AgentConfig::for_project(wt.clone(), &project_id);
             config.first_edit_buffer_ms = 5;
             let snapshots = SnapshotStore::open(&snapshots_root, &project_id, &wt, 2).unwrap();
             let session = AgentSession::create(

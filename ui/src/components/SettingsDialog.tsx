@@ -21,7 +21,6 @@ interface LayaStatus {
   enabled?: boolean;
   downloaded?: boolean;
   version?: string | null;
-  device?: string;
 }
 
 interface ProviderRow {
@@ -429,7 +428,7 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, o
                   ? t("settings.models.laya_downloaded")
                   : t("settings.models.laya_not_downloaded")}
                 {laya.version ? ` · ${t("settings.models.laya_version")} ${laya.version}` : ""}
-                {laya.device ? ` · ${t("settings.models.laya_device")} ${laya.device}` : ""}
+
               </span>
             ) : (
               <span className="muted">{t("settings.models.laya_unknown")}</span>

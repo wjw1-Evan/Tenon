@@ -6,7 +6,6 @@ use std::time::Duration;
 use tenon_agent::session::{AgentConfig, ControlCommand, ProjectWriteLock, TaskOutcome};
 use tenon_agent::AgentSession;
 use tenon_core::context::ProjectRules;
-use tenon_core::policy::Mode;
 use tenon_fs::l4;
 use tenon_models::{MockProvider, Role, ScriptedReply};
 use tenon_snapshot::SnapshotStore;
@@ -17,8 +16,6 @@ type StdStore = Arc<Mutex<Store>>;
 
 async fn setup(
     script: Vec<ScriptedReply>,
-    trusted: bool,
-    mode: Mode,
 ) -> (
     tempfile::TempDir,
     Arc<AgentSession>,
@@ -35,7 +32,7 @@ async fn setup(
     let snapshots =
         Arc::new(SnapshotStore::open(&snapshots_root, &project_id, dir.path(), 2).unwrap());
     let provider = Arc::new(MockProvider::new("mock", "mock-1", script));
-    let mut config = AgentConfig::for_project(dir.path().to_path_buf(), &project_id, trusted, mode);
+    let mut config = AgentConfig::for_project(dir.path().to_path_buf(), &project_id);
     config.first_edit_buffer_ms = 20; // 测试加速
     let rules = ProjectRules::default();
     let session = AgentSession::create(
@@ -53,12 +50,8 @@ async fn setup(
 
 #[tokio::test]
 async fn answer_only_task_completes_without_changes() {
-    let (_d, session, store, _p) = setup(
-        vec![ScriptedReply::Text("这是纯回答，无改动".into())],
-        false,
-        Mode::Interactive,
-    )
-    .await;
+    let (_d, session, store, _p) =
+        setup(vec![ScriptedReply::Text("这是纯回答，无改动".into())]).await;
     let outcome = session.run_task("解释这段代码").await;
     match outcome {
         TaskOutcome::Done(card) => {
@@ -77,12 +70,7 @@ async fn answer_only_task_completes_without_changes() {
 
 #[tokio::test]
 async fn model_stream_is_persisted_and_joined_without_loss() {
-    let (_d, session, store, _p) = setup(
-        vec![ScriptedReply::Text("流式回答ABC".into())],
-        false,
-        Mode::Interactive,
-    )
-    .await;
+    let (_d, session, store, _p) = setup(vec![ScriptedReply::Text("流式回答ABC".into())]).await;
     let outcome = session.run_task("解释").await;
     assert!(matches!(outcome, TaskOutcome::Done(_)));
     let mut st = store.lock().await;
@@ -114,8 +102,6 @@ async fn patch_task_auto_mode_writes_verifies_and_checkpoints() {
             },
             ScriptedReply::Text("修复完成".into()),
         ],
-        true,
-        Mode::Auto,
     )
     .await;
     let outcome = session.run_task("修复 bug").await;
@@ -155,8 +141,6 @@ async fn truncated_reply_continues_instead_of_done() {
             },
             ScriptedReply::Text("开发完成".into()),
         ],
-        true,
-        Mode::Auto,
     )
     .await;
     let outcome = session.run_task("开发游戏").await;
@@ -177,15 +161,11 @@ async fn truncated_reply_continues_instead_of_done() {
 #[tokio::test]
 async fn consecutive_truncations_error_out() {
     // v1.53：连续 3 次截断按模型失败语义转 ERROR，不再无限续跑
-    let (_d, session, store, _p) = setup(
-        vec![
-            ScriptedReply::Truncated("t1".into()),
-            ScriptedReply::Truncated("t2".into()),
-            ScriptedReply::Truncated("t3".into()),
-        ],
-        true,
-        Mode::Auto,
-    )
+    let (_d, session, store, _p) = setup(vec![
+        ScriptedReply::Truncated("t1".into()),
+        ScriptedReply::Truncated("t2".into()),
+        ScriptedReply::Truncated("t3".into()),
+    ])
     .await;
     let outcome = session.run_task("任务").await;
     match outcome {
@@ -200,17 +180,13 @@ async fn consecutive_truncations_error_out() {
 #[tokio::test]
 async fn interactive_mode_executes_b_level_writes_directly() {
     // v1.89：档位只是兼容元数据；B 级修改不再等待审批。
-    let (dir, session, store, _p) = setup(
-        vec![
-            ScriptedReply::Tool {
-                name: "apply_patch".into(),
-                args: serde_json::json!({"file": "a.txt", "range": null, "content": "one\n"}),
-            },
-            ScriptedReply::Text("已写入。".into()),
-        ],
-        false,
-        Mode::Interactive,
-    )
+    let (dir, session, store, _p) = setup(vec![
+        ScriptedReply::Tool {
+            name: "apply_patch".into(),
+            args: serde_json::json!({"file": "a.txt", "range": null, "content": "one\n"}),
+        },
+        ScriptedReply::Text("已写入。".into()),
+    ])
     .await;
     let outcome = session.run_task("写一个文件").await;
     match outcome {
@@ -223,22 +199,19 @@ async fn interactive_mode_executes_b_level_writes_directly() {
     );
     let mut st = store.lock().await;
     let events = st.events(&session.session_id).unwrap();
-    assert!(!events.iter().any(|e| e.kind == EventKind::ApprovalRequest));
+    // v1.89 审批事件类型已删：B 级写直接落 patch_applied
+    assert!(events.iter().any(|e| e.kind == EventKind::PatchApplied));
 }
 
 #[tokio::test]
 async fn d_level_git_commit_executes_and_audits_directly() {
-    let (dir, session, store, _p) = setup(
-        vec![
-            ScriptedReply::Tool {
-                name: "git_commit".into(),
-                args: serde_json::json!({"message": "test commit"}),
-            },
-            ScriptedReply::Text("已提交".into()),
-        ],
-        true,
-        Mode::Auto,
-    )
+    let (dir, session, store, _p) = setup(vec![
+        ScriptedReply::Tool {
+            name: "git_commit".into(),
+            args: serde_json::json!({"message": "test commit"}),
+        },
+        ScriptedReply::Text("已提交".into()),
+    ])
     .await;
     let root = dir.path();
     std::fs::write(root.join("code.txt"), "fn main() {}\n").unwrap();
@@ -275,17 +248,13 @@ async fn d_level_git_commit_executes_and_audits_directly() {
 
 #[tokio::test]
 async fn readonly_session_blocks_writes_but_answers() {
-    let (_dir, _unused_session, _store, _p) = setup(
-        vec![
-            ScriptedReply::Tool {
-                name: "apply_patch".into(),
-                args: serde_json::json!({"file": "a.txt", "range": null, "content": "x\n"}),
-            },
-            ScriptedReply::Text("只读会话无法修改文件。".into()),
-        ],
-        true,
-        Mode::Auto,
-    )
+    let (_dir, _unused_session, _store, _p) = setup(vec![
+        ScriptedReply::Tool {
+            name: "apply_patch".into(),
+            args: serde_json::json!({"file": "a.txt", "range": null, "content": "x\n"}),
+        },
+        ScriptedReply::Text("只读会话无法修改文件。".into()),
+    ])
     .await;
     // 只读：由 rules 只收窄注入
     let (_d2, session) = {
@@ -310,8 +279,7 @@ async fn readonly_session_blocks_writes_but_answers() {
                 ScriptedReply::Text("只读会话无法修改文件。".into()),
             ],
         ));
-        let mut config =
-            AgentConfig::for_project(dir.path().to_path_buf(), &project_id, true, Mode::Auto);
+        let mut config = AgentConfig::for_project(dir.path().to_path_buf(), &project_id);
         config.first_edit_buffer_ms = 10;
         let rules = ProjectRules {
             readonly: Some(true),
@@ -341,21 +309,17 @@ async fn readonly_session_blocks_writes_but_answers() {
 
 #[tokio::test]
 async fn circuit_breaker_pauses_on_file_budget() {
-    let (dir, session, _store, _p) = setup(
-        vec![
-            ScriptedReply::Tool {
-                name: "apply_patch".into(),
-                args: serde_json::json!({"file": "a.txt", "range": null, "content": "x\n"}),
-            },
-            ScriptedReply::Tool {
-                name: "apply_patch".into(),
-                args: serde_json::json!({"file": "b.txt", "range": null, "content": "y\n"}),
-            },
-            ScriptedReply::Text("done".into()),
-        ],
-        true,
-        Mode::Auto,
-    )
+    let (dir, session, _store, _p) = setup(vec![
+        ScriptedReply::Tool {
+            name: "apply_patch".into(),
+            args: serde_json::json!({"file": "a.txt", "range": null, "content": "x\n"}),
+        },
+        ScriptedReply::Tool {
+            name: "apply_patch".into(),
+            args: serde_json::json!({"file": "b.txt", "range": null, "content": "y\n"}),
+        },
+        ScriptedReply::Text("done".into()),
+    ])
     .await;
     // 收紧熔断：最多 1 个文件
     session
@@ -379,17 +343,13 @@ async fn circuit_breaker_pauses_on_file_budget() {
 
 #[tokio::test]
 async fn model_failure_rolls_back_to_pre_task_state() {
-    let (dir, session, _store, _p) = setup(
-        vec![
-            ScriptedReply::Tool {
-                name: "apply_patch".into(),
-                args: serde_json::json!({"file": "a.txt", "range": null, "content": "written\n"}),
-            },
-            ScriptedReply::Failure("provider down".into()),
-        ],
-        true,
-        Mode::Auto,
-    )
+    let (dir, session, _store, _p) = setup(vec![
+        ScriptedReply::Tool {
+            name: "apply_patch".into(),
+            args: serde_json::json!({"file": "a.txt", "range": null, "content": "written\n"}),
+        },
+        ScriptedReply::Failure("provider down".into()),
+    ])
     .await;
     let outcome = session.run_task("改文件").await;
     match outcome {
@@ -402,45 +362,56 @@ async fn model_failure_rolls_back_to_pre_task_state() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pause_control_stops_between_tool_calls() {
-    let (_dir, session, _store, _p) = setup(
-        vec![
-            ScriptedReply::Tool {
-                name: "apply_patch".into(),
-                args: serde_json::json!({"file": "a.txt", "range": null, "content": "x\n"}),
-            },
-            ScriptedReply::Tool {
-                name: "apply_patch".into(),
-                args: serde_json::json!({"file": "b.txt", "range": null, "content": "y\n"}),
-            },
-            ScriptedReply::Text("done".into()),
-        ],
-        true,
-        Mode::Auto,
-    )
+    let (_dir, session, _store, _p) = setup(vec![
+        ScriptedReply::Tool {
+            name: "apply_patch".into(),
+            args: serde_json::json!({"file": "a.txt", "range": null, "content": "x\n"}),
+        },
+        ScriptedReply::Tool {
+            name: "apply_patch".into(),
+            args: serde_json::json!({"file": "b.txt", "range": null, "content": "y\n"}),
+        },
+        ScriptedReply::Text("done".into()),
+    ])
     .await;
+    // v1.93：Pause = 挂起等待（Resume 继续 / Stop 退出），不再直接返回
     session.control(ControlCommand::Pause);
-    let outcome = session.run_task("任务").await;
-    assert!(
-        matches!(outcome, TaskOutcome::Paused { .. }),
-        "暂停应在工具间生效，实际 {outcome:?}"
-    );
+    let handle = tokio::spawn({
+        let session = session.clone();
+        async move { session.run_task("任务").await }
+    });
+    for _ in 0..100 {
+        if matches!(
+            session.current_state().await,
+            tenon_core::machine::State::Paused
+        ) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(matches!(
+        session.current_state().await,
+        tenon_core::machine::State::Paused
+    ));
+    session.control(ControlCommand::Stop);
+    let outcome = handle.await.unwrap();
+    match outcome {
+        TaskOutcome::Paused { reason, .. } => assert!(reason.contains("停止"), "{reason}"),
+        other => panic!("期望 Stop 退出为 Paused，实际 {other:?}"),
+    }
 }
 
 #[tokio::test]
 async fn rollback_last_restores_pre_task_snapshot() {
-    let (dir, session, _store, _p) = setup(
-        vec![
-            ScriptedReply::Tool {
-                name: "apply_patch".into(),
-                args: serde_json::json!({"file": "new.txt", "range": null, "content": "ai made\n"}),
-            },
-            ScriptedReply::Text("done".into()),
-        ],
-        true,
-        Mode::Auto,
-    )
+    let (dir, session, _store, _p) = setup(vec![
+        ScriptedReply::Tool {
+            name: "apply_patch".into(),
+            args: serde_json::json!({"file": "new.txt", "range": null, "content": "ai made\n"}),
+        },
+        ScriptedReply::Text("done".into()),
+    ])
     .await;
     session.run_task("创建文件").await;
     assert!(dir.path().join("new.txt").exists());
@@ -482,8 +453,7 @@ async fn secret_redaction_applies_to_git_read_output() {
 
 #[tokio::test]
 async fn concurrent_tasks_serialized_by_project_write_lock() {
-    let (_dir, session, _store, p) =
-        setup(vec![ScriptedReply::Text("answer".into())], true, Mode::Auto).await;
+    let (_dir, session, _store, p) = setup(vec![ScriptedReply::Text("answer".into())]).await;
     // 同一会话的并发 run_task 由写锁串行；两次都能完成
     let s1 = session.clone();
     let t1 = tokio::spawn(async move { s1.run_task("任务1").await });
@@ -497,12 +467,8 @@ async fn concurrent_tasks_serialized_by_project_write_lock() {
 
 #[tokio::test]
 async fn l4_recall_builds_l1_working_set_for_provider() {
-    let (_d, session, store, provider) = setup(
-        vec![ScriptedReply::Text("已基于 L4 上下文回答".into())],
-        false,
-        Mode::Interactive,
-    )
-    .await;
+    let (_d, session, store, provider) =
+        setup(vec![ScriptedReply::Text("已基于 L4 上下文回答".into())]).await;
     {
         let mut st = store.lock().await;
         let project_id = session.config().project_id.clone();
@@ -557,13 +523,9 @@ async fn l4_recall_builds_l1_working_set_for_provider() {
 
 #[tokio::test]
 async fn inline_completion_uses_single_turn_model_and_records_usage() {
-    let (_d, session, store, provider) = setup(
-        vec![ScriptedReply::Text(
-            "```rust\nreturn cached_value;\n```".into(),
-        )],
-        true,
-        Mode::Interactive,
-    )
+    let (_d, session, store, provider) = setup(vec![ScriptedReply::Text(
+        "```rust\nreturn cached_value;\n```".into(),
+    )])
     .await;
 
     let completion = session
@@ -650,12 +612,7 @@ fn sanitize_title_strips_english_meta_prefixes() {
 /// v1.58 对话标题：单轮、无工具、带 TITLE_MARKER；不消耗任务脚本队列。
 #[tokio::test]
 async fn generate_title_is_single_turn_marked_and_keeps_script_intact() {
-    let (_d, session, _store, provider) = setup(
-        vec![ScriptedReply::Text("任务回答".into())],
-        false,
-        Mode::Interactive,
-    )
-    .await;
+    let (_d, session, _store, provider) = setup(vec![ScriptedReply::Text("任务回答".into())]).await;
     let title = session
         .generate_title("帮我修复登录超时的 bug，越快越好")
         .await
@@ -685,7 +642,7 @@ async fn generate_title_is_single_turn_marked_and_keeps_script_intact() {
 
 #[tokio::test]
 async fn set_title_persists_and_broadcasts_session_title_event() {
-    let (_d, session, store, _p) = setup(vec![], false, Mode::Interactive).await;
+    let (_d, session, store, _p) = setup(vec![]).await;
     let mut rx = session.subscribe();
     session.set_title("修复登录超时").await.unwrap();
 
@@ -707,4 +664,139 @@ async fn set_title_persists_and_broadcasts_session_title_event() {
         .expect("broadcast within timeout")
         .expect("subscriber receives event");
     assert_eq!(broadcast.kind, EventKind::SessionTitle);
+}
+
+// ---------- v1.93：真恢复 / 运行期只读 / 并发守卫 / token 熔断 ----------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pause_suspends_until_resume_then_completes_task() {
+    let (dir, session, _store, _p) = setup(vec![
+        ScriptedReply::Tool {
+            name: "apply_patch".into(),
+            args: serde_json::json!({"file": "a.txt", "range": null, "content": "x\n"}),
+        },
+        ScriptedReply::Tool {
+            name: "apply_patch".into(),
+            args: serde_json::json!({"file": "b.txt", "range": null, "content": "y\n"}),
+        },
+        ScriptedReply::Text("done".into()),
+    ])
+    .await;
+    session.control(ControlCommand::Pause);
+    let handle = tokio::spawn({
+        let session = session.clone();
+        async move { session.run_task("任务").await }
+    });
+    // 挂起等待：状态进入 Paused 且任务未返回
+    for _ in 0..100 {
+        if matches!(
+            session.current_state().await,
+            tenon_core::machine::State::Paused
+        ) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(matches!(
+        session.current_state().await,
+        tenon_core::machine::State::Paused
+    ));
+    assert!(
+        !handle.is_finished(),
+        "挂起期间任务不得返回（v1.93 真挂起）"
+    );
+    // 恢复 → 继续原任务直至完成
+    session.control(ControlCommand::Resume);
+    let outcome = handle.await.unwrap();
+    assert!(
+        matches!(outcome, TaskOutcome::Done(_)),
+        "恢复后应完成原任务，实际 {outcome:?}"
+    );
+    assert!(dir.path().join("a.txt").exists());
+    assert!(
+        dir.path().join("b.txt").exists(),
+        "恢复后继续执行第二个工具步"
+    );
+}
+
+#[tokio::test]
+async fn set_readonly_takes_effect_at_runtime() {
+    let (dir, session, _store, _p) = setup(vec![
+        ScriptedReply::Tool {
+            name: "apply_patch".into(),
+            args: serde_json::json!({"file": "a.txt", "range": null, "content": "x\n"}),
+        },
+        ScriptedReply::Text("已只读".into()),
+    ])
+    .await;
+    // v1.93：控制命令运行期切换（此前为空操作）
+    session.control(ControlCommand::SetReadonly(true));
+    let outcome = session.run_task("改文件").await;
+    assert!(
+        matches!(outcome, TaskOutcome::Done(_)),
+        "只读拒绝写后仍应完成回答，实际 {outcome:?}"
+    );
+    assert!(
+        !dir.path().join("a.txt").exists(),
+        "只读模式下 B 级写必须被拒绝"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_task_rejects_reentry_while_running() {
+    let (_dir, session, _store, _p) = setup(vec![
+        ScriptedReply::Tool {
+            name: "apply_patch".into(),
+            args: serde_json::json!({"file": "a.txt", "range": null, "content": "x\n"}),
+        },
+        ScriptedReply::Text("done".into()),
+    ])
+    .await;
+    let handle = tokio::spawn({
+        let session = session.clone();
+        async move { session.run_task("第一个任务").await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let second = session.run_task("并发第二个任务").await;
+    match &second {
+        TaskOutcome::Error(msg) => assert!(msg.contains("任务进行中"), "{msg}"),
+        other => panic!("进行中重入应被拒绝，实际 {other:?}"),
+    }
+    assert!(matches!(handle.await.unwrap(), TaskOutcome::Done(_)));
+}
+
+#[tokio::test]
+async fn circuit_breaker_pauses_on_token_budget() {
+    let (dir, session, _store, _p) = setup(vec![
+        ScriptedReply::Tool {
+            name: "apply_patch".into(),
+            args: serde_json::json!({"file": "a.txt", "range": null, "content": "x\n"}),
+        },
+        ScriptedReply::Tool {
+            name: "apply_patch".into(),
+            args: serde_json::json!({"file": "b.txt", "range": null, "content": "y\n"}),
+        },
+        ScriptedReply::Text("done".into()),
+    ])
+    .await;
+    // §9.3 v1.93：token 预算熔断（此前 record_usage 不进熔断器，max_tokens 恒无效）
+    session
+        .set_circuit_limits(tenon_core::circuit::CircuitLimits {
+            max_files: 100,
+            max_lines: 100_000,
+            max_tokens: 8,
+            max_cost_usd: 1_000.0,
+        })
+        .await;
+    let outcome = session.run_task("长任务").await;
+    match &outcome {
+        TaskOutcome::Paused { reason, .. } => assert!(reason.contains("max_tokens"), "{reason}"),
+        other => panic!("期望 token 熔断暂停，实际 {other:?}"),
+    }
+    // 预算极小：首个回合用量即超限，在第一个工具步检查点拦截——
+    // 后续脚本步（b.txt）不执行即语义达成。
+    assert!(
+        !dir.path().join("b.txt").exists(),
+        "熔断后不得继续执行后续工具步"
+    );
 }

@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -72,7 +73,8 @@ pub struct ToolContext {
     /// 单命令超时（附录 E `[agent.exec].command_timeout_s`）。
     pub command_timeout: Duration,
     /// 只读开关（A 级可用、其余拒绝）。
-    pub readonly: bool,
+    /// 会话只读开关（§9.3）：AtomicBool 供 `set_readonly` 控制命令运行期切换（v1.93）。
+    pub readonly: std::sync::atomic::AtomicBool,
     /// 脏缓冲注册表（§8.6 人机共编；None = daemon 未接入）。
     pub dirty: Option<std::sync::Arc<tenon_fs::DirtyBufferRegistry>>,
     /// MCP 外部进程插件桥（§13.3；None = 未接入）。
@@ -81,8 +83,6 @@ pub struct ToolContext {
     pub mcp_policy: tenon_mcp::McpLevelPolicy,
     /// 团队策略工具黑名单（M3：跨会话只收窄；命中即拒绝）。
     pub team_denied_tools: Vec<String>,
-    /// Laya 本地决策模型（§9.8 集成点 #2 命令风险辅助；None = 回退）。
-    pub laya: Option<std::sync::Arc<tenon_laya::LayaRuntime>>,
     /// 共享 LSP 宿主（§8.5 / §9.2；None = 内核未接入 daemon）。
     pub lsp: Option<std::sync::Arc<tenon_lsp::LspManager>>,
 }
@@ -97,12 +97,11 @@ impl ToolContext {
             root: root.clone(),
             command_cwd: root.clone(),
             command_timeout,
-            readonly: false,
+            readonly: std::sync::atomic::AtomicBool::new(false),
             dirty: None,
             mcp: None,
             mcp_policy: tenon_mcp::McpLevelPolicy::default(),
             team_denied_tools: Vec::new(),
-            laya: None,
             lsp: None,
         }
     }
@@ -283,7 +282,7 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
 
         // ---------- B 级写执行 ----------
         "apply_patch" => {
-            if ctx.readonly {
+            if ctx.readonly.load(Ordering::Relaxed) {
                 return ToolOutput::err("只读会话禁用写操作");
             }
             let Ok(op) = serde_json::from_value::<PatchOp>(args.clone()) else {
@@ -387,7 +386,7 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
             }
         }
         "run_tests" | "run_build" => {
-            if ctx.readonly {
+            if ctx.readonly.load(Ordering::Relaxed) {
                 return ToolOutput::err("只读会话禁用命令执行");
             }
             // §9.8 集成点 #2 命令风险辅助由 session 层编排（规则为主 + Laya
@@ -427,7 +426,7 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
             }
         }
         "install_deps" => {
-            if ctx.readonly {
+            if ctx.readonly.load(Ordering::Relaxed) {
                 return ToolOutput::err("只读会话禁用依赖安装");
             }
             let Some(cmd) = args.get("command").and_then(|c| c.as_str()) else {
@@ -457,7 +456,7 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
 
         // ---------- C 级出网 ----------
         "http_fetch" => {
-            if ctx.readonly {
+            if ctx.readonly.load(Ordering::Relaxed) {
                 return ToolOutput::err("只读会话禁用网络访问");
             }
             let Some(url) = args.get("url").and_then(|u| u.as_str()) else {
@@ -499,7 +498,7 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
 
         // ---------- MCP 外部进程工具（§13.3：默认 C/D，永不自动执行） ----------
         name if name.starts_with("mcp:") => {
-            if ctx.readonly {
+            if ctx.readonly.load(Ordering::Relaxed) {
                 return ToolOutput::err("只读会话禁用 MCP 工具");
             }
             let Some(conn) = &ctx.mcp else {
@@ -537,7 +536,7 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
 
         // ---------- D 级（直执并审计） ----------
         "git_commit" => {
-            if ctx.readonly {
+            if ctx.readonly.load(Ordering::Relaxed) {
                 return ToolOutput::err("只读会话禁用 git 提交");
             }
             let msg = args
@@ -577,7 +576,7 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
             }
         }
         "git_push" => {
-            if ctx.readonly {
+            if ctx.readonly.load(Ordering::Relaxed) {
                 return ToolOutput::err("只读会话禁用 git 推送");
             }
             let remote = args
@@ -656,7 +655,7 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
 /// 创建 Pull Request（C+D 复合直执）：通过本机 `gh` CLI 使用用户已配置凭据。
 /// argv 直执不经 shell；`gh` 自身负责目标主机 / token 认证，输出仍统一脱敏。
 fn create_pull_request(ctx: &ToolContext, args: &serde_json::Value) -> ToolOutput {
-    if ctx.readonly {
+    if ctx.readonly.load(Ordering::Relaxed) {
         return ToolOutput::err("只读会话禁用创建 Pull Request");
     }
     let Some(title) = args.get("title").and_then(|v| v.as_str()).map(str::trim) else {
@@ -859,7 +858,7 @@ mod tests {
     #[test]
     fn readonly_blocks_writes_but_allows_reads() {
         let (d, mut c) = ctx();
-        c.readonly = true;
+        c.readonly = std::sync::atomic::AtomicBool::new(true);
         let out = execute_tool(
             &c,
             "apply_patch",

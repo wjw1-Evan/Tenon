@@ -60,7 +60,6 @@ pub enum SessionStatus {
     Executing,
     Verifying,
     Fixing,
-    AwaitingApproval,
     Paused,
     Error,
     Done,
@@ -76,7 +75,6 @@ impl SessionStatus {
             SessionStatus::Executing => "executing",
             SessionStatus::Verifying => "verifying",
             SessionStatus::Fixing => "fixing",
-            SessionStatus::AwaitingApproval => "awaiting_approval",
             SessionStatus::Paused => "paused",
             SessionStatus::Error => "error",
             SessionStatus::Done => "done",
@@ -92,7 +90,6 @@ impl SessionStatus {
             "executing" => SessionStatus::Executing,
             "verifying" => SessionStatus::Verifying,
             "fixing" => SessionStatus::Fixing,
-            "awaiting_approval" => SessionStatus::AwaitingApproval,
             "paused" => SessionStatus::Paused,
             "error" => SessionStatus::Error,
             "done" => SessionStatus::Done,
@@ -115,11 +112,7 @@ pub enum EventKind {
     /// v1.89 C/D 直接执行风险审计（不等待决策）。
     DirectAction,
     Diagnostics,
-    ApprovalRequest,
-    ApprovalDecision,
-    ApprovalTimeout,
     Checkpoint,
-    Compaction,
     Rollback,
     Unrollback,
     ModelFallback,
@@ -140,11 +133,7 @@ impl EventKind {
             EventKind::CommandRun => "command_run",
             EventKind::DirectAction => "direct_action",
             EventKind::Diagnostics => "diagnostics",
-            EventKind::ApprovalRequest => "approval_request",
-            EventKind::ApprovalDecision => "approval_decision",
-            EventKind::ApprovalTimeout => "approval_timeout",
             EventKind::Checkpoint => "checkpoint",
-            EventKind::Compaction => "compaction",
             EventKind::Rollback => "rollback",
             EventKind::Unrollback => "unrollback",
             EventKind::ModelFallback => "model_fallback",
@@ -164,11 +153,7 @@ impl EventKind {
             "command_run" => EventKind::CommandRun,
             "direct_action" => EventKind::DirectAction,
             "diagnostics" => EventKind::Diagnostics,
-            "approval_request" => EventKind::ApprovalRequest,
-            "approval_decision" => EventKind::ApprovalDecision,
-            "approval_timeout" => EventKind::ApprovalTimeout,
             "checkpoint" => EventKind::Checkpoint,
-            "compaction" => EventKind::Compaction,
             "rollback" => EventKind::Rollback,
             "unrollback" => EventKind::Unrollback,
             "model_fallback" => EventKind::ModelFallback,
@@ -279,15 +264,6 @@ pub struct ModelUsage {
     pub output_tokens: i64,
     pub cost_usd: f64,
     pub created_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MonthlyUsage {
-    /// YYYY-MM 或 YYYY-MM-DD
-    pub period: String,
-    pub input_tokens: i64,
-    pub output_tokens: i64,
-    pub cost_usd: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1108,42 +1084,6 @@ impl Store {
         .map_err(Into::into)
     }
 
-    /// 日级归因。
-    pub fn daily_usage(&mut self, day: &str) -> Result<MonthlyUsage> {
-        self.conn
-            .query_row(
-                "SELECT ?1, COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), COALESCE(SUM(cost_usd),0.0)
-                 FROM model_usage WHERE substr(created_at, 1, 10) = ?1",
-                [day],
-                |r| {
-                    Ok(MonthlyUsage {
-                        period: r.get(0)?,
-                        input_tokens: r.get(1)?,
-                        output_tokens: r.get(2)?,
-                        cost_usd: r.get(3)?,
-                    })
-                },
-            )
-            .map_err(Into::into)
-    }
-
-    /// 按月聚合表（永久）。
-    pub fn monthly_usage(&mut self) -> Result<Vec<MonthlyUsage>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT month, input_tokens, output_tokens, cost_usd
-             FROM model_usage_monthly ORDER BY month ASC",
-        )?;
-        let rows = stmt.query_map([], |r| {
-            Ok(MonthlyUsage {
-                period: r.get(0)?,
-                input_tokens: r.get(1)?,
-                output_tokens: r.get(2)?,
-                cost_usd: r.get(3)?,
-            })
-        })?;
-        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
-    }
-
     // ---------- plugins（§14.2 安装记录） ----------
 
     /// 插件安装记录（§13.2：版本锁定 + 签名入库）。
@@ -1778,16 +1718,6 @@ mod tests {
         let (pinp, pout, pcost) = s.project_usage_totals(&p.id).unwrap();
         assert_eq!((pinp, pout), (300, 130));
         assert!((pcost - 0.03).abs() < 1e-9);
-
-        // 月度聚合为永久表
-        let monthly = s.monthly_usage().unwrap();
-        assert_eq!(monthly.len(), 1);
-        assert_eq!(monthly[0].input_tokens, 300);
-
-        // 日级
-        let today = Utc::now().format("%Y-%m-%d").to_string();
-        let daily = s.daily_usage(&today).unwrap();
-        assert_eq!(daily.input_tokens, 300);
     }
 
     #[test]

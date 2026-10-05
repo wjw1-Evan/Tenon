@@ -7,7 +7,6 @@ use std::sync::Arc;
 use tenon_agent::recovery::recover_stale_sessions;
 use tenon_agent::session::{AgentConfig, AgentSession, ProjectWriteLock, TaskOutcome};
 use tenon_core::context::ProjectRules;
-use tenon_core::policy::Mode;
 use tenon_models::{MockProvider, ScriptedReply};
 use tenon_snapshot::SnapshotStore;
 use tenon_store::{EventKind, SessionStatus, Store};
@@ -41,7 +40,7 @@ async fn crash_mid_executing_recovers_to_last_snapshot() {
             ScriptedReply::Text("done".into()),
         ],
     ));
-    let mut config = AgentConfig::for_project(project.clone(), &project_id, true, Mode::Auto);
+    let mut config = AgentConfig::for_project(project.clone(), &project_id);
     config.first_edit_buffer_ms = 5;
     let session = AgentSession::create(
         store.clone(),

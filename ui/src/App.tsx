@@ -738,6 +738,16 @@ export default function App({
             },
           ]),
       {
+        id: "agent.readonly_on",
+        label: t("palette.readonly_on"),
+        run: () => sessionId && api.control(sessionId, "set_readonly", true),
+      },
+      {
+        id: "agent.readonly_off",
+        label: t("palette.readonly_off"),
+        run: () => sessionId && api.control(sessionId, "set_readonly", false),
+      },
+      {
         id: "agent.stop",
         label: t("message.stop"),
         run: () => sessionId && api.control(sessionId, "stop"),

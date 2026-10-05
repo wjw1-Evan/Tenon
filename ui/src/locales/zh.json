@@ -150,7 +150,6 @@
   "settings.models.laya_downloaded": "已下载",
   "settings.models.laya_not_downloaded": "未下载",
   "settings.models.laya_version": "版本",
-  "settings.models.laya_device": "设备",
   "settings.models.laya_unknown": "状态未知",
   "settings.models.note": "保存后立即重建 provider 表；默认模型对新会话生效（既有会话保持各自 provider）。密钥经环境变量引用（api_key_env），不落盘明文。",
   "model.dialog_title": "选择模型",
@@ -235,5 +234,7 @@
   "relative.days_ago": "{count} 天前",
   "message.resume": "恢复",
   "palette.toggle_sidebar": "切换侧栏",
-  "panel.patch_diff": "最新补丁 Diff"
+  "panel.patch_diff": "最新补丁 Diff",
+  "palette.readonly_on": "只读模式：开（拒绝写操作）",
+  "palette.readonly_off": "只读模式：关（允许写操作）"
 }

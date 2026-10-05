@@ -19,6 +19,6 @@ pub use context::{
 };
 pub use machine::{Event, Limits as StateLimits, State, StateMachine, TransitionError};
 pub use merge::{merge_three_way, MergeConflict};
-pub use policy::{Action, Decision, Level, Mode, Policy};
+pub use policy::{Action, Decision, Level, Policy};
 pub use redact::{contains_secret, redact, redact_tracked, scan, SecretKind};
 pub use tools::{count_changed_lines, unified_diff, PatchOp, Tool};

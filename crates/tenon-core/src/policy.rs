@@ -34,14 +34,6 @@ impl Level {
     }
 }
 
-/// 旧会话档位。v1.89 仅兼容配置 / API 序列化，不再改变执行决策。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Mode {
-    Interactive,
-    Auto,
-}
-
 /// 权限引擎输入：动作的分级。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Action {
@@ -57,30 +49,12 @@ pub enum Decision {
     Denied(&'static str),
 }
 
-/// 会话级执行上下文（旧字段保留以兼容既有构造与配置）。
-#[derive(Debug, Clone)]
+/// 会话级执行上下文（v1.93：mode / trusted / snapshot_enabled / degraded
+/// 均无读者，已删——档位随 v1.89 审批移除失效，快照与沙箱能力由执行器自身校验）。
+#[derive(Debug, Clone, Default)]
 pub struct Policy {
-    pub mode: Mode,
-    /// TOFU 项目元数据；v1.89 不再影响执行。
-    pub trusted: bool,
-    /// 会话只读开关（§9.3）。
+    /// 会话只读开关（§9.3；`set_readonly` 控制命令即时切换，v1.93）。
     pub readonly: bool,
-    /// 快照能力由执行器校验；此处保留兼容字段。
-    pub snapshot_enabled: bool,
-    /// Windows 沙箱能力元数据；写守卫仍始终生效。
-    pub degraded: bool,
-}
-
-impl Default for Policy {
-    fn default() -> Self {
-        Self {
-            mode: Mode::Interactive,
-            trusted: false,
-            readonly: false,
-            snapshot_enabled: true,
-            degraded: false,
-        }
-    }
 }
 
 impl Policy {
@@ -93,11 +67,6 @@ impl Policy {
         } else {
             Decision::Auto
         }
-    }
-
-    /// 旧接口兼容：档位不再是执行边界。
-    pub fn effective_mode(&self) -> Mode {
-        self.mode
     }
 }
 
@@ -130,21 +99,12 @@ mod tests {
 
     #[test]
     fn all_writes_execute_directly_unless_readonly() {
-        let p = Policy {
-            mode: Mode::Interactive,
-            trusted: false,
-            degraded: true,
-            snapshot_enabled: false,
-            ..Policy::default()
-        };
+        let p = Policy::default();
         for level in [Level::B, Level::C, Level::D, Level::Composite] {
             assert_eq!(p.decide(Action { level }), Decision::Auto);
         }
 
-        let readonly = Policy {
-            readonly: true,
-            ..Policy::default()
-        };
+        let readonly = Policy { readonly: true };
         for level in [Level::B, Level::C, Level::D, Level::Composite] {
             assert_eq!(
                 readonly.decide(Action { level }),

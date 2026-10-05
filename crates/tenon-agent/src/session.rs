@@ -20,10 +20,11 @@ use tenon_core::context::{
     render_working_set, ContextSlice, ProjectRules, SessionMemory, WorkingSet,
 };
 use tenon_core::machine::{Limits as MachineLimits, State, StateMachine};
-use tenon_core::policy::{Action, Decision, Level, Mode, Policy};
+use tenon_core::policy::{Action, Decision, Level, Policy};
 use tenon_core::tools::Tool;
 use tenon_models::{
-    ChatMessage, ChatRequest, ChatStreamEvent, ModelProvider, ToolSpec, Usage, TITLE_MARKER,
+    ChatMessage, ChatRequest, ChatStreamEvent, ModelProvider, PriceTable, ToolSpec, Usage,
+    TITLE_MARKER,
 };
 use tenon_snapshot::SnapshotStore;
 use tenon_store::{Event, EventKind, Level as StoreLevel, SessionStatus, Store};
@@ -61,19 +62,17 @@ pub struct AgentConfig {
     pub managed_worktree: Option<PathBuf>,
     /// 写锁作用域键（§9.7 并行写锁）：主根会话 "root"，受管 worktree 会话为其路径。
     pub write_scope: String,
+    /// 价格表（§11 v1.93）：daemon 按 provider 配置构建；未定价模型计 0。
+    pub price_table: PriceTable,
 }
 
 impl AgentConfig {
-    pub fn for_project(project_root: PathBuf, project_id: &str, trusted: bool, mode: Mode) -> Self {
+    pub fn for_project(project_root: PathBuf, project_id: &str) -> Self {
         Self {
             snapshots_root: tenon_config::Config::data_dir().join("snapshots"),
             project_root,
             project_id: project_id.to_string(),
-            policy: Policy {
-                mode,
-                trusted,
-                ..Policy::default()
-            },
+            policy: Policy::default(),
             first_edit_buffer_ms: 2000,
             circuit: CircuitLimits::default(),
             fix_rounds: 3,
@@ -87,6 +86,7 @@ impl AgentConfig {
             session_id: None,
             managed_worktree: None,
             write_scope: "root".to_string(),
+            price_table: PriceTable::new(),
         }
     }
 }
@@ -175,6 +175,8 @@ pub struct AgentSession {
     /// 最近一次回滚前的安全快照（unrevert 恢复点，§10.3）。
     pre_rollback_tree: Mutex<Option<String>>,
     interrupt: Notify,
+    /// 任务进行中标志（v1.93 并发守卫）：挂起等待恢复期间同样为 true。
+    running: AtomicBool,
 }
 
 fn tool_specs() -> Vec<ToolSpec> {
@@ -289,7 +291,7 @@ impl AgentSession {
             .unwrap_or_else(|| config.project_root.clone());
         let mut tool_ctx =
             ToolContext::new(&tool_root, Duration::from_secs(config.command_timeout_s));
-        tool_ctx.readonly = readonly;
+        tool_ctx.readonly = std::sync::atomic::AtomicBool::new(readonly);
         if let Some(working_dir) = &config.working_dir {
             let joined = if working_dir.is_absolute() {
                 working_dir.clone()
@@ -306,7 +308,6 @@ impl AgentSession {
         }
         tool_ctx.dirty = config.dirty.clone();
         tool_ctx.team_denied_tools = config.team_denied_tools.clone();
-        tool_ctx.laya = config.laya.clone();
         tool_ctx.lsp = config.lsp.clone();
         let (control_tx, control_rx) = mpsc::unbounded_channel();
         let (events_tx, _) = broadcast::channel(1024);
@@ -333,6 +334,7 @@ impl AgentSession {
             managed_worktree,
             control_tx,
             control_rx: Mutex::new(control_rx),
+            running: AtomicBool::new(false),
             events_tx,
             first_edit_done: AtomicBool::new(false),
             touched_files: Mutex::new(BTreeSet::new()),
@@ -511,6 +513,19 @@ impl AgentSession {
         }
         let provider = self.provider.read().await.clone();
         let model = provider.default_model();
+        // §11 v1.93：按 provider 配置单价折算（未定价模型计 0，宁少报不虚报），
+        // 并作为熔断预算输入（§9.3）——超 token / 超预算在下一工具步检查点熔断。
+        let cost = tenon_models::compute_cost(
+            &self.config.price_table,
+            &model,
+            usage.input_tokens,
+            usage.output_tokens,
+        );
+        let _status = self
+            .circuit
+            .lock()
+            .await
+            .record_usage(usage.input_tokens + usage.output_tokens, cost);
         let mut st = self.store.lock().await;
         let _ = st.record_model_usage(
             &self.session_id,
@@ -518,7 +533,7 @@ impl AgentSession {
             &model,
             usage.input_tokens as i64,
             usage.output_tokens as i64,
-            0.0, // 成本折算由 daemon 按价格表进行；本地模型恒 0
+            cost,
         );
     }
 
@@ -616,7 +631,20 @@ impl AgentSession {
     }
 
     /// 执行一个任务（完整 §9.1 循环）。
+    /// 任务入口（v1.93 并发守卫）：进行中（含挂起等待恢复）拒绝重入——
+    /// 此前 Executing 中再发消息会并发跑两个任务循环，竞态改写会话消息历史。
     pub async fn run_task(&self, user_text: &str) -> TaskOutcome {
+        if self.running.swap(true, Ordering::SeqCst) {
+            return TaskOutcome::Error(
+                "任务进行中（暂停 = 挂起待恢复）：请先停止或等待完成".into(),
+            );
+        }
+        let outcome = self.run_task_inner(user_text).await;
+        self.running.store(false, Ordering::SeqCst);
+        outcome
+    }
+
+    async fn run_task_inner(&self, user_text: &str) -> TaskOutcome {
         // §9.7 v1.87 并行写锁：按 (project_id, worktree_scope) 计——主根会话互斥，
         // 不同受管 worktree 会话可与主根及彼此并行；全局配额由 daemon 控制。
         let scope_lock = self.write_lock.lock_for(&self.write_scope).await;
@@ -831,20 +859,61 @@ impl AgentSession {
                 // Esc / 熔断暂停检查点
                 if let Some(cmd) = self.drain_control().await {
                     match cmd {
-                        ControlCommand::Pause | ControlCommand::Stop => {
+                        ControlCommand::Pause => {
+                            self.force_state(State::Paused).await;
+                            self.set_status(SessionStatus::Paused).await;
+                            // v1.93 真挂起：任务停在原地等 Resume 继续 / Stop 退出。
+                            // （此前直接 break 丢弃任务上下文，resume 命令为空操作。）
+                            loop {
+                                match self.drain_control().await {
+                                    Some(ControlCommand::Resume) => {
+                                        self.force_state(State::Executing).await;
+                                        self.set_status(SessionStatus::Executing).await;
+                                        break;
+                                    }
+                                    Some(ControlCommand::Stop) => {
+                                        paused_reason = Some("用户停止".into());
+                                        break 'rounds;
+                                    }
+                                    Some(ControlCommand::SetReadonly(v)) => {
+                                        self.tool_ctx.readonly.store(v, Ordering::SeqCst);
+                                    }
+                                    _ => tokio::time::sleep(Duration::from_millis(150)).await,
+                                }
+                            }
+                        }
+                        ControlCommand::Stop => {
                             self.force_state(State::Paused).await;
                             self.set_status(SessionStatus::Paused).await;
                             paused_reason = Some("用户暂停".into());
                             break 'rounds;
                         }
-                        ControlCommand::Resume | ControlCommand::SetReadonly(_) => {}
+                        // 非暂停态收到 resume 无事可做
+                        ControlCommand::Resume => {}
+                        // v1.93 实装：工具步间即时切换只读（此前为空操作）
+                        ControlCommand::SetReadonly(v) => {
+                            self.tool_ctx.readonly.store(v, Ordering::SeqCst);
+                        }
                     }
+                }
+                // 熔断预算检查（§9.3 v1.93）：token / 成本按回合累计，超限即暂停
+                if let CircuitStatus::Tripped(reason) = self.circuit.lock().await.status() {
+                    self.emit(
+                        EventKind::Error,
+                        &serde_json::json!({"circuit_tripped": reason.label()}),
+                    )
+                    .await;
+                    self.force_state(State::Paused).await;
+                    self.set_status(SessionStatus::Paused).await;
+                    paused_reason = Some(format!("熔断器触发（{}）", reason.label()));
+                    break 'rounds;
                 }
 
                 let tool = Tool::from_name(&call.name);
                 let level = tool.and_then(|t| t.level()).unwrap_or(Level::C);
 
-                let decision = if self.tool_ctx.readonly && level != Level::A {
+                let decision = if self.tool_ctx.readonly.load(Ordering::SeqCst) && level != Level::A
+                {
                     Decision::Denied("readonly")
                 } else {
                     self.config.policy.decide(Action { level })

@@ -14,6 +14,7 @@ use tenon_config::Config;
 use tenon_laya::LayaRuntime;
 use tenon_lsp::LspManager;
 use tenon_models::ModelProvider;
+use tenon_snapshot::SnapshotStore;
 use tenon_store::Store;
 
 use crate::auth::TicketStore;
@@ -860,6 +861,35 @@ impl DaemonState {
         runtime.stop().await;
         self.dirty_buffers.lock().await.remove(project_id);
         Some(runtime)
+    }
+
+    /// shadow 快照库 gc（§10.3 v1.93）：对全部登记项目按 keep_days prune。
+    /// 仅做对象级清理；失败逐项目静默（日志留痕），不阻塞其余项目。
+    pub async fn gc_snapshot_stores(&self, keep_days: u32) {
+        let projects: Vec<(String, String)> = {
+            let mut store = self.store.lock().await;
+            store
+                .list_projects()
+                .map(|ps| ps.into_iter().map(|p| (p.id, p.path)).collect::<Vec<_>>())
+                .unwrap_or_default()
+        };
+        for (project_id, path) in projects {
+            let root = match std::fs::canonicalize(&path) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let Ok(snapshots) = SnapshotStore::open(
+                &self.snapshots_root,
+                &project_id,
+                &root,
+                self.config.checkpoint.max_untracked_mb,
+            ) else {
+                continue;
+            };
+            if let Err(e) = snapshots.gc(keep_days) {
+                tracing::warn!("快照 gc 失败（{project_id}）: {e}");
+            }
+        }
     }
 
     /// 空闲回收：无活跃代理会话且超过 TTL 的 runtime；返回已关闭项目。

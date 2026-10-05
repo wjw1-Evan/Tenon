@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v1.92** |
-| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.92） |
+| 版本 | **v1.93** |
+| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.93） |
 | 状态 | 定稿（v1.10 决策闭环），M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 | 历史评审 | v0.1 / v0.3 两轮共 41 项、v1.0 复审 21 项问题的结论已全部并入本方案（过程文档已清理） |
@@ -126,6 +126,7 @@
 | **v1.90** | **GitHub Release 发布与桌面壳自动更新：tag 推送触发三平台矩阵构建 daemon sidecar 与 Tauri 安装包，聚合签名 `latest.json` 到 GitHub Release；桌面壳在用户选择 auto 后用 Tauri Updater 从 `releases/latest/download/latest.json` 检查 / 下载 / 校验 / 安装完整包并重启，manual 默认不出网。v1.86 的 daemon-only 执行器继续服务无壳 Web / headless，桌面壳内禁用 auto 以避免双通道** |
 | **v1.91** | **对话标题质量修复（对齐 Codex 短标题体验）：标题必须由模型基于首条用户请求生成；系统提示要求同语言、2-12 词、CJK ≤16 字符 / 拉丁 ≤32 字符、只输出任务目标标题。请求带 `reasoning_effort=low`（OpenAI 兼容端点映射 `reasoning_effort`；Anthropic 兼容端点关闭 thinking）并设 `max_tokens=128`。实测推理型 GLM 默认可消耗上百 reasoning token，48 会以 `length` 结束且正文为空，导致全量退回本地截断。模型失败仍回退本地截断，不阻塞任务循环** |
 | **v1.92** | **功能面收敛与断链修复（用户决策：功能简洁，移除无用功能）：① API 面收敛——移除 legacy 隐式项目端点（`GET/PUT /file`、`/file/ops`、`/search`、`/lsp`）与不在 §15 表的私加端点（`GET/PUT /project`）、`POST /lsp/openvsx`（零调用，Open VSX 实验兼容随之撤销，§13.3）、`GET/POST /portfolio-tasks`（跨项目组合任务无 UI 创建入口，读写自循环空转，端点 / 进程状态 / UI 2s 轮询与消费整链移除）、`GET /team-policy`（/settings 已内嵌 team_policy 回填）、`GET /project/:id/buffers`（PUT/DELETE 保留）、`POST /models/laya/download`（与启动自动下载同链路且无 UI 入口）、`GET /project/:id/l4/search`（Agent 走 store 直查，HTTP 面无消费者）；`GET /costs` 收敛为 `?session=` 必带；`/lsp` 假作用域修复——`POST /project/:id/lsp` 的 Path 参数生效，body 不再收 `project_id` / `project_path`；② 断链修复——Laya 运行时注入会话配置（§9.8 #1/#2 随 `models.laya.enabled` 生效，此前 daemon 恒不传导致生产恒关）；AGENTS.md 项目规则接线（§13.3「直读」落地：会话创建读取项目根 AGENTS.md `<!-- tenon:rules -->` 块做只收窄合并，此前恒传 default）；③ 死设置 / 死字段移除——会话默认档 mode（v1.89 后无行为差异，设置键 / 创建参数 / TOFU 门整链删除）、`force_interactive`（v1.89 后无操作）、隐私遥测 / 崩溃报告开关（无采集端永不生效，§7.1 / §15 / 附录 E 同步改为「不设无效开关」）；设置面板外观 / 语言两行移除（顶栏已有同功能）；④ UI 一致性——暂停补恢复入口（发送钮 + 命令面板，此前只进不出）；移除与 Cmd/Ctrl+J 完全等价的 Cmd/Ctrl+Alt+Z（§7.4）；laya 未接线的上下文预筛 / 批量 triage 集成点与 `features` 对应项、approvals 死写函数、死 locale / CSS / 导出清理；§9.8 收敛为三集成点（意图预判 / 命令风险 / 路由启发）** |
+| **v1.93** | **断链接线实装（v1.92 审计留档项落地）：① 恢复语义——`resume` 此前是空操作臂，Pause 改为任务挂起等待（工具步间检查点进入挂起循环，Resume 继续原任务、Stop 退出），`run_task` 加并发守卫（进行中拒绝重入，堵住 Executing 中发消息双跑循环的既有竞态）；② `set_readonly` 实装（此前控制命令为空操作）——工具步间即时切换只读，命令面板提供「只读模式 开 / 关」两入口；③ 成本归因接线（§9.3 承诺的 token / 成本熔断与 §11 价格表落地）——provider 配置新增可选 `price_in_per_mtok` / `price_out_per_mtok`，daemon 构建 PriceTable 注入会话，每回合 usage 计价入 `model_usage.cost_usd` 并进熔断器（超 token / 超预算即熔断暂停，与文件 / 行数同路径）；④ 快照库 gc 接线（§10.3 承诺落地）——daemon 周期任务按 `checkpoint.keep_days` 对登记项目 shadow 库 `git gc --prune`，`keep_last` / `checkpoint.enabled` 字段删除（前者无对应机制，后者是破坏回滚安全故事的脚枪）；⑤ 会话归档接线（§14.2 承诺落地）——`archive.events_days` 每日定时压缩归档关闭超期会话；⑥ 死符号清扫——`EventKind` 四个审批 / 压缩变体、`SessionStatus::AwaitingApproval`、`monthly_usage` / `daily_usage` 月日聚合（无消费方，§14.2 月聚合表口径撤销）、`Policy.mode/trusted/snapshot_enabled/degraded` 与 `Mode` 枚举、`ToolContext.laya`（写后不读）、`[sandbox]` / `[lsp]` / `recent_limit` / `low_verification_rounds` / `update.staging_dir` / `models.laya.device` 死配置字段、`/pairing` 的 `lan_enabled` 改为反映真实状态；MCP 桥维持留档（接线属特性级交付，manifest 声明面未定稿）** |
 
 
 
@@ -443,7 +444,7 @@ GlobalScheduler（全局并发 / 成本 / 通知）
 
 **下达任务**：会话输入 / 行内指令 / 诊断「AI 修复」→ 进入自主循环（§9.1）→ 首改 2s 缓冲（Esc 可断）→ 改动实时高亮 → 证据卡片；C/D 直执动作生成 direct_action 审计事件。
 
-**直执审计**：C / D / C+D 动作不再出卡等待；级别、具体动作、影响范围与执行结果写入 Trace。用户可在 Checkpoint 时间轴回滚相关节点；只读开关或工具黑名单是事前硬边界。
+**直执审计**：C / D / C+D 动作不再出卡等待；级别、具体动作、影响范围与执行结果写入 Trace。用户可在 Checkpoint 时间轴回滚相关节点；只读开关（命令面板「只读模式 开 / 关」，控制命令工具步间即时生效，v1.93）或工具黑名单是事前硬边界。
 
 **回滚**：两种粒度——① **按事件撤销**（默认）：基于事件日志与各步记录的改动文件集（§10.3），只撤销选定的 AI 补丁序列（快照中不存在的 AI 新建文件一并删除），用户同期手改与未保存缓冲走三方合并保留；② **checkpoint 整体恢复**（高级）：时间轴选快照 → 预览将丢弃的改动（明确警示包含用户手改）→ 确认 → shadow 库整体恢复。两种粒度的差异在预览中逐文件展示（§10.3）。**回滚本身可撤销（unrevert）**：每次回滚前自动追加快照，时间轴一键撤销最近一次回滚（opencode 同款双向语义）。
 
@@ -455,7 +456,7 @@ GlobalScheduler（全局并发 / 成本 / 通知）
 | Cmd/Ctrl+Shift+P | 命令面板 |
 | Cmd/Ctrl+I | 行内 AI 指令（选中代码） |
 | Cmd/Ctrl+Enter | 发送会话消息 |
-| Esc | 暂停代理 / 关闭卡片（暂停后发送钮或命令面板恢复，v1.92） |
+| Esc | 暂停代理 / 关闭卡片（暂停 = 任务挂起，发送钮或命令面板恢复继续原任务，v1.93 实装） |
 | Cmd/Ctrl+. | 停止当前任务 |
 | Cmd/Ctrl+B / J / ` | 侧栏 / 面板 / 终端区（终端区 M3 评估） |
 
@@ -620,8 +621,8 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 |---|---|---|
 | 首改缓冲 | 2s 可关 | 首个 B 级前高亮「即将修改 X」，Esc 打断；不是审批 |
 | 全局暂停 | Esc / 托盘 | 立即暂停，停最近 checkpoint |
-| 任务熔断 | >15 文件 / >1500 行 / 超预算 | 暂停待确认——断路器而非 Plan；预算默认 = 单任务 500k token 或 $5 等值（先到为准；本地模型仅计 token；config.toml 可调，全文见附录 E） |
-| 只读开关 | 会话级 | 禁用 B 级，不依赖模型语义理解 |
+| 任务熔断 | >15 文件 / >1500 行 / 超预算 | 暂停待确认——断路器而非 Plan；预算默认 = 单任务 500k token 或 $5 等值（先到为准；本地模型仅计 token；config.toml 可调，全文见附录 E）；v1.93 接线：每回合 usage 计价累计进熔断器，超 token / 超预算与文件 / 行数同路径熔断暂停（价格来源见 §11） |
+| 只读开关 | 会话级 | 禁用 B 级，不依赖模型语义理解；`set_readonly` 控制命令工具步间即时生效（v1.93 实装，此前为空操作） |
 | 模型能力适配 | 按模型 | 弱本地模型建议交互档 / 收紧熔断 |
 
 ### 9.4 验证与收敛
@@ -706,7 +707,7 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
   1. **按事件撤销 revert**（默认）：逐文件 `checkout <快照> -- <file>` 恢复到目标事件前状态；快照中不存在该文件 → 删除（AI 新建文件随撤销移除）；目标事件之外的用户手改文件不受触碰；同文件用户手改走三方合并保留（§8.6，强于 opencode 直接覆盖）；
   2. **整体恢复 restore**（高级）：`read-tree` + `checkout-index -a -f` 回到快照全量状态（含用户手改，预览警示）；
 - **撤销回滚（unrevert）**：每次回滚前自动追加快照（记录回滚前状态），时间轴支持一键撤销最近一次回滚——回滚是双向操作；
-- **保留与清理**：每会话保留最近 50 个或 7 天（可配置）+ shadow 库定时 `git gc --prune=7d`（每小时，后台）——仅影响「checkpoint 整体恢复」；「按事件撤销」依赖事件日志，不受快照清理影响；事件日志不受此限（归档策略见 §14.2）；
+- **保留与清理**（v1.93 接线）：shadow 库按 `checkpoint.keep_days`（默认 7 天）周期 `git gc --prune`（daemon 周期任务，默认每小时；项目 runtime 回收时顺带执行）——仅影响「checkpoint 整体恢复」的可达快照对象；checkpoint 记录与事件日志不受此限（会话归档策略见 §14.2）；`keep_last` / `checkpoint.enabled` 字段已删（前者无独立机制，后者可静默关闭快照、破坏回滚安全故事）；
 - **崩溃恢复语义**：恢复 = 回滚到最近快照 + 依据事件日志重建会话上下文；EXECUTING 中崩溃不承诺原地续跑；
 - 快照库不可用（关闭 / 磁盘满 / 损坏）→ 自动降交互档（「自动 = 必可回滚」不变式）；
 - 事件溯源：工具调用 / diff / 风险级别 / **用户编辑**全量追加日志，只增不删（归档策略见 §14.2）。
@@ -723,7 +724,7 @@ L4 按包隔离、语言服务器按需启动；子代理限定单包；检索�
 - **接入**：OpenAI / Anthropic / DeepSeek / Ollama 原生 + **OpenAI 兼容端点通用 provider**（base URL + Key）；设置面板模型分区（v1.40）提供常用提供商预设（OpenAI / Anthropic / DeepSeek / Ollama / 智谱 GLM——后两者经 OpenAI 兼容接入），新增 provider 只填名称 / 协议族 / base_url / 默认模型 / 密钥环境变量引用；
 - **本地决策模型（Laya）**：产品自管小型分类模型，承接代理循环结构化判定（用途 / 分发 / 边界见 §9.8）；启动自动下载并启用（静态 registry + 签名 + 版本锁定，无确认卡，v1.71）、本地 CPU 推理零 token 成本；不可用即整体回退，不阻塞任何功能；
 - **路由**：v1 显式（`/model` 与设置面板）+ 轻量启发式（纯读任务提示轻模型）；auto 路由实验特性默认关（置信度展示、一键改派、可反馈）；
-- **成本**：云端按价格表；本地模型（含 Laya）显示「本地 · 0 成本」，token 单独统计；任务级 / 会话级 / 日级归因；
+- **成本**（v1.93 接线）：价格表来源 = provider 配置可选 `price_in_per_mtok` / `price_out_per_mtok`（美元 / 百万 token，缺省 0 = 未知模型不计、宁少报不虚报）；daemon 按默认模型构建价格表注入会话，每回合计价累计入 `model_usage.cost_usd` 并作为熔断预算输入（§9.3）；本地模型（含 Laya）显示「本地 · 0 成本」，token 单独统计；任务级 / 会话级 / 项目级归因；
 - **密钥存储**：`api_key_env` 名先查 daemon 环境变量，缺失时读取操作系统凭据库（macOS Keychain / Linux libsecret / Windows PasswordVault）；持久写入只进入 OS 凭据库，不落盘明文；
 - **降级**：供应商不可用时可切换会话模型，任务上下文随迁。
 
@@ -856,7 +857,7 @@ registry 检索 → 展示**权限 diff**（相对已装版本新增权限高亮
 
 事件类型枚举：`user_input / sensing / decision / model_delta / patch_applied / command_run / direct_action / diagnostics / checkpoint / compaction / rollback / unrollback / model_fallback / decider_call / error / session_title`（direct_action 是 v1.89 C/D 直执审计：工具 / 级别 / 关键参数；rollback / unrollback 对应 §10.3 回滚与撤销回滚；model_delta 为 §9.6 合并后的模型增量（Final 的 usage / tool calls 仍只按权威 Final 入账）；decider_call 为 §9.8 Laya 本地判定：类型 / 结果 / 耗时，不含输入原文；session_title 为 v1.59 对话标题生成完成（payload `{title}`，UI 据此即时刷新对话列表）；均入 Trace 可审计）。旧库中的 `approval_request / approval_decision / approval_timeout` 只读回放兼容，新运行不再产生。
 
-**增长治理**：events / tool_calls 冷热分层——热数据留 SQLite，关闭超 90 天（可配置）的会话压缩归档至 `~/.tenon/archive/`（仍全本地、可检索回载）；历史 approvals 审计记录永久保留；model_usage 明细随会话归档，另维护按月聚合表（永久，支撑 §11 成本归因）。
+**增长治理**（v1.93 接线）：events / tool_calls 冷热分层——热数据留 SQLite，关闭超 `archive.events_days`（默认 90 天，daemon 每日定时执行）的会话压缩归档至 `~/.tenon/archive/`（仍全本地、可检索回载）；model_usage 明细随会话归档，项目 / 会话聚合经 `project_usage_totals` / `session_usage_totals` 即时查询（按月 / 按日聚合表无消费方，已删）；approvals 表仅作 v1.89 前旧库兼容。
 
 ---
 
@@ -879,7 +880,7 @@ registry 检索 → 展示**权限 diff**（相对已装版本新增权限高亮
 |---|---|---|
 | POST | `/session` | 创建会话；body 必须带 `project_id`，可附项目内 `cwd` / `worktree_id`；可附 `worktree: "managed"` 创建会话级受管 worktree 并行执行（v1.87，§9.7），响应携带 worktree 路径 |
 | POST | `/session/:id/message` | 发送任务；会话首条消息触发模型生成对话标题（v1.91：单轮带标记、low reasoning、`max_tokens=128`，失败 / 历史遗留会话回退首条消息本地截断，不阻塞任务） |
-| POST | `/session/:id/control` | pause / resume / stop / rollback（快捷回滚至最近 checkpoint，等价于 `/checkpoint/:id/rollback` 最近点，勿单独实现第二条路径）/ unrollback（撤销最近回滚，§10.3）/ set_readonly |
+| POST | `/session/:id/control` | pause（挂起任务）/ resume（继续原任务，v1.93 实装）/ stop / rollback（快捷回滚至最近 checkpoint，等价于 `/checkpoint/:id/rollback` 最近点，勿单独实现第二条路径）/ unrollback（撤销最近回滚，§10.3）/ set_readonly（v1.93 实装，工具步间即时生效） |
 | POST | `/session/:id/worktree/merge` | 受管 worktree 会话收尾·合并（v1.87）：先 checkpoint 项目根，再按会话改动文件集三方合入；冲突返回 §8.6 合并预览，不静默覆盖（B 级，可回滚） |
 | POST | `/session/:id/worktree/discard` | 受管 worktree 会话收尾·丢弃（v1.87）：显式确认后删除受管 worktree 与其快照分片，不动用户根 |
 | GET | `/session/:id/trace` | Trace 查询 |
@@ -1118,7 +1119,6 @@ update.channel         = "manual"     # manual | auto（默认 manual，§4.2）
 update.manifest_url    = "https://tenonide.dev/updates/manifest.json"
 update.public_key_hex  = ""           # 必填后 updater 才可用；空串禁用远端检查（fail closed）
 update.check_interval_s = 21600       # 仅 auto 生效；0 禁用周期检查
-update.staging_dir     = ""           # 空串 = ~/.tenon/updates/staged；测试 / 企业镜像可覆盖
 
 [session]
 mode              = "interactive"  # v1.89 仅兼容保留；不再影响执行决策
@@ -1129,7 +1129,6 @@ readonly          = false
 max_open                      = 12 # 运行时内部 LRU 上限：超限逐出无活跃会话的最久未用 runtime（v1.61，不拒绝登记 / 切换）
 max_concurrent_agent_tasks    = 2  # 全局同时 EXECUTING 上限：跨项目与同项目受管 worktree 并行共用（v1.87）；项目主根仍互斥
 idle_runtime_ttl_seconds      = 600 # ProjectRuntime 空闲回收延迟
-recent_limit                  = 20 # 最近项目列表保留数
 allow_linked_workspace        = false # 显式允许打开 monorepo + 子包等嵌套根；仍按 project_id 隔离
 
 [agent.circuit]
@@ -1139,29 +1138,17 @@ max_tokens  = 500000               # 与 max_cost_usd 先到为准（§9.3）
 max_cost_usd = 5.0
 
 [agent.fix_loop]
-max_rounds              = 3
-low_verification_rounds = 1        # 无测试仓库降级通道（§9.4）
+max_rounds = 3                     # 修复循环上限（§9.4）
 
 [agent.exec]
 command_timeout_s = 120            # 单条命令（测试 / 构建）超时（§9.2）
 
 [checkpoint]
-enabled         = true           # false = 无快照能力 → 强制交互档（§10.3）
-keep_last       = 50
-keep_days       = 7
+keep_days        = 7             # shadow 库 gc prune 天数（§10.3；daemon 周期执行）
 max_untracked_mb = 2             # 未跟踪大文件排除阈值（§10.3）
 
-[sandbox]
-macos   = "seatbelt"              # §12.3
-linux   = "landlock_seccomp"
-windows = "wsl2"                  # 无 WSL2 → 降级档（交互档 + 写守卫）
-
-[lsp]
-multiplex        = true           # §8.5
-allowed_commands = []             # 宿主命令白名单（铁律七；默认空 = 全拒）
-
 [archive]
-events_days = 90                  # §14.2 增长治理
+events_days = 90                  # §14.2 增长治理；daemon 每日定时归档关闭超期会话
 
 [evals]                           # AI Evals 流水线（§18.3 / M3）
 interval_hours = 0                # 定时触发间隔（小时）；0 = 关闭
@@ -1176,10 +1163,11 @@ base_url    = "http://127.0.0.1:11434/v1"
 wire_api    = "chat"              # chat | responses（schema 借鉴 codex，§3.1）
 api_key_env = ""                  # 钥匙串引用，不落盘
 model       = ""                  # 该 provider 默认模型（v1.11，可空）
+price_in_per_mtok  = 0.0          # 可选：美元 / 百万输入 token（v1.93；0 = 未定价不计成本）
+price_out_per_mtok = 0.0          # 可选：美元 / 百万输出 token
 
 [models.laya]
 enabled       = true              # 本地决策模型总开关（§9.8；false = 各集成点回退现状）
 auto_download = true              # daemon 启动自动下载并热装载（v1.71：无审批卡，失败静默回退）；false = 不自动下载
-device        = "cpu"             # cpu；gpu 预留
 features      = ["intent", "risk", "routing"]  # 集成点逐项开关（§9.8 表 #1-3，v1.92 收敛）
 ```

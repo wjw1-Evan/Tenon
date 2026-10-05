@@ -2917,3 +2917,79 @@ async fn managed_worktree_session_merge_conflict_and_discard() {
         .unwrap();
     assert_eq!(plain["worktree_path"], serde_json::json!(""));
 }
+
+#[tokio::test]
+async fn set_readonly_control_blocks_b_level_writes_over_http() {
+    // v1.93：set_readonly 实装（此前为空操作臂）——只读后 B 级写被拒，任务仍完成
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("ro-proj");
+    std::fs::create_dir_all(&project).unwrap();
+
+    let (_tmp, port, token) = start_daemon(vec![
+        ScriptedReply::Tool {
+            name: "apply_patch".into(),
+            args: serde_json::json!({"file": "a.txt", "range": null, "content": "x\n"}),
+        },
+        ScriptedReply::Text("只读，未修改文件".into()),
+    ])
+    .await;
+    let client = client_with_token(&token);
+    let opened: serde_json::Value = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({"path": project.to_string_lossy()}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let pid = opened["id"].as_str().unwrap().to_string();
+    let session: serde_json::Value = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({"project_id": pid, "provider": "mock"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let sid = session["session_id"].as_str().unwrap().to_string();
+
+    let ro = client
+        .post(format!("{}/session/{sid}/control", base(port)))
+        .json(&serde_json::json!({"action": "set_readonly", "value": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ro.status(), 200);
+
+    let sent = client
+        .post(format!("{}/session/{sid}/message", base(port)))
+        .json(&serde_json::json!({"text": "改文件"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(sent.status(), 202);
+
+    let mut done = false;
+    for _ in 0..100 {
+        let status: serde_json::Value = client
+            .get(format!("{}/session/{sid}", base(port)))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        if status["status"] == "done" && status["outcome"].is_object() {
+            done = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(done, "只读拒绝写后任务仍应完成");
+    assert!(
+        !project.join("a.txt").exists(),
+        "只读会话中 B 级写必须被拒绝"
+    );
+}

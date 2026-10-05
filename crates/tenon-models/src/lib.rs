@@ -252,6 +252,8 @@ mod tests {
                 api_key_env: Some("TENON_TEST_KEY".into()),
                 api_key: None,
                 model: Some("glm-4.6".into()),
+                price_in_per_mtok: None,
+                price_out_per_mtok: None,
             },
         );
         let cfg = tenon_config::ModelsConfig {

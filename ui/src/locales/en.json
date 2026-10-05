@@ -150,7 +150,6 @@
   "settings.models.laya_downloaded": "Downloaded",
   "settings.models.laya_not_downloaded": "Not downloaded",
   "settings.models.laya_version": "version",
-  "settings.models.laya_device": "device",
   "settings.models.laya_unknown": "Status unknown",
   "settings.models.note": "Saving rebuilds the provider table immediately; the default model applies to new sessions (existing sessions keep their provider). Keys are referenced via environment variables (api_key_env) and never stored in plaintext.",
   "model.dialog_title": "Choose model",
@@ -235,5 +234,7 @@
   "relative.days_ago": "{count}d ago",
   "message.resume": "Resume",
   "palette.toggle_sidebar": "Toggle sidebar",
-  "panel.patch_diff": "Latest patch diff"
+  "panel.patch_diff": "Latest patch diff",
+  "palette.readonly_on": "Read-only mode: on (writes denied)",
+  "palette.readonly_off": "Read-only mode: off (writes allowed)"
 }

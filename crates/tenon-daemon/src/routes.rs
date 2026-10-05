@@ -15,7 +15,6 @@ use tokio::sync::Mutex;
 
 use tenon_agent::session::{sanitize_title, AgentConfig, AgentSession, ControlCommand};
 use tenon_core::context::ProjectRules;
-use tenon_core::policy::Mode;
 use tenon_snapshot::SnapshotStore;
 use tenon_store::{EventKind, SessionStatus};
 
@@ -131,14 +130,8 @@ async fn create_agent_session(
         state.config.checkpoint.max_untracked_mb,
     )
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("快照库: {e}")))?;
-    // v1.92：审批移除后 interactive/auto 档位无行为差异，mode 整链删除——
-    // AgentConfig 恒按交互档构建（§9.1 状态机不受影响）。
-    let mut agent_cfg = AgentConfig::for_project(
-        std::path::PathBuf::from(&project.path),
-        &project.id,
-        project.trusted,
-        Mode::Interactive,
-    );
+    let mut agent_cfg =
+        AgentConfig::for_project(std::path::PathBuf::from(&project.path), &project.id);
     agent_cfg.first_edit_buffer_ms = state.config.session.first_edit_buffer_ms;
     {
         let ov = state.settings_overrides.lock().unwrap().clone();
@@ -165,6 +158,21 @@ async fn create_agent_session(
     agent_cfg.dirty = Some(state.dirty_buffers_for(&project.id).await);
     agent_cfg.lsp = Some(state.lsp.clone());
     agent_cfg.team_denied_tools = team_policy.denied_tools;
+    // §11 v1.93：按 provider 配置单价构建价格表（设置覆盖优先于 config），
+    // 会话每回合计价入 model_usage.cost_usd 并作为熔断预算输入（§9.3）。
+    {
+        let provider_name = provider.name().to_string();
+        let cfg = state.config.models.providers.get(&provider_name);
+        let price_in = cfg.and_then(|c| c.price_in_per_mtok);
+        let price_out = cfg.and_then(|c| c.price_out_per_mtok);
+        if matches!((price_in, price_out), (Some(i), Some(o)) if i > 0.0 || o > 0.0) {
+            agent_cfg.price_table = tenon_models::PriceTable::new().with_rate(
+                &provider.default_model(),
+                price_in.unwrap_or(0.0),
+                price_out.unwrap_or(0.0),
+            );
+        }
+    }
     // §9.8 v1.92 接线：enabled 时把 Laya 运行时注入会话配置（#1 意图预判 /
     // #2 命令风险补盲区随之生效；未下载 / 未加载由运行时内部回退现状）。
     if state.config.models.laya.enabled {
@@ -600,7 +608,6 @@ async fn get_session(State(state): State<Arc<DaemonState>>, Path(id): Path<Strin
         SessionStatus::Executing => "executing",
         SessionStatus::Verifying => "verifying",
         SessionStatus::Fixing => "fixing",
-        SessionStatus::AwaitingApproval => "awaiting_approval",
         SessionStatus::Paused => "paused",
         SessionStatus::Error => "error",
         SessionStatus::Done => "done",
@@ -2159,7 +2166,7 @@ async fn pairing_info(State(state): State<Arc<DaemonState>>) -> Response {
         "port": state.port.load(std::sync::atomic::Ordering::Relaxed),
         "token": state.token,
         "ws_ticket": ws_ticket,
-        "lan_enabled": false,
+        "lan_enabled": state.lan_pairing.is_enabled(),
         // 启动时注册的项目根：浏览器自发现 UI 据此打开同一项目（而非 cwd）
         "project": state.default_project,
     }))
@@ -2204,7 +2211,6 @@ async fn list_models(State(state): State<Arc<DaemonState>>) -> Response {
         "enabled": state.config.models.laya.enabled,
         "downloaded": loaded,
         "version": version,
-        "device": state.config.models.laya.device,
     });
     Json(json!({
         "models": models,

@@ -271,6 +271,45 @@ pub async fn serve(options: DaemonOptions) -> std::io::Result<DaemonHandle> {
         });
     }
 
+    // shadow 快照库周期 gc（§10.3 v1.93 接线）：keep_days > 0 时每小时对全部
+    // 登记项目执行 `git gc --prune=<keep_days>.days.ago`——对象级清理，
+    // checkpoint 记录与事件日志不受影响；失败静默留待下轮。
+    if state.config.checkpoint.keep_days > 0 {
+        let state = state.clone();
+        let keep_days = state.config.checkpoint.keep_days;
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(3600));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                state.gc_snapshot_stores(keep_days).await;
+            }
+        });
+    }
+
+    // 会话归档定时（§14.2 v1.93 接线）：events_days > 0 时每日把关闭超期的
+    // 会话压缩归档至 ~/.tenon/archive/（热数据留 SQLite）。
+    if state.config.archive.events_days > 0 {
+        let state = state.clone();
+        let days = state.config.archive.events_days;
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(24 * 3600));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                let archive_dir = tenon_config::Config::data_dir().join("archive");
+                let mut store = state.store.lock().await;
+                match store.archive_old_sessions(days, &archive_dir) {
+                    Ok(ids) if !ids.is_empty() => {
+                        tracing::info!("归档 {} 个超期会话至 {}", ids.len(), archive_dir.display())
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("会话归档失败: {e}"),
+                }
+            }
+        });
+    }
+
     Ok(DaemonHandle {
         port,
         token: state.token.clone(),
