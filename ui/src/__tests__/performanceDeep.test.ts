@@ -262,3 +262,13 @@ describe("performance storage-error paths", () => {
     globalThis.requestAnimationFrame = origRAF;
   });
 });
+
+describe("i18n resolveLocale", () => {
+  it("resolves auto based on navigator", async () => {
+    const { resolveLocale } = await import("../lib/i18n");
+    // jsdom navigator.language 默认 "en" → "en"
+    expect(resolveLocale("auto")).toBe("en");
+    expect(resolveLocale("zh-CN")).toBe("zh-CN");
+    expect(resolveLocale("en")).toBe("en");
+  });
+});
