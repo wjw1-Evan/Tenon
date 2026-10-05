@@ -24,12 +24,17 @@ use tenon_core::policy::{Action, Decision, Level, Policy};
 use tenon_core::tools::Tool;
 use tenon_models::{
     ChatMessage, ChatRequest, ChatStreamEvent, ModelProvider, PriceTable, Role, ToolSpec, Usage,
-    TITLE_MARKER,
+    MEMORY_MARKER, TITLE_MARKER,
 };
 use tenon_snapshot::SnapshotStore;
-use tenon_store::{Event, EventKind, Level as StoreLevel, SessionStatus, Store};
+use tenon_store::{Event, EventKind, Level as StoreLevel, MemoryRecord, SessionStatus, Store};
 
 use crate::executor::{execute_tool, ToolContext};
+
+/// 每项目 L5 记忆 active 上限（§10.1 v1.104）。
+const MAX_MEMORIES_PER_PROJECT: usize = 200;
+/// L5 记忆去重余弦阈值（§10.1 v1.104）。
+const MEMORY_DEDUPE_THRESHOLD: f32 = 0.90;
 
 #[derive(Debug, Clone)]
 pub struct AgentConfig {
@@ -62,6 +67,8 @@ pub struct AgentConfig {
     pub managed_worktree: Option<PathBuf>,
     /// 写锁作用域键（§9.7 并行写锁）：主根会话 "root"，受管 worktree 会话为其路径。
     pub write_scope: String,
+    /// L5 跨会话对话记忆（§10.1 v1.104）：false = 不提取不注入。
+    pub memories_enabled: bool,
     /// 价格表（§11 v1.93）：daemon 按 provider 配置构建；未定价模型计 0。
     pub price_table: PriceTable,
 }
@@ -86,6 +93,7 @@ impl AgentConfig {
             session_id: None,
             managed_worktree: None,
             write_scope: "root".to_string(),
+            memories_enabled: true,
             price_table: PriceTable::new(),
         }
     }
@@ -551,6 +559,115 @@ impl AgentSession {
         Ok(())
     }
 
+    /// L5 跨会话记忆提取（§10.1 v1.104）：任务成功完成后单轮无工具调用，
+    /// 输入仅用户消息 + 最终回答（不含中间工具输出），严格 JSON 契约、
+    /// 每任务 ≤5 条、每条 ≤200 字符；请求带 `MEMORY_MARKER` 供测试替身识别
+    /// （同 TITLE_MARKER：不消耗脚本队列）。入库走 store 去重合并（本地
+    /// embedding 余弦 ≥0.90 刷新既有条目）与每项目上限治理。任何失败静默
+    /// 回退（日志留痕），不阻塞任务结果、不产生 Error 事件。
+    async fn extract_memories(&self, user_text: &str, answer: &str) {
+        let result = self.extract_memories_inner(user_text, answer).await;
+        if let Err(e) = result {
+            tracing::debug!("L5 memory extraction skipped: {e}");
+        }
+    }
+
+    async fn extract_memories_inner(&self, user_text: &str, answer: &str) -> Result<(), String> {
+        const MAX_ITEMS: usize = 5;
+        const MAX_CONTENT_CHARS: usize = 200;
+        let provider = self.provider.read().await.clone();
+        let excerpt_text: String = user_text.chars().take(4000).collect();
+        let excerpt_answer: String = answer.chars().take(4000).collect();
+        let mut request = ChatRequest::new(
+            provider.default_model(),
+            vec![
+                ChatMessage::system(format!(
+                    "{MEMORY_MARKER} 你是记忆提取器：从这轮对话中提取值得跨会话记住的稳定信息\
+                     （用户偏好 / 项目事实 / 已定决策 / 工作流要点）。规则：\
+                     1. 只提取稳定、可复用的信息；一次性任务细节、代码片段、文件内容一律不要；\
+                     2. 全局用户偏好 scope=global 且 kind=preference，其余 scope=project；\
+                     3. 禁止把文件内容或代码写入记忆；每条 content ≤200 字符；\
+                     4. 最多 5 条；没有值得记的就返回空数组；\
+                     5. 只输出严格 JSON：\
+                     {{\"memories\":[{{\"kind\":\"preference|fact|decision|workflow\",\"scope\":\"project|global\",\"content\":\"…\",\"importance\":1}}]}}，\
+                     不要解释、不要 markdown 代码块。"
+                )),
+                ChatMessage::user(format!(
+                    "用户消息：\n{excerpt_text}\n\n最终回答：\n{excerpt_answer}"
+                )),
+            ],
+        );
+        request.max_tokens = 512;
+        request.temperature = 0.2;
+        let response = provider.chat(&request).await.map_err(|e| e.to_string())?;
+        self.record_usage(response.usage).await;
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(response.content.trim()).map_err(|e| format!("解析失败: {e}"))?;
+        let empty = Vec::new();
+        let items = parsed
+            .get("memories")
+            .and_then(|v| v.as_array())
+            .unwrap_or(&empty);
+        let mut saved_ids: Vec<String> = Vec::new();
+        for item in items.iter().take(MAX_ITEMS) {
+            let Some(content) = item.get("content").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let kind = item
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("fact")
+                .to_string();
+            let scope = item
+                .get("scope")
+                .and_then(|v| v.as_str())
+                .unwrap_or("project")
+                .to_string();
+            // global 层只承载用户偏好（§10.1 v1.104：永不承载仓库内容），
+            // 模型输出不合规时收敛为 project 层入库。
+            let (scope, kind) = if scope == "global" && kind == "preference" {
+                ("global".to_string(), "preference".to_string())
+            } else {
+                ("project".to_string(), kind)
+            };
+            let content: String = content.chars().take(MAX_CONTENT_CHARS).collect();
+            let importance = item
+                .get("importance")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(3)
+                .clamp(1, 5);
+            let embedding = tenon_fs::l4::embed("", &content);
+            let rec = MemoryRecord {
+                scope,
+                project_id: self.config.project_id.clone(),
+                kind,
+                content,
+                importance,
+                embedding,
+                source_session: self.session_id.clone(),
+            };
+            let mut st = self.store.lock().await;
+            match st.upsert_memory(&rec, MEMORY_DEDUPE_THRESHOLD) {
+                Ok((mem, _merged)) => saved_ids.push(mem.id),
+                Err(e) => return Err(format!("入库失败: {e}")),
+            }
+        }
+        if saved_ids.is_empty() {
+            return Ok(());
+        }
+        // 每项目 active 上限治理（§10.1 v1.104）
+        if let Err(e) = st_upsert_prune(&self.store, &self.config.project_id).await {
+            tracing::debug!("L5 memory prune failed: {e}");
+        }
+        self.emit(
+            EventKind::MemorySaved,
+            &serde_json::json!({"count": saved_ids.len(), "ids": saved_ids}),
+        )
+        .await;
+        Ok(())
+    }
+
     /// 设置熔断器预算（创建后按 config.toml 覆盖）。
     pub async fn set_circuit_limits(&self, limits: CircuitLimits) {
         *self.circuit.lock().await = CircuitBreaker::new(limits);
@@ -723,6 +840,13 @@ impl AgentSession {
             );
         }
         let outcome = self.run_task_inner(user_text).await;
+        // L5 记忆提取（§10.1 v1.104）：任务成功完成后单轮提取；失败静默回退，
+        // 不改变任务结果、不阻塞返回。提取调用照常经 record_usage 入成本归因。
+        if let TaskOutcome::Done(card) = &outcome {
+            if self.config.memories_enabled {
+                self.extract_memories(user_text, &card.answer).await;
+            }
+        }
         self.running.store(false, Ordering::SeqCst);
         outcome
     }
@@ -827,11 +951,38 @@ impl AgentSession {
             context if context.is_empty() => user_text.to_string(),
             context => format!("{user_text}\n\n{context}"),
         };
+        // L5 跨会话记忆注入（§10.1 v1.104）：项目层 + global preference 层，
+        // importance × 新鲜度排序、条数 / token 预算在 render_memories 内裁剪；
+        // 记忆为参考数据非指令（§12.1 不可信数据），检索失败静默回退空集。
+        let memory_items = if self.config.memories_enabled {
+            match self
+                .store
+                .lock()
+                .await
+                .list_memories(&self.config.project_id, None, 16)
+            {
+                Ok(rows) => rows
+                    .into_iter()
+                    .map(|m| tenon_core::prompt::MemoryItem {
+                        kind: m.kind,
+                        scope: m.scope,
+                        content: m.content,
+                        importance: m.importance,
+                    })
+                    .collect::<Vec<_>>(),
+                Err(e) => {
+                    tracing::debug!("L5 memory recall unavailable: {e}");
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
         let mut messages: Vec<ChatMessage> = vec![
             ChatMessage::system(tenon_core::prompt::build_system_prompt(
                 &self.rules.lock().await.clone(),
                 &self.memory.lock().await.clone(),
-                &[],
+                &memory_items,
             )),
             ChatMessage::user(user_message),
         ];
