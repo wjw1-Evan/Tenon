@@ -213,8 +213,8 @@ describe("ProjectExplorer multi-project control surface", () => {
     );
   });
 
-  // v1.58 对话标题：对话行标题优先，无标题回退模型名。
-  it("chat rows prefer generated titles and fall back to model names", () => {
+  // v1.116：只展示真正开始的任务——有标题会话行渲染，无标题回退（模型名 / 短 id）不进列表。
+  it("chat rows prefer generated titles and hide untitled fallbacks", () => {
     const titled = {
       ...project("open-a"),
       sessions: [
@@ -231,7 +231,7 @@ describe("ProjectExplorer multi-project control surface", () => {
     renderExplorer([titled]);
     expect(screen.getByTestId("chat-list-open-a")).toBeInTheDocument();
     expect(screen.getByText("修复登录超时")).toBeInTheDocument();
-    expect(screen.getByText("mock")).toBeInTheDocument();
+    expect(screen.queryByText("mock")).toBeNull();
   });
 
   // v1.88 Codex 项目行：Updated 列取最近会话，支持侧栏快速扫读。
@@ -283,6 +283,8 @@ function projectWithSessions(
     sessions: sessions.map((session) => ({
       status: "idle",
       model: "mock",
+      // v1.116：无标题会话不进列表——行操作类用例的会话默认带标题（已开始）。
+      title: "已开始的任务",
       updated_at: "2026-10-05T00:00:00Z",
       ...session,
     })),
@@ -401,6 +403,8 @@ describe("Session archive & delete (v1.103)", () => {
     id,
     status,
     model: "mock",
+    // v1.116：无标题会话不进列表——行操作类用例的会话默认带标题（已开始）。
+    title: "已开始的任务",
     updated_at: "2026-10-05T00:00:00Z",
   });
 

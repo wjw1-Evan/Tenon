@@ -93,19 +93,18 @@ describe("App project explorer deep", () => {
     }
   });
 
-  it("creates a managed worktree session (when visible)", async () => {
+  // v1.116 草稿态：worktree 新任务点击只记录意图，不再立即建会话；
+  // 首条消息发出才 POST /session（draftSessionFlow.test.tsx 覆盖首发链路）。
+  it("records managed-worktree intent without creating a session (when visible)", async () => {
     render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/proj-a" />);
     await waitFor(() => expect(screen.getByTestId("project-list")).toBeTruthy(), { timeout: 5000 });
     const wtBtn = screen.queryByTestId("session-new-worktree-proj-a");
     if (wtBtn) {
       fireEvent.click(wtBtn);
-      await waitFor(() => {
-        const createCall = fetchCalls.find(([url, init]) => {
-          if (!url.includes("/session") || init?.method !== "POST") return false;
-          try { return JSON.parse(String(init.body)).worktree === "managed"; } catch { return false; }
-        });
-        expect(createCall).toBeTruthy();
-      }, { timeout: 5000 });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(
+        fetchCalls.some(([url, init]) => url.includes("/session") && init?.method === "POST")
+      ).toBe(false);
     }
   });
 

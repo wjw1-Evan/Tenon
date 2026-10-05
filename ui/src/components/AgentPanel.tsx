@@ -25,6 +25,10 @@ interface Props {
   api: TenonApi;
   t: Translate;
   sessionId: string | null;
+  /** 新任务草稿态（v1.116 §7.2）：sessionId 为空时输入仍可用，首发经 onDraftSend 建会话。 */
+  draft?: boolean;
+  /** 草稿首发回调：App 落库建会话（按草稿意图附 worktree）后发送并回填激活会话。 */
+  onDraftSend?: (text: string) => Promise<void>;
   onStateChange?: (s: AgentStateName) => void;
   onLatestDiff?: (diff: string | null) => void;
   onDirtyConflict?: (c: DirtyConflictView | null) => void;
@@ -139,6 +143,8 @@ export function AgentPanel({
   api,
   t,
   sessionId,
+  draft,
+  onDraftSend,
   onStateChange,
   onLatestDiff,
   onDirtyConflict,
@@ -265,10 +271,25 @@ export function AgentPanel({
   }, [api, sessionId, onStateChange, onLatestDiff, onDirtyConflict]);
 
   async function send() {
-    if (!sessionId || !input.trim()) return;
+    const text = input.trim();
+    if (!text) return;
+    // 草稿任务首发（v1.116）：此刻才建会话（App 落库后回填激活会话），随后的
+    // 发送经既有路径；失败保留输入可重试，错误经 App 层呈现。
+    if (!sessionId) {
+      if (draft && onDraftSend) {
+        setBusy(true);
+        try {
+          await onDraftSend(text);
+          setInput("");
+        } finally {
+          setBusy(false);
+        }
+      }
+      return;
+    }
     setBusy(true);
     try {
-      await api.sendMessage(sessionId, input.trim());
+      await api.sendMessage(sessionId, text);
       setInput("");
     } finally {
       setBusy(false);
@@ -358,7 +379,7 @@ export function AgentPanel({
       <div className="agent-feed" ref={feedRef} data-testid="agent-feed">
         {empty && (
           <div className="agent-empty" data-testid="agent-empty">
-            {sessionId ? t("thread.empty") : t("thread.no_session")}
+            {sessionId || draft ? t("thread.empty") : t("thread.no_session")}
           </div>
         )}
         {turns.map((turn, idx) => {
@@ -437,7 +458,7 @@ export function AgentPanel({
           <button
             className={running ? "agent-send agent-send-stop" : "agent-send"}
             onClick={paused ? resume : running ? stop : send}
-            disabled={!sessionId || stopRequested || (!running && !paused && busy)}
+            disabled={(!sessionId && !(draft && onDraftSend)) || stopRequested || (!running && !paused && busy)}
             data-testid={paused ? "resume" : running ? "stop" : "send"}
           >
             {paused ? t("message.resume") : running ? t("message.stop_short") : t("message.send")}

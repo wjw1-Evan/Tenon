@@ -403,11 +403,15 @@ export function ProjectExplorer({
 
   /** 展开文件夹下的会话与组合任务子项（归属该项目的任务按会话呈现）。 */
   const renderSessions = (project: ProjectSummary) => {
-    const counts = countSessionNames(project.sessions);
+    // v1.116：只展示真正开始的任务——无标题回退（显示名 = 模型名 / 短 id）的会话
+    // 从未发送过首条消息（或标题尚未生成），不进列表；标题生成（session_title）后即现。
+    const started = (session: ProjectSummary["sessions"][number]) =>
+      displayBaseName(session) !== (session.model || session.id);
+    const counts = countSessionNames(project.sessions.filter(started));
     const activeSessionId = sessionsByProject[project.id] ?? null;
-    const orderedSessions = [...project.sessions].sort((a, b) =>
-      (b.updated_at ?? "").localeCompare(a.updated_at ?? "")
-    );
+    const orderedSessions = project.sessions
+      .filter(started)
+      .sort((a, b) => (b.updated_at ?? "").localeCompare(a.updated_at ?? ""));
     const showAll = allSessionsOpen.has(project.id);
     const sessions =
       orderedSessions.length > RECENT_SESSION_LIMIT && !showAll
@@ -513,11 +517,11 @@ export function ProjectExplorer({
             </button>
           </li>
         )}
-        {project.sessions.length === 0 && (
+        {orderedSessions.length === 0 && (
           <li className="pe-empty">{t("projects.chats_empty")}</li>
         )}
-        {/* 已归档组（v1.103）：默认收起，展开后行内还原 / 删除。 */}
-        {(project.archived_sessions?.length ?? 0) > 0 && (
+        {/* 已归档组（v1.103）：默认收起，展开后行内还原 / 删除；未开始会话同样不显示（v1.116）。 */}
+        {(project.archived_sessions?.filter(started).length ?? 0) > 0 && (
           <li className="pe-archived">
             <button
               type="button"
@@ -533,11 +537,11 @@ export function ProjectExplorer({
                 })
               }
             >
-              {t("projects.archived_group", { count: project.archived_sessions!.length })}
+              {t("projects.archived_group", { count: project.archived_sessions!.filter(started).length })}
             </button>
             {archivedOpen.has(project.id) && (
               <ul className="pe-chat-list pe-archived-list">
-                {project.archived_sessions!.map((session) => (
+                {project.archived_sessions!.filter(started).map((session) => (
                   <li key={session.id} className="pe-chat-item">
                     <button
                       type="button"

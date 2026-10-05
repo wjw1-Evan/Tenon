@@ -10,7 +10,14 @@ const t = (key: string) => key;
 function mockApi(events: Array<Record<string, unknown>>, status = "idle") {
   return {
     models: vi.fn().mockResolvedValue(models),
-    trace: vi.fn().mockResolvedValue({ events, latest_seq: events.length }),
+    // 尊重 after 游标：固定返回全量会让 500ms 轮询重复追加同一事件，
+    // 高负载下第二个轮询先于断言到达即出现重复卡片（实测抖动）。
+    trace: vi.fn().mockImplementation((_sessionId: string, after = 0) =>
+      Promise.resolve({
+        events: events.filter((e) => (e.seq as number) > after),
+        latest_seq: events.length,
+      })
+    ),
     getSession: vi.fn().mockResolvedValue({ session_id: "s1", status, latest_seq: events.length, outcome: null }),
     sendMessage: vi.fn().mockResolvedValue({}),
     control: vi.fn().mockResolvedValue({ ok: true }),

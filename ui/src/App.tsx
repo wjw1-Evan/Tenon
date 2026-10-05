@@ -142,6 +142,10 @@ export default function App({
   const [projectId, setProjectId] = useState<string | null>(null);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [sessionsByProject, setSessionsByProject] = useState<Record<string, string>>({});
+  /** 新任务草稿态（v1.116 §7.2）：点「＋ 新任务」不再急切建会话，记录待启动意图
+   *  （false=主根 / true=受管 worktree）；首条消息发出才落库建会话并进列表。 */
+  const [draftByProject, setDraftByProject] = useState<Record<string, boolean>>({});
+  const draftByProjectRef = useRef<Record<string, boolean>>({});
   const [tabsByProject, setTabsByProject] = useState<Record<string, EditorTab[]>>({});
   const [activePathByProject, setActivePathByProject] = useState<Record<string, string | null>>({});
   const [splitPathByProject, setSplitPathByProject] = useState<Record<string, string | null>>({});
@@ -182,6 +186,9 @@ export default function App({
   useEffect(() => {
     followModeRef.current = followMode;
   }, [followMode]);
+  useEffect(() => {
+    draftByProjectRef.current = draftByProject;
+  }, [draftByProject]);
   const toggleFollow = useCallback(() => {
     setFollowMode((v) => {
       const next = !v;
@@ -352,8 +359,10 @@ export default function App({
     setSessionsByProject((prev) => {
       const next = { ...prev };
       for (const project of r.projects) {
-        if (!next[project.id]) {
-          const persisted = project.sessions[0]?.id;
+        // 草稿态项目不参与默认选会话兜底（v1.116）：轮询不得夺走未发送的草稿任务；
+        // 兜底也只选已开始（有标题）的会话——无标题会话从未开始，不作激活线程。
+        if (!next[project.id] && draftByProjectRef.current[project.id] === undefined) {
+          const persisted = project.sessions.find((s) => (s.title ?? "").trim() !== "")?.id;
           if (persisted) next[project.id] = persisted;
         }
       }
@@ -414,18 +423,26 @@ export default function App({
         saved.sessionId && project.session_runtimes?.includes(saved.sessionId)
           ? saved.sessionId
           : undefined;
-      // 复用优先级：ui-state 持久会话（须有 runtime）→ 项目内任一
-      // 活跃 runtime 会话 → 新建。DB 历史会话无 runtime 不可直接复用。
+      // 复用优先级：未发送首条消息的草稿任务（v1.116）→ ui-state 持久会话
+      // （须有 runtime）→ 项目内任一活跃 runtime 会话 → 草稿态。
+      // DB 历史会话无 runtime 不可直接复用。
       const existing =
         savedSession ?? project.sessions.find((s) => project.session_runtimes?.includes(s.id))?.id;
-      if (existing) {
+      if (draftByProjectRef.current[project.id] !== undefined) {
+        // 保持草稿态：跨项目往返不丢未发送的草稿任务。
+      } else if (existing) {
         setSessionsByProject((prev) => ({ ...prev, [project.id]: existing }));
       } else {
-        // v1.92 移除会话默认档后此处不再传档位；provider 留空由 daemon 取默认。
-        // 断链修复（v1.97）：此前误把 "interactive" 传入 createSession 的 provider 位，
-        // 未知 provider 使建会话恒失败、切项目永远建不出会话（多项目 E2E 挂死根因）。
-        const session = await api.createSession(project.id);
-        setSessionsByProject((prev) => ({ ...prev, [project.id]: session.session_id }));
+        // v1.116：无既有会话不再急切新建（避免产生从未开始的空会话），
+        // 进入草稿态，首条消息发出时才建会话；boot 期轮询兜底可能已选中
+        // 无标题会话，一并清掉（线程与任务列表保持「未开始」口径一致）。
+        setSessionsByProject((prev) => {
+          if (!(project.id in prev)) return prev;
+          const next = { ...prev };
+          delete next[project.id];
+          return next;
+        });
+        setDraftByProject((prev) => ({ ...prev, [project.id]: prev[project.id] ?? false }));
       }
       projectUiStateLoaded.current.add(project.id);
     },
@@ -454,24 +471,55 @@ export default function App({
     setTabsByProject((prev) => ({ ...prev, [projectId]: updater(prev[projectId] ?? []) }));
   }, [projectId]);
 
-  /** 「对话」组点击：切换项目内激活会话（§7.5）。 */
+  /** 「对话」组点击：切换项目内激活会话（§7.5）；选择既有会话即弃草稿（v1.116）。 */
   const selectSession = useCallback((pid: string, sid: string) => {
+    setDraftByProject((prev) => {
+      if (!(pid in prev)) return prev;
+      const next = { ...prev };
+      delete next[pid];
+      return next;
+    });
     setSessionsByProject((prev) => ({ ...prev, [pid]: sid }));
   }, []);
 
-  /** 新建会话（v1.87 §7.3）：主根互斥，受管 worktree 会话可与主根并行执行。 */
+  /** 新建会话入口（v1.87 §7.3；v1.116 草稿态）：不再立即建会话——记录待启动意图
+   *  （主根 / 受管 worktree），线程切空任务输入；首条消息发出时才落库建会话。
+   *  受管 worktree 会话可与主根并行执行的语义不变（§7.3）。 */
   const createProjectSession = useCallback(
     async (project: ProjectSummary, worktree: boolean) => {
-      const session = await api.createSession(
-        project.id,
-        "",
-        worktree ? "managed" : undefined
-      );
-      if (worktree) await refreshProjects();
       if (project.id !== projectIdRef.current) await activateProject(project);
-      setSessionsByProject((prev) => ({ ...prev, [project.id]: session.session_id }));
+      setSessionsByProject((prev) => {
+        if (!(project.id in prev)) return prev;
+        const next = { ...prev };
+        delete next[project.id];
+        return next;
+      });
+      setDraftByProject((prev) => ({ ...prev, [project.id]: worktree }));
     },
-    [activateProject, api, refreshProjects]
+    [activateProject]
+  );
+
+  /** 草稿任务首发（v1.116）：此刻才建会话（按意图附 worktree）并发送首条消息；
+   *  provider 留空由 daemon 取默认（v1.97 断链修复语义随迁）。 */
+  const sendDraftMessage = useCallback(
+    async (text: string) => {
+      const pid = projectIdRef.current;
+      if (!pid) return;
+      const worktree = draftByProjectRef.current[pid] === true;
+      // v1.92 移除会话默认档后此处不传档位；未知 provider 会使建会话恒失败。
+      const session = await api.createSession(pid, "", worktree ? "managed" : undefined);
+      setDraftByProject((prev) => {
+        if (!(pid in prev)) return prev;
+        const next = { ...prev };
+        delete next[pid];
+        return next;
+      });
+      setSessionsByProject((prev) => ({ ...prev, [pid]: session.session_id }));
+      // 先刷新项目摘要（runtime / 会话就绪）再发消息；会话行待标题生成后才进列表。
+      await refreshProjects();
+      await api.sendMessage(session.session_id, text);
+    },
+    [api, refreshProjects]
   );
 
   // 打开项目 + 建会话（§7.3：v1.67 打开即静默信任，不再弹 TOFU 确认卡）
@@ -1141,6 +1189,8 @@ export default function App({
             api={api}
             t={t}
             sessionId={sessionId}
+            draft={projectId ? draftByProject[projectId] !== undefined : false}
+            onDraftSend={sendDraftMessage}
             onStateChange={onStateChange}
             onLatestDiff={setLatestDiff}
             onPatchLines={(path, lines) => {
