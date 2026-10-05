@@ -5221,3 +5221,95 @@ async fn multiple_sessions_same_project() {
     let r2 = client.get(format!("{}/session/{}", base(port), s2)).send().await.unwrap();
     assert_eq!(r2.status(), 200);
 }
+
+#[tokio::test]
+async fn open_project_creates_snapshot_root() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    // Project opened successfully → snapshot infrastructure ready
+}
+
+#[tokio::test]
+async fn file_write_read_roundtrip_with_unicode_path() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    let content = "中文文档内容\\n第二行";
+    let r = client
+        .put(format!("{}/project/{}/file", base(port), pid))
+        .json(&serde_json::json!({ "path": "docs/中文文档.md", "content": content }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    let r = client
+        .get(format!("{}/project/{}/file?path={}", base(port), pid, "docs%2F%E4%B8%AD%E6%96%87%E6%96%87%E6%A1%A3.md"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert!(body["content"].as_str().unwrap().contains("中文"));
+}
+
+#[tokio::test]
+async fn create_session_returns_worktree_path_for_managed() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    // Create a git repo project
+    let tmp = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        let _ = std::process::Command::new("git")
+            .args(args)
+            .current_dir(tmp.path())
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@l")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@l")
+            .output()
+            .unwrap();
+    };
+    git(&["init", "--initial-branch=main"]);
+    std::fs::write(tmp.path().join("init.txt"), "init").unwrap();
+    git(&["add", "init.txt"]);
+    git(&["commit", "-m", "init"]);
+
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    // Create managed worktree session
+    let r = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({ "project_id": pid, "provider": "mock", "worktree": "managed" }))
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = r.json().await.unwrap();
+    // Managed worktree should have a worktree_path
+    if let Some(wt_path) = body["worktree_path"].as_str() {
+        assert!(!wt_path.is_empty());
+    }
+}

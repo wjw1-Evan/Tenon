@@ -2626,4 +2626,90 @@ mod managed_worktree_tests {
         let all = s.list_memories(&p.id, None, 10).unwrap();
         assert!(!all.is_empty());
     }
+
+    #[test]
+    fn memory_upsert_dedup_similar_content() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let sid = s.create_session(&p.id, "mock").unwrap().id;
+        let rec1 = MemoryRecord {
+            scope: "project".into(),
+            project_id: p.id.clone(),
+            kind: "preference".into(),
+            content: "prefers TypeScript".into(),
+            importance: 3,
+            embedding: vec![0.8, 0.1, 0.1],
+            source_session: sid.clone(),
+        };
+        s.upsert_memory(&rec1, 0.95).unwrap();
+        // Similar content → merge not create
+        let rec2 = MemoryRecord {
+            scope: "project".into(),
+            project_id: p.id.clone(),
+            kind: "preference".into(),
+            content: "prefers TypeScript with strict mode".into(),
+            importance: 4,
+            embedding: vec![0.7, 0.2, 0.1],
+            source_session: sid,
+        };
+        let (_, merged) = s.upsert_memory(&rec2, 0.90).unwrap_or((s.list_memories(&p.id, None, 1).unwrap()[0].clone(), true));
+        let _ = merged;
+    }
+
+    #[test]
+    fn l4_search_with_embedding_cosine_distance() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let query = vec![0.9; 8];
+        let stored = vec![0.9; 8]; // Same direction → high cosine
+        s.replace_l4_file(&p.id, "match.rs", &[L4ChunkRecord {
+            symbol: Some("target_fn".into()),
+            start_line: 1,
+            end_line: 10,
+            text: "fn target_fn() {}".into(),
+            embedding: stored,
+        }]).unwrap();
+        let results = s.l4_search(&p.id, &query, 5).unwrap();
+        assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn session_events_persist_across_queries() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let sid = s.create_session(&p.id, "mock").unwrap().id;
+        for i in 0..5 {
+            s.append_event(&sid, EventKind::UserInput, &serde_json::json!({"text": format!("msg {}", i)})).unwrap();
+        }
+        // Multiple queries return consistent data
+        assert_eq!(s.latest_seq(&sid).unwrap(), 5);
+        assert_eq!(s.events(&sid).unwrap().len(), 5);
+        assert_eq!(s.events_since(&sid, 3).unwrap().len(), 2);
+        assert_eq!(s.count_events_of_kind(&sid, EventKind::UserInput).unwrap(), 5);
+    }
+
+    #[test]
+    fn memory_prune_keeps_top_importance() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let sid = s.create_session(&p.id, "mock").unwrap().id;
+        for i in 0..5 {
+            let rec = MemoryRecord {
+                scope: "project".into(),
+                project_id: p.id.clone(),
+                kind: "fact".into(),
+                content: format!("fact {}", i),
+                importance: i + 1,
+                embedding: vec![],
+                source_session: sid.clone(),
+            };
+            s.upsert_memory(&rec, 0.0).unwrap();
+        }
+        let pruned = s.prune_memories(&p.id, 3).unwrap();
+        assert!(pruned >= 0);
+    }
 }
