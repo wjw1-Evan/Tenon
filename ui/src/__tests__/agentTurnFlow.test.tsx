@@ -69,6 +69,21 @@ describe("会话过程流：回合分组", () => {
     render(<AgentPanel api={mockApi(events, "sensing")} t={t} sessionId="s1" />);
     expect(await screen.findByTestId("turn-running")).toHaveTextContent("thread.running");
   });
+
+  // v1.131 回合模型标注：气泡下按钮组行尾显示回合内首个 decision 的 model；
+  // 无 model 的历史事件（旧档案 / 系统回合）不显示。
+  it("气泡下标注该回合所用模型，无 model 事件不标注", async () => {
+    const events = [
+      { id: 1, seq: 1, type: "user_input", payload: { text: "任务一" } },
+      { id: 2, seq: 2, type: "decision", payload: { intent: "答案一", model: "glm-5.3" } },
+      { id: 3, seq: 3, type: "user_input", payload: { text: "任务二" } },
+      { id: 4, seq: 4, type: "decision", payload: { intent: "答案二" } },
+    ];
+    render(<AgentPanel api={mockApi(events)} t={t} sessionId="s1" />);
+    await screen.findByText("答案二");
+    expect(screen.getByTestId("turn-model-1").textContent).toBe("glm-5.3");
+    expect(screen.queryByTestId("turn-model-3")).toBeNull();
+  });
 });
 
 describe("会话过程流：工具步骤卡", () => {

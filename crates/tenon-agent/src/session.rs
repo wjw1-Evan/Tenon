@@ -71,6 +71,10 @@ pub struct AgentConfig {
     pub write_scope: String,
     /// L5 跨会话对话记忆（§10.1 v1.104）：false = 不提取不注入。
     pub memories_enabled: bool,
+    /// 技能全局目录（§13.4 v1.130；`~/.tenon/skills/`，daemon 注入测试隔离路径）。
+    pub skills_global_dir: PathBuf,
+    /// 停用技能名单（§13.4 v1.130；settings.json `skills.disabled` 快照）。
+    pub skills_disabled: Vec<String>,
     /// 价格表（§11 v1.93）：daemon 按 provider 配置构建；未定价模型计 0。
     pub price_table: PriceTable,
 }
@@ -96,6 +100,8 @@ impl AgentConfig {
             managed_worktree: None,
             write_scope: "root".to_string(),
             memories_enabled: true,
+            skills_global_dir: tenon_config::Config::data_dir().join("skills"),
+            skills_disabled: Vec::new(),
             price_table: PriceTable::new(),
         }
     }
@@ -202,6 +208,9 @@ fn tool_specs() -> Vec<ToolSpec> {
             },
             "required": ["kind", "text"]
         })),
+        ("skill_use", "读取代理技能 SKILL.md 全文（§13.4：目录见系统提示「可用技能」节——需要某技能的方法指引时按名称调用加载正文）", serde_json::json!({
+            "type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]
+        })),
         ("list_dir", "列出目录", serde_json::json!({
             "type": "object", "properties": {"path": {"type": "string"}}
         })),
@@ -272,7 +281,7 @@ fn tool_specs_read_only() -> Vec<ToolSpec> {
         .filter(|t| {
             matches!(
                 t.name.as_str(),
-                "read_file" | "list_dir" | "grep" | "git_read" | "laya_decide"
+                "read_file" | "list_dir" | "grep" | "git_read" | "laya_decide" | "skill_use"
             )
         })
         .collect()
@@ -434,6 +443,9 @@ impl AgentSession {
         tool_ctx.dirty = config.dirty.clone();
         tool_ctx.team_denied_tools = config.team_denied_tools.clone();
         tool_ctx.lsp = config.lsp.clone();
+        // §13.4 v1.130：技能全局目录与停用名单（停用经 settings 快照，新会话生效）。
+        tool_ctx.skills_global_dir = Some(config.skills_global_dir.clone());
+        tool_ctx.skills_disabled = config.skills_disabled.clone();
         let (control_tx, control_rx) = mpsc::unbounded_channel();
         let (events_tx, _) = broadcast::channel(1024);
         let circuit_limits = config.circuit;
@@ -522,7 +534,8 @@ impl AgentSession {
             .chat(&request)
             .await
             .map_err(|e| AgentError::Model(e.to_string()))?;
-        self.record_usage(response.usage).await;
+        // 非流式辅助调用（补全 / 标题 / 记忆）不计时：duration_ms = 0 = 未观测。
+        self.record_usage(response.usage, 0).await;
         let mut text = response.content.trim().to_string();
         if text.starts_with("```") {
             text = text
@@ -570,7 +583,7 @@ impl AgentSession {
             .chat(&request)
             .await
             .map_err(|e| AgentError::Model(e.to_string()))?;
-        self.record_usage(response.usage).await;
+        self.record_usage(response.usage, 0).await;
         let title = sanitize_title(&response.content, 32);
         if title.is_empty() {
             return Err(AgentError::Model("empty session title".into()));
@@ -634,7 +647,7 @@ impl AgentSession {
         request.max_tokens = 512;
         request.temperature = 0.2;
         let response = provider.chat(&request).await.map_err(|e| e.to_string())?;
-        self.record_usage(response.usage).await;
+        self.record_usage(response.usage, 0).await;
 
         let parsed: serde_json::Value =
             serde_json::from_str(response.content.trim()).map_err(|e| format!("解析失败: {e}"))?;
@@ -746,7 +759,7 @@ impl AgentSession {
         let _ = st.set_session_status(&self.session_id, status);
     }
 
-    async fn record_usage(&self, usage: Usage) {
+    async fn record_usage(&self, usage: Usage, duration_ms: u64) {
         if usage.input_tokens == 0 && usage.output_tokens == 0 {
             return;
         }
@@ -772,17 +785,21 @@ impl AgentSession {
             &model,
             usage.input_tokens as i64,
             usage.output_tokens as i64,
+            usage.cached_input_tokens as i64,
+            duration_ms as i64,
             cost,
         );
     }
 
     /// 流式调用当前模型；权威 usage / tool calls 只取流末尾 Final。
     /// 小增量按 64 字符 / 120ms 合并，避免 SQLite 事件溯源被 token 级写入淹没。
+    /// 返回 (响应, 回合耗时毫秒)——耗时自流建立计至权威 Final（v1.129 §11 观测）。
     async fn stream_model_turn(
         &self,
         provider: &StdArc<dyn ModelProvider>,
         request: &ChatRequest,
-    ) -> Result<tenon_models::ChatResponse, String> {
+    ) -> Result<(tenon_models::ChatResponse, u64), String> {
+        let started = Instant::now();
         let mut stream = provider
             .chat_stream(request)
             .await
@@ -810,7 +827,9 @@ impl AgentSession {
             self.emit(EventKind::ModelDelta, &serde_json::json!({"text": pending}))
                 .await;
         }
-        final_response.ok_or_else(|| "模型流缺少最终响应".to_string())
+        final_response
+            .map(|resp| (resp, started.elapsed().as_millis() as u64))
+            .ok_or_else(|| "模型流缺少最终响应".to_string())
     }
 
     /// 执行一个任务（完整 §9.1 循环）。
@@ -1017,11 +1036,20 @@ impl AgentSession {
         } else {
             Vec::new()
         };
+        // §13.4 v1.130：可用技能目录注入（渐进披露——目录只含名称与描述，
+        // 正文经 skill_use 按需读取；每任务扫描一次，改文件即时生效；
+        // 扫描跟随会话工作根（主根 / 受管 worktree），失败静默回退空集）。
+        let skill_entries = tenon_core::skills::scan_skills(
+            &self.config.skills_global_dir,
+            self.managed_worktree.as_deref(),
+            &self.config.skills_disabled,
+        );
         let mut messages: Vec<ChatMessage> = vec![
             ChatMessage::system(tenon_core::prompt::build_system_prompt(
                 &self.rules.lock().await.clone(),
                 &self.memory.lock().await.clone(),
                 &memory_items,
+                &skill_entries,
             )),
             ChatMessage::user(user_message),
         ];
@@ -1085,8 +1113,8 @@ impl AgentSession {
                 temperature: 0.2,
                 reasoning_effort: None,
             };
-            let resp = match self.stream_model_turn(&provider, &request).await {
-                Ok(r) => r,
+            let (resp, turn_duration_ms) = match self.stream_model_turn(&provider, &request).await {
+                Ok((r, ms)) => (r, ms),
                 Err(e) => {
                     // 侧向出口：模型失败 → ERROR（重试语义由 daemon 的 model_fallback 承接）
                     self.force_state(State::Error).await;
@@ -1101,13 +1129,24 @@ impl AgentSession {
                 }
             };
             last_input_tokens = resp.usage.input_tokens;
-            self.record_usage(resp.usage).await;
+            self.record_usage(resp.usage, turn_duration_ms).await;
             steps += 1;
 
-            // 决策意图卡
+            // 决策意图卡（payload.usage 供 UI 回合页脚缓存命中率 / 输出速度聚合，v1.129）
+            // payload.model 供 UI 气泡下回合模型标注（v1.131：热切换 / fallback 后各回合如实标注）
             self.emit(
                 EventKind::Decision,
-                &serde_json::json!({"intent": resp.content, "tool_calls": resp.tool_calls.len()}),
+                &serde_json::json!({
+                    "intent": resp.content,
+                    "model": request.model,
+                    "tool_calls": resp.tool_calls.len(),
+                    "usage": {
+                        "input_tokens": resp.usage.input_tokens,
+                        "output_tokens": resp.usage.output_tokens,
+                        "cached_input_tokens": resp.usage.cached_input_tokens,
+                        "duration_ms": turn_duration_ms,
+                    },
+                }),
             )
             .await;
 
@@ -2005,6 +2044,17 @@ mod agent_config_tests {
         assert!(tool_specs_read_only()
             .iter()
             .any(|t| t.name == "laya_decide"));
+    }
+
+    #[test]
+    fn skill_use_graded_a_and_in_tool_directory() {
+        // §13.4 v1.130：A 级只读（本地文件读取零副作用），进全目录与只读收窄目录
+        assert_eq!(
+            tenon_core::Tool::from_name("skill_use").and_then(|t| t.level()),
+            Some(tenon_core::policy::Level::A)
+        );
+        assert!(tool_specs().iter().any(|t| t.name == "skill_use"));
+        assert!(tool_specs_read_only().iter().any(|t| t.name == "skill_use"));
     }
 
     #[test]

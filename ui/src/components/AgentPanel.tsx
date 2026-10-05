@@ -67,6 +67,18 @@ interface Turn {
   items: EventItem[];
   /** v1.111 消息级撤销：回合内首个 patch_applied 事件 seq（对应该步写前 checkpoint）。 */
   firstPatchSeq: number | null;
+  /** v1.129 模型用量观测：回合内全部 decision 的 usage 聚合（求和；无则缺省）。 */
+  usage: TurnUsageTotal;
+  /** v1.131 回合模型标注：回合内首个携带 model 的 decision（热切换 / fallback 后各回合如实）。 */
+  model: string | null;
+}
+
+/** 回合聚合用量：命中率 = cached / input，速度 = output / durationMs（§11 v1.129）。 */
+interface TurnUsageTotal {
+  input: number;
+  output: number;
+  cached: number;
+  durationMs: number;
 }
 
 /** §9.2 内置工具协议集合：已知工具走动作短语，外部 / 未知工具原样显示名。 */
@@ -76,6 +88,7 @@ const KNOWN_TOOLS = new Set([
   "grep",
   "git_read",
   "lsp_query",
+  "laya_decide",
   "apply_patch",
   "run_tests",
   "run_build",
@@ -438,20 +451,54 @@ export function AgentPanel({
   const turns = useMemo(() => {
     const list: Turn[] = [];
     let cur: Turn | null = null;
+    const blank = (): Turn => ({
+      id: 0,
+      task: null,
+      items: [],
+      firstPatchSeq: null,
+      usage: { input: 0, output: 0, cached: 0, durationMs: 0 },
+      model: null,
+    });
     for (const ev of events) {
       if (ev.type === "user_input") {
-        cur = { id: ev.id, task: String(ev.payload.text ?? ""), items: [], firstPatchSeq: null };
+        cur = {
+          id: ev.id,
+          task: String(ev.payload.text ?? ""),
+          items: [],
+          firstPatchSeq: null,
+          usage: { input: 0, output: 0, cached: 0, durationMs: 0 },
+          model: null,
+        };
         list.push(cur);
         continue;
       }
       if (ev.type === "model_delta") continue;
       if (!cur) {
-        cur = { id: 0, task: null, items: [], firstPatchSeq: null };
+        cur = blank();
         list.push(cur);
       }
       // 消息级撤销锚点：回合内首个 patch_applied 的 checkpoint 记录该回合写入前状态。
       if (ev.type === "patch_applied" && cur.firstPatchSeq === null) {
         cur.firstPatchSeq = ev.seq;
+      }
+      // v1.129：decision 携带 usage——回合内多模型回合聚合（求和），页脚徽标消费。
+      if (ev.type === "decision") {
+        const u = ev.payload.usage as
+          | { input_tokens?: number; output_tokens?: number; cached_input_tokens?: number; duration_ms?: number }
+          | undefined;
+        if (u) {
+          cur.usage = {
+            input: cur.usage.input + Number(u.input_tokens ?? 0),
+            output: cur.usage.output + Number(u.output_tokens ?? 0),
+            cached: cur.usage.cached + Number(u.cached_input_tokens ?? 0),
+            durationMs: cur.usage.durationMs + Number(u.duration_ms ?? 0),
+          };
+        }
+        // v1.131：回合模型标注——取回合内首个携带 model 的 decision（热切换 / fallback 后各回合如实）。
+        if (cur.model === null) {
+          const m = String(ev.payload.model ?? "");
+          if (m) cur.model = m;
+        }
       }
       cur.items.push(ev);
     }
@@ -550,6 +597,11 @@ export function AgentPanel({
                         ↪ {t("thread.redo")}
                       </button>
                     )}
+                    {turn.model && (
+                      <span className="turn-model" data-testid={`turn-model-${turn.id}`} title={turn.model}>
+                        {turn.model}
+                      </span>
+                    )}
                   </div>
                 </div>
               )}
@@ -571,6 +623,7 @@ export function AgentPanel({
                     {runningLabel}
                   </div>
                 )}
+                <TurnUsageBadge turn={turn} t={t} />
               </div>
             </section>
           );
@@ -716,6 +769,26 @@ function ReadOnlySummary({ items, t }: { items: EventItem[]; t: Translate }) {
   return (
     <div className="turn-readonly" data-testid="turn-readonly" title={t("thread.readonly_more")}>
       ⌕ {label}
+    </div>
+  );
+}
+
+/** v1.129：回合页脚模型用量徽标——↑input tok · 缓存命中 N% · N tok/s。
+ * 回合内多模型回合聚合（Turn.usage 求和）；无 usage 数据 / 全零不渲染；
+ * Anthropic 系不打 cache_control 时缓存未启用，cached=0 自然只显示速度段。 */
+function TurnUsageBadge({ turn, t }: { turn: Turn; t: Translate }) {
+  const u = turn.usage;
+  if (!u || (u.input === 0 && u.output === 0)) return null;
+  const parts: string[] = [`↑ ${u.input} tok`];
+  if (u.cached > 0 && u.input > 0) {
+    parts.push(`${t("thread.cached")} ${Math.round((u.cached / u.input) * 100)}%`);
+  }
+  if (u.durationMs > 0 && u.output > 0) {
+    parts.push(`${(u.output / (u.durationMs / 1000)).toFixed(1)} tok/s`);
+  }
+  return (
+    <div className="turn-usage" data-testid="turn-usage">
+      {parts.join(" · ")}
     </div>
   );
 }

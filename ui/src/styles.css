@@ -1298,8 +1298,27 @@ button:disabled { opacity: 0.45; cursor: default; }
   color: var(--muted);
   padding: 1px 0;
 }
+/* 模型用量徽标（v1.129 §11）：回合页脚单行弱化展示，与只读 / Laya 聚合同级 */
+.turn-usage {
+  font-size: 11px;
+  color: var(--muted);
+  padding: 1px 0;
+  font-variant-numeric: tabular-nums;
+}
 /* 用户气泡下功能按钮组（v1.123）：复制 / 撤销 / 重做——撤销 hover 用错误色提示破坏性 */
-.turn-actions { display: flex; gap: 4px; margin-top: 2px; }
+.turn-actions { display: flex; align-items: center; gap: 4px; margin-top: 2px; }
+/* 回合模型标注（v1.131）：热切换 / fallback 后各回合如实展示所用模型 */
+.turn-model {
+  flex-shrink: 0;
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 10.5px;
+  opacity: 0.85;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 40%;
+}
 .turn-action {
   border: none;
   background: none;
@@ -2469,4 +2488,44 @@ button:disabled { opacity: 0.45; cursor: default; }
   color: var(--accent-text);
   border-color: var(--accent);
   background: var(--accent-soft);
+}
+
+/* v1.130 设置面板 Skills 分区（§13.4）：清单行 + SKILL.md 源码编辑器 */
+.skills-open {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--fg);
+  cursor: pointer;
+  text-align: left;
+}
+.skills-open:hover { color: var(--accent-text); }
+.skills-desc {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.skills-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.skills-editor { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.skills-editor textarea {
+  width: 100%;
+  min-height: 220px;
+  resize: vertical;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--fg);
 }
