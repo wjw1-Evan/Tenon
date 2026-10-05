@@ -30,6 +30,11 @@ function makeApi(
 
 const t = (k: string) => k;
 
+/** v1.121：设置按分类渲染，组件测试先切换到对应导航页。 */
+function openSection(name: "general" | "models" | "permissions" | "plugins" | "updates") {
+  fireEvent.click(screen.getByTestId(`settings-nav-${name}`));
+}
+
 describe("SettingsDialog", () => {
   beforeEach(() => {
     const backing = new Map<string, string>();
@@ -41,6 +46,19 @@ describe("SettingsDialog", () => {
     });
   });
   afterEach(() => vi.unstubAllGlobals());
+
+  it("v1.121 分类导航：默认 General，切换后只渲染当前分类", () => {
+    render(
+      <SettingsDialog api={makeApi()} t={t} settings={settings} saveMode="auto" onSaveModeChange={() => {}} onClose={() => {}} onSaved={() => {}} />
+    );
+    expect(screen.getByTestId("settings-panel-general")).toBeTruthy();
+    expect(screen.getByTestId("settings-save-mode")).toBeTruthy();
+
+    openSection("models");
+    expect(screen.queryByTestId("settings-panel-general")).toBeNull();
+    expect(screen.getByTestId("settings-panel-models")).toBeTruthy();
+    expect(screen.getByTestId("provider-preset")).toBeTruthy();
+  });
 
   it("从全局设置回填表单", () => {
     render(
@@ -110,6 +128,7 @@ describe("SettingsDialog", () => {
         onSaved={() => {}}
       />
     );
+    openSection("models");
     const def = screen.getByTestId("settings-default-model") as HTMLSelectElement;
     expect(def.value).toBe("glm");
     expect(screen.getByTestId("provider-row-glm")).toBeTruthy();
@@ -126,6 +145,7 @@ describe("SettingsDialog", () => {
     render(
       <SettingsDialog api={makeApi(put)} t={t} settings={settings} saveMode="auto" onSaveModeChange={() => {}} onClose={() => {}} onSaved={() => {}} />
     );
+    openSection("models");
     fireEvent.change(screen.getByTestId("provider-preset"), { target: { value: "deepseek" } });
     fireEvent.click(screen.getByTestId("provider-add"));
     expect(screen.getByTestId("provider-row-deepseek")).toBeTruthy();
@@ -167,6 +187,7 @@ describe("SettingsDialog", () => {
     render(
       <SettingsDialog api={makeApi(put)} t={t} settings={withModels} saveMode="auto" onSaveModeChange={() => {}} onClose={() => {}} onSaved={() => {}} />
     );
+    openSection("models");
     fireEvent.click(screen.getByTestId("provider-remove-temp"));
     expect(screen.queryByTestId("provider-row-temp")).toBeNull();
     fireEvent.click(screen.getByTestId("settings-save"));
@@ -183,6 +204,7 @@ describe("SettingsDialog", () => {
     render(
       <SettingsDialog api={makeApi(put)} t={t} settings={withPrivacy} saveMode="auto" onSaveModeChange={() => {}} onClose={() => {}} onSaved={() => {}} />
     );
+    openSection("updates");
     expect((screen.getByTestId("settings-update-channel") as HTMLSelectElement).value).toBe("auto");
 
     fireEvent.change(screen.getByTestId("settings-update-channel"), { target: { value: "manual" } });
@@ -212,6 +234,7 @@ describe("SettingsDialog", () => {
     render(
       <SettingsDialog api={api} t={t} settings={withPolicy} saveMode="auto" onSaveModeChange={() => {}} onClose={() => {}} onSaved={() => {}} />
     );
+    openSection("permissions");
     expect(screen.queryByTestId("settings-force-interactive")).toBeNull();
     expect((screen.getByTestId("settings-denied-tools") as HTMLInputElement).value).toBe(
       "git_push, create_pr"
@@ -244,6 +267,7 @@ describe("SettingsDialog", () => {
     render(
       <SettingsDialog api={api} t={t} settings={settings} saveMode="auto" onSaveModeChange={() => {}} onClose={() => {}} onSaved={() => {}} />
     );
+    openSection("permissions");
     fireEvent.change(screen.getByTestId("settings-policy-cost"), { target: { value: "-1" } });
     fireEvent.click(screen.getByTestId("settings-save"));
     await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
@@ -280,6 +304,7 @@ describe("SettingsDialog", () => {
     render(
       <SettingsDialog api={api} t={t} settings={settings} saveMode="auto" onSaveModeChange={() => {}} onClose={() => {}} onSaved={() => {}} />
     );
+    openSection("updates");
     expect(screen.getByTestId("settings-update-apply").hasAttribute("disabled")).toBe(true);
     fireEvent.click(screen.getByTestId("settings-update-check"));
     await waitFor(() => expect(check).toHaveBeenCalled());

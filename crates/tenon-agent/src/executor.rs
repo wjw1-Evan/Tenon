@@ -2529,4 +2529,68 @@ mod tests {
         assert!(out.ok);
         assert!(out.content.contains("model.rs"));
     }
+
+    #[test]
+    fn apply_patch_typescript_vue_svelte_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let files = [
+            ("src/App.vue", "<template><div>Vue App</div></template>\n"),
+            ("src/App.svelte", "<div>Svelte App</div>\n"),
+            ("src/main.ts", "import { createApp } from './app';\n"),
+        ];
+        for (path, content) in files {
+            let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+                "file": path, "range": null, "content": content
+            }));
+            assert!(out.ok, "failed: {}", path);
+        }
+        // All files exist
+        for (path, _) in files {
+            assert!(dir.path().join(path).exists());
+        }
+    }
+
+    #[test]
+    fn apply_patch_and_verify_content_exact_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let expected = "line 1\nline 2\nline 3\n";
+        execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "exact.txt", "range": null, "content": expected
+        }));
+        let actual = std::fs::read_to_string(dir.path().join("exact.txt")).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn readonly_list_dir_grep_and_git_read_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let _ = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@l")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@l")
+                .output()
+                .unwrap();
+        };
+        git(&["init", "--initial-branch=main"]);
+        std::fs::write(dir.path().join("f.txt"), "readonly test").unwrap();
+        git(&["add", "f.txt"]);
+        git(&["commit", "-m", "init"]);
+
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        c.readonly.store(true, Ordering::Relaxed);
+
+        // All A-level tools should work in readonly
+        let list = execute_tool(&c, "list_dir", &serde_json::json!({}));
+        assert!(list.ok);
+        let grep = execute_tool(&c, "grep", &serde_json::json!({"pattern": "test"}));
+        assert!(grep.ok);
+        let git_read = execute_tool(&c, "git_read", &serde_json::json!({"sub": "log"}));
+        assert!(git_read.ok);
+    }
 }

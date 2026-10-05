@@ -55,6 +55,17 @@ function rowsFromSettings(settings: SettingsData | null): ProviderRow[] {
   }));
 }
 
+/** v1.121：Codex 式设置信息架构——左栏分类，右栏只渲染当前分类。 */
+type SettingsSection = "general" | "models" | "permissions" | "plugins" | "updates";
+
+const SETTINGS_SECTIONS: SettingsSection[] = [
+  "general",
+  "models",
+  "permissions",
+  "plugins",
+  "updates",
+];
+
 interface Props {
   api: TenonApi;
   t: Translate;
@@ -80,6 +91,7 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, o
   const [laya, setLaya] = useState<LayaStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [section, setSection] = useState<SettingsSection>("general");
 
   // 从已拉取的全局设置回填（外观 / 语言为本地即时项，不入 daemon）
   useEffect(() => {
@@ -216,231 +228,275 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, o
   return (
     <div className="merge-overlay" data-testid="settings-overlay">
       <div className="merge-pane settings-pane" role="dialog" aria-label={t("settings.title")}>
-        <div className="merge-head">
+        <div className="merge-head settings-head">
           <strong>{t("settings.title")}</strong>
         </div>
 
-        <div className="settings-grid">
-          <label htmlFor="set-save-mode">{t("settings.saveMode")}</label>
-          <select
-            id="set-save-mode"
-            data-testid="settings-save-mode"
-            value={saveMode}
-            onChange={(e) => onSaveModeChange(e.target.value as "auto" | "manual")}
-          >
-            <option value="auto">{t("settings.saveMode_auto")}</option>
-            <option value="manual">{t("settings.saveMode_manual")}</option>
-          </select>
-
-          <label htmlFor="set-buffer">{t("settings.buffer")}</label>
-          <input
-            id="set-buffer"
-            type="number"
-            min={0}
-            max={10000}
-            value={bufferMs}
-            onChange={(e) => setBufferMs(Number(e.target.value))}
-          />
-
-          <label htmlFor="set-cmd-timeout">{t("settings.command_timeout")}</label>
-          <input
-            id="set-cmd-timeout"
-            type="number"
-            min={1}
-            max={3600}
-            value={commandTimeout}
-            onChange={(e) => setCommandTimeout(Number(e.target.value))}
-          />
-
-          <label htmlFor="set-update">{t("settings.update.channel")}</label>
-          <select
-            id="set-update"
-            data-testid="settings-update-channel"
-            value={updateChannel}
-            onChange={(e) => setUpdateChannel(e.target.value as "manual" | "auto")}
-          >
-            <option value="manual">{t("settings.update.manual")}</option>
-            <option value="auto">{t("settings.update.auto")}</option>
-          </select>
-        </div>
-
-        <div className="settings-section" data-testid="settings-updates-status">
-          <div className="settings-section-title">{t("settings.updates.status")}</div>
-          <div className="settings-grid">
-            <span>{t("settings.updates.current")}</span>
-            <code>{updateStatus?.current_version || "—"}</code>
-
-            <span>{t("settings.updates.last_check")}</span>
-            <span className="muted">
-              {updateStatus?.last_check_at || t("settings.updates.never")}
-              {updateStatus?.last_error ? ` · ${updateStatus.last_error}` : ""}
-            </span>
-
-            <span>{t("settings.updates.staged")}</span>
-            <span className="muted">
-              {updateStatus?.staged
-                ? `v${updateStatus.staged.version} · ${t("settings.updates.restart_required")}`
-                : t("settings.updates.none")}
-            </span>
-          </div>
-          <div className="provider-add">
-            <button
-              type="button"
-              data-testid="settings-update-check"
-              disabled={updateBusy}
-              onClick={() => void checkForUpdate()}
-            >
-              {t("settings.updates.check")}
-            </button>
-            <button
-              type="button"
-              data-testid="settings-update-apply"
-              disabled={updateBusy || !updateStatus?.staged}
-              onClick={() => void applyStagedUpdate()}
-            >
-              {t("settings.updates.apply")}
-            </button>
-          </div>
-          <p className="muted settings-note">{t("settings.updates.note")}</p>
-        </div>
-
-        <div className="settings-section" data-testid="settings-policy-section">
-          <div className="settings-section-title">{t("settings.policy")}</div>
-          <div className="settings-grid">
-            <label htmlFor="set-denied-tools">{t("settings.policy.denied_tools")}</label>
-            <input
-              id="set-denied-tools"
-              data-testid="settings-denied-tools"
-              placeholder="git_push, create_pr"
-              value={deniedTools}
-              onChange={(e) => setDeniedTools(e.target.value)}
-            />
-
-            <label htmlFor="set-policy-cost">{t("settings.policy.cost")}</label>
-            <input
-              id="set-policy-cost"
-              data-testid="settings-policy-cost"
-              type="number"
-              min={0}
-              max={1000000}
-              step={0.01}
-              value={maxCost}
-              onChange={(e) => setMaxCost(e.target.value)}
-            />
-          </div>
-          <p className="muted settings-note">{t("settings.policy.note")}</p>
-        </div>
-
-        <div className="settings-section" data-testid="settings-models-section">
-          <div className="settings-section-title">{t("settings.models")}</div>
-          <div className="settings-grid">
-            <label htmlFor="set-default-model">{t("settings.models.default")}</label>
-            <select
-              id="set-default-model"
-              value={defaultModel}
-              onChange={(e) => setDefaultModel(e.target.value)}
-              data-testid="settings-default-model"
-            >
-              <option value="">{t("settings.models.default_none")}</option>
-              {providers.map((p) => (
-                <option key={p.name} value={p.name}>
-                  {p.name}
-                  {p.model ? ` — ${p.model}` : ""}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="provider-list" data-testid="provider-list">
-            {providers.map((p) => (
-              <div className="provider-row" key={p.name} data-testid={`provider-row-${p.name}`}>
-                <code className="provider-name" title={p.name}>{p.name}</code>
-                <select
-                  aria-label={`${t("settings.models.kind")} · ${p.name}`}
-                  value={p.kind}
-                  onChange={(e) => updateProvider(p.name, { kind: e.target.value })}
-                >
-                  <option value="openai">{t("settings.models.kind_openai")}</option>
-                  <option value="anthropic">{t("settings.models.kind_anthropic")}</option>
-                  <option value="openai_responses">
-                    {t("settings.models.kind_openai_responses")}
-                  </option>
-                </select>
-                <input
-                  aria-label={`${t("settings.models.base_url")} · ${p.name}`}
-                  placeholder="https://…"
-                  value={p.base_url}
-                  onChange={(e) => updateProvider(p.name, { base_url: e.target.value })}
-                />
-                <input
-                  aria-label={`${t("settings.models.model")} · ${p.name}`}
-                  placeholder={t("settings.models.model_hint")}
-                  value={p.model}
-                  onChange={(e) => updateProvider(p.name, { model: e.target.value })}
-                />
-                <input
-                  aria-label={`${t("settings.models.api_key_env")} · ${p.name}`}
-                  placeholder="OPENAI_API_KEY"
-                  value={p.api_key_env}
-                  onChange={(e) => updateProvider(p.name, { api_key_env: e.target.value })}
-                />
-                {p.overridden && (
-                  <button
-                    type="button"
-                    className="provider-remove"
-                    aria-label={`${t("settings.models.delete")} · ${p.name}`}
-                    data-testid={`provider-remove-${p.name}`}
-                    onClick={() => removeProvider(p.name)}
-                  >
-                    ✕
-                  </button>
-                )}
-              </div>
+        <div className="settings-body">
+          <nav className="settings-nav" role="tablist" aria-label={t("settings.title")} data-testid="settings-nav">
+            {SETTINGS_SECTIONS.map((key) => (
+              <button
+                key={key}
+                type="button"
+                id={`settings-tab-${key}`}
+                role="tab"
+                aria-controls={`settings-panel-${key}`}
+                aria-selected={section === key}
+                className={section === key ? "settings-nav-item active" : "settings-nav-item"}
+                data-testid={`settings-nav-${key}`}
+                onClick={() => setSection(key)}
+              >
+                {t(`settings.categories.${key}`)}
+              </button>
             ))}
-          </div>
+          </nav>
 
-          <div className="provider-add">
-            <select
-              aria-label={t("settings.models.preset")}
-              value={preset}
-              onChange={(e) => setPreset(e.target.value)}
-              data-testid="provider-preset"
-            >
-              <option value="openai">{t("settings.models.preset_openai")}</option>
-              <option value="anthropic">{t("settings.models.preset_anthropic")}</option>
-              <option value="deepseek">{t("settings.models.preset_deepseek")}</option>
-              <option value="ollama">{t("settings.models.preset_ollama")}</option>
-              <option value="zhipu">{t("settings.models.preset_zhipu")}</option>
-              <option value="custom">{t("settings.models.preset_custom")}</option>
-            </select>
-            <button type="button" data-testid="provider-add" onClick={addProvider}>
-              {t("settings.models.add")}
-            </button>
-          </div>
+          <div
+            className="settings-panel"
+            role="tabpanel"
+            id={`settings-panel-${section}`}
+            aria-labelledby={`settings-tab-${section}`}
+            aria-label={t(`settings.categories.${section}`)}
+            data-testid={`settings-panel-${section}`}
+          >
+            {section === "general" && (
+              <div className="settings-section" data-testid="settings-general-section">
+                <div className="settings-section-title">{t("settings.general.title")}</div>
+                <div className="settings-grid">
+                  <label htmlFor="set-save-mode">{t("settings.saveMode")}</label>
+                  <select
+                    id="set-save-mode"
+                    data-testid="settings-save-mode"
+                    value={saveMode}
+                    onChange={(e) => onSaveModeChange(e.target.value as "auto" | "manual")}
+                  >
+                    <option value="auto">{t("settings.saveMode_auto")}</option>
+                    <option value="manual">{t("settings.saveMode_manual")}</option>
+                  </select>
 
-          <div className="laya-status" data-testid="laya-status">
-            <span className="settings-section-sub">{t("settings.models.laya")}</span>
-            {laya ? (
-              <span className="muted">
-                {laya.enabled ? t("settings.models.laya_enabled") : t("settings.models.laya_disabled")}
-                {" · "}
-                {laya.downloaded
-                  ? t("settings.models.laya_downloaded")
-                  : t("settings.models.laya_not_downloaded")}
-                {laya.version ? ` · ${t("settings.models.laya_version")} ${laya.version}` : ""}
+                  <label htmlFor="set-buffer">{t("settings.buffer")}</label>
+                  <input
+                    id="set-buffer"
+                    type="number"
+                    min={0}
+                    max={10000}
+                    value={bufferMs}
+                    onChange={(e) => setBufferMs(Number(e.target.value))}
+                  />
 
-              </span>
-            ) : (
-              <span className="muted">{t("settings.models.laya_unknown")}</span>
+                  <label htmlFor="set-cmd-timeout">{t("settings.command_timeout")}</label>
+                  <input
+                    id="set-cmd-timeout"
+                    type="number"
+                    min={1}
+                    max={3600}
+                    value={commandTimeout}
+                    onChange={(e) => setCommandTimeout(Number(e.target.value))}
+                  />
+                </div>
+                <p className="muted settings-note">{t("settings.note_new_sessions")}</p>
+              </div>
+            )}
+
+            {section === "models" && (
+              <div className="settings-section" data-testid="settings-models-section">
+                <div className="settings-section-title">{t("settings.models")}</div>
+                <div className="settings-grid">
+                  <label htmlFor="set-default-model">{t("settings.models.default")}</label>
+                  <select
+                    id="set-default-model"
+                    value={defaultModel}
+                    onChange={(e) => setDefaultModel(e.target.value)}
+                    data-testid="settings-default-model"
+                  >
+                    <option value="">{t("settings.models.default_none")}</option>
+                    {providers.map((p) => (
+                      <option key={p.name} value={p.name}>
+                        {p.name}
+                        {p.model ? ` — ${p.model}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="provider-list" data-testid="provider-list">
+                  {providers.map((p) => (
+                    <div className="provider-row" key={p.name} data-testid={`provider-row-${p.name}`}>
+                      <code className="provider-name" title={p.name}>{p.name}</code>
+                      <select
+                        aria-label={`${t("settings.models.kind")} · ${p.name}`}
+                        value={p.kind}
+                        onChange={(e) => updateProvider(p.name, { kind: e.target.value })}
+                      >
+                        <option value="openai">{t("settings.models.kind_openai")}</option>
+                        <option value="anthropic">{t("settings.models.kind_anthropic")}</option>
+                        <option value="openai_responses">
+                          {t("settings.models.kind_openai_responses")}
+                        </option>
+                      </select>
+                      <input
+                        aria-label={`${t("settings.models.base_url")} · ${p.name}`}
+                        placeholder="https://…"
+                        value={p.base_url}
+                        onChange={(e) => updateProvider(p.name, { base_url: e.target.value })}
+                      />
+                      <input
+                        aria-label={`${t("settings.models.model")} · ${p.name}`}
+                        placeholder={t("settings.models.model_hint")}
+                        value={p.model}
+                        onChange={(e) => updateProvider(p.name, { model: e.target.value })}
+                      />
+                      <input
+                        aria-label={`${t("settings.models.api_key_env")} · ${p.name}`}
+                        placeholder="OPENAI_API_KEY"
+                        value={p.api_key_env}
+                        onChange={(e) => updateProvider(p.name, { api_key_env: e.target.value })}
+                      />
+                      {p.overridden && (
+                        <button
+                          type="button"
+                          className="provider-remove"
+                          aria-label={`${t("settings.models.delete")} · ${p.name}`}
+                          data-testid={`provider-remove-${p.name}`}
+                          onClick={() => removeProvider(p.name)}
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                <div className="provider-add">
+                  <select
+                    aria-label={t("settings.models.preset")}
+                    value={preset}
+                    onChange={(e) => setPreset(e.target.value)}
+                    data-testid="provider-preset"
+                  >
+                    <option value="openai">{t("settings.models.preset_openai")}</option>
+                    <option value="anthropic">{t("settings.models.preset_anthropic")}</option>
+                    <option value="deepseek">{t("settings.models.preset_deepseek")}</option>
+                    <option value="ollama">{t("settings.models.preset_ollama")}</option>
+                    <option value="zhipu">{t("settings.models.preset_zhipu")}</option>
+                    <option value="custom">{t("settings.models.preset_custom")}</option>
+                  </select>
+                  <button type="button" data-testid="provider-add" onClick={addProvider}>
+                    {t("settings.models.add")}
+                  </button>
+                </div>
+
+                <div className="laya-status" data-testid="laya-status">
+                  <span className="settings-section-sub">{t("settings.models.laya")}</span>
+                  {laya ? (
+                    <span className="muted">
+                      {laya.enabled ? t("settings.models.laya_enabled") : t("settings.models.laya_disabled")}
+                      {" · "}
+                      {laya.downloaded
+                        ? t("settings.models.laya_downloaded")
+                        : t("settings.models.laya_not_downloaded")}
+                      {laya.version ? ` · ${t("settings.models.laya_version")} ${laya.version}` : ""}
+                    </span>
+                  ) : (
+                    <span className="muted">{t("settings.models.laya_unknown")}</span>
+                  )}
+                </div>
+
+                <p className="muted settings-note">{t("settings.models.note")}</p>
+              </div>
+            )}
+
+            {section === "permissions" && (
+              <div className="settings-section" data-testid="settings-policy-section">
+                <div className="settings-section-title">{t("settings.policy")}</div>
+                <div className="settings-grid">
+                  <label htmlFor="set-denied-tools">{t("settings.policy.denied_tools")}</label>
+                  <input
+                    id="set-denied-tools"
+                    data-testid="settings-denied-tools"
+                    placeholder="git_push, create_pr"
+                    value={deniedTools}
+                    onChange={(e) => setDeniedTools(e.target.value)}
+                  />
+
+                  <label htmlFor="set-policy-cost">{t("settings.policy.cost")}</label>
+                  <input
+                    id="set-policy-cost"
+                    data-testid="settings-policy-cost"
+                    type="number"
+                    min={0}
+                    max={1000000}
+                    step={0.01}
+                    value={maxCost}
+                    onChange={(e) => setMaxCost(e.target.value)}
+                  />
+                </div>
+                <p className="muted settings-note">{t("settings.policy.note")}</p>
+              </div>
+            )}
+
+            {section === "plugins" && <PluginSettings api={api} t={t} />}
+
+            {section === "updates" && (
+              <div className="settings-section" data-testid="settings-updates-section">
+                <div className="settings-section-title">{t("settings.update.channel")}</div>
+                <div className="settings-grid">
+                  <label htmlFor="set-update">{t("settings.update.channel")}</label>
+                  <select
+                    id="set-update"
+                    data-testid="settings-update-channel"
+                    value={updateChannel}
+                    onChange={(e) => setUpdateChannel(e.target.value as "manual" | "auto")}
+                  >
+                    <option value="manual">{t("settings.update.manual")}</option>
+                    <option value="auto">{t("settings.update.auto")}</option>
+                  </select>
+                </div>
+
+                <div className="settings-section" data-testid="settings-updates-status">
+                  <div className="settings-section-title">{t("settings.updates.status")}</div>
+                  <div className="settings-grid">
+                    <span>{t("settings.updates.current")}</span>
+                    <code>{updateStatus?.current_version || "—"}</code>
+
+                    <span>{t("settings.updates.last_check")}</span>
+                    <span className="muted">
+                      {updateStatus?.last_check_at || t("settings.updates.never")}
+                      {updateStatus?.last_error ? ` · ${updateStatus.last_error}` : ""}
+                    </span>
+
+                    <span>{t("settings.updates.staged")}</span>
+                    <span className="muted">
+                      {updateStatus?.staged
+                        ? `v${updateStatus.staged.version} · ${t("settings.updates.restart_required")}`
+                        : t("settings.updates.none")}
+                    </span>
+                  </div>
+                  <div className="provider-add">
+                    <button
+                      type="button"
+                      data-testid="settings-update-check"
+                      disabled={updateBusy}
+                      onClick={() => void checkForUpdate()}
+                    >
+                      {t("settings.updates.check")}
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="settings-update-apply"
+                      disabled={updateBusy || !updateStatus?.staged}
+                      onClick={() => void applyStagedUpdate()}
+                    >
+                      {t("settings.updates.apply")}
+                    </button>
+                  </div>
+                  <p className="muted settings-note">{t("settings.updates.note")}</p>
+                </div>
+              </div>
             )}
           </div>
-
-          <p className="muted settings-note">{t("settings.models.note")}</p>
         </div>
 
-        <PluginSettings api={api} t={t} />
-
-        <p className="muted settings-note">{t("settings.note_new_sessions")}</p>
         {error && <div role="alert">{error}</div>}
         <div className="merge-actions">
           <button disabled={busy} data-testid="settings-save" onClick={() => void save()}>
