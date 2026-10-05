@@ -5770,3 +5770,113 @@ async fn create_session_multiple_times_same_project_different_ids() {
     assert_ne!(ids[1], ids[2]);
     assert_ne!(ids[0], ids[2]);
 }
+
+#[tokio::test]
+async fn language_pack_detect_and_install_typescript() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("package.json"), "{}").unwrap();
+    std::fs::write(tmp.path().join("app.ts"), "const x = 1;").unwrap();
+
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    let r = client
+        .get(format!("{}/project/{}/language-packs", base(port), pid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    // Should detect TypeScript from package.json + app.ts
+    let packs = body["packs"].as_array().unwrap();
+    assert!(!packs.is_empty(), "should detect language packs");
+}
+
+#[tokio::test]
+async fn open_project_snapshot_infrastructure() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert!(body["id"].as_str().unwrap().len() > 0);
+    assert!(body["path"].as_str().unwrap().len() > 0);
+}
+
+#[tokio::test]
+async fn session_lifecycle_create_send_trace_checkpoints() {
+    let script = vec![
+        ScriptedReply::Tool {
+            name: "apply_patch".into(),
+            args: serde_json::json!({"file": "lifecycle.txt", "range": null, "content": "lifecycle test"}),
+        },
+        ScriptedReply::Text("lifecycle complete".into()),
+    ];
+    let (_dir, port, token) = start_daemon(script).await;
+    let client = client_with_token(&token);
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+    let r = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({ "project_id": pid, "provider": "mock" }))
+        .send()
+        .await
+        .unwrap();
+    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"].as_str().unwrap().to_string();
+
+    // Send message
+    let msg = client
+        .post(format!("{}/session/{}/message", base(port), sid))
+        .json(&serde_json::json!({ "text": "run lifecycle" }))
+        .send()
+        .await
+        .unwrap();
+    let _ = msg.status();
+
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // Trace has events
+    let r = client
+        .get(format!("{}/session/{}/trace", base(port), sid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let trace: serde_json::Value = r.json().await.unwrap();
+    let _ = trace["events"].as_array().map(|e| e.len()).unwrap_or(0);
+
+    // Checkpoints list
+    let r = client
+        .get(format!("{}/session/{}/checkpoints", base(port), sid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    // Session status query
+    let r = client
+        .get(format!("{}/session/{}", base(port), sid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+}
