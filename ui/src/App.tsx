@@ -1055,7 +1055,8 @@ export default function App({
                   : { width: effLeft, minWidth: 140, maxWidth: 480 }
               }
             >
-              {/* projects 视图标题行由 ProjectExplorer 自渲染（含「+」，v1.101），通用标题仅其余视图需要 */}
+              {/* projects 视图标题行由 ProjectExplorer 自渲染（含「+」，v1.101），通用标题仅其余视图需要；
+                  v1.117：side-head 收起钮移除——侧栏开合收敛 rail 切换钮 / rail 同视图再点 / 命令面板 */}
               {sideView !== "projects" && (
                 <div className="side-head">
                   <span className="side-title">
@@ -1063,19 +1064,6 @@ export default function App({
                       ? t("search.title")
                       : t("panel.packs")}
                   </span>
-                  <button
-                    type="button"
-                    className="pe-collapse"
-                    data-testid="sidebar-collapse"
-                    title={t("palette.collapse_sidebar")}
-                    aria-label={t("palette.collapse_sidebar")}
-                    onClick={() => setSidebarOpen(false)}
-                  >
-                    <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                      <path d="m11 17-5-5 5-5" />
-                      <path d="m18 17-5-5 5-5" />
-                    </svg>
-                  </button>
                 </div>
               )}
               <div className="side-body">
