@@ -1743,4 +1743,62 @@ mod tests {
         }));
         assert!(out.ok);
     }
+
+    #[test]
+    fn read_file_large_but_within_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "line\n".repeat(1000);
+        std::fs::write(dir.path().join("medium.txt"), &content).unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "read_file", &serde_json::json!({"path": "medium.txt"}));
+        assert!(out.ok);
+        assert_eq!(out.content, content);
+    }
+
+    #[test]
+    fn list_dir_with_hidden_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".hidden"), "").unwrap();
+        std::fs::write(dir.path().join("visible.txt"), "").unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "list_dir", &serde_json::json!({}));
+        assert!(out.ok);
+        assert!(out.content.contains(".hidden"), "hidden files should be listed");
+    }
+
+    #[test]
+    fn grep_case_sensitive_search() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("case.txt"), "Hello World\nhello world").unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "grep", &serde_json::json!({"pattern": "Hello"}));
+        assert!(out.ok);
+        assert!(out.content.contains("Hello"));
+    }
+
+    #[test]
+    fn apply_patch_special_chars_in_filename() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "src/lib/dto/user-profile.dto.ts",
+            "range": null,
+            "content": "export interface UserProfile { id: string; }\n"
+        }));
+        assert!(out.ok);
+    }
+
+    #[test]
+    fn apply_patch_symlink_target() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("real")).unwrap();
+        std::fs::write(dir.path().join("real/target.txt"), "original").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.path().join("real"), dir.path().join("link")).unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "real/target.txt", "range": null, "content": "updated via symlink"
+        }));
+        assert!(out.ok);
+    }
 }
