@@ -2,7 +2,7 @@
 //!
 //! | 级 | 工具 |
 //! |---|---|
-//! | A | read_file / list_dir / grep / git_read / lsp_query |
+//! | A | read_file / list_dir / grep / git_read / lsp_query / laya_decide（v1.124）/ skill_use（v1.130 §13.4） |
 //! | B | apply_patch / run_tests / run_build / install_deps |
 //! | C | http_fetch |
 //! | D | git_commit / git_push / create_pr |
@@ -18,6 +18,10 @@ pub enum Tool {
     Grep,
     GitRead,
     LspQuery,
+    /// Laya 本地判定（§9.8 #4，v1.124）：本地 CPU 推理，只读零副作用。
+    LayaDecide,
+    /// 代理技能读取（§13.4，v1.130）：读 SKILL.md 全文进上下文，只读零副作用。
+    SkillUse,
     ApplyPatch,
     RunTests,
     RunBuild,
@@ -38,6 +42,8 @@ impl Tool {
             Tool::Grep => "grep",
             Tool::GitRead => "git_read",
             Tool::LspQuery => "lsp_query",
+            Tool::LayaDecide => "laya_decide",
+            Tool::SkillUse => "skill_use",
             Tool::ApplyPatch => "apply_patch",
             Tool::RunTests => "run_tests",
             Tool::RunBuild => "run_build",
@@ -54,9 +60,13 @@ impl Tool {
     pub fn level(self) -> Option<crate::policy::Level> {
         use crate::policy::Level;
         Some(match self {
-            Tool::ReadFile | Tool::ListDir | Tool::Grep | Tool::GitRead | Tool::LspQuery => {
-                Level::A
-            }
+            Tool::ReadFile
+            | Tool::ListDir
+            | Tool::Grep
+            | Tool::GitRead
+            | Tool::LspQuery
+            | Tool::LayaDecide
+            | Tool::SkillUse => Level::A,
             Tool::ApplyPatch | Tool::RunTests | Tool::RunBuild | Tool::InstallDeps => Level::B,
             Tool::HttpFetch => Level::C,
             Tool::GitCommit | Tool::GitPush => Level::D,
@@ -72,6 +82,8 @@ impl Tool {
             "grep" => Tool::Grep,
             "git_read" => Tool::GitRead,
             "lsp_query" => Tool::LspQuery,
+            "laya_decide" => Tool::LayaDecide,
+            "skill_use" => Tool::SkillUse,
             "apply_patch" => Tool::ApplyPatch,
             "run_tests" => Tool::RunTests,
             "run_build" => Tool::RunBuild,
@@ -135,6 +147,7 @@ mod tests {
         assert_eq!(Tool::Grep.level(), Some(Level::A));
         assert_eq!(Tool::GitRead.level(), Some(Level::A));
         assert_eq!(Tool::LspQuery.level(), Some(Level::A));
+        assert_eq!(Tool::SkillUse.level(), Some(Level::A), "v1.130 §13.4");
         assert_eq!(Tool::ApplyPatch.level(), Some(Level::B));
         assert_eq!(Tool::RunTests.level(), Some(Level::B));
         assert_eq!(Tool::RunBuild.level(), Some(Level::B));
@@ -154,6 +167,7 @@ mod tests {
             Tool::Grep,
             Tool::GitRead,
             Tool::LspQuery,
+            Tool::SkillUse,
             Tool::ApplyPatch,
             Tool::RunTests,
             Tool::RunBuild,
@@ -192,5 +206,4 @@ mod tests {
         let op2: PatchOp = serde_json::from_str(r#"{"file":"new.txt","content":"x"}"#).unwrap();
         assert_eq!(op2.range, None, "缺省追加到文件尾");
     }
-
 }

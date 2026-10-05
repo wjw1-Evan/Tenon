@@ -40,7 +40,7 @@ pub struct DirtConflictView {
 }
 
 impl ToolOutput {
-    fn ok(content: impl Into<String>) -> Self {
+    pub(crate) fn ok(content: impl Into<String>) -> Self {
         Self {
             ok: true,
             content: content.into(),
@@ -50,7 +50,7 @@ impl ToolOutput {
             dirty_merged: None,
         }
     }
-    fn err(content: impl Into<String>) -> Self {
+    pub(crate) fn err(content: impl Into<String>) -> Self {
         Self {
             ok: false,
             content: content.into(),
@@ -1693,11 +1693,15 @@ mod tests {
     fn apply_patch_unicode_content() {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "unicode.md",
-            "range": null,
-            "content": "# 标题\n\n## 中文段落\n\n日本語テキスト\n"
-        }));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "unicode.md",
+                "range": null,
+                "content": "# 标题\n\n## 中文段落\n\n日本語テキスト\n"
+            }),
+        );
         assert!(out.ok);
         let content = std::fs::read_to_string(dir.path().join("unicode.md")).unwrap();
         assert!(content.contains("中文段落"));
@@ -1717,9 +1721,13 @@ mod tests {
     fn apply_patch_dotfile() {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": ".gitignore", "range": null, "content": "node_modules/\ntarget/\n"
-        }));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": ".gitignore", "range": null, "content": "node_modules/\ntarget/\n"
+            }),
+        );
         assert!(out.ok);
         assert!(dir.path().join(".gitignore").exists());
     }
@@ -1738,9 +1746,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
         let content = "\u{0}\u{1}\u{2}binary\u{ff}\u{fe}";
-        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "bin.dat", "range": null, "content": content
-        }));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "bin.dat", "range": null, "content": content
+            }),
+        );
         assert!(out.ok);
     }
 
@@ -1763,7 +1775,10 @@ mod tests {
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
         let out = execute_tool(&c, "list_dir", &serde_json::json!({}));
         assert!(out.ok);
-        assert!(out.content.contains(".hidden"), "hidden files should be listed");
+        assert!(
+            out.content.contains(".hidden"),
+            "hidden files should be listed"
+        );
     }
 
     #[test]
@@ -1780,11 +1795,15 @@ mod tests {
     fn apply_patch_special_chars_in_filename() {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "src/lib/dto/user-profile.dto.ts",
-            "range": null,
-            "content": "export interface UserProfile { id: string; }\n"
-        }));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "src/lib/dto/user-profile.dto.ts",
+                "range": null,
+                "content": "export interface UserProfile { id: string; }\n"
+            }),
+        );
         assert!(out.ok);
     }
 
@@ -1796,9 +1815,13 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(dir.path().join("real"), dir.path().join("link")).unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "real/target.txt", "range": null, "content": "updated via symlink"
-        }));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "real/target.txt", "range": null, "content": "updated via symlink"
+            }),
+        );
         assert!(out.ok);
     }
 
@@ -1806,9 +1829,13 @@ mod tests {
     fn apply_patch_creates_deeply_nested_dirs() {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "a/b/c/d/e/deep.txt", "range": null, "content": "deep content"
-        }));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "a/b/c/d/e/deep.txt", "range": null, "content": "deep content"
+            }),
+        );
         assert!(out.ok);
         assert!(dir.path().join("a/b/c/d/e/deep.txt").exists());
     }
@@ -1818,9 +1845,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
         let content = "round-trip content\nwith multiple lines\n";
-        execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "rt.txt", "range": null, "content": content
-        }));
+        execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "rt.txt", "range": null, "content": content
+            }),
+        );
         let out = execute_tool(&c, "read_file", &serde_json::json!({"path": "rt.txt"}));
         assert!(out.ok);
         assert_eq!(out.content, content);
@@ -1866,9 +1897,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(".editorconfig"), "old = true").unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": ".editorconfig", "range": null, "content": "root = true\n"
-        }));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": ".editorconfig", "range": null, "content": "root = true\n"
+            }),
+        );
         assert!(out.ok);
         let content = std::fs::read_to_string(dir.path().join(".editorconfig")).unwrap();
         assert!(content.contains("root = true"));
@@ -1906,9 +1941,13 @@ mod tests {
     fn apply_patch_file_with_spaces_in_name() {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "my file with spaces.txt", "range": null, "content": "content with spaces"
-        }));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "my file with spaces.txt", "range": null, "content": "content with spaces"
+            }),
+        );
         assert!(out.ok);
         assert!(dir.path().join("my file with spaces.txt").exists());
     }
@@ -1929,7 +1968,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("ls-test.txt"), "data").unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        let out = execute_tool(&c, "bash", &serde_json::json!({"command": "ls", "timeout_s": 5}));
+        let out = execute_tool(
+            &c,
+            "bash",
+            &serde_json::json!({"command": "ls", "timeout_s": 5}),
+        );
         // ls 可能被沙箱拦截或成功
         let _ = out;
     }
@@ -1939,9 +1982,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
         for i in 0..3 {
-            let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-                "file": "iter.txt", "range": null, "content": format!("version {}", i)
-            }));
+            let out = execute_tool(
+                &c,
+                "apply_patch",
+                &serde_json::json!({
+                    "file": "iter.txt", "range": null, "content": format!("version {}", i)
+                }),
+            );
             assert!(out.ok, "iteration {}: {}", i, out.content);
         }
         let content = std::fs::read_to_string(dir.path().join("iter.txt")).unwrap();
@@ -1964,7 +2011,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
         c.readonly.store(true, Ordering::Relaxed);
-        let out = execute_tool(&c, "install_deps", &serde_json::json!({"command": "cargo add serde"}));
+        let out = execute_tool(
+            &c,
+            "install_deps",
+            &serde_json::json!({"command": "cargo add serde"}),
+        );
         assert!(!out.ok, "readonly should block C-level install_deps");
     }
 
@@ -2000,9 +2051,13 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("src/lib")).unwrap();
         std::fs::write(dir.path().join("src/lib/existing.rs"), "// old content").unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "src/lib/existing.rs", "range": null, "content": "// new content\nfn updated() {}\n"
-        }));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "src/lib/existing.rs", "range": null, "content": "// new content\nfn updated() {}\n"
+            }),
+        );
         assert!(out.ok);
         let content = std::fs::read_to_string(dir.path().join("src/lib/existing.rs")).unwrap();
         assert!(content.contains("new content"));
@@ -2032,20 +2087,30 @@ mod tests {
     fn apply_patch_complex_nested_path_creation() {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "packages/core/src/types/config.ts",
-            "range": null,
-            "content": "export interface Config { debug: boolean; }\n"
-        }));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "packages/core/src/types/config.ts",
+                "range": null,
+                "content": "export interface Config { debug: boolean; }\n"
+            }),
+        );
         assert!(out.ok);
-        assert!(dir.path().join("packages/core/src/types/config.ts").exists());
+        assert!(dir
+            .path()
+            .join("packages/core/src/types/config.ts")
+            .exists());
     }
 
     #[test]
     fn grep_multiline_file_finds_on_multiple_lines() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("multi-line.txt"),
-            "first match here\nno match\nanother match\n").unwrap();
+        std::fs::write(
+            dir.path().join("multi-line.txt"),
+            "first match here\nno match\nanother match\n",
+        )
+        .unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
         let out = execute_tool(&c, "grep", &serde_json::json!({"pattern": "match"}));
         assert!(out.ok);
@@ -2058,10 +2123,18 @@ mod tests {
     fn apply_patch_then_grep_finds_new_content() {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "searchable.rs", "range": null, "content": "pub fn searchable_function() {}"
-        }));
-        let out = execute_tool(&c, "grep", &serde_json::json!({"pattern": "searchable_function"}));
+        execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "searchable.rs", "range": null, "content": "pub fn searchable_function() {}"
+            }),
+        );
+        let out = execute_tool(
+            &c,
+            "grep",
+            &serde_json::json!({"pattern": "searchable_function"}),
+        );
         assert!(out.ok);
         assert!(out.content.contains("searchable.rs"));
     }
@@ -2093,9 +2166,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
         let content = "let re = r\"(\\d+)\\.(\\d+)\";\nconst cost = $10.99;\n";
-        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "regex-content.rs", "range": null, "content": content
-        }));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "regex-content.rs", "range": null, "content": content
+            }),
+        );
         assert!(out.ok);
     }
 
@@ -2112,9 +2189,13 @@ mod tests {
     fn apply_patch_and_list_dir_see_new_file() {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "visible.txt", "range": null, "content": "see me"
-        }));
+        execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "visible.txt", "range": null, "content": "see me"
+            }),
+        );
         let out = execute_tool(&c, "list_dir", &serde_json::json!({}));
         assert!(out.content.contains("visible.txt"));
     }
@@ -2124,10 +2205,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
         let content = "pub mod deep {\n    pub fn nested() {}\n}\n";
-        execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "src/core/deep/nested.rs", "range": null, "content": content
-        }));
-        let out = execute_tool(&c, "read_file", &serde_json::json!({"path": "src/core/deep/nested.rs"}));
+        execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "src/core/deep/nested.rs", "range": null, "content": content
+            }),
+        );
+        let out = execute_tool(
+            &c,
+            "read_file",
+            &serde_json::json!({"path": "src/core/deep/nested.rs"}),
+        );
         assert!(out.ok);
         assert_eq!(out.content, content);
     }
@@ -2136,10 +2225,18 @@ mod tests {
     fn grep_after_multiple_writes_finds_all() {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        for (name, content) in [("one.rs", "fn one()"), ("two.rs", "fn two()"), ("three.rs", "fn three()")] {
-            execute_tool(&c, "apply_patch", &serde_json::json!({
-                "file": name, "range": null, "content": format!("{}\n", content)
-            }));
+        for (name, content) in [
+            ("one.rs", "fn one()"),
+            ("two.rs", "fn two()"),
+            ("three.rs", "fn three()"),
+        ] {
+            execute_tool(
+                &c,
+                "apply_patch",
+                &serde_json::json!({
+                    "file": name, "range": null, "content": format!("{}\n", content)
+                }),
+            );
         }
         let out = execute_tool(&c, "grep", &serde_json::json!({"pattern": "fn "}));
         assert!(out.ok);
@@ -2154,12 +2251,20 @@ mod tests {
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
 
         // 1. Create file
-        execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "cycle/README.md", "range": null, "content": "# Project\n\n## Setup\n"
-        }));
+        execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "cycle/README.md", "range": null, "content": "# Project\n\n## Setup\n"
+            }),
+        );
 
         // 2. Read it back
-        let read = execute_tool(&c, "read_file", &serde_json::json!({"path": "cycle/README.md"}));
+        let read = execute_tool(
+            &c,
+            "read_file",
+            &serde_json::json!({"path": "cycle/README.md"}),
+        );
         assert!(read.ok);
         assert!(read.content.contains("Setup"));
 
@@ -2178,9 +2283,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
         // bash may be sandboxed, but verify no panic
-        let out = execute_tool(&c, "bash", &serde_json::json!({
-            "command": "echo hello > /dev/null", "timeout_s": 5
-        }));
+        let out = execute_tool(
+            &c,
+            "bash",
+            &serde_json::json!({
+                "command": "echo hello > /dev/null", "timeout_s": 5
+            }),
+        );
         let _ = out;
     }
 
@@ -2189,9 +2298,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut c = ToolContext::new(dir.path(), Duration::from_secs(30));
         c.team_denied_tools = vec!["apply_patch".into()];
-        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "denied.txt", "range": null, "content": "denied content"
-        }));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "denied.txt", "range": null, "content": "denied content"
+            }),
+        );
         assert!(!out.ok);
         assert!(out.content.contains("团队策略禁用"));
     }
@@ -2219,16 +2332,29 @@ mod tests {
             ("api.rs", "pub fn handle_request() {}"),
         ];
         for (name, content) in files {
-            execute_tool(&c, "apply_patch", &serde_json::json!({
-                "file": name, "range": null, "content": format!("{}\n", content)
-            }));
+            execute_tool(
+                &c,
+                "apply_patch",
+                &serde_json::json!({
+                    "file": name, "range": null, "content": format!("{}\n", content)
+                }),
+            );
         }
 
         // Grep for each
-        for (name, keyword) in [("auth.rs", "authenticate"), ("db.rs", "connect"), ("api.rs", "handle_request")] {
+        for (name, keyword) in [
+            ("auth.rs", "authenticate"),
+            ("db.rs", "connect"),
+            ("api.rs", "handle_request"),
+        ] {
             let out = execute_tool(&c, "grep", &serde_json::json!({"pattern": keyword}));
             assert!(out.ok, "grep for {}", keyword);
-            assert!(out.content.contains(name), "{} should contain {}", keyword, name);
+            assert!(
+                out.content.contains(name),
+                "{} should contain {}",
+                keyword,
+                name
+            );
         }
     }
 
@@ -2239,7 +2365,11 @@ mod tests {
         c.readonly.store(true, Ordering::Relaxed);
         c.team_denied_tools = vec!["bash".into(), "read_file".into()];
         // readonly + denied bash → denied by team policy first
-        let out = execute_tool(&c, "bash", &serde_json::json!({"command": "echo", "timeout_s": 5}));
+        let out = execute_tool(
+            &c,
+            "bash",
+            &serde_json::json!({"command": "echo", "timeout_s": 5}),
+        );
         assert!(!out.ok);
         // readonly + denied read_file → denied by team policy
         let out = execute_tool(&c, "read_file", &serde_json::json!({"path": "any.txt"}));
@@ -2256,13 +2386,26 @@ mod tests {
 
         let versions = ["alpha", "beta", "gamma"];
         for v in versions {
-            let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-                "file": "versions.txt", "range": null, "content": v
-            }));
+            let out = execute_tool(
+                &c,
+                "apply_patch",
+                &serde_json::json!({
+                    "file": "versions.txt", "range": null, "content": v
+                }),
+            );
             assert!(out.ok);
-            let read = execute_tool(&c, "read_file", &serde_json::json!({"path": "versions.txt"}));
+            let read = execute_tool(
+                &c,
+                "read_file",
+                &serde_json::json!({"path": "versions.txt"}),
+            );
             assert!(read.ok);
-            assert!(read.content.contains(v), "expected {} in {}", v, read.content);
+            assert!(
+                read.content.contains(v),
+                "expected {} in {}",
+                v,
+                read.content
+            );
         }
     }
 
@@ -2272,14 +2415,22 @@ mod tests {
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
 
         // Create nested structure
-        execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "src/utils/helpers.ts", "range": null,
-            "content": "export function formatDate(d: Date): string {\n  return d.toISOString();\n}\n"
-        }));
-        execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "src/utils/constants.ts", "range": null,
-            "content": "export const MAX_RETRY = 3;\n"
-        }));
+        execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "src/utils/helpers.ts", "range": null,
+                "content": "export function formatDate(d: Date): string {\n  return d.toISOString();\n}\n"
+            }),
+        );
+        execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "src/utils/constants.ts", "range": null,
+                "content": "export const MAX_RETRY = 3;\n"
+            }),
+        );
 
         // List src/utils
         let list = execute_tool(&c, "list_dir", &serde_json::json!({"path": "src/utils"}));
@@ -2293,7 +2444,11 @@ mod tests {
         assert!(grep.content.contains("helpers.ts"));
 
         // Read constants
-        let read = execute_tool(&c, "read_file", &serde_json::json!({"path": "src/utils/constants.ts"}));
+        let read = execute_tool(
+            &c,
+            "read_file",
+            &serde_json::json!({"path": "src/utils/constants.ts"}),
+        );
         assert!(read.ok);
         assert!(read.content.contains("MAX_RETRY"));
     }
@@ -2304,9 +2459,13 @@ mod tests {
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
         c.readonly.store(true, Ordering::Relaxed);
         // apply_patch blocked in readonly
-        let patch = execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "blocked.txt", "range": null, "content": "no"
-        }));
+        let patch = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "blocked.txt", "range": null, "content": "no"
+            }),
+        );
         assert!(!patch.ok);
         // list_dir still works
         let list = execute_tool(&c, "list_dir", &serde_json::json!({}));
@@ -2319,14 +2478,24 @@ mod tests {
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
 
         let files = [
-            ("src/models/user.ts", "export interface User { id: string; name: string; }\n"),
-            ("src/services/user-service.ts", "import { User } from '../models/user';\n"),
+            (
+                "src/models/user.ts",
+                "export interface User { id: string; name: string; }\n",
+            ),
+            (
+                "src/services/user-service.ts",
+                "import { User } from '../models/user';\n",
+            ),
             ("src/index.ts", "export { User } from './models/user';\n"),
         ];
         for (path, content) in files {
-            let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-                "file": path, "range": null, "content": content
-            }));
+            let out = execute_tool(
+                &c,
+                "apply_patch",
+                &serde_json::json!({
+                    "file": path, "range": null, "content": content
+                }),
+            );
             assert!(out.ok, "failed to create {}", path);
         }
 
@@ -2338,7 +2507,11 @@ mod tests {
         assert!(list.content.contains("index.ts"));
 
         // Read user model
-        let read = execute_tool(&c, "read_file", &serde_json::json!({"path": "src/models/user.ts"}));
+        let read = execute_tool(
+            &c,
+            "read_file",
+            &serde_json::json!({"path": "src/models/user.ts"}),
+        );
         assert!(read.ok);
         assert!(read.content.contains("interface User"));
 
@@ -2356,21 +2529,37 @@ mod tests {
         c.team_denied_tools = vec!["bash".into(), "run_tests".into()];
 
         // A级（只读）工具 → readonly OK, not denied → works
-        let read = execute_tool(&c, "read_file", &serde_json::json!({"path": "readable.txt"}));
+        let read = execute_tool(
+            &c,
+            "read_file",
+            &serde_json::json!({"path": "readable.txt"}),
+        );
         assert!(read.ok);
 
         // B级工具 + readonly → blocked
-        let patch = execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "ro.txt", "range": null, "content": "blocked"
-        }));
+        let patch = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "ro.txt", "range": null, "content": "blocked"
+            }),
+        );
         assert!(!patch.ok);
 
         // B级工具 + denied → blocked (readonly check happens after team check for bash)
-        let bash = execute_tool(&c, "bash", &serde_json::json!({"command": "echo", "timeout_s": 5}));
+        let bash = execute_tool(
+            &c,
+            "bash",
+            &serde_json::json!({"command": "echo", "timeout_s": 5}),
+        );
         assert!(!bash.ok);
 
         // NOT denied C级 tool + NOT readonly (install_deps not in denied) → works or sandbox error
-        let deps = execute_tool(&c, "install_deps", &serde_json::json!({"command": "echo deps"}));
+        let deps = execute_tool(
+            &c,
+            "install_deps",
+            &serde_json::json!({"command": "echo deps"}),
+        );
         let _ = deps; // sandbox may or may not be available
     }
 
@@ -2382,13 +2571,23 @@ mod tests {
             ("package.json", r#"{"name": "my-app", "version": "1.0.0"}"#),
             ("tsconfig.json", r#"{"compilerOptions": {"strict": true}}"#),
             ("src/index.ts", "export { App } from './App';\n"),
-            ("src/App.tsx", "export default function App() { return null; }\n"),
-            ("src/components/Header.tsx", "export function Header() { return null; }\n"),
+            (
+                "src/App.tsx",
+                "export default function App() { return null; }\n",
+            ),
+            (
+                "src/components/Header.tsx",
+                "export function Header() { return null; }\n",
+            ),
         ];
         for (path, content) in files {
-            let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-                "file": path, "range": null, "content": content
-            }));
+            let out = execute_tool(
+                &c,
+                "apply_patch",
+                &serde_json::json!({
+                    "file": path, "range": null, "content": content
+                }),
+            );
             assert!(out.ok, "failed: {}", path);
         }
         // Verify all files exist
@@ -2400,7 +2599,11 @@ mod tests {
     #[test]
     fn grep_pattern_with_anchors() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("anchored.txt"), "start of line\nnot at start").unwrap();
+        std::fs::write(
+            dir.path().join("anchored.txt"),
+            "start of line\nnot at start",
+        )
+        .unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
         let out = execute_tool(&c, "grep", &serde_json::json!({"pattern": "^start"}));
         assert!(out.ok);
@@ -2422,9 +2625,13 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("src/models")).unwrap();
         std::fs::write(dir.path().join("src/models/user.ts"), "// old").unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "src/models/user.ts", "range": null, "content": "// updated\n"
-        }));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "src/models/user.ts", "range": null, "content": "// updated\n"
+            }),
+        );
         assert!(out.ok);
         // Directory still exists
         assert!(dir.path().join("src/models").is_dir());
@@ -2437,7 +2644,11 @@ mod tests {
     fn grep_in_nested_directory() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("src/deeply/nested")).unwrap();
-        std::fs::write(dir.path().join("src/deeply/nested/deep.ts"), "deeply_nested_fn()").unwrap();
+        std::fs::write(
+            dir.path().join("src/deeply/nested/deep.ts"),
+            "deeply_nested_fn()",
+        )
+        .unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
         let out = execute_tool(&c, "grep", &serde_json::json!({"pattern": "deeply_nested"}));
         assert!(out.ok);
@@ -2447,9 +2658,13 @@ mod tests {
     fn bash_sandbox_available_or_not() {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        let out = execute_tool(&c, "bash", &serde_json::json!({
-            "command": "pwd", "timeout_s": 5
-        }));
+        let out = execute_tool(
+            &c,
+            "bash",
+            &serde_json::json!({
+                "command": "pwd", "timeout_s": 5
+            }),
+        );
         // Sandbox may be available or not - just verify no panic
         let _ = out;
     }
@@ -2459,7 +2674,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut c = ToolContext::new(dir.path(), Duration::from_secs(30));
         c.team_denied_tools = vec!["install_deps".into()];
-        let out = execute_tool(&c, "install_deps", &serde_json::json!({"command": "npm install"}));
+        let out = execute_tool(
+            &c,
+            "install_deps",
+            &serde_json::json!({"command": "npm install"}),
+        );
         assert!(!out.ok);
         assert!(out.content.contains("团队策略禁用"));
     }
@@ -2469,11 +2688,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
         let json_content = r#"{"name": "test", "version": "1.0.0", "dependencies": {}}"#;
-        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "package.json", "range": null, "content": json_content
-        }));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "package.json", "range": null, "content": json_content
+            }),
+        );
         assert!(out.ok);
-        let read = execute_tool(&c, "read_file", &serde_json::json!({"path": "package.json"}));
+        let read = execute_tool(
+            &c,
+            "read_file",
+            &serde_json::json!({"path": "package.json"}),
+        );
         assert!(read.ok);
         assert!(read.content.contains("test"));
     }
@@ -2491,13 +2718,21 @@ mod tests {
         assert!(read.ok);
 
         // apply_patch: readonly → blocked
-        let patch = execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "new.txt", "range": null, "content": "no"
-        }));
+        let patch = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "new.txt", "range": null, "content": "no"
+            }),
+        );
         assert!(!patch.ok);
 
         // bash: denied → blocked
-        let bash = execute_tool(&c, "bash", &serde_json::json!({"command": "echo", "timeout_s": 5}));
+        let bash = execute_tool(
+            &c,
+            "bash",
+            &serde_json::json!({"command": "echo", "timeout_s": 5}),
+        );
         assert!(!bash.ok);
 
         // run_tests: denied → blocked
@@ -2519,9 +2754,13 @@ mod tests {
             ("model.rs", "pub struct Model { id: u32 }"),
             ("view.rs", "pub struct View { model: Model }"),
         ] {
-            execute_tool(&c, "apply_patch", &serde_json::json!({
-                "file": name, "range": null, "content": content
-            }));
+            execute_tool(
+                &c,
+                "apply_patch",
+                &serde_json::json!({
+                    "file": name, "range": null, "content": content
+                }),
+            );
         }
 
         // Grep for Model struct
@@ -2540,9 +2779,13 @@ mod tests {
             ("src/main.ts", "import { createApp } from './app';\n"),
         ];
         for (path, content) in files {
-            let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-                "file": path, "range": null, "content": content
-            }));
+            let out = execute_tool(
+                &c,
+                "apply_patch",
+                &serde_json::json!({
+                    "file": path, "range": null, "content": content
+                }),
+            );
             assert!(out.ok, "failed: {}", path);
         }
         // All files exist
@@ -2556,9 +2799,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
         let expected = "line 1\nline 2\nline 3\n";
-        execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "exact.txt", "range": null, "content": expected
-        }));
+        execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "exact.txt", "range": null, "content": expected
+            }),
+        );
         let actual = std::fs::read_to_string(dir.path().join("exact.txt")).unwrap();
         assert_eq!(actual, expected);
     }
@@ -2600,13 +2847,23 @@ mod tests {
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
         let files = [
             ("go.mod", "module example.com/myapp\n\ngo 1.21\n"),
-            ("main.go", "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"hello\")\n}\n"),
-            ("internal/handler/handler.go", "package handler\n\nfunc Handle() {}\n"),
+            (
+                "main.go",
+                "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"hello\")\n}\n",
+            ),
+            (
+                "internal/handler/handler.go",
+                "package handler\n\nfunc Handle() {}\n",
+            ),
         ];
         for (path, content) in files {
-            let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-                "file": path, "range": null, "content": content
-            }));
+            let out = execute_tool(
+                &c,
+                "apply_patch",
+                &serde_json::json!({
+                    "file": path, "range": null, "content": content
+                }),
+            );
             assert!(out.ok, "failed: {}", path);
         }
     }
@@ -2617,15 +2874,25 @@ mod tests {
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
         let files = [
             ("Cargo.toml", "[workspace]\nmembers = [\"core\", \"cli\"]\n"),
-            ("core/Cargo.toml", "[package]\nname = \"core\"\nversion = \"0.1.0\"\n"),
+            (
+                "core/Cargo.toml",
+                "[package]\nname = \"core\"\nversion = \"0.1.0\"\n",
+            ),
             ("core/src/lib.rs", "pub fn core_fn() {}\n"),
-            ("cli/Cargo.toml", "[package]\nname = \"cli\"\nversion = \"0.1.0\"\n"),
+            (
+                "cli/Cargo.toml",
+                "[package]\nname = \"cli\"\nversion = \"0.1.0\"\n",
+            ),
             ("cli/src/main.rs", "fn main() {}\n"),
         ];
         for (path, content) in files {
-            let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-                "file": path, "range": null, "content": content
-            }));
+            let out = execute_tool(
+                &c,
+                "apply_patch",
+                &serde_json::json!({
+                    "file": path, "range": null, "content": content
+                }),
+            );
             assert!(out.ok, "failed: {}", path);
         }
     }
@@ -2635,13 +2902,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
         let files = [
-            ("pom.xml", r#"<?xml version="1.0"?><project><modelVersion>4.0.0</modelVersion></project>"#),
-            ("src/main/java/com/example/App.java", "public class App {\n    public static void main(String[] args) {}\n}\n"),
+            (
+                "pom.xml",
+                r#"<?xml version="1.0"?><project><modelVersion>4.0.0</modelVersion></project>"#,
+            ),
+            (
+                "src/main/java/com/example/App.java",
+                "public class App {\n    public static void main(String[] args) {}\n}\n",
+            ),
         ];
         for (path, content) in files {
-            let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-                "file": path, "range": null, "content": content
-            }));
+            let out = execute_tool(
+                &c,
+                "apply_patch",
+                &serde_json::json!({
+                    "file": path, "range": null, "content": content
+                }),
+            );
             assert!(out.ok, "failed: {}", path);
         }
     }
@@ -2655,9 +2932,13 @@ mod tests {
             ("Program.cs", "var builder = WebApplication.CreateBuilder(args);\n"),
         ];
         for (path, content) in files {
-            let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-                "file": path, "range": null, "content": content
-            }));
+            let out = execute_tool(
+                &c,
+                "apply_patch",
+                &serde_json::json!({
+                    "file": path, "range": null, "content": content
+                }),
+            );
             assert!(out.ok, "failed: {}", path);
         }
     }
@@ -2683,9 +2964,13 @@ mod tests {
             ("docker-compose.yml", "version: \"3\"\nservices:\n  app:\n    build: .\n"),
         ];
         for (path, content) in files {
-            let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-                "file": path, "range": null, "content": content
-            }));
+            let out = execute_tool(
+                &c,
+                "apply_patch",
+                &serde_json::json!({
+                    "file": path, "range": null, "content": content
+                }),
+            );
             assert!(out.ok, "failed: {}", path);
         }
     }
@@ -2694,11 +2979,15 @@ mod tests {
     fn apply_patch_ci_workflow() {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": ".github/workflows/ci.yml",
-            "range": null,
-            "content": "name: CI\non: [push]\njobs:\n  test:\n    runs-on: ubuntu-latest\n"
-        }));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": ".github/workflows/ci.yml",
+                "range": null,
+                "content": "name: CI\non: [push]\njobs:\n  test:\n    runs-on: ubuntu-latest\n"
+            }),
+        );
         assert!(out.ok);
     }
 
@@ -2706,10 +2995,14 @@ mod tests {
     fn apply_patch_env_file() {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": ".env.example", "range": null,
-            "content": "DATABASE_URL=postgres://localhost/mydb\nAPI_KEY=your-key-here\n"
-        }));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": ".env.example", "range": null,
+                "content": "DATABASE_URL=postgres://localhost/mydb\nAPI_KEY=your-key-here\n"
+            }),
+        );
         assert!(out.ok);
     }
 
@@ -2717,10 +3010,14 @@ mod tests {
     fn apply_patch_readme_md() {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "README.md", "range": null,
-            "content": "# My Project\n\n## Installation\n\n```bash\nnpm install\n```\n\n## Usage\n"
-        }));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "README.md", "range": null,
+                "content": "# My Project\n\n## Installation\n\n```bash\nnpm install\n```\n\n## Usage\n"
+            }),
+        );
         assert!(out.ok);
     }
 
@@ -2728,10 +3025,14 @@ mod tests {
     fn apply_patch_license_file() {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "LICENSE", "range": null,
-            "content": "MIT License\n\nCopyright (c) 2026\n"
-        }));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "LICENSE", "range": null,
+                "content": "MIT License\n\nCopyright (c) 2026\n"
+            }),
+        );
         assert!(out.ok);
     }
 
@@ -2739,10 +3040,14 @@ mod tests {
     fn apply_patch_gitignore() {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": ".gitignore", "range": null,
-            "content": "node_modules/\ndist/\n.env\n*.log\n"
-        }));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": ".gitignore", "range": null,
+                "content": "node_modules/\ndist/\n.env\n*.log\n"
+            }),
+        );
         assert!(out.ok);
     }
 
@@ -2750,10 +3055,14 @@ mod tests {
     fn apply_patch_vscode_settings() {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": ".vscode/settings.json", "range": null,
-            "content": "{\n  \"editor.formatOnSave\": true,\n  \"editor.tabSize\": 2\n}\n"
-        }));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": ".vscode/settings.json", "range": null,
+                "content": "{\n  \"editor.formatOnSave\": true,\n  \"editor.tabSize\": 2\n}\n"
+            }),
+        );
         assert!(out.ok);
     }
 
@@ -2767,9 +3076,13 @@ mod tests {
             ("config.yaml", "server:\n  port: 8080\n"),
         ];
         for (path, content) in files {
-            let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-                "file": path, "range": null, "content": content
-            }));
+            let out = execute_tool(
+                &c,
+                "apply_patch",
+                &serde_json::json!({
+                    "file": path, "range": null, "content": content
+                }),
+            );
             assert!(out.ok, "write {}", path);
             let read = execute_tool(&c, "read_file", &serde_json::json!({"path": path}));
             assert!(read.ok, "read {}", path);
@@ -2793,14 +3106,24 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
         let files = [
-            ("src/server.ts", "import express from 'express';\nconst app = express();\n"),
+            (
+                "src/server.ts",
+                "import express from 'express';\nconst app = express();\n",
+            ),
             ("src/client.js", "fetch('/api/data').then(r => r.json());\n"),
-            ("scripts/deploy.py", "import subprocess\nsubprocess.run(['npm', 'run', 'build'])\n"),
+            (
+                "scripts/deploy.py",
+                "import subprocess\nsubprocess.run(['npm', 'run', 'build'])\n",
+            ),
         ];
         for (path, content) in files {
-            let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-                "file": path, "range": null, "content": content
-            }));
+            let out = execute_tool(
+                &c,
+                "apply_patch",
+                &serde_json::json!({
+                    "file": path, "range": null, "content": content
+                }),
+            );
             assert!(out.ok, "write {}", path);
         }
         // Cross-verify with grep
@@ -2815,13 +3138,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
         let files = [
-            ("migrations/001_init.sql", "CREATE TABLE users (id SERIAL PRIMARY KEY, name TEXT);\n"),
-            ("scripts/setup.sh", "#!/bin/bash\nset -e\necho 'setup complete'\n"),
+            (
+                "migrations/001_init.sql",
+                "CREATE TABLE users (id SERIAL PRIMARY KEY, name TEXT);\n",
+            ),
+            (
+                "scripts/setup.sh",
+                "#!/bin/bash\nset -e\necho 'setup complete'\n",
+            ),
         ];
         for (path, content) in files {
-            let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-                "file": path, "range": null, "content": content
-            }));
+            let out = execute_tool(
+                &c,
+                "apply_patch",
+                &serde_json::json!({
+                    "file": path, "range": null, "content": content
+                }),
+            );
             assert!(out.ok, "write {}", path);
         }
         // List migrations dir
@@ -2836,14 +3169,24 @@ mod tests {
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
         // Create nested project structure
         let files = [
-            ("src/core/engine.ts", "export class Engine {\n  start() {}\n}\n"),
-            ("src/core/engine.test.ts", "import { Engine } from './engine';\n"),
+            (
+                "src/core/engine.ts",
+                "export class Engine {\n  start() {}\n}\n",
+            ),
+            (
+                "src/core/engine.test.ts",
+                "import { Engine } from './engine';\n",
+            ),
             ("docs/engine.md", "# Engine\n\nCore module.\n"),
         ];
         for (path, content) in files {
-            let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-                "file": path, "range": null, "content": content
-            }));
+            let out = execute_tool(
+                &c,
+                "apply_patch",
+                &serde_json::json!({
+                    "file": path, "range": null, "content": content
+                }),
+            );
             assert!(out.ok, "write {}", path);
         }
         // Read each file
@@ -2851,7 +3194,7 @@ mod tests {
             let read = execute_tool(&c, "read_file", &serde_json::json!({"path": path}));
             assert!(read.ok, "read {}", path);
             let keyword = expected.split_whitespace().nth(2).unwrap_or("content");
-            assert!(read.content.len() > 0, "read {} has content", path);
+            assert!(read.content.contains(keyword), "read {} has keyword", path);
         }
         // Grep for Engine
         let grep = execute_tool(&c, "grep", &serde_json::json!({"pattern": "Engine"}));
@@ -2863,14 +3206,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
         // Create file
-        execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "cycle-test.txt", "range": null, "content": "cycle content"
-        }));
+        execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "cycle-test.txt", "range": null, "content": "cycle content"
+            }),
+        );
         // List to verify
         let list = execute_tool(&c, "list_dir", &serde_json::json!({}));
         assert!(list.content.contains("cycle-test.txt"));
         // Read to verify
-        let read = execute_tool(&c, "read_file", &serde_json::json!({"path": "cycle-test.txt"}));
+        let read = execute_tool(
+            &c,
+            "read_file",
+            &serde_json::json!({"path": "cycle-test.txt"}),
+        );
         assert!(read.ok);
         assert!(read.content.contains("cycle"));
     }

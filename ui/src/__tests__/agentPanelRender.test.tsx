@@ -38,6 +38,57 @@ describe("AgentPanel event rendering", () => {
     await screen.findByText(/npm test/);
   });
 
+  it("renders laya_decide badge for agent_tool decider_call (v1.124)", async () => {
+    const events = [
+      {
+        id: 1,
+        seq: 1,
+        type: "decider_call",
+        payload: {
+          feature: "agent_tool",
+          kind: "choice",
+          result: { label: "needs_change", confidence: 0.87 },
+          duration_ms: 3,
+          origin: "agent_tool",
+        },
+      },
+    ];
+    render(<AgentPanel api={mockApi(events)} t={t} sessionId="s1" />);
+    const badge = await screen.findByTestId("turn-laya");
+    expect(badge.textContent).toContain("needs_change");
+    expect(badge.textContent).toContain("3ms");
+  });
+
+  it("does not render daemon-auto decider_call (v1.124 仅轨迹可见)", async () => {
+    const events = [
+      {
+        id: 1,
+        seq: 1,
+        type: "decider_call",
+        payload: { feature: "risk", kind: "score", result: 0.83, rule: true },
+      },
+    ];
+    render(<AgentPanel api={mockApi(events)} t={t} sessionId="s1" />);
+    await waitFor(() => expect(screen.queryByTestId("turn-laya")).toBeNull());
+  });
+
+  it("collapses laya_decide step card into read-only aggregate (v1.124)", async () => {
+    const events = [
+      {
+        id: 1,
+        seq: 1,
+        type: "command_run",
+        payload: { tool: "laya_decide", output: { ok: true, content: "{}" } },
+      },
+    ];
+    render(<AgentPanel api={mockApi(events)} t={t} sessionId="s1" />);
+    // 步骤卡被折叠；计数也由徽标承载（聚合行不出现）
+    await waitFor(() => {
+      expect(screen.queryByTestId("turn-step")).toBeNull();
+      expect(screen.queryByTestId("turn-readonly")).toBeNull();
+    });
+  });
+
   it("renders patch_applied card", async () => {
     const events = [{ id: 1, seq: 1, type: "patch_applied", payload: { tool: "apply_patch" } }];
     render(<AgentPanel api={mockApi(events)} t={t} sessionId="s1" />);

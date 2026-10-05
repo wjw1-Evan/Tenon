@@ -15,7 +15,7 @@ pub mod primitives;
 pub mod registry;
 pub mod runtime;
 
-pub use primitives::{DecisionKind, Feature, IntentLabel, LayaOutcome};
+pub use primitives::{DecideKind, DecideValue, DecisionKind, Feature, IntentLabel, LayaOutcome};
 pub use runtime::LayaRuntime;
 
 /// 静态 registry 默认地址（附录 C Q1：静态清单 + 对象存储 / CDN，

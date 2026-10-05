@@ -276,8 +276,23 @@ pub struct ModelUsage {
     pub model: String,
     pub input_tokens: i64,
     pub output_tokens: i64,
+    /// 缓存命中输入 token（v1.129 §11；旧行 / 未报告 = 0）。
+    pub cached_input_tokens: i64,
+    /// 该回合模型流耗时毫秒（provider 流建立 → 权威 Final 到达；0 = 未观测）。
+    pub duration_ms: i64,
     pub cost_usd: f64,
     pub created_at: String,
+}
+
+/// 会话 / 项目用量聚合（v1.129）：命中率与均速由消费方派生
+/// （命中率 = cached_input_tokens / input_tokens；速度 = output_tokens / duration_ms）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct UsageTotals {
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cost_usd: f64,
+    pub cached_input_tokens: i64,
+    pub duration_ms: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -300,7 +315,7 @@ pub struct Plugin {
     pub installed_at: String,
 }
 
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 
 const DDL: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -390,6 +405,8 @@ CREATE TABLE IF NOT EXISTS model_usage (
     model TEXT NOT NULL DEFAULT '',
     input_tokens INTEGER NOT NULL DEFAULT 0,
     output_tokens INTEGER NOT NULL DEFAULT 0,
+    cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
     cost_usd REAL NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 );
@@ -637,6 +654,19 @@ impl Store {
                 if !Self::column_exists(&conn, "sessions", "archived_at")? {
                     conn.execute(
                         "ALTER TABLE sessions ADD COLUMN archived_at TEXT NOT NULL DEFAULT ''",
+                        [],
+                    )?;
+                }
+                // v9 → v10：model_usage 补缓存命中与回合耗时（v1.129 §11；旧行回退 0 = 未观测）。
+                if !Self::column_exists(&conn, "model_usage", "cached_input_tokens")? {
+                    conn.execute(
+                        "ALTER TABLE model_usage ADD COLUMN cached_input_tokens INTEGER NOT NULL DEFAULT 0",
+                        [],
+                    )?;
+                }
+                if !Self::column_exists(&conn, "model_usage", "duration_ms")? {
+                    conn.execute(
+                        "ALTER TABLE model_usage ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0",
                         [],
                     )?;
                 }
@@ -1374,14 +1404,16 @@ impl Store {
         model: &str,
         input_tokens: i64,
         output_tokens: i64,
+        cached_input_tokens: i64,
+        duration_ms: i64,
         cost_usd: f64,
     ) -> Result<ModelUsage> {
         let now = Self::now();
         let project_id = self.project_id_for_session(session_id);
         self.conn.execute(
-            "INSERT INTO model_usage (session_id, project_id, provider, model, input_tokens, output_tokens, cost_usd, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![session_id, project_id, provider, model, input_tokens, output_tokens, cost_usd, now],
+            "INSERT INTO model_usage (session_id, project_id, provider, model, input_tokens, output_tokens, cached_input_tokens, duration_ms, cost_usd, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![session_id, project_id, provider, model, input_tokens, output_tokens, cached_input_tokens, duration_ms, cost_usd, now],
         )?;
         // 按月聚合（永久，§14.2）
         let month = &now[..7];
@@ -1402,6 +1434,8 @@ impl Store {
             model: model.to_string(),
             input_tokens,
             output_tokens,
+            cached_input_tokens,
+            duration_ms,
             cost_usd,
             created_at: now,
         })
@@ -1409,33 +1443,53 @@ impl Store {
 
     pub fn session_usage(&mut self, session_id: &str) -> Result<Vec<ModelUsage>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, session_id, project_id, provider, model, input_tokens, output_tokens, cost_usd, created_at
+            "SELECT id, session_id, project_id, provider, model, input_tokens, output_tokens, cached_input_tokens, duration_ms, cost_usd, created_at
              FROM model_usage WHERE session_id = ?1 ORDER BY id ASC",
         )?;
         let rows = stmt.query_map([session_id], row_to_usage)?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
-    /// 会话累计（任务级 / 会话级归因）。
-    pub fn session_usage_totals(&mut self, session_id: &str) -> Result<(i64, i64, f64)> {
-        self.conn.query_row(
-            "SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), COALESCE(SUM(cost_usd),0.0)
-             FROM model_usage WHERE session_id = ?1",
-            [session_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .map_err(Into::into)
+    /// 会话累计（任务级 / 会话级归因；v1.129 携缓存命中与回合耗时）。
+    pub fn session_usage_totals(&mut self, session_id: &str) -> Result<UsageTotals> {
+        self.conn
+            .query_row(
+                "SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), COALESCE(SUM(cost_usd),0.0),
+                        COALESCE(SUM(cached_input_tokens),0), COALESCE(SUM(duration_ms),0)
+                 FROM model_usage WHERE session_id = ?1",
+                [session_id],
+                |r| {
+                    Ok(UsageTotals {
+                        input_tokens: r.get(0)?,
+                        output_tokens: r.get(1)?,
+                        cost_usd: r.get(2)?,
+                        cached_input_tokens: r.get(3)?,
+                        duration_ms: r.get(4)?,
+                    })
+                },
+            )
+            .map_err(Into::into)
     }
 
     /// 项目累计（项目任务中心 / 成本看板 §6.4 / §11）。
-    pub fn project_usage_totals(&mut self, project_id: &str) -> Result<(i64, i64, f64)> {
-        self.conn.query_row(
-            "SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), COALESCE(SUM(cost_usd),0.0)
-             FROM model_usage WHERE project_id = ?1",
-            [project_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .map_err(Into::into)
+    pub fn project_usage_totals(&mut self, project_id: &str) -> Result<UsageTotals> {
+        self.conn
+            .query_row(
+                "SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), COALESCE(SUM(cost_usd),0.0),
+                        COALESCE(SUM(cached_input_tokens),0), COALESCE(SUM(duration_ms),0)
+                 FROM model_usage WHERE project_id = ?1",
+                [project_id],
+                |r| {
+                    Ok(UsageTotals {
+                        input_tokens: r.get(0)?,
+                        output_tokens: r.get(1)?,
+                        cost_usd: r.get(2)?,
+                        cached_input_tokens: r.get(3)?,
+                        duration_ms: r.get(4)?,
+                    })
+                },
+            )
+            .map_err(Into::into)
     }
 
     // ---------- plugins（§14.2 安装记录） ----------
@@ -1743,8 +1797,10 @@ fn row_to_usage(r: &rusqlite::Row<'_>) -> rusqlite::Result<ModelUsage> {
         model: r.get(4)?,
         input_tokens: r.get(5)?,
         output_tokens: r.get(6)?,
-        cost_usd: r.get(7)?,
-        created_at: r.get(8)?,
+        cached_input_tokens: r.get(7)?,
+        duration_ms: r.get(8)?,
+        cost_usd: r.get(9)?,
+        created_at: r.get(10)?,
     })
 }
 
@@ -1897,6 +1953,9 @@ mod tests {
         assert_eq!(store.project(project_id).unwrap().unwrap().display_name, "");
         // v5 → v6：旧会话行补 title 列且默认空串（UI 回退模型名 / 短 id）。
         assert_eq!(store.session(session_id).unwrap().unwrap().title, "");
+        // v9 → v10：旧 model_usage 行补缓存命中 / 回合耗时列且默认 0（v1.129）。
+        let migrated = store.session_usage(session_id).unwrap()[0].clone();
+        assert_eq!((migrated.cached_input_tokens, migrated.duration_ms), (0, 0));
     }
 
     #[test]
@@ -2045,17 +2104,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
         let sess = s.create_session(&p.id, "glm").unwrap();
-        s.record_model_usage(&sess.id, "glm", "glm-4.6", 100, 50, 0.01)
+        s.record_model_usage(&sess.id, "glm", "glm-4.6", 100, 50, 80, 1_200, 0.01)
             .unwrap();
-        s.record_model_usage(&sess.id, "glm", "glm-4.6", 200, 80, 0.02)
+        s.record_model_usage(&sess.id, "glm", "glm-4.6", 200, 80, 150, 2_800, 0.02)
             .unwrap();
 
-        let (inp, out, cost) = s.session_usage_totals(&sess.id).unwrap();
-        assert_eq!((inp, out), (300, 130));
-        assert!((cost - 0.03).abs() < 1e-9);
-        let (pinp, pout, pcost) = s.project_usage_totals(&p.id).unwrap();
-        assert_eq!((pinp, pout), (300, 130));
-        assert!((pcost - 0.03).abs() < 1e-9);
+        let totals = s.session_usage_totals(&sess.id).unwrap();
+        assert_eq!(totals.input_tokens, 300);
+        assert_eq!(totals.output_tokens, 130);
+        assert_eq!(totals.cached_input_tokens, 230);
+        assert_eq!(totals.duration_ms, 4_000);
+        assert!((totals.cost_usd - 0.03).abs() < 1e-9);
+        let proj = s.project_usage_totals(&p.id).unwrap();
+        assert_eq!(proj, totals);
     }
 
     #[test]
@@ -2142,7 +2203,7 @@ mod tests {
         let old = s.create_session(&p.id, "mock").unwrap();
         s.append_event(&old.id, EventKind::UserInput, &json!({}))
             .unwrap();
-        s.record_model_usage(&old.id, "glm", "m", 10, 5, 0.001)
+        s.record_model_usage(&old.id, "glm", "m", 10, 5, 0, 0, 0.001)
             .unwrap();
         s.set_session_status(&old.id, SessionStatus::Done).unwrap();
         s.conn
@@ -2260,12 +2321,14 @@ mod managed_worktree_tests {
         let dir = tempfile::tempdir().unwrap();
         let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
         let sid = s.create_session(&p.id, "mock").unwrap().id;
-        s.record_model_usage(&sid, "mock", "mock-1", 100, 200, 0.05)
+        s.record_model_usage(&sid, "mock", "mock-1", 100, 200, 60, 500, 0.05)
             .unwrap();
-        let (inp, out, cost) = s.project_usage_totals(&p.id).unwrap();
-        assert_eq!(inp, 100);
-        assert_eq!(out, 200);
-        assert!(cost > 0.0);
+        let totals = s.project_usage_totals(&p.id).unwrap();
+        assert_eq!(totals.input_tokens, 100);
+        assert_eq!(totals.output_tokens, 200);
+        assert_eq!(totals.cached_input_tokens, 60);
+        assert_eq!(totals.duration_ms, 500);
+        assert!(totals.cost_usd > 0.0);
     }
 
     #[test]
@@ -2501,13 +2564,18 @@ mod managed_worktree_tests {
         let dir = tempfile::tempdir().unwrap();
         let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
         let embedding = vec![0.1; 8];
-        s.replace_l4_file(&p.id, "search.rs", &[L4ChunkRecord {
-            symbol: Some("search_fn".into()),
-            start_line: 1,
-            end_line: 10,
-            text: "pub fn search_fn() {}".into(),
-            embedding: embedding.clone(),
-        }]).unwrap();
+        s.replace_l4_file(
+            &p.id,
+            "search.rs",
+            &[L4ChunkRecord {
+                symbol: Some("search_fn".into()),
+                start_line: 1,
+                end_line: 10,
+                text: "pub fn search_fn() {}".into(),
+                embedding: embedding.clone(),
+            }],
+        )
+        .unwrap();
         assert_eq!(s.l4_chunk_count(&p.id).unwrap(), 1);
     }
 
@@ -2517,17 +2585,44 @@ mod managed_worktree_tests {
         let dir = tempfile::tempdir().unwrap();
         let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
         let emb = vec![0.2; 8];
-        s.replace_l4_file(&p.id, "a.rs", &[L4ChunkRecord {
-            symbol: None, start_line: 1, end_line: 5, text: "fn a()".into(), embedding: emb.clone(),
-        }]).unwrap();
-        s.replace_l4_file(&p.id, "b.rs", &[L4ChunkRecord {
-            symbol: None, start_line: 1, end_line: 5, text: "fn b()".into(), embedding: emb.clone(),
-        }]).unwrap();
+        s.replace_l4_file(
+            &p.id,
+            "a.rs",
+            &[L4ChunkRecord {
+                symbol: None,
+                start_line: 1,
+                end_line: 5,
+                text: "fn a()".into(),
+                embedding: emb.clone(),
+            }],
+        )
+        .unwrap();
+        s.replace_l4_file(
+            &p.id,
+            "b.rs",
+            &[L4ChunkRecord {
+                symbol: None,
+                start_line: 1,
+                end_line: 5,
+                text: "fn b()".into(),
+                embedding: emb.clone(),
+            }],
+        )
+        .unwrap();
         assert_eq!(s.l4_chunk_count(&p.id).unwrap(), 2);
         // replace one file removes old chunks
-        s.replace_l4_file(&p.id, "a.rs", &[L4ChunkRecord {
-            symbol: None, start_line: 1, end_line: 5, text: "fn a2()".into(), embedding: emb,
-        }]).unwrap();
+        s.replace_l4_file(
+            &p.id,
+            "a.rs",
+            &[L4ChunkRecord {
+                symbol: None,
+                start_line: 1,
+                end_line: 5,
+                text: "fn a2()".into(),
+                embedding: emb,
+            }],
+        )
+        .unwrap();
         assert_eq!(s.l4_chunk_count(&p.id).unwrap(), 2);
     }
 
@@ -2547,7 +2642,7 @@ mod managed_worktree_tests {
     #[test]
     fn project_list_multiple_projects() {
         let mut s = mem();
-        for i in 0..3 {
+        for _i in 0..3 {
             let dir = tempfile::tempdir().unwrap();
             s.upsert_project(dir.path().to_str().unwrap()).unwrap();
         }
@@ -2561,8 +2656,12 @@ mod managed_worktree_tests {
         let dir = tempfile::tempdir().unwrap();
         let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
         let sid = s.create_session(&p.id, "mock").unwrap().id;
-        for status in [SessionStatus::Executing, SessionStatus::Done, SessionStatus::RolledBack] {
-            s.set_session_status(&sid, status.clone()).unwrap();
+        for status in [
+            SessionStatus::Executing,
+            SessionStatus::Done,
+            SessionStatus::RolledBack,
+        ] {
+            s.set_session_status(&sid, status).unwrap();
             let sess = s.session(&sid).unwrap().unwrap();
             assert_eq!(sess.status, status);
         }
@@ -2574,11 +2673,20 @@ mod managed_worktree_tests {
         let dir = tempfile::tempdir().unwrap();
         let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
         let emb = vec![0.3; 8];
-        s.replace_l4_file(&p.id, "rem.rs", &[L4ChunkRecord {
-            symbol: None, start_line: 1, end_line: 5, text: "fn rem()".into(), embedding: emb,
-        }]).unwrap();
+        s.replace_l4_file(
+            &p.id,
+            "rem.rs",
+            &[L4ChunkRecord {
+                symbol: None,
+                start_line: 1,
+                end_line: 5,
+                text: "fn rem()".into(),
+                embedding: emb,
+            }],
+        )
+        .unwrap();
         assert_eq!(s.l4_chunk_count(&p.id).unwrap(), 1);
-        s.delete_l4_file(&p.id, "rem.rs");
+        s.delete_l4_file(&p.id, "rem.rs").unwrap();
         assert_eq!(s.l4_chunk_count(&p.id).unwrap(), 0);
     }
 
@@ -2588,12 +2696,16 @@ mod managed_worktree_tests {
         let dir = tempfile::tempdir().unwrap();
         let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
         let sid = s.create_session(&p.id, "mock").unwrap().id;
-        s.record_model_usage(&sid, "mock", "mock-1", 50, 75, 0.01).unwrap();
-        s.record_model_usage(&sid, "mock", "mock-1", 50, 75, 0.02).unwrap();
-        let (inp, out, cost) = s.project_usage_totals(&p.id).unwrap();
-        assert_eq!(inp, 100);
-        assert_eq!(out, 150);
-        assert!((cost - 0.03).abs() < f64::EPSILON);
+        s.record_model_usage(&sid, "mock", "mock-1", 50, 75, 40, 900, 0.01)
+            .unwrap();
+        s.record_model_usage(&sid, "mock", "mock-1", 50, 75, 40, 1_100, 0.02)
+            .unwrap();
+        let totals = s.project_usage_totals(&p.id).unwrap();
+        assert_eq!(totals.input_tokens, 100);
+        assert_eq!(totals.output_tokens, 150);
+        assert_eq!(totals.cached_input_tokens, 80);
+        assert_eq!(totals.duration_ms, 2_000);
+        assert!((totals.cost_usd - 0.03).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -2653,7 +2765,9 @@ mod managed_worktree_tests {
             embedding: vec![0.7, 0.2, 0.1],
             source_session: sid,
         };
-        let (_, merged) = s.upsert_memory(&rec2, 0.90).unwrap_or((s.list_memories(&p.id, None, 1).unwrap()[0].clone(), true));
+        let (_, merged) = s
+            .upsert_memory(&rec2, 0.90)
+            .unwrap_or((s.list_memories(&p.id, None, 1).unwrap()[0].clone(), true));
         let _ = merged;
     }
 
@@ -2664,13 +2778,18 @@ mod managed_worktree_tests {
         let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
         let query = vec![0.9; 8];
         let stored = vec![0.9; 8]; // Same direction → high cosine
-        s.replace_l4_file(&p.id, "match.rs", &[L4ChunkRecord {
-            symbol: Some("target_fn".into()),
-            start_line: 1,
-            end_line: 10,
-            text: "fn target_fn() {}".into(),
-            embedding: stored,
-        }]).unwrap();
+        s.replace_l4_file(
+            &p.id,
+            "match.rs",
+            &[L4ChunkRecord {
+                symbol: Some("target_fn".into()),
+                start_line: 1,
+                end_line: 10,
+                text: "fn target_fn() {}".into(),
+                embedding: stored,
+            }],
+        )
+        .unwrap();
         let results = s.l4_search(&p.id, &query, 5).unwrap();
         assert!(!results.is_empty());
     }
@@ -2682,13 +2801,21 @@ mod managed_worktree_tests {
         let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
         let sid = s.create_session(&p.id, "mock").unwrap().id;
         for i in 0..5 {
-            s.append_event(&sid, EventKind::UserInput, &serde_json::json!({"text": format!("msg {}", i)})).unwrap();
+            s.append_event(
+                &sid,
+                EventKind::UserInput,
+                &serde_json::json!({"text": format!("msg {}", i)}),
+            )
+            .unwrap();
         }
         // Multiple queries return consistent data
         assert_eq!(s.latest_seq(&sid).unwrap(), 5);
         assert_eq!(s.events(&sid).unwrap().len(), 5);
         assert_eq!(s.events_since(&sid, 3).unwrap().len(), 2);
-        assert_eq!(s.count_events_of_kind(&sid, EventKind::UserInput).unwrap(), 5);
+        assert_eq!(
+            s.count_events_of_kind(&sid, EventKind::UserInput).unwrap(),
+            5
+        );
     }
 
     #[test]
@@ -2710,7 +2837,7 @@ mod managed_worktree_tests {
             s.upsert_memory(&rec, 0.0).unwrap();
         }
         let pruned = s.prune_memories(&p.id, 3).unwrap();
-        assert!(pruned > 0 || pruned == 0);
+        let _ = pruned;
     }
 
     #[test]
@@ -2756,7 +2883,8 @@ mod managed_worktree_tests {
         s.set_project_language_packs(&p.id, &[]).unwrap();
         let empty = s.project(&p.id).unwrap().unwrap();
         assert!(empty.language_packs.is_empty());
-        s.set_project_language_packs(&p.id, &["ts".into(), "py".into(), "rust".into()]).unwrap();
+        s.set_project_language_packs(&p.id, &["ts".into(), "py".into(), "rust".into()])
+            .unwrap();
         let multi = s.project(&p.id).unwrap().unwrap();
         assert_eq!(multi.language_packs.len(), 3);
     }
@@ -2780,10 +2908,18 @@ mod managed_worktree_tests {
         let emb = vec![0.5; 8];
         // Replace 3 files
         for name in ["f1.rs", "f2.rs", "f3.rs"] {
-            s.replace_l4_file(&p.id, name, &[L4ChunkRecord {
-                symbol: None, start_line: 1, end_line: 5,
-                text: format!("fn {}()", name), embedding: emb.clone(),
-            }]).unwrap();
+            s.replace_l4_file(
+                &p.id,
+                name,
+                &[L4ChunkRecord {
+                    symbol: None,
+                    start_line: 1,
+                    end_line: 5,
+                    text: format!("fn {}()", name),
+                    embedding: emb.clone(),
+                }],
+            )
+            .unwrap();
         }
         assert_eq!(s.l4_chunk_count(&p.id).unwrap(), 3);
     }
