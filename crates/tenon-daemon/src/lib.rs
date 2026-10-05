@@ -744,13 +744,4 @@ mod tests {
         assert_eq!(overrides.update_channel, Some("auto".into()));
     }
 
-    #[test]
-    fn effective_update_channel_with_override() {
-        let mut overrides = SettingsOverrides::default();
-        overrides.merge_json(&serde_json::json!({
-            "update": { "channel": "auto" }
-        })).unwrap();
-        // effective channel depends on implementation
-        let _ = overrides.effective_update_channel();
-    }
 }
