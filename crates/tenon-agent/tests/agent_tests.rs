@@ -1186,3 +1186,50 @@ async fn session_readonly_config_blocks_writes() {
         _ => {}
     }
 }
+
+#[tokio::test]
+async fn session_run_task_bash_tool_executes() {
+    let script = vec![
+        ScriptedReply::Tool {
+            name: "bash".into(),
+            args: serde_json::json!({"command": "echo integration_test_output", "timeout_s": 5}),
+        },
+        ScriptedReply::Text("命令执行完成".into()),
+    ];
+    let (_d, session, _store, _p) = setup(script).await;
+    let outcome = session.run_task("run a command").await;
+    match outcome {
+        TaskOutcome::Done(card) => {
+            assert!(!card.answer.is_empty());
+        }
+        _ => panic!("expected Done"),
+    }
+}
+
+#[tokio::test]
+async fn session_run_task_grep_tool() {
+    let script = vec![
+        ScriptedReply::Tool {
+            name: "grep".into(),
+            args: serde_json::json!({"pattern": "searchable"}),
+        },
+        ScriptedReply::Text("搜索完成".into()),
+    ];
+    let (_d, session, _store, _p) = setup(script).await;
+    let outcome = session.run_task("search for content").await;
+    assert!(matches!(outcome, TaskOutcome::Done(_)));
+}
+
+#[tokio::test]
+async fn session_run_task_list_dir_tool() {
+    let script = vec![
+        ScriptedReply::Tool {
+            name: "list_dir".into(),
+            args: serde_json::json!({}),
+        },
+        ScriptedReply::Text("列目录完成".into()),
+    ];
+    let (_d, session, _store, _p) = setup(script).await;
+    let outcome = session.run_task("list files").await;
+    assert!(matches!(outcome, TaskOutcome::Done(_)));
+}
