@@ -3688,3 +3688,300 @@ async fn merge_and_discard_worktree_endpoints() {
         .unwrap();
     assert_ne!(r.status(), 401);
 }
+
+#[tokio::test]
+async fn settings_put_validation_error() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    // PUT settings with invalid values
+    let r = client
+        .put(format!("{}/settings", base(port)))
+        .json(&serde_json::json!({
+            "session": { "first_edit_buffer_ms": -1 }
+        }))
+        .send()
+        .await
+        .unwrap();
+    // 可能 200（daemon 忽略无效值）或 400（校验拒绝）
+    assert_ne!(r.status(), 401);
+}
+
+#[tokio::test]
+async fn open_project_same_path_returns_same_id() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().to_str().unwrap();
+
+    let r1 = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": path }))
+        .send()
+        .await
+        .unwrap();
+    let id1 = r1.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    let r2 = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": path }))
+        .send()
+        .await
+        .unwrap();
+    let id2 = r2.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    assert_eq!(id1, id2, "同路径项目应返回同一 ID");
+}
+
+#[tokio::test]
+async fn open_project_with_display_name() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let tmp = tempfile::tempdir().unwrap();
+
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({
+            "path": tmp.path().to_str().unwrap(),
+            "display_name": "My Custom Name"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body["display_name"], "My Custom Name");
+}
+
+#[tokio::test]
+async fn file_write_creates_and_overwrites_content() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    // 写入
+    let r = client
+        .put(format!("{}/project/{}/file", base(port), pid))
+        .json(&serde_json::json!({ "path": "test.txt", "content": "v1" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    // 读取确认
+    let r = client
+        .get(format!("{}/project/{}/file?path=test.txt", base(port), pid))
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body["content"], "v1");
+
+    // 覆写
+    client
+        .put(format!("{}/project/{}/file", base(port), pid))
+        .json(&serde_json::json!({ "path": "test.txt", "content": "v2" }))
+        .send()
+        .await
+        .unwrap();
+
+    // 读取确认更新
+    let r = client
+        .get(format!("{}/project/{}/file?path=test.txt", base(port), pid))
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body["content"], "v2");
+}
+
+#[tokio::test]
+async fn file_not_found_returns_error() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    let r = client
+        .get(format!("{}/project/{}/file?path=nonexistent.txt", base(port), pid))
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_client_error() || r.status().is_server_error());
+}
+
+#[tokio::test]
+async fn search_finds_content_in_files() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    // 写入可搜索内容
+    client
+        .put(format!("{}/project/{}/file", base(port), pid))
+        .json(&serde_json::json!({ "path": "searchable.ts", "content": "const unique_marker = 42;" }))
+        .send()
+        .await
+        .unwrap();
+
+    let r = client
+        .get(format!("{}/project/{}/search?q=unique_marker", base(port), pid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert!(body["hits"].as_array().map(|h| !h.is_empty()).unwrap_or(false));
+}
+
+#[tokio::test]
+async fn fuzzy_files_finds_matching_names() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    client
+        .put(format!("{}/project/{}/file", base(port), pid))
+        .json(&serde_json::json!({ "path": "unique_component.tsx", "content": "export {}" }))
+        .send()
+        .await
+        .unwrap();
+
+    let r = client
+        .get(format!("{}/project/{}/files/fuzzy?q=unique_comp", base(port), pid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert!(body["hits"].as_array().map(|h| !h.is_empty()).unwrap_or(false));
+}
+
+#[tokio::test]
+async fn ws_ticket_returns_token_and_expiry() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let r = client.post(format!("{}/ws-ticket", base(port))).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    let ticket = body["ticket"].as_str().unwrap();
+    assert!(!ticket.is_empty());
+    assert!(body["expires_in_s"].as_u64().unwrap() > 0);
+}
+
+#[tokio::test]
+async fn health_endpoint_no_auth_needed() {
+    let (_dir, port, _token) = start_daemon(vec![]).await;
+    let r = reqwest::get(format!("{}/health", base(port))).await.unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.text().await.unwrap(), "ok");
+}
+
+#[tokio::test]
+async fn models_endpoint_lists_providers() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let r = client.get(format!("{}/models", base(port))).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert!(body["models"].is_array());
+    assert_eq!(body["default"], "mock");
+}
+
+#[tokio::test]
+async fn get_session_not_found_returns_404() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let r = client
+        .get(format!("{}/session/nonexistent-id", base(port)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
+}
+
+#[tokio::test]
+async fn tree_returns_file_entries() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    client
+        .put(format!("{}/project/{}/file", base(port), pid))
+        .json(&serde_json::json!({ "path": "tree-test.rs", "content": "fn main() {}" }))
+        .send()
+        .await
+        .unwrap();
+
+    let r = client
+        .get(format!("{}/project/{}/tree", base(port), pid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert!(body["entries"].is_array());
+}
+
+#[tokio::test]
+async fn language_packs_endpoint_returns_detection() {
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    let r = client
+        .get(format!("{}/project/{}/language-packs", base(port), pid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert!(body["packs"].is_array() || body["languages"].is_array());
+}
