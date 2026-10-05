@@ -562,6 +562,9 @@ button:disabled { opacity: 0.45; cursor: default; }
 /* 列表底部常驻添加项目行（v1.114 回归 v1.43 语义） */
 .pe-add-row {
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
   width: 100%;
   padding: 6px 8px;
   margin-top: 2px;

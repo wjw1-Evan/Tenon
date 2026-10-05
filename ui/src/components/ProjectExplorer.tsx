@@ -198,6 +198,25 @@ function ChevronIcon() {
   );
 }
 
+/** 线性加号：文本「+」字形墨迹受字体度量影响偏移行中心（Windows 字体更甚），SVG 保证与边框行对齐。 */
+function PlusIcon() {
+  return (
+    <svg
+      width={10}
+      height={10}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2.4}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
 /**
  * 选择项目目录（§6.4 添加项目模态）：桌面壳内走 Tauri 原生目录对话框；
  * 浏览器模式无绝对路径来源，由用户手输路径。
@@ -695,7 +714,8 @@ export function ProjectExplorer({
           aria-expanded={adding}
           onClick={() => setAdding(true)}
         >
-          + {t("projects.add_title")}
+          <PlusIcon />
+          {t("projects.add_title")}
         </button>
       </section>
 
