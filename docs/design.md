@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | **v1.113** |
+| 版本 | **v1.115** |
 | 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.113） |
 | 状态 | 定稿（v1.10 决策闭环），M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
@@ -147,6 +147,7 @@
 | **v1.111** | **消息级撤销：用户消息气泡下方「撤销」钮（用户令「我发的消息下面要有撤销功能」）：① 语义——撤销该消息（回合）产生的全部 AI 改动 = 恢复到回合内首个 `patch_applied` 写入前状态（该步 checkpoint 记录写前树），回滚后可经 unrevert 双向撤销（§10.3）；② 边界——仅**最后一个含改动的回合**提供撤销钮（恢复是树级快照，撤销更早回合会连带丢弃后续回合改动——时间旅行场景由 checkpoint 时间轴「选快照整体恢复」覆盖）；运行态禁用；点击 window.confirm 确认（含 unrevert 提示）→ `GET /checkpoints` 按 `event_seq` 匹配回合首步 → `POST /checkpoint/:id/rollback`；③ daemon 语义修复——`checkpoint_rollback` 端点此前虽校验 checkpoint id 却误调 `rollback_last()`（回最近一步，与 §10.3「选快照 → 整体恢复」名实不符），现提取 `Session::rollback_to_checkpoint(&Checkpoint)`（unrevert 快照先行 → restore 目标树 → rollback 事件 → rolled_back 态），`rollback_last` 重构为其特例（最近事件级快照），时间轴与消息级撤销共用同一端点；④ UI——回合容器加 `turn-user` 包装（右对齐职责自气泡上移），气泡下 `.turn-undo` ghost 钮（hover 红显），`thread.undo / undo_confirm / undo_failed` 五语言键；v1.110 跳号已被在途会话占用** |
 | **v1.112** | **会话流降噪（用户令「清理与 AI 对话过程中无用的信息，不要显示，要简洁」）：① A 级只读工具步骤（`read_file` / `list_dir` / `grep` / `git_read` / `lsp_query`）不再逐个落卡——按回合聚合为一行 muted 摘要（`.turn-readonly`，置于回合体首位，格式 = 动词 + 次数如「读取 2 · 搜索 1」，动词复用 `tool.*` 键），完整明细仍由底部「轨迹」tab 承载（沿用 v1.109「会话流只渲染面向用户子集」边界）；只读调用**失败 / 被拒**仍单独红显卡（信息不丢失）；② 信息行进一步收敛——`memory_saved` / `compaction` / `model_fallback` 不再渲染（轨迹面板可见），`rollback` / `unrollback` 保留（状态变化需解释）；③ 验证证据卡在 `verification` 为空串时不再渲染空壳；④ `thread.readonly_more` 五语言键（聚合行 title 提示「只读步骤详情见轨迹面板」）** |
 | **v1.113** | **跟随模式不再抢占弹浮层（E2E 抓出的 v1.110 缺陷：任务执行中代理写入即自动弹出全屏编辑器浮层并滞留，遮挡线程与底部面板入口——用户令「单击文件打开单独窗口」的入口语义被跟随模式滥用）：§8.5 跟随模式语义修订——代理写入仍打开 tab、标记 AI 行并记 activePath / gotoLine（数据层不变，底部诊断与 Diff 即时可用），但**不再自动弹出编辑器浮层**；浮层已开时照常定位到首个改动行，未开时由用户主动打开文件查看；「跟随 AI 编辑」开关语义不变（§7.4）** |
+| **v1.115** | **左栏「项目」标题行去收起钮 + 默认宽收窄（用户令「缩小默认宽度，移除『项目』文字右侧的关闭按钮」）：① `pe-head` 移除 v1.106 增的「收侧栏」钮与 `onCollapseSidebar` prop——侧栏开合入口收敛为 rail 顶部切换钮 / rail 同视图再点 / 命令面板（其余视图 `side-head` 收起钮保留不变）；② 左栏默认宽 220→180px（仅无记忆尺寸的新档案默认，localStorage `tenon:leftWidth` 与项目 ui-state 记忆值不变，v1.74 clamp 语义不变）** |
 
 
 

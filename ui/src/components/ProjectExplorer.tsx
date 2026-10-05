@@ -61,8 +61,6 @@ interface Props {
   onCreateSession: (project: ProjectSummary, worktree: boolean) => void;
   /** 受管 worktree 合并 / 丢弃后刷新项目摘要（会话状态与文件树）。 */
   onRefreshProjects?: () => void;
-  /** 收起侧栏（v1.106）：标题行右端显式开关。 */
-  onCollapseSidebar?: () => void;
   /** 会话被归档 / 删除后回调（v1.103）：App 清理激活选择并刷新摘要。 */
   onSessionRemoved?: (projectId: string, sessionId: string) => void;
   /** 源码视图打开文件（v1.110）：经 App openFile 弹出编辑器浮层。 */
@@ -220,7 +218,6 @@ export function ProjectExplorer({
   onCreateSession,
   onRefreshProjects,
   onSessionRemoved,
-  onCollapseSidebar,
   onOpenFile,
   onFileTreeChange,
 }: Props) {
@@ -582,23 +579,11 @@ export function ProjectExplorer({
 
   return (
     <div className="project-explorer" data-testid="project-explorer">
-      {/* 视图标题行（v1.101；v1.106 增收起钮）：视图名 + 常驻添加入口，projects 视图自渲染标题。 */}
+      {/* 视图标题行（v1.101；v1.115 撤销 v1.106 收起钮——侧栏开合收敛
+          rail 切换钮 / rail 同视图再点 / 命令面板）：视图名 + 常驻添加入口。 */}
       <div className="pe-head">
         <span className="side-title">{t("panel.projects")}</span>
         <span className="pe-head-actions">
-          <button
-            type="button"
-            className="pe-collapse"
-            data-testid="sidebar-collapse"
-            title={t("palette.collapse_sidebar")}
-            aria-label={t("palette.collapse_sidebar")}
-            onClick={() => onCollapseSidebar?.()}
-          >
-            <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="m11 17-5-5 5-5" />
-              <path d="m18 17-5-5 5-5" />
-            </svg>
-          </button>
           <button
             type="button"
             className="pe-add"

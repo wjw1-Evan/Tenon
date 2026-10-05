@@ -310,8 +310,8 @@ export default function App({
   const [bottomTab, setBottomTab] = useState<"timeline" | "trace" | "evals">(
     "timeline"
   );
-  // 可调布局（§7.2：两区可折叠可调宽；localStorage 记忆；v1.110 移除右栏）
-  const [leftWidth, setLeftWidth] = useState(() => Number(localStorage.getItem("tenon:leftWidth")) || 220);
+  // 可调布局（§7.2：两区可折叠可调宽；localStorage 记忆；v1.110 移除右栏；v1.115 默认宽收窄 220→180）
+  const [leftWidth, setLeftWidth] = useState(() => Number(localStorage.getItem("tenon:leftWidth")) || 180);
   const [bottomHeight, setBottomHeight] = useState(() => Number(localStorage.getItem("tenon:bottomHeight")) || 180);
 
   const tabs = projectId ? tabsByProject[projectId] ?? [] : [];
@@ -1098,7 +1098,6 @@ export default function App({
                         setOpenError(String(error))
                       )}
                     onRefreshProjects={() => void refreshProjects()}
-                    onCollapseSidebar={() => setSidebarOpen(false)}
                     onSessionRemoved={(removedProjectId, removedSessionId) => {
                       setSessionsByProject((prev) => {
                         if (prev[removedProjectId] !== removedSessionId) return prev;
