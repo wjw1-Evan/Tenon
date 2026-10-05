@@ -48,7 +48,9 @@ async fn run_read_only_task(laya: Option<Arc<LayaRuntime>>) -> (bool, u64) {
         .await;
     let tokens = {
         let mut st = store.lock().await;
-        st.session_usage_totals(&session.session_id).unwrap().0 as u64
+        st.session_usage_totals(&session.session_id)
+            .unwrap()
+            .input_tokens as u64
     };
     (matches!(outcome, TaskOutcome::Done(_)), tokens)
 }

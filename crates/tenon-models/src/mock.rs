@@ -93,6 +93,7 @@ impl ModelProvider for MockProvider {
                 usage: Usage {
                     input_tokens: 1,
                     output_tokens: 1,
+                    cached_input_tokens: 0,
                 },
                 model: self.model.clone(),
                 finish_reason: Some("stop".into()),
@@ -115,6 +116,7 @@ impl ModelProvider for MockProvider {
                 usage: Usage {
                     input_tokens: 1,
                     output_tokens: 1,
+                    cached_input_tokens: 0,
                 },
                 model: self.model.clone(),
                 finish_reason: Some("stop".into()),
@@ -156,6 +158,8 @@ impl ModelProvider for MockProvider {
                 usage: Usage {
                     input_tokens,
                     output_tokens: 5,
+                    // v1.129：模拟隐式缓存命中（50%），供缓存命中率链路测试断言
+                    cached_input_tokens: input_tokens / 2,
                 },
                 model: self.model.clone(),
                 finish_reason: Some("stop".into()),
@@ -170,6 +174,7 @@ impl ModelProvider for MockProvider {
                 usage: Usage {
                     input_tokens,
                     output_tokens: 5,
+                    cached_input_tokens: input_tokens / 2,
                 },
                 model: self.model.clone(),
                 finish_reason: Some("tool_use".into()),
@@ -184,6 +189,7 @@ impl ModelProvider for MockProvider {
                 usage: Usage {
                     input_tokens,
                     output_tokens: 5,
+                    cached_input_tokens: input_tokens / 2,
                 },
                 model: self.model.clone(),
                 finish_reason: Some("tool_use".into()),
@@ -194,6 +200,7 @@ impl ModelProvider for MockProvider {
                 usage: Usage {
                     input_tokens,
                     output_tokens: 5,
+                    cached_input_tokens: input_tokens / 2,
                 },
                 model: self.model.clone(),
                 finish_reason: Some("length".into()),

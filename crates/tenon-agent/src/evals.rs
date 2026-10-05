@@ -335,9 +335,10 @@ impl EvalRunner {
                     _ => {}
                 }
             }
-            let (inp, _out, _cost) = st
+            let inp = st
                 .session_usage_totals(&session.session_id)
-                .unwrap_or_default();
+                .unwrap_or_default()
+                .input_tokens;
             tokens = inp as u64;
         }
 

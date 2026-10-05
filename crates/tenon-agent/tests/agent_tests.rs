@@ -69,6 +69,45 @@ async fn answer_only_task_completes_without_changes() {
 }
 
 #[tokio::test]
+async fn decision_event_and_model_usage_carry_cache_and_duration() {
+    // v1.129：decision 事件 payload.usage 携带缓存命中与回合耗时；
+    // model_usage 落库同源数值（mock 恒回 cached = input/2 模拟隐式缓存）。
+    let (_d, session, store, _p) = setup(vec![ScriptedReply::Text("观测回答".into())]).await;
+    let outcome = session.run_task("解释").await;
+    assert!(matches!(outcome, TaskOutcome::Done(_)));
+
+    let mut st = store.lock().await;
+    let events = st.events(&session.session_id).unwrap();
+    let decision = events
+        .iter()
+        .find(|e| e.kind == EventKind::Decision)
+        .expect("应有 decision 事件");
+    let usage = decision
+        .payload
+        .get("usage")
+        .expect("decision 应携带 usage");
+    let input = usage["input_tokens"].as_u64().unwrap();
+    let cached = usage["cached_input_tokens"].as_u64().unwrap();
+    assert!(input > 0);
+    assert_eq!(cached, input / 2, "mock 缓存命中 = input/2，事件与落库同源");
+    assert!(usage["output_tokens"].as_u64().unwrap() > 0);
+    // 回合耗时：mock 即时返回，毫秒级时钟可能为 0，只断言字段在且为非负数
+    assert!(usage["duration_ms"].as_u64().is_some());
+
+    let totals = st.session_usage_totals(&session.session_id).unwrap();
+    assert_eq!(totals.cached_input_tokens, cached as i64);
+    assert!(totals.input_tokens > cached as i64);
+    // 任务回合行：标题 / 记忆辅助调用 cached=0，按 cached>0 定位
+    let rows = st.session_usage(&session.session_id).unwrap();
+    let task_row = rows
+        .iter()
+        .find(|r| r.cached_input_tokens > 0)
+        .expect("任务回合应落缓存命中");
+    assert_eq!(task_row.cached_input_tokens, cached as i64);
+    assert!(task_row.duration_ms >= 0);
+}
+
+#[tokio::test]
 async fn model_stream_is_persisted_and_joined_without_loss() {
     let (_d, session, store, _p) = setup(vec![ScriptedReply::Text("流式回答ABC".into())]).await;
     let outcome = session.run_task("解释").await;
@@ -591,7 +630,7 @@ async fn inline_completion_uses_single_turn_model_and_records_usage() {
             .unwrap()
     };
     assert!(
-        usage.0 > 0 && usage.1 > 0,
+        usage.input_tokens > 0 && usage.output_tokens > 0,
         "inline completion usage should be attributed"
     );
 }

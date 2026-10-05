@@ -408,6 +408,11 @@ async fn full_session_flow_over_http() {
         .await
         .unwrap();
     assert!(costs["input_tokens"].as_u64().unwrap() > 0);
+    // v1.129：/costs 返回体携缓存命中与回合耗时（mock 任务回合 cached = input/2，
+    // 标题辅助调用 cached=0 也计入 totals，故只断言区间）
+    let cached = costs["cached_tokens"].as_u64().unwrap();
+    assert!(cached > 0 && cached < costs["input_tokens"].as_u64().unwrap());
+    assert!(costs["duration_ms"].as_u64().is_some());
 }
 
 /// v1.128 测试确定性通道：轮询后端（100ms 内容比对），避免原生 FSEvents

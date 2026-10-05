@@ -45,7 +45,7 @@ async fn openai_sse_accumulates_text_and_tool_arguments() {
         "data: {\"model\":\"m1\",\"choices\":[{\"delta\":{\"content\":\"he\"}}]}\n\n",
         "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\"}}]}}]}\n\n",
         "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"x\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
-        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3}}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,\"prompt_tokens_details\":{\"cached_tokens\":5}}}\n\n",
         "data: [DONE]\n\n"
     );
     let base = serve_once(body).await;
@@ -66,6 +66,8 @@ async fn openai_sse_accumulates_text_and_tool_arguments() {
     let resp = resp.unwrap();
     assert_eq!(resp.model, "m1");
     assert_eq!(resp.usage.input_tokens, 7);
+    // v1.129：缓存命中数随 usage 采集（prompt_tokens_details.cached_tokens）
+    assert_eq!(resp.usage.cached_input_tokens, 5);
     assert_eq!(resp.finish_reason.as_deref(), Some("tool_calls"));
     assert_eq!(resp.tool_calls[0].id, "call_1");
     assert_eq!(resp.tool_calls[0].arguments["path"], "x");
@@ -74,7 +76,7 @@ async fn openai_sse_accumulates_text_and_tool_arguments() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn anthropic_sse_accumulates_text_tool_and_usage() {
     let body = concat!(
-        "data: {\"type\":\"message_start\",\"message\":{\"model\":\"m2\",\"usage\":{\"input_tokens\":9}}}\n\n",
+        "data: {\"type\":\"message_start\",\"message\":{\"model\":\"m2\",\"usage\":{\"input_tokens\":9,\"cache_read_input_tokens\":6}}}\n\n",
         "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tool_1\",\"name\":\"read\"}}\n\n",
         "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\"}}\n\n",
         "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"y\\\"}\"}}\n\n",
@@ -99,6 +101,8 @@ async fn anthropic_sse_accumulates_text_tool_and_usage() {
     assert_eq!(resp.model, "m2");
     assert_eq!(resp.usage.input_tokens, 9);
     assert_eq!(resp.usage.output_tokens, 4);
+    // v1.129：cache_read_input_tokens 随 message_start 采集
+    assert_eq!(resp.usage.cached_input_tokens, 6);
     assert_eq!(resp.finish_reason.as_deref(), Some("tool_use"));
     assert_eq!(resp.tool_calls[0].arguments["path"], "y");
 }

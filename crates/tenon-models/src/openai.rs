@@ -104,6 +104,11 @@ impl OpenAiSseState {
                 .get("completion_tokens")
                 .and_then(|u| u.as_u64())
                 .unwrap_or(self.usage.output_tokens);
+            self.usage.cached_input_tokens = usage
+                .get("prompt_tokens_details")
+                .and_then(|d| d.get("cached_tokens"))
+                .and_then(|u| u.as_u64())
+                .unwrap_or(self.usage.cached_input_tokens);
         }
         let Some(choice) = v.get("choices").and_then(|c| c.get(0)) else {
             return Ok(());
@@ -308,6 +313,11 @@ impl ModelProvider for OpenAiCompatProvider {
                     .unwrap_or(0),
                 output_tokens: usage
                     .get("completion_tokens")
+                    .and_then(|u| u.as_u64())
+                    .unwrap_or(0),
+                cached_input_tokens: usage
+                    .get("prompt_tokens_details")
+                    .and_then(|d| d.get("cached_tokens"))
                     .and_then(|u| u.as_u64())
                     .unwrap_or(0),
             },

@@ -2190,9 +2190,11 @@ async fn list_projects(State(state): State<Arc<DaemonState>>) -> Response {
                     })
                     .unwrap_or(0),
                 "usage": {
-                    "input_tokens": usage.0,
-                    "output_tokens": usage.1,
-                    "cost_usd": usage.2,
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                    "cached_tokens": usage.cached_input_tokens,
+                    "duration_ms": usage.duration_ms,
+                    "cost_usd": usage.cost_usd,
                 },
                 "sessions": sessions.iter().map(|s| json!({
                     "id": s.id,
@@ -2449,10 +2451,15 @@ async fn costs(
         return api_err(StatusCode::BAD_REQUEST, "session 参数必填（?session=<id>）");
     };
     let mut store = state.store.lock().await;
-    let (inp, out, cost) = store.session_usage_totals(session_id).unwrap_or_default();
-    Json(
-        json!({"session": session_id, "input_tokens": inp, "output_tokens": out, "cost_usd": cost}),
-    )
+    let totals = store.session_usage_totals(session_id).unwrap_or_default();
+    Json(json!({
+        "session": session_id,
+        "input_tokens": totals.input_tokens,
+        "output_tokens": totals.output_tokens,
+        "cached_tokens": totals.cached_input_tokens,
+        "duration_ms": totals.duration_ms,
+        "cost_usd": totals.cost_usd,
+    }))
     .into_response()
 }
 

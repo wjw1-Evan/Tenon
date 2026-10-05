@@ -40,7 +40,14 @@ export interface ProjectSummary {
   session_runtimes?: string[];
   active_sessions: number;
   dirty_buffers: number;
-  usage: { input_tokens: number; output_tokens: number; cost_usd: number };
+  /** v1.129：cached_tokens / duration_ms 缺省兼容旧 daemon（命中率与均速派生自二者）。 */
+  usage: {
+    input_tokens: number;
+    output_tokens: number;
+    cached_tokens?: number;
+    duration_ms?: number;
+    cost_usd: number;
+  };
 }
 
 /** 项目级 UI 状态（§7.2 / §7.5：布局按项目记忆）。 */

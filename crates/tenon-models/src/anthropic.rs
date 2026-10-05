@@ -69,6 +69,10 @@ impl AnthropicSseState {
                     .pointer("/usage/input_tokens")
                     .and_then(|u| u.as_u64())
                     .unwrap_or(self.usage.input_tokens);
+                self.usage.cached_input_tokens = message
+                    .pointer("/usage/cache_read_input_tokens")
+                    .and_then(|u| u.as_u64())
+                    .unwrap_or(self.usage.cached_input_tokens);
             }
             Some("content_block_start") => {
                 let index = v.get("index").and_then(|i| i.as_u64()).unwrap_or_default();
@@ -120,6 +124,10 @@ impl AnthropicSseState {
                     .pointer("/usage/output_tokens")
                     .and_then(|u| u.as_u64())
                     .unwrap_or(self.usage.output_tokens);
+                self.usage.cached_input_tokens = v
+                    .pointer("/usage/cache_read_input_tokens")
+                    .and_then(|u| u.as_u64())
+                    .unwrap_or(self.usage.cached_input_tokens);
             }
             Some("message_stop") => self.done = true,
             _ => {}
@@ -316,6 +324,10 @@ impl ModelProvider for AnthropicProvider {
                     .unwrap_or(0),
                 output_tokens: usage
                     .get("output_tokens")
+                    .and_then(|u| u.as_u64())
+                    .unwrap_or(0),
+                cached_input_tokens: usage
+                    .get("cache_read_input_tokens")
                     .and_then(|u| u.as_u64())
                     .unwrap_or(0),
             },

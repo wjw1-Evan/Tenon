@@ -128,6 +128,11 @@ pub struct ToolCallReq {
 pub struct Usage {
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// 供应商报告的缓存命中输入 token（v1.129 §11）：OpenAI 兼容 =
+    /// `prompt_tokens_details.cached_tokens`（prompt 的子集）；Anthropic =
+    /// `cache_read_input_tokens`（不含在 input_tokens 内，不打 `cache_control`
+    /// 断点恒 0）。未报告 = 0，本地模型 = 0。
+    pub cached_input_tokens: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

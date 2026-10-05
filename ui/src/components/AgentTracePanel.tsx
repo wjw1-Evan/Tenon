@@ -26,11 +26,13 @@ interface SpeedSample {
 
 export function AgentTracePanel({ api, sessionId, t }: Props) {
   const [events, setEvents] = useState<TraceEvent[]>([]);
-  const [tokens, setTokens] = useState<{ inp: number; out: number; cost: number }>({
-    inp: 0,
-    out: 0,
-    cost: 0,
-  });
+  const [tokens, setTokens] = useState<{
+    inp: number;
+    out: number;
+    cost: number;
+    cached: number;
+    durationMs: number;
+  }>({ inp: 0, out: 0, cost: 0, cached: 0, durationMs: 0 });
   /// 输出 token/s（滚动窗口采样）
   const [outSpeed, setOutSpeed] = useState<number | null>(null);
   /// 输入 token/s
@@ -48,7 +50,14 @@ export function AgentTracePanel({ api, sessionId, t }: Props) {
         setEvents((trace.events ?? []) as TraceEvent[]);
         const inp = Number(costs.input_tokens ?? 0);
         const out = Number(costs.output_tokens ?? 0);
-        setTokens({ inp, out, cost: Number(costs.cost_usd ?? 0) });
+        setTokens({
+          inp,
+          out,
+          cost: Number(costs.cost_usd ?? 0),
+          // v1.129：缓存命中与回合耗时（权威实测，§11）
+          cached: Number(costs.cached_tokens ?? 0),
+          durationMs: Number(costs.duration_ms ?? 0),
+        });
 
         // token/s：每次轮询计算增量速率（1.5s 窗口）
         const now = performance.now();
@@ -93,6 +102,16 @@ export function AgentTracePanel({ api, sessionId, t }: Props) {
       <div className="trace-metrics" data-testid="trace-metrics">
         <span>{t("trace.tokens_in")} {tokens.inp} tok</span>
         <span>{t("trace.tokens_out")} {tokens.out} tok</span>
+        {tokens.cached > 0 && tokens.inp > 0 && (
+          <span data-testid="trace-cache">
+            {t("thread.cached")} {Math.round((tokens.cached / tokens.inp) * 100)}%
+          </span>
+        )}
+        {tokens.durationMs > 0 && tokens.out > 0 && (
+          <span data-testid="trace-avg-speed">
+            {(tokens.out / (tokens.durationMs / 1000)).toFixed(1)} tok/s
+          </span>
+        )}
         {inpSpeed !== null && inpSpeed > 0 && (
           <span data-testid="inp-speed">{inpSpeed} tok/s ↑</span>
         )}

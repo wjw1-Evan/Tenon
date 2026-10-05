@@ -147,7 +147,7 @@ async fn openai_chat_maps_roles_tools_auth_and_reasoning_fallback() {
             },
             "finish_reason": "tool_calls"
         }],
-        "usage": {"prompt_tokens": 11, "completion_tokens": 4}
+        "usage": {"prompt_tokens": 11, "completion_tokens": 4, "prompt_tokens_details": {"cached_tokens": 8}}
     })
     .to_string();
     let (base, server) = serve_http("200 OK", "application/json", &response).await;
@@ -171,6 +171,8 @@ async fn openai_chat_maps_roles_tools_auth_and_reasoning_fallback() {
     assert_eq!(resp.content, "reasoning answer");
     assert_eq!(resp.tool_calls[0].id, "call_9");
     assert_eq!(resp.usage.output_tokens, 4);
+    // v1.129：非流式缓存命中解析（prompt_tokens_details.cached_tokens）
+    assert_eq!(resp.usage.cached_input_tokens, 8);
     assert_eq!(resp.finish_reason.as_deref(), Some("tool_calls"));
 }
 
@@ -184,7 +186,7 @@ async fn anthropic_chat_maps_messages_auth_and_blocks() {
             {"type": "text", "text": "a tool"},
             {"type": "tool_use", "id": "tool_9", "name": "read", "input": {"path": "x"}}
         ],
-        "usage": {"input_tokens": 8, "output_tokens": 5}
+        "usage": {"input_tokens": 8, "output_tokens": 5, "cache_read_input_tokens": 7}
     })
     .to_string();
     let (base, server) = serve_http("200 OK", "application/json", &response).await;
@@ -206,6 +208,8 @@ async fn anthropic_chat_maps_messages_auth_and_blocks() {
     assert_eq!(resp.content, "need a tool");
     assert_eq!(resp.tool_calls[0].id, "tool_9");
     assert_eq!(resp.usage.input_tokens, 8);
+    // v1.129：非流式缓存命中解析（cache_read_input_tokens）
+    assert_eq!(resp.usage.cached_input_tokens, 7);
     assert_eq!(resp.finish_reason.as_deref(), Some("tool_use"));
 }
 
