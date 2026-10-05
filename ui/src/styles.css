@@ -565,7 +565,7 @@ button:disabled { opacity: 0.45; cursor: default; }
 .pe-group-row:hover .pe-group-actions,
 .pe-group-row:focus-within .pe-group-actions { display: flex; }
 /* 操作区背景继承行背景（active 行为半透明 accent-soft）遮不住时间文字——
-   hover 时时间直接让位，避免与 ⎡ × 叠印 */
+   hover 时时间直接让位，避免与分支图标 × 叠印 */
 .pe-group-row:hover .pe-updated,
 .pe-group-row:focus-within .pe-updated { visibility: hidden; }
 .pe-gact {
@@ -585,6 +585,8 @@ button:disabled { opacity: 0.45; cursor: default; }
 .pe-gact:hover:not(:disabled) { background: var(--surface); color: var(--fg); }
 .pe-gact.danger:hover:not(:disabled) { color: var(--error, #d43d3d); }
 .pe-gact:disabled { opacity: 0.4; cursor: not-allowed; }
+/* 图标禁止参与 flex 收缩：Chromium 对属性定尺寸 SVG 的 flex 基准按 0 处理，会被收缩到不可见 */
+.pe-gact svg { flex: none; }
 /* 列表底部常驻添加项目行（v1.114 回归 v1.43 语义） */
 .pe-add-row {
   flex-shrink: 0;

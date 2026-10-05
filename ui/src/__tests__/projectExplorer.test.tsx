@@ -201,7 +201,7 @@ describe("ProjectExplorer multi-project control surface", () => {
     expect(screen.getByTestId("pe-source-open-a").textContent).toBe(tasksLabel);
   });
 
-  // v1.114：新任务入口重排——标题行「＋ 新任务」作用 active 项目，分组行尾 hover ⎡。
+  // v1.114：新任务入口重排——标题行「＋ 新任务」作用 active 项目，分组行尾 hover 分支图标（v1.125 由「⎡」换 SVG）。
   it("creates sessions from the header button and the per-group worktree action", () => {
     const { onCreateSession } = renderExplorer([project("open-a")]);
     fireEvent.click(screen.getByTestId("project-new-task"));

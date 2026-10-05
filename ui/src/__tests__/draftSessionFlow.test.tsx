@@ -146,7 +146,7 @@ describe("draft new-task flow (v1.116)", () => {
     await waitFor(() => {
       expect((screen.getByTestId("send") as HTMLButtonElement).disabled).toBe(false);
     });
-    // 分组行尾 ⎡（受管 worktree 新任务）→ 草稿记录意图，仍不建会话。
+    // 分组行尾分支图标（受管 worktree 新任务，v1.125 由「⎡」换 SVG）→ 草稿记录意图，仍不建会话。
     fireEvent.click(screen.getByTestId("session-new-worktree-proj-a"));
     expect(createCalls()).toHaveLength(0);
     fireEvent.change(screen.getByTestId("task-input"), { target: { value: "branch task" } });

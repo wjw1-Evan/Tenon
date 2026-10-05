@@ -217,6 +217,29 @@ function PlusIcon() {
   );
 }
 
+/** 线性分支图标（v1.125）：U+23A1「⎡」是数学多行括号的上半块，12px 下呈残缺角括号状被误读为渲染
+    缺陷——换为与字体回退解耦的 stroke SVG，语义（受管 worktree 新任务）与 testid / aria 不变。 */
+function WorktreeIcon() {
+  return (
+    <svg
+      width={12}
+      height={12}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2.4}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M6 3v12" />
+      <circle cx={18} cy={6} r={3} />
+      <circle cx={6} cy={18} r={3} />
+      <path d="M18 9a9 9 0 0 1-9 9" />
+    </svg>
+  );
+}
+
 /**
  * 选择项目目录（§6.4 添加项目模态）：桌面壳内走 Tauri 原生目录对话框；
  * 浏览器模式无绝对路径来源，由用户手输路径。
@@ -581,7 +604,7 @@ export function ProjectExplorer({
             )}
           </li>
         )}
-        {/* v1.114：新任务入口上移——视图标题行「＋ 新任务」+ 分组行尾 hover「⎡」。 */}
+        {/* v1.114：新任务入口上移——视图标题行「＋ 新任务」+ 分组行尾 hover 分支图标（v1.125 由「⎡」字符换 SVG）。 */}
       </ul>
     );
   };
@@ -665,7 +688,7 @@ export function ProjectExplorer({
                       title={t("projects.new_worktree_session")}
                       onClick={() => onCreateSession(project, true)}
                     >
-                      ⎡
+                      <WorktreeIcon />
                     </button>
                     <button
                       type="button"
