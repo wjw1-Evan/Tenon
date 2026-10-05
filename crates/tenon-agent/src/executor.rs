@@ -2756,4 +2756,35 @@ mod tests {
         }));
         assert!(out.ok);
     }
+
+    #[test]
+    fn apply_patch_read_makefile_toml_yaml() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let files = [
+            ("Makefile", "all: build\n\nbuild:\n\techo building\n"),
+            ("config.toml", "[server]\nport = 8080\n"),
+            ("config.yaml", "server:\n  port: 8080\n"),
+        ];
+        for (path, content) in files {
+            let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+                "file": path, "range": null, "content": content
+            }));
+            assert!(out.ok, "write {}", path);
+            let read = execute_tool(&c, "read_file", &serde_json::json!({"path": path}));
+            assert!(read.ok, "read {}", path);
+        }
+    }
+
+    #[test]
+    fn grep_in_config_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("app.conf"), "port=3000\nhost=localhost\n").unwrap();
+        std::fs::write(dir.path().join("db.conf"), "port=5432\n").unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "grep", &serde_json::json!({"pattern": "port"}));
+        assert!(out.ok);
+        assert!(out.content.contains("app.conf"));
+        assert!(out.content.contains("db.conf"));
+    }
 }
