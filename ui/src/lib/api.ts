@@ -60,21 +60,6 @@ export interface OpenedProject {
   trusted: boolean;
 }
 
-export interface PortfolioTask {
-  id: string;
-  title: string;
-  status: string;
-  created_at: string;
-  updated_at: string;
-  children: Array<{
-    id: string;
-    project_id: string;
-    session_id: string;
-    text: string;
-    status: string;
-  }>;
-}
-
 export interface SearchHit {
   path: string;
   line: number;
@@ -128,7 +113,6 @@ export interface ProviderSettings {
 
 /** 权限高级策略（v1.89）：工具黑名单与成本上限收窄；无审批。 */
 export interface TeamPolicySettings {
-  force_interactive?: boolean;
   denied_tools?: string[];
   max_cost_usd?: number | null;
   [k: string]: unknown;
@@ -152,16 +136,10 @@ export interface UpdateStatusData {
 /** 全局设置（§15 /settings 合并视图）。 */
 export interface SettingsData {
   session: {
-    mode?: string;
     first_edit_buffer_ms?: number;
     [k: string]: unknown;
   };
   exec?: { command_timeout_s?: number; [k: string]: unknown };
-  privacy?: {
-    telemetry?: boolean;
-    crash_reports?: "off" | "opt_in" | string;
-    [k: string]: unknown;
-  };
   update?: {
     channel?: "manual" | "auto" | string;
     [k: string]: unknown;
@@ -205,10 +183,6 @@ export class TenonApi {
     return (await resp.json()) as T;
   }
 
-  health(): Promise<string> {
-    return fetch(`${this.base}/health`).then((r) => r.text());
-  }
-
   /** 读 UI 偏好（§7.5）：失败回退空对象（外观走本地缓存 / 系统档）。 */
   async getUiPrefs(): Promise<UiPrefs> {
     try {
@@ -233,11 +207,6 @@ export class TenonApi {
     return this.request<SettingsData>("/settings", { method: "PUT", json: body });
   }
 
-  /** 读权限高级策略（v1.85）。 */
-  getTeamPolicy(): Promise<TeamPolicySettings> {
-    return this.request<TeamPolicySettings>("/team-policy");
-  }
-
   /** 写权限高级策略（v1.85）：全量原子替换，仅对新会话生效。 */
   putTeamPolicy(body: TeamPolicySettings): Promise<TeamPolicySettings> {
     return this.request<TeamPolicySettings>("/team-policy", { method: "PUT", json: body });
@@ -256,13 +225,6 @@ export class TenonApi {
   /** 接受 staged 更新，下次 daemon / 壳重启时生效（v1.86）。 */
   applyUpdates(): Promise<{ accepted: boolean; restart_required: boolean }> {
     return this.request("/updates/apply", { method: "POST" });
-  }
-
-  registerProject(path: string, displayName?: string) {
-    return this.request<{ id: string; trusted: boolean }>("/project", {
-      method: "PUT",
-      json: displayName === undefined ? { path } : { path, display_name: displayName },
-    });
   }
 
   listProjects() {
@@ -306,10 +268,9 @@ export class TenonApi {
     }).catch(() => {});
   }
 
-  /** mode 空串 = 由 daemon 按全局设置默认档决定（§7.2 / §15）。 */
+  /** v1.92：mode 档位随审批移除已删；v1.87 "managed" = 会话级受管 worktree。 */
   createSession(
     projectId: string,
-    mode: "interactive" | "auto" | "",
     provider = "",
     /** v1.87 §9.7："managed" = 会话级受管 worktree，可与主根会话并行执行。 */
     worktree?: "managed"
@@ -320,7 +281,7 @@ export class TenonApi {
       worktree_path?: string | null;
     }>("/session", {
       method: "POST",
-      json: { project_id: projectId, mode, provider, worktree: worktree ?? null },
+      json: { project_id: projectId, provider, worktree: worktree ?? null },
     });
   }
 
@@ -508,10 +469,9 @@ export class TenonApi {
     character?: number;
     extra?: string;
   }) {
-    return this.request<{ result: unknown }>("/lsp", {
+    return this.request<{ result: unknown }>(`/project/${body.project_id}/lsp`, {
       method: "POST",
       json: {
-        project_id: body.project_id,
         path: body.path,
         action: body.action,
         line: body.line ?? 0,
@@ -614,26 +574,6 @@ export class TenonApi {
     });
   }
 
-  portfolioTasks() {
-    return this.request<{ tasks: PortfolioTask[] }>("/portfolio-tasks");
-  }
-
-  createPortfolioTask(
-    title: string,
-    children: Array<{
-      project_id: string;
-      text: string;
-      mode?: "interactive" | "auto";
-      working_dir?: string;
-    }>,
-    provider = ""
-  ) {
-    return this.request<PortfolioTask>("/portfolio-tasks", {
-      method: "POST",
-      json: { title, children, provider },
-    });
-  }
-
   /** AI Evals 报告列表（§18.3 / M3 可视化）。 */
   evalRuns() {
     return this.request<{
@@ -645,11 +585,6 @@ export class TenonApi {
         created_at: string;
       }>;
     }>("/evals");
-  }
-
-  /** 成本归因：月度聚合。 */
-  monthlyCosts() {
-    return this.request<{ monthly: Array<Record<string, unknown>> }>("/costs");
   }
 
   /** 路由建议（§11 轻量启发式 + Laya 集成点 #4）。 */

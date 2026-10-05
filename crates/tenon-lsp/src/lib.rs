@@ -11,14 +11,12 @@ pub mod codec;
 pub mod guard;
 pub mod host;
 pub mod manager;
-pub mod openvsx;
 pub mod pack;
 pub mod transport;
 
 pub use guard::{uri_within, GuardDecision, LspGuard, LspGuardConfig, ServerRequestReport};
 pub use host::{LspHost, LspHostConfig, LspHostError, Notification};
 pub use manager::{LspManager, LspManagerError};
-pub use openvsx::{convert_extension, dynamic_pack_for_file, register_dynamic_pack};
 pub use pack::{builtin_packs, pack_for_file};
 
 use serde::{Deserialize, Serialize};

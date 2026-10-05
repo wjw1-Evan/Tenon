@@ -5,7 +5,6 @@ export type ResolvedTheme = "dark" | "light";
 
 export const THEME_STORAGE_KEY = "tenon:theme";
 /** 外观切换事件（设置控件派发，需要联动处订阅）。 */
-export const THEME_CHANGE = "tenon:theme-change";
 
 const VALID: ThemePreference[] = ["system", "dark", "light"];
 

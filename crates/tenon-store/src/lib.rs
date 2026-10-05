@@ -1035,79 +1035,6 @@ impl Store {
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
-    // ---------- approvals（审计记录永久保留） ----------
-
-    pub fn insert_approval(
-        &mut self,
-        session_id: &str,
-        action: &str,
-        level: Level,
-    ) -> Result<Approval> {
-        let a = Approval {
-            id: Uuid::now_v7().to_string(),
-            session_id: session_id.to_string(),
-            project_id: self.project_id_for_session(session_id),
-            action: action.to_string(),
-            level,
-            decision: None,
-            created_at: Self::now(),
-            decided_at: None,
-        };
-        self.conn.execute(
-            "INSERT INTO approvals (id, session_id, project_id, action, level, decision, created_at, decided_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, NULL)",
-            params![a.id, a.session_id, a.project_id, a.action, a.level.as_str(), a.created_at],
-        )?;
-        Ok(a)
-    }
-
-    /// 审批决策（once / session / deny，§15）；不可重复决策（审计不可改写）。
-    pub fn decide_approval(
-        &mut self,
-        id: &str,
-        decision: ApprovalDecision,
-    ) -> Result<Option<Approval>> {
-        let n = self.conn.execute(
-            "UPDATE approvals SET decision = ?2, decided_at = ?3
-             WHERE id = ?1 AND decision IS NULL",
-            params![id, decision_str(decision), Self::now()],
-        )?;
-        if n == 0 {
-            return Ok(None);
-        }
-        self.approval(id)
-    }
-
-    pub fn approval(&mut self, id: &str) -> Result<Option<Approval>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, session_id, project_id, action, level, decision, created_at, decided_at
-             FROM approvals WHERE id = ?1",
-        )?;
-        let mut rows = stmt.query_map([id], row_to_approval)?;
-        Ok(rows.next().transpose()?)
-    }
-
-    pub fn approvals(&mut self, session_id: &str) -> Result<Vec<Approval>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, session_id, project_id, action, level, decision, created_at, decided_at
-             FROM approvals WHERE session_id = ?1 ORDER BY created_at ASC",
-        )?;
-        let rows = stmt.query_map([session_id], row_to_approval)?;
-        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
-    }
-
-    /// 项目待审批摘要（项目任务中心 §6.4 / §7.1）。
-    pub fn pending_project_approvals(&mut self, project_id: &str) -> Result<Vec<Approval>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, session_id, project_id, action, level, decision, created_at, decided_at
-             FROM approvals
-             WHERE project_id = ?1 AND decision IS NULL
-             ORDER BY created_at ASC",
-        )?;
-        let rows = stmt.query_map([project_id], row_to_approval)?;
-        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
-    }
-
     // ---------- model_usage（成本归因 §11） ----------
 
     pub fn record_model_usage(
@@ -1529,26 +1456,6 @@ fn row_to_checkpoint(r: &rusqlite::Row<'_>) -> rusqlite::Result<Checkpoint> {
     })
 }
 
-fn row_to_approval(r: &rusqlite::Row<'_>) -> rusqlite::Result<Approval> {
-    Ok(Approval {
-        id: r.get(0)?,
-        session_id: r.get(1)?,
-        project_id: r.get(2)?,
-        action: r.get(3)?,
-        level: parse_level(&r.get::<_, String>(4)?),
-        decision: r
-            .get::<_, Option<String>>(5)?
-            .and_then(|s| match s.as_str() {
-                "once" => Some(ApprovalDecision::Once),
-                "session" => Some(ApprovalDecision::Session),
-                "deny" => Some(ApprovalDecision::Deny),
-                _ => None,
-            }),
-        created_at: r.get(6)?,
-        decided_at: r.get(7)?,
-    })
-}
-
 fn row_to_usage(r: &rusqlite::Row<'_>) -> rusqlite::Result<ModelUsage> {
     Ok(ModelUsage {
         id: r.get(0)?,
@@ -1570,14 +1477,6 @@ fn parse_level(s: &str) -> Level {
         "d" | "D" => Level::D,
         "cd" | "CD" | "c+d" | "C+D" => Level::Composite,
         _ => Level::B,
-    }
-}
-
-fn decision_str(d: ApprovalDecision) -> &'static str {
-    match d {
-        ApprovalDecision::Once => "once",
-        ApprovalDecision::Session => "session",
-        ApprovalDecision::Deny => "deny",
     }
 }
 
@@ -1700,8 +1599,16 @@ mod tests {
             SCHEMA_VERSION
         );
         assert_eq!(store.events(session_id).unwrap()[0].project_id, project_id);
+        // v2→v3 审批表回填 project_id（v1.89 后 approvals 只读兼容，经 SQL 验证）
         assert_eq!(
-            store.approval("approval-v1").unwrap().unwrap().project_id,
+            store
+                .connection_for_tests()
+                .query_row(
+                    "SELECT project_id FROM approvals WHERE id = 'approval-v1'",
+                    [],
+                    |r| r.get::<_, String>(0)
+                )
+                .unwrap(),
             project_id
         );
         assert_eq!(
@@ -1855,32 +1762,6 @@ mod tests {
     }
 
     #[test]
-    fn approval_lifecycle_and_immutability() {
-        let mut s = mem();
-        let dir = tempfile::tempdir().unwrap();
-        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
-        let sess = s.create_session(&p.id, "mock").unwrap();
-        let a = s.insert_approval(&sess.id, "git_commit", Level::D).unwrap();
-        assert!(a.decision.is_none());
-
-        let decided = s
-            .decide_approval(&a.id, ApprovalDecision::Once)
-            .unwrap()
-            .unwrap();
-        assert_eq!(decided.decision, Some(ApprovalDecision::Once));
-
-        // 二次决策被拒绝（审计记录不可改写）
-        assert!(s
-            .decide_approval(&a.id, ApprovalDecision::Deny)
-            .unwrap()
-            .is_none());
-        assert_eq!(
-            s.approvals(&sess.id).unwrap()[0].decision,
-            Some(ApprovalDecision::Once)
-        );
-    }
-
-    #[test]
     fn model_usage_attribution() {
         let mut s = mem();
         let dir = tempfile::tempdir().unwrap();
@@ -1907,22 +1788,6 @@ mod tests {
         let today = Utc::now().format("%Y-%m-%d").to_string();
         let daily = s.daily_usage(&today).unwrap();
         assert_eq!(daily.input_tokens, 300);
-    }
-
-    #[test]
-    fn pending_approvals_are_project_scoped() {
-        let mut s = mem();
-        let dir = tempfile::tempdir().unwrap();
-        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
-        let sess = s.create_session(&p.id, "mock").unwrap();
-        let a = s
-            .insert_approval(&sess.id, "http example.com", Level::C)
-            .unwrap();
-        let pending = s.pending_project_approvals(&p.id).unwrap();
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].id, a.id);
-        s.decide_approval(&a.id, ApprovalDecision::Once).unwrap();
-        assert!(s.pending_project_approvals(&p.id).unwrap().is_empty());
     }
 
     #[test]
@@ -1990,7 +1855,6 @@ mod tests {
             .unwrap();
         s.record_model_usage(&old.id, "glm", "m", 10, 5, 0.001)
             .unwrap();
-        let appr = s.insert_approval(&old.id, "git_commit", Level::D).unwrap();
         s.set_session_status(&old.id, SessionStatus::Done).unwrap();
         s.conn
             .execute(
@@ -2012,8 +1876,6 @@ mod tests {
 
         assert!(s.events(&old.id).unwrap().is_empty());
         assert!(s.session_usage(&old.id).unwrap().is_empty());
-        // 审计永久保留
-        assert!(s.approval(&appr.id).unwrap().is_some());
         // 归档文件存在
         assert!(dir
             .path()

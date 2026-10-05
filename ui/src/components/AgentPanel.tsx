@@ -190,7 +190,14 @@ export function AgentPanel({
     await api.control(sessionId, "stop");
   }
 
+  // v1.92：暂停只进不出的修复——paused 时发送钮承担恢复。
+  async function resume() {
+    if (!sessionId) return;
+    await api.control(sessionId, "resume");
+  }
+
   const running = RUNNING_STATES.has(status);
+  const paused = status === "paused";
 
   return (
     <div className="agent-panel" data-testid="agent-panel">
@@ -257,11 +264,11 @@ export function AgentPanel({
           />
           <button
             className={running ? "agent-send agent-send-stop" : "agent-send"}
-            onClick={running ? stop : send}
-            disabled={!sessionId || stopRequested || (!running && busy)}
-            data-testid={running ? "stop" : "send"}
+            onClick={paused ? resume : running ? stop : send}
+            disabled={!sessionId || stopRequested || (!running && !paused && busy)}
+            data-testid={paused ? "resume" : running ? "stop" : "send"}
           >
-            {running ? t("message.stop_short") : t("message.send")}
+            {paused ? t("message.resume") : running ? t("message.stop_short") : t("message.send")}
           </button>
         </div>
       </div>

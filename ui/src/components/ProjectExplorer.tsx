@@ -3,7 +3,7 @@
 // （点击行即隐式激活并展开），默认内嵌最近 10 条会话；行尾「源码」按钮切换文件树。
 // 「All activity」为同构列表组，承接跨项目监控但不占据仪表盘式首屏。
 import { useEffect, useState } from "react";
-import type { PortfolioTask, ProjectSummary, TenonApi } from "../lib/api";
+import type { ProjectSummary, TenonApi } from "../lib/api";
 import type { Translate } from "../lib/i18n";
 import { RUNNING_STATES } from "../lib/stateColors";
 import { FileTree, type FileTreeChange } from "./FileTree";
@@ -37,7 +37,6 @@ interface Props {
   projectId: string | null;
   /** 各项目当前激活会话（§7.5 项目级 UI 状态）。 */
   sessionsByProject: Record<string, string>;
-  portfolioTasks: PortfolioTask[];
   openError: string | null;
   /** ProjectRuntime 文件事件版本；透传文件树增量刷新（§6.4 / §8.1）。 */
   refreshToken: number;
@@ -210,7 +209,6 @@ export function ProjectExplorer({
   projects,
   projectId,
   sessionsByProject,
-  portfolioTasks,
   openError,
   refreshToken,
   onSwitchProject,
@@ -407,9 +405,6 @@ export function ProjectExplorer({
       orderedSessions.length > RECENT_SESSION_LIMIT && !showAll
         ? orderedSessions.slice(0, RECENT_SESSION_LIMIT)
         : orderedSessions;
-    const tasks = portfolioTasks.filter((task) =>
-      task.children.some((child) => child.project_id === project.id)
-    );
     return (
       <ul className="pe-chat-list" data-testid={`chat-list-${project.id}`}>
         {sessions.map((session) => (
@@ -456,26 +451,6 @@ export function ProjectExplorer({
             )}
           </li>
         ))}
-        {tasks.map((task) => {
-          const child = task.children.find((c) => c.project_id === project.id);
-          return (
-            <li key={task.id}>
-              <button
-                type="button"
-                className={
-                  child && child.session_id === activeSessionId
-                    ? "pe-chat-row active"
-                    : "pe-chat-row"
-                }
-                onClick={() => child && onSelectSession(project.id, child.session_id)}
-                title={task.title}
-              >
-                <span className="pe-chat-name">{task.title}</span>
-                <span className="pe-chat-status">{stateLabel(t, task.status)}</span>
-              </button>
-            </li>
-          );
-        })}
         {orderedSessions.length > RECENT_SESSION_LIMIT && (
           <li>
             <button
@@ -495,7 +470,7 @@ export function ProjectExplorer({
             </button>
           </li>
         )}
-        {project.sessions.length === 0 && tasks.length === 0 && (
+        {project.sessions.length === 0 && (
           <li className="pe-empty">{t("projects.chats_empty")}</li>
         )}
         {/* 新会话入口（v1.87 §7.3）：主根 / 受管 worktree（可与主根并行执行）。 */}

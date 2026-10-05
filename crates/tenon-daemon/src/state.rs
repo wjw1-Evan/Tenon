@@ -129,13 +129,8 @@ impl ProviderOverride {
 /// 持久化 `~/.tenon/settings.json`，**新会话**生效（既有会话保持各自配置）。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SettingsOverrides {
-    /// interactive | auto
-    pub mode: Option<String>,
     pub first_edit_buffer_ms: Option<u64>,
     pub command_timeout_s: Option<u64>,
-    /// v1.83 隐私分区：遥测默认关；崩溃报告 off | opt_in。
-    pub privacy_telemetry: Option<bool>,
-    pub privacy_crash_reports: Option<String>,
     /// v1.83 更新分区：manual | auto（auto 仍受更新器实现限制，仅记录偏好）。
     pub update_channel: Option<String>,
     /// v1.40 模型分区：默认 provider 名与 provider 覆盖表（整体替换语义）。
@@ -147,12 +142,8 @@ impl SettingsOverrides {
     /// 校验并合并 PUT body；非法值返回错误文案。
     pub fn merge_json(&mut self, body: &serde_json::Value) -> Result<(), String> {
         if let Some(session) = body.get("session") {
-            if let Some(m) = session.get("mode") {
-                let m = m.as_str().ok_or("session.mode 须为字符串")?;
-                if m != "interactive" && m != "auto" {
-                    return Err("session.mode 仅支持 interactive | auto".into());
-                }
-                self.mode = Some(m.to_string());
+            if session.get("mode").is_some() {
+                return Err("session.mode 已移除（v1.92：审批移除后档位无行为差异）".into());
             }
             if let Some(v) = session.get("first_edit_buffer_ms") {
                 let v = v
@@ -174,16 +165,9 @@ impl SettingsOverrides {
             }
         }
         if let Some(privacy) = body.get("privacy") {
-            if let Some(v) = privacy.get("telemetry") {
-                let v = v.as_bool().ok_or("privacy.telemetry 须为布尔")?;
-                self.privacy_telemetry = Some(v);
-            }
-            if let Some(v) = privacy.get("crash_reports") {
-                let v = v.as_str().ok_or("privacy.crash_reports 须为字符串")?;
-                if v != "off" && v != "opt_in" {
-                    return Err("privacy.crash_reports 仅支持 off | opt_in".into());
-                }
-                self.privacy_crash_reports = Some(v.to_string());
+            // v1.92：遥测 / 崩溃报告无采集端，键整体拒绝（不设无效开关）。
+            if privacy.get("telemetry").is_some() || privacy.get("crash_reports").is_some() {
+                return Err("privacy.* 已移除（v1.92：无采集端，不设无效开关）".into());
             }
         }
         if let Some(update) = body.get("update") {
@@ -234,9 +218,6 @@ impl SettingsOverrides {
 
     pub fn to_json(&self) -> serde_json::Value {
         let mut session = serde_json::Map::new();
-        if let Some(m) = &self.mode {
-            session.insert("mode".into(), serde_json::Value::String(m.clone()));
-        }
         if let Some(v) = self.first_edit_buffer_ms {
             session.insert("first_edit_buffer_ms".into(), serde_json::json!(v));
         }
@@ -244,10 +225,6 @@ impl SettingsOverrides {
         if let Some(v) = self.command_timeout_s {
             exec.insert("command_timeout_s".into(), serde_json::json!(v));
         }
-        let privacy = serde_json::json!({
-            "telemetry": self.privacy_telemetry.unwrap_or(false),
-            "crash_reports": self.privacy_crash_reports.clone().unwrap_or_else(|| "off".into()),
-        });
         let update = serde_json::json!({
             "channel": self.update_channel.clone().unwrap_or_else(|| "manual".into()),
         });
@@ -266,7 +243,6 @@ impl SettingsOverrides {
         serde_json::json!({
             "session": session,
             "exec": exec,
-            "privacy": privacy,
             "update": update,
             "models": models,
         })
@@ -304,9 +280,16 @@ impl SettingsOverrides {
         let Ok(text) = std::fs::read_to_string(path) else {
             return out;
         };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+        let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&text) else {
             return out;
         };
+        // v1.92 兼容：静默剔除已移除键（session.mode / privacy.*），旧文件其余覆盖照常生效。
+        if let Some(session) = v.get_mut("session").and_then(|s| s.as_object_mut()) {
+            session.remove("mode");
+        }
+        if let Some(obj) = v.as_object_mut() {
+            obj.remove("privacy");
+        }
         let _ = out.merge_json(&v);
         out
     }
@@ -401,27 +384,6 @@ pub struct SessionEntry {
     pub managed_worktree: Option<std::path::PathBuf>,
     pub last_outcome: Mutex<Option<TaskOutcome>>,
     pub last_seq: i64,
-}
-
-/// 项目组合任务子项：每条子会话仍强绑定一个项目（§6.4）。
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct PortfolioChild {
-    pub id: String,
-    pub project_id: String,
-    pub session_id: String,
-    pub text: String,
-    pub status: String,
-}
-
-/// 跨项目编排容器：只聚合状态 / 成本，不共享代码上下文。
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct PortfolioTask {
-    pub id: String,
-    pub title: String,
-    pub status: String,
-    pub children: Vec<PortfolioChild>,
-    pub created_at: String,
-    pub updated_at: String,
 }
 
 /// WS / ProjectRuntime 文件变更事件（§7.2 / §8.1；项目作用域）。
@@ -576,7 +538,6 @@ pub struct DaemonState {
     /// 跨项目并发调度（§6.4 / §9.7）。
     pub execution_permits: Arc<Semaphore>,
     /// v1.15 项目组合任务聚合（父任务内存态；子会话/事件持久于 SQLite）。
-    pub portfolio_tasks: Mutex<HashMap<String, PortfolioTask>>,
     /// 进程内文件变更事件总线；WS 订阅者可全量或按 project_id 过滤。
     pub file_events: tokio::sync::broadcast::Sender<ProjectFileEvent>,
     /// L4 状态变化进程内广播；WS 订阅者可全量或按 project_id 过滤。
@@ -616,16 +577,6 @@ struct PendingL4Index {
 }
 
 impl DaemonState {
-    /// 新会话的默认档位（设置覆盖 > 全局配置）。
-    pub fn default_session_mode(&self) -> String {
-        self.settings_overrides
-            .lock()
-            .unwrap()
-            .mode
-            .clone()
-            .unwrap_or_else(|| "interactive".into())
-    }
-
     /// 运行中更新通道：设置覆盖优先于 config（v1.83）。
     pub fn effective_update_channel(&self) -> String {
         self.settings_overrides
@@ -662,17 +613,11 @@ pub fn validate_team_policy(
 ) -> Result<tenon_core::policy::TeamPolicy, String> {
     let obj = body.as_object().ok_or("team policy 须为对象")?;
     for key in obj.keys() {
-        if !matches!(
-            key.as_str(),
-            "force_interactive" | "denied_tools" | "max_cost_usd"
-        ) {
+        if !matches!(key.as_str(), "denied_tools" | "max_cost_usd") {
             return Err(format!("team policy 不支持字段: {key}"));
         }
     }
     let mut policy = tenon_core::policy::TeamPolicy::default();
-    if let Some(v) = obj.get("force_interactive") {
-        policy.force_interactive = v.as_bool().ok_or("force_interactive 须为布尔")?;
-    }
     if let Some(v) = obj.get("denied_tools") {
         let values = v.as_array().ok_or("denied_tools 须为字符串数组")?;
         let mut names = std::collections::BTreeSet::new();
@@ -796,7 +741,6 @@ impl DaemonState {
             worktrees_root,
             open_projects: Mutex::new(HashMap::new()),
             execution_permits,
-            portfolio_tasks: Mutex::new(HashMap::new()),
             file_events,
             l4_status_events,
             snapshots_root,

@@ -9,16 +9,6 @@ use std::path::{Path, PathBuf};
 pub const CONFIG_VERSION_NOTE: &str = "schema: design.md 附录 E (v1.11)";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "kebab-case")]
-pub enum Locale {
-    #[default]
-    Auto,
-    #[serde(rename = "zh-CN")]
-    ZhCn,
-    En,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum UpdateChannel {
     #[default]
@@ -26,41 +16,18 @@ pub enum UpdateChannel {
     Auto,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum SessionMode {
-    #[default]
-    Interactive,
-    Auto,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum CrashReports {
-    #[default]
-    Off,
-    #[serde(rename = "opt_in")]
-    OptIn,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SessionConfig {
-    /// interactive | auto；TOFU 信任后才可 auto（§12.7）
-    pub mode: SessionMode,
     /// 首改缓冲毫秒（§9.3）
     #[serde(rename = "first_edit_buffer")]
     pub first_edit_buffer_ms: u64,
-    /// 会话只读开关
-    pub readonly: bool,
 }
 
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
-            mode: SessionMode::Interactive,
             first_edit_buffer_ms: 2000,
-            readonly: false,
         }
     }
 }
@@ -210,22 +177,6 @@ impl Default for LspConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct PrivacyConfig {
-    pub telemetry: bool,
-    pub crash_reports: CrashReports,
-}
-
-impl Default for PrivacyConfig {
-    fn default() -> Self {
-        Self {
-            telemetry: false,
-            crash_reports: CrashReports::Off,
-        }
-    }
-}
-
 /// AI Evals 流水线（§18.3 / M3）：定时自动触发基准套件。
 /// 派生默认 `{ interval_hours: 0, provider: "" }`——0 表示关闭定时触发，
 /// 手动 `tenon-evals` 仍可用。
@@ -317,7 +268,7 @@ pub struct LayaConfig {
     pub auto_download: bool,
     /// cpu；gpu 预留
     pub device: String,
-    /// 集成点逐项开关（§9.8 表 #1-5）
+    /// 集成点逐项开关（§9.8 表 #1-3，v1.92 收敛）
     pub features: Vec<String>,
 }
 
@@ -327,13 +278,7 @@ impl Default for LayaConfig {
             enabled: true,
             auto_download: true,
             device: "cpu".into(),
-            features: vec![
-                "intent".into(),
-                "risk".into(),
-                "prefilter".into(),
-                "routing".into(),
-                "triage".into(),
-            ],
+            features: vec!["intent".into(), "risk".into(), "routing".into()],
         }
     }
 }
@@ -377,14 +322,12 @@ impl Default for UpdateConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Config {
-    pub locale: Locale,
     pub update: UpdateConfig,
     pub session: SessionConfig,
     pub agent: AgentConfig,
     pub checkpoint: CheckpointConfig,
     pub sandbox: SandboxConfig,
     pub lsp: LspConfig,
-    pub privacy: PrivacyConfig,
     pub archive: ArchiveConfig,
     pub evals: EvalsConfig,
     pub projects: ProjectsConfig,
@@ -450,13 +393,10 @@ mod tests {
     use super::*;
 
     const FULL_EXAMPLE: &str = r#"
-locale          = "zh-CN"
 update.channel  = "manual"
 
 [session]
-mode              = "auto"
 first_edit_buffer = 1500
-readonly          = false
 
 [agent.circuit]
 max_files   = 20
@@ -486,10 +426,6 @@ windows = "wsl2"
 multiplex        = true
 allowed_commands = ["generate"]
 
-[privacy]
-telemetry     = false
-crash_reports = "opt_in"
-
 [archive]
 events_days = 30
 
@@ -516,8 +452,6 @@ features      = ["intent", "risk"]
     #[test]
     fn parses_full_example_with_defaults_for_missing() {
         let cfg = Config::parse_toml(FULL_EXAMPLE).expect("parse");
-        assert_eq!(cfg.locale, Locale::ZhCn);
-        assert_eq!(cfg.session.mode, SessionMode::Auto);
         assert_eq!(cfg.session.first_edit_buffer_ms, 1500);
         assert_eq!(cfg.agent.circuit.max_files, 20);
         assert_eq!(cfg.agent.circuit.max_lines, 3000);
@@ -525,7 +459,6 @@ features      = ["intent", "risk"]
         assert_eq!(cfg.agent.exec.command_timeout_s, 60);
         assert_eq!(cfg.checkpoint.keep_last, 10);
         assert_eq!(cfg.lsp.allowed_commands, vec!["generate".to_string()]);
-        assert_eq!(cfg.privacy.crash_reports, CrashReports::OptIn);
         assert_eq!(cfg.archive.events_days, 30);
         assert_eq!(cfg.models.default, "glm");
 
@@ -548,11 +481,8 @@ features      = ["intent", "risk"]
     #[test]
     fn empty_input_yields_design_defaults() {
         let cfg = Config::parse_toml("").expect("parse empty");
-        assert_eq!(cfg.locale, Locale::Auto);
         assert_eq!(cfg.update.channel, UpdateChannel::Manual);
-        assert_eq!(cfg.session.mode, SessionMode::Interactive);
         assert_eq!(cfg.session.first_edit_buffer_ms, 2000);
-        assert!(!cfg.session.readonly);
         assert_eq!(cfg.agent.circuit.max_files, 15);
         assert_eq!(cfg.agent.circuit.max_lines, 1500);
         assert_eq!(cfg.agent.circuit.max_tokens, 500_000);
@@ -572,8 +502,6 @@ features      = ["intent", "risk"]
             cfg.lsp.allowed_commands.is_empty(),
             "铁律七：白名单默认空 = 全拒"
         );
-        assert!(!cfg.privacy.telemetry);
-        assert_eq!(cfg.privacy.crash_reports, CrashReports::Off);
         assert_eq!(cfg.archive.events_days, 90);
         assert_eq!(cfg.projects.max_open, 12);
         assert_eq!(cfg.projects.max_concurrent_agent_tasks, 2);
@@ -583,7 +511,7 @@ features      = ["intent", "risk"]
         assert!(cfg.models.default.is_empty());
         assert!(cfg.models.laya.enabled);
         assert!(cfg.models.laya.auto_download);
-        assert_eq!(cfg.models.laya.features.len(), 5);
+        assert_eq!(cfg.models.laya.features.len(), 3);
     }
 
     #[test]
@@ -591,17 +519,11 @@ features      = ["intent", "risk"]
         let cfg = Config::parse_toml(FULL_EXAMPLE).expect("parse");
         let text = toml::to_string(&cfg).expect("serialize");
         let cfg2 = Config::parse_toml(&text).expect("re-parse");
-        assert_eq!(cfg.locale, cfg2.locale);
         assert_eq!(
             cfg.agent.circuit.max_cost_usd,
             cfg2.agent.circuit.max_cost_usd
         );
         assert_eq!(cfg.models.laya.features, cfg2.models.laya.features);
-    }
-
-    #[test]
-    fn rejects_unknown_session_mode() {
-        assert!(Config::parse_toml("[session]\nmode = \"yolo\"").is_err());
     }
 
     #[test]

@@ -37,7 +37,6 @@ function renderExplorer(projects: ProjectSummary[], apiOverrides: Partial<TenonA
       projects={projects}
       projectId={projects[0]?.id ?? null}
       sessionsByProject={projects[0] ? { [projects[0].id]: "session-1" } : {}}
-      portfolioTasks={[]}
       openError={null}
       refreshToken={1}
       onSwitchProject={onSwitchProject}

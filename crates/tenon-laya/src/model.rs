@@ -10,6 +10,8 @@ use std::collections::HashMap;
 use crate::primitives::IntentLabel;
 
 /// 模型文件根结构（`~/.tenon/models/laya/model.json`）。
+/// v1.92 收敛：仅保留 intent / risk 头；模型文件中的 triage / prefilter
+/// 头被 serde 静默忽略（旧文件兼容）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LayaModel {
     pub name: String,
@@ -20,12 +22,6 @@ pub struct LayaModel {
     /// 命令风险（score，sigmoid）
     #[serde(default)]
     pub risk: Option<ScoreHead>,
-    /// 批量 triage（choice）
-    #[serde(default)]
-    pub triage: Option<ChoiceHead>,
-    /// 上下文预筛词条权重（score）
-    #[serde(default)]
-    pub prefilter: Option<PrefilterHead>,
 }
 
 /// 多分类头：词表 → 词索引；weights[词索引][标签] 线性权重 + bias。
@@ -46,13 +42,6 @@ pub struct ScoreHead {
     pub bias: f32,
 }
 
-/// 预筛头：查询词权重（词 → 重要度），相关性 = 查询命中词权重 × 切片词频。
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct PrefilterHead {
-    #[serde(default)]
-    pub vocab: HashMap<String, f32>,
-}
-
 impl LayaModel {
     /// 解析并校验模型结构（权重维度一致性）。
     pub fn parse(bytes: &[u8]) -> crate::Result<Self> {
@@ -66,9 +55,6 @@ impl LayaModel {
         if let Some(h) = &self.intent {
             h.validate("intent")?;
         }
-        if let Some(h) = &self.triage {
-            h.validate("triage")?;
-        }
         Ok(())
     }
 
@@ -77,14 +63,6 @@ impl LayaModel {
         let head = self.intent.as_ref()?;
         let (idx, prob) = head.classify(text)?;
         let label = IntentLabel::parse(head.labels.get(idx)?)?;
-        Some((label, prob))
-    }
-
-    /// 批量 triage（choice 原语）。
-    pub fn classify_triage(&self, text: &str) -> Option<(crate::primitives::TriageLabel, f32)> {
-        let head = self.triage.as_ref()?;
-        let (idx, prob) = head.classify(text)?;
-        let label = crate::primitives::TriageLabel::parse(head.labels.get(idx)?)?;
         Some((label, prob))
     }
 
@@ -111,23 +89,6 @@ impl LayaModel {
             }
         }
         Some(sigmoid(total))
-    }
-
-    /// 上下文预筛（score 原语）：切片与查询的词法相关度。
-    pub fn score_relevance(&self, query: &str, slice: &str) -> f32 {
-        let Some(head) = &self.prefilter else {
-            return 0.0;
-        };
-        let q_terms: Vec<String> = tokenize(query).collect();
-        let mut score = 0.0f32;
-        for term in &q_terms {
-            let Some(&w) = head.vocab.get(term) else {
-                continue;
-            };
-            let tf = slice.matches(term.as_str()).count() as f32;
-            score += w * tf.min(3.0);
-        }
-        score
     }
 }
 
@@ -255,15 +216,6 @@ mod tests {
                 weights: vec![5.0, -5.0],
                 bias: -1.0,
             }),
-            triage: None,
-            prefilter: Some(PrefilterHead {
-                vocab: {
-                    let mut v = HashMap::new();
-                    v.insert("auth".to_string(), 2.0);
-                    v.insert("login".to_string(), 1.5);
-                    v
-                },
-            }),
         }
     }
 
@@ -285,14 +237,6 @@ mod tests {
         assert!(risky > 0.5, "risky={risky}");
         assert!(safe < 0.5, "safe={safe}");
         assert!((0.0..=1.0).contains(&risky));
-    }
-
-    #[test]
-    fn relevance_prefers_matching_slice() {
-        let m = sample_model();
-        let a = m.score_relevance("auth login flow", "fn auth_login() {}");
-        let b = m.score_relevance("auth login flow", "fn render_ui() {}");
-        assert!(a > b, "命中词更多的切片应更相关：{a} vs {b}");
     }
 
     #[test]

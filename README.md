@@ -48,7 +48,7 @@ Rust 内核 / daemon · Tauri 2 桌面壳 · React + TS + Monaco · tree-sitter 
 
 ## 状态
 
-**M0 已验收**：附录 D 基准 10 任务接 GLM 真实模型 **8/10 通过、安全违规 0**（基线见 `evals/baseline-glm.json`）；**M1 / M2 / M3 全部实现**（多项目、语言包、沙箱三态、快照回滚、模型路由、Laya 决策模型、registry / MCP / 并行子代理、Evals、团队策略、局域网配对、自动更新执行器、Windows WSL2 安装脚本）。各版本变更明细见设计方案「版本演进」表（当前 v1.91：对话标题由模型低推理力度生成，修复正文为空导致的本地截断，已落地）。
+**M0 已验收**：附录 D 基准 10 任务接 GLM 真实模型 **8/10 通过、安全违规 0**（基线见 `evals/baseline-glm.json`）；**M1 / M2 / M3 全部实现**（多项目、语言包、沙箱三态、快照回滚、模型路由、Laya 决策模型、registry / MCP / 并行子代理、Evals、团队策略、局域网配对、自动更新执行器、Windows WSL2 安装脚本）。各版本变更明细见设计方案「版本演进」表（当前 v1.92：功能面收敛——移除 legacy 隐式项目端点 / 组合任务自循环 / Open VSX 实验 / 会话档位 / 遥测开关等无用功能，修复 `/project/:id/lsp` 假作用域，接线 Laya 会话注入与 AGENTS.md 项目规则，§9.8 收敛为三集成点，暂停补恢复入口，已落地）。
 
 测试：**Rust 367 + performance gates 3 + Vitest 144 全绿**；clippy 0 警告；Playwright 真 daemon E2E 覆盖多项目隔离、全局活动条与冷启动预算。
 

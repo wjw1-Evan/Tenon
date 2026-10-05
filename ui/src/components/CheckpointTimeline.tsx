@@ -14,10 +14,9 @@ interface Props {
   api: TenonApi;
   t: Translate;
   sessionId: string | null;
-  onRolledBack?: () => void;
 }
 
-export function CheckpointTimeline({ api, t, sessionId, onRolledBack }: Props) {
+export function CheckpointTimeline({ api, t, sessionId }: Props) {
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
   const [busy, setBusy] = useState(false);
 
@@ -40,7 +39,6 @@ export function CheckpointTimeline({ api, t, sessionId, onRolledBack }: Props) {
     setBusy(true);
     try {
       await api.rollbackCheckpoint(id);
-      onRolledBack?.();
     } finally {
       setBusy(false);
     }
@@ -52,7 +50,6 @@ export function CheckpointTimeline({ api, t, sessionId, onRolledBack }: Props) {
     setBusy(true);
     try {
       await api.control(sessionId, "unrollback");
-      onRolledBack?.();
     } catch {
       // 无可撤销的回滚时静默（时间轴保持原状）
     } finally {

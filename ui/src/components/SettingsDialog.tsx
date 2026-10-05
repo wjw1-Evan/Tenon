@@ -68,14 +68,10 @@ interface Props {
 }
 
 export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, onClose, onSaved }: Props) {
-  const [theme, setTheme] = useState<ThemePreference>(() => loadThemePreference());
-  const [locale, setLocale] = useState<Locale>("auto");
   const [bufferMs, setBufferMs] = useState(2000);
   const [commandTimeout, setCommandTimeout] = useState(120);
   const [deniedTools, setDeniedTools] = useState("");
   const [maxCost, setMaxCost] = useState("");
-  const [telemetry, setTelemetry] = useState(false);
-  const [crashReports, setCrashReports] = useState<"off" | "opt_in">("off");
   const [updateChannel, setUpdateChannel] = useState<"manual" | "auto">("manual");
   const [updateStatus, setUpdateStatus] = useState<UpdateStatusData | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
@@ -94,8 +90,6 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, o
     const policy = settings.team_policy ?? {};
     setDeniedTools((policy.denied_tools ?? []).join(", "));
     setMaxCost(policy.max_cost_usd == null ? "" : String(policy.max_cost_usd));
-    setTelemetry(Boolean(settings.privacy?.telemetry));
-    setCrashReports(settings.privacy?.crash_reports === "opt_in" ? "opt_in" : "off");
     setUpdateChannel(settings.update?.channel === "auto" ? "auto" : "manual");
     setDefaultModel(String(settings.models?.default ?? ""));
     setProviders(rowsFromSettings(settings));
@@ -182,9 +176,6 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, o
     setBusy(true);
     setError(null);
     try {
-      saveThemePreference(theme);
-      applyTheme(theme);
-      window.dispatchEvent(new CustomEvent(LOCALE_CHANGE, { detail: locale }));
       let policyMaxCost: number | null = null;
       if (maxCost.trim()) {
         policyMaxCost = Number(maxCost);
@@ -193,7 +184,6 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, o
         }
       }
       await api.putTeamPolicy({
-        force_interactive: false,
         denied_tools: deniedTools
           .split(",")
           .map((name) => name.trim())
@@ -212,7 +202,6 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, o
           first_edit_buffer_ms: bufferMs,
         },
         exec: { command_timeout_s: commandTimeout },
-        privacy: { telemetry, crash_reports: crashReports },
         update: { channel: updateChannel },
         models: { default: defaultModel, providers: providerPayload },
       });
@@ -233,33 +222,6 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, o
         </div>
 
         <div className="settings-grid">
-          <label htmlFor="set-theme">{t("settings.theme")}</label>
-          <select
-            id="set-theme"
-            value={theme}
-            onChange={(e) => {
-              const v = e.target.value as ThemePreference;
-              setTheme(v);
-              saveThemePreference(v);
-              applyTheme(v);
-            }}
-          >
-            <option value="system">{t("theme.system")}</option>
-            <option value="dark">{t("theme.dark")}</option>
-            <option value="light">{t("theme.light")}</option>
-          </select>
-
-          <label htmlFor="set-locale">{t("settings.language")}</label>
-          <select
-            id="set-locale"
-            value={locale}
-            onChange={(e) => setLocale(e.target.value as Locale)}
-          >
-            <option value="auto">Auto</option>
-            <option value="en">English</option>
-            <option value="zh-CN">中文</option>
-          </select>
-
           <label htmlFor="set-save-mode">{t("settings.saveMode")}</label>
           <select
             id="set-save-mode"
@@ -290,28 +252,6 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, o
             value={commandTimeout}
             onChange={(e) => setCommandTimeout(Number(e.target.value))}
           />
-
-          <label htmlFor="set-telemetry">{t("settings.privacy.telemetry")}</label>
-          <select
-            id="set-telemetry"
-            data-testid="settings-telemetry"
-            value={telemetry ? "on" : "off"}
-            onChange={(e) => setTelemetry(e.target.value === "on")}
-          >
-            <option value="off">{t("settings.privacy.off")}</option>
-            <option value="on">{t("settings.privacy.on")}</option>
-          </select>
-
-          <label htmlFor="set-crash">{t("settings.privacy.crash")}</label>
-          <select
-            id="set-crash"
-            data-testid="settings-crash-reports"
-            value={crashReports}
-            onChange={(e) => setCrashReports(e.target.value as "off" | "opt_in")}
-          >
-            <option value="off">{t("settings.privacy.off")}</option>
-            <option value="opt_in">{t("settings.privacy.opt_in")}</option>
-          </select>
 
           <label htmlFor="set-update">{t("settings.update.channel")}</label>
           <select

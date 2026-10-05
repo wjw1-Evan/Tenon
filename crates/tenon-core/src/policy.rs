@@ -102,11 +102,10 @@ impl Policy {
 }
 
 /// 团队策略（M3 §19 / §12.2）：由团队下发、**只收窄**的全局约束。
-/// `force_interactive` 是 v1.89 前字段，解析兼容但无操作。
+/// v1.89 移除审批后 `force_interactive` 无操作语义，已随 v1.92 删除
+/// （旧 policy.toml 中的该键被 serde 静默忽略）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct TeamPolicy {
-    #[serde(default)]
-    pub force_interactive: bool,
     /// 全局禁用工具（名单，跨会话）
     #[serde(default)]
     pub denied_tools: Vec<String>,
@@ -116,9 +115,6 @@ pub struct TeamPolicy {
 }
 
 impl TeamPolicy {
-    /// 兼容旧调用：档位收窄不再影响免审批执行。
-    pub fn apply_to(&self, _policy: &mut Policy) {}
-
     /// 熔断上限取更严格者。
     pub fn clamp_cost(&self, configured: f64) -> f64 {
         match self.max_cost_usd {
@@ -159,10 +155,7 @@ mod tests {
 
     #[test]
     fn team_policy_serialization_and_cost_clamp() {
-        let tp: TeamPolicy =
-            serde_json::from_str(r#"{"force_interactive": true, "denied_tools": ["git_push"]}"#)
-                .unwrap();
-        assert!(tp.force_interactive);
+        let tp: TeamPolicy = serde_json::from_str(r#"{"denied_tools": ["git_push"]}"#).unwrap();
         assert_eq!(tp.denied_tools, vec!["git_push".to_string()]);
         assert_eq!(tp.max_cost_usd, None);
         assert_eq!(tp.clamp_cost(5.0), 5.0);

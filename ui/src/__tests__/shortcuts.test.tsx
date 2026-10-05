@@ -13,7 +13,6 @@ describe("快捷键（§7.4 核心集）", () => {
       onPalette: vi.fn(),
       onGotoFile: vi.fn(),
       onStop: vi.fn(),
-      onTimeline: vi.fn(),
       onPauseOrClose: vi.fn(),
     };
     render(<Probe handlers={handlers} />);
@@ -26,8 +25,6 @@ describe("快捷键（§7.4 核心集）", () => {
     expect(handlers.onGotoFile).toHaveBeenCalledTimes(1);
     press({ key: ".", metaKey: true, bubbles: true });
     expect(handlers.onStop).toHaveBeenCalledTimes(1);
-    press({ key: "z", metaKey: true, altKey: true, bubbles: true });
-    expect(handlers.onTimeline).toHaveBeenCalledTimes(1);
     press({ key: "Escape", bubbles: true });
     expect(handlers.onPauseOrClose).toHaveBeenCalledTimes(1);
   });

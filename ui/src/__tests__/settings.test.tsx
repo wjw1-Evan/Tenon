@@ -174,29 +174,20 @@ describe("SettingsDialog", () => {
     expect(put.mock.calls[0][0].models.providers).toEqual({});
   });
 
-  it("隐私与更新分区：回填偏好并保存受控载荷", async () => {
-    const withPrivacy: SettingsData = {
+  it("更新分区：回填偏好并保存受控载荷（v1.92 privacy 移除）", async () => {
+    const withPrivacy = {
       ...settings,
-      privacy: { telemetry: false, crash_reports: "opt_in" },
       update: { channel: "auto" },
-    };
+    } as SettingsData;
     const put = vi.fn().mockResolvedValue(withPrivacy);
     render(
       <SettingsDialog api={makeApi(put)} t={t} settings={withPrivacy} saveMode="auto" onSaveModeChange={() => {}} onClose={() => {}} onSaved={() => {}} />
     );
-    expect((screen.getByTestId("settings-telemetry") as HTMLSelectElement).value).toBe("off");
-    expect((screen.getByTestId("settings-crash-reports") as HTMLSelectElement).value).toBe("opt_in");
     expect((screen.getByTestId("settings-update-channel") as HTMLSelectElement).value).toBe("auto");
 
-    fireEvent.change(screen.getByTestId("settings-telemetry"), { target: { value: "on" } });
-    fireEvent.change(screen.getByTestId("settings-crash-reports"), { target: { value: "off" } });
     fireEvent.change(screen.getByTestId("settings-update-channel"), { target: { value: "manual" } });
     fireEvent.click(screen.getByTestId("settings-save"));
     await waitFor(() => expect(put).toHaveBeenCalled());
-    expect(put.mock.calls[0][0].privacy).toEqual({
-      telemetry: true,
-      crash_reports: "off",
-    });
     expect(put.mock.calls[0][0].update).toEqual({ channel: "manual" });
   });
 
@@ -234,7 +225,6 @@ describe("SettingsDialog", () => {
     fireEvent.click(screen.getByTestId("settings-save"));
     await waitFor(() => expect(putPolicy).toHaveBeenCalled());
     expect(putPolicy).toHaveBeenCalledWith({
-      force_interactive: false,
       denied_tools: ["git_push", "mcp:*"],
       max_cost_usd: 2,
     });

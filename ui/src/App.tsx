@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ResizeHandle } from "./components/ResizeHandle";
 import { TenonApi } from "./lib/api";
-import type { PortfolioTask, ProjectSummary } from "./lib/api";
+import type { ProjectSummary } from "./lib/api";
 import { createTranslator, LOCALE_CHANGE, type Locale, type Translate } from "./lib/i18n";
 import {
   applyTheme,
@@ -135,7 +135,6 @@ export default function App({
 
   const [projectId, setProjectId] = useState<string | null>(null);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
-  const [portfolioTasks, setPortfolioTasks] = useState<PortfolioTask[]>([]);
   const [sessionsByProject, setSessionsByProject] = useState<Record<string, string>>({});
   const [tabsByProject, setTabsByProject] = useState<Record<string, EditorTab[]>>({});
   const [activePathByProject, setActivePathByProject] = useState<Record<string, string | null>>({});
@@ -352,11 +351,6 @@ export default function App({
     return r.projects;
   }, [api]);
 
-  const refreshPortfolio = useCallback(async () => {
-    const r = await api.portfolioTasks();
-    setPortfolioTasks(r.tasks.filter((task) => task.status !== "done"));
-  }, [api]);
-
   /** 项目级状态恢复：布局 + tab 路径 + active path + 可复用 session（§7.2/§7.5）。 */
   const activateProject = useCallback(
     async (project: ProjectSummary) => {
@@ -463,7 +457,6 @@ export default function App({
     async (project: ProjectSummary, worktree: boolean) => {
       const session = await api.createSession(
         project.id,
-        (settings?.session?.mode as "interactive" | "auto" | "" | undefined) ?? "interactive",
         "",
         worktree ? "managed" : undefined
       );
@@ -471,7 +464,7 @@ export default function App({
       if (project.id !== projectIdRef.current) await activateProject(project);
       setSessionsByProject((prev) => ({ ...prev, [project.id]: session.session_id }));
     },
-    [activateProject, api, refreshProjects, settings]
+    [activateProject, api, refreshProjects]
   );
 
   // 打开项目 + 建会话（§7.3：v1.67 打开即静默信任，不再弹 TOFU 确认卡）
@@ -687,7 +680,6 @@ export default function App({
     () => ({
       onPalette: () => setPaletteOpen((v) => !v),
       onGotoFile: () => setFinderOpen(true),
-      onTimeline: () => setTimelineOpen((v) => !v),
       onSidebar: () => setSidebarOpen((v) => !v),
       onPanel: () => setTimelineOpen((v) => !v),
     onInlineInstruction: () => {
@@ -729,12 +721,22 @@ export default function App({
         label: t("editor.redo"),
         run: () => editorApiRef.current?.redo(),
       },
-      { id: "toggle.sidebar", label: t("panel.projects"), run: () => setSidebarOpen((v) => !v) },
-      {
-        id: "agent.pause",
-        label: t("message.pause"),
-        run: () => sessionId && api.control(sessionId, "pause"),
-      },
+      { id: "toggle.sidebar", label: t("palette.toggle_sidebar"), run: () => setSidebarOpen((v) => !v) },
+      ...(agentState === "paused"
+        ? [
+            {
+              id: "agent.resume",
+              label: t("message.resume"),
+              run: () => sessionId && api.control(sessionId, "resume"),
+            },
+          ]
+        : [
+            {
+              id: "agent.pause",
+              label: t("message.pause"),
+              run: () => sessionId && api.control(sessionId, "pause"),
+            },
+          ]),
       {
         id: "agent.stop",
         label: t("message.stop"),
@@ -751,7 +753,7 @@ export default function App({
         run: () => sessionId && api.control(sessionId, "unrollback"),
       },
     ],
-    [t, api, sessionId, inlineCompletionEnabled, toggleInlineCompletion]
+    [t, api, sessionId, agentState, inlineCompletionEnabled, toggleInlineCompletion]
   );
 
   // 底部面板开合（v1.61）：展开态 tabs 行右端收起、收起态细条展开；标签与 tab 按钮共用一份
@@ -777,10 +779,9 @@ export default function App({
   useEffect(() => {
     const id = window.setInterval(() => {
       void refreshProjects().catch(() => {});
-      void refreshPortfolio().catch(() => {});
     }, 2000);
     return () => window.clearInterval(id);
-  }, [refreshProjects, refreshPortfolio]);
+  }, [refreshProjects]);
   // 项目级 UI 状态去抖持久化（§7.2 / §7.5）：加载完成后才允许覆盖远端。
   useEffect(() => {
     if (!projectId || !projectUiStateLoaded.current.has(projectId)) return;
@@ -1041,7 +1042,6 @@ export default function App({
                     projects={projects}
                     projectId={projectId}
                     sessionsByProject={sessionsByProject}
-                    portfolioTasks={portfolioTasks}
                     openError={openError}
                     refreshToken={fileTreeVersion}
                     onSwitchProject={(project) => void switchProject(project)}
@@ -1068,13 +1068,7 @@ export default function App({
                   />
                 )}
                 {sideView === "packs" && (
-                  <LanguagePackWizard
-                    api={api}
-                    projectId={projectId}
-                    onInstalled={() => {
-                      // 重新拉取文件树无必要；向导自身刷新状态
-                    }}
-                  />
+                  <LanguagePackWizard api={api} projectId={projectId} />
                 )}
               </div>
             </aside>
@@ -1336,7 +1330,7 @@ export default function App({
                 onOpenFile={(path, line) => void openFile(path, line)}
                 onFix={fixDiagnostic}
               />
-              <DiffPanel diff={latestDiff} title={t("panel.diagnostics")} />
+              <DiffPanel diff={latestDiff} title={t("panel.patch_diff")} />
               <L4StatusPanel api={api} t={t} projectId={projectId} />
             </div>
           )}

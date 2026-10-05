@@ -7,7 +7,6 @@ export interface ShortcutHandlers {
   onInlineInstruction?: () => void; // Cmd/Ctrl+I 行内 AI 指令（§7.4 / §8.5）
   onPauseOrClose?: () => void; // Esc
   onStop?: () => void; // Cmd/Ctrl+.
-  onTimeline?: () => void; // Cmd/Ctrl+Alt+Z
   onSidebar?: () => void; // Cmd/Ctrl+B
   onPanel?: () => void; // Cmd/Ctrl+J 底部面板（§7.4）
   onSave?: () => void; // Cmd/Ctrl+S（自动保存下的立即保存，§8.2）
@@ -32,9 +31,6 @@ export function useShortcuts(handlers: ShortcutHandlers) {
       } else if (mod && e.key === ".") {
         e.preventDefault();
         handlers.onStop?.();
-      } else if (mod && e.altKey && e.key.toLowerCase() === "z") {
-        e.preventDefault();
-        handlers.onTimeline?.();
       } else if (mod && !e.shiftKey && e.key.toLowerCase() === "b") {
         e.preventDefault();
         handlers.onSidebar?.();

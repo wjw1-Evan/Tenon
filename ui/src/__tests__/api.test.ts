@@ -85,31 +85,14 @@ describe("TenonApi（§15 客户端）", () => {
     expect(result.disk_contents_deleted).toBe(false);
   });
 
-  it("组合任务只提交 project-scoped children", async () => {
-    fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
-    const api = new TenonApi({ port: 9999, token: "t" });
-    await api.createPortfolioTask("release", [
-      { project_id: "p-a", text: "run A" },
-      { project_id: "p-b", text: "run B" },
-    ]);
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe("http://127.0.0.1:9999/portfolio-tasks");
-    const body = JSON.parse(init.body);
-    expect(body.children.map((c: { project_id: string }) => c.project_id)).toEqual([
-      "p-a",
-      "p-b",
-    ]);
-  });
-
   it("权限策略使用专用收窄配置端点", async () => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify({}), { status: 200 }));
     const api = new TenonApi({ port: 9999, token: "t" });
-    await api.putTeamPolicy({ force_interactive: true, denied_tools: ["git_push"], max_cost_usd: 2 });
+    await api.putTeamPolicy({ denied_tools: ["git_push"], max_cost_usd: 2 });
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("http://127.0.0.1:9999/team-policy");
     expect(init.method).toBe("PUT");
     expect(JSON.parse(init.body)).toEqual({
-      force_interactive: true,
       denied_tools: ["git_push"],
       max_cost_usd: 2,
     });

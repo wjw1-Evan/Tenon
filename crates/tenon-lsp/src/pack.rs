@@ -55,10 +55,6 @@ pub fn builtin_packs() -> Vec<LanguagePack> {
 /// 为文件扩展名选择语言包（含探测：项目根须有对应标记文件，§8.4 项目感知推荐）。
 pub fn pack_for_file(project_root: &Path, file: &str) -> Option<LanguagePack> {
     let ext = Path::new(file).extension()?.to_str()?.to_lowercase();
-    // Open VSX 转换产物（动态包）优先于内置包（§13.3 实验子集）
-    if let Some(dynamic) = crate::openvsx::dynamic_pack_for_file(file) {
-        return Some(dynamic);
-    }
     let packs = builtin_packs();
     let mut candidates: Vec<LanguagePack> = packs
         .into_iter()

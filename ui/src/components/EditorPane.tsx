@@ -7,7 +7,6 @@ import type { Translate } from "../lib/i18n";
 import type { TenonApi } from "../lib/api";
 import {
   lspRange,
-  lspUriToModelPath,
   parseLspCompletions,
   parseLspHover,
   parseLspCodeActions,
@@ -687,12 +686,7 @@ export function EditorPane({
               });
             }}
             onChange={(v) => {
-              // 用户编辑该文件 → 行级 AI 角标解除（§8.6）
-              if (aiModifiedLines && aiModifiedLines[active.path]?.length) {
-                const rest = { ...aiModifiedLines };
-                delete rest[active.path];
-                // 通过回调清空由上层管理；此处仅透传内容
-              }
+              // 用户编辑该文件 → 行级 AI 角标解除由上层 onChange 管理（§8.6）
               onChange(active.path, v ?? "");
             }}
           />

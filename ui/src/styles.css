@@ -361,21 +361,6 @@ button:disabled { opacity: 0.45; cursor: default; }
   gap: 12px;
 }
 .pe-section { display: flex; flex-direction: column; min-height: 0; }
-.pe-label {
-  flex-shrink: 0;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--muted);
-  padding: 2px 2px 6px;
-}
-.pe-label-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
 .pe-action {
   flex-shrink: 0;
   border: 1px solid var(--border);
@@ -774,15 +759,6 @@ button:disabled { opacity: 0.45; cursor: default; }
   white-space: nowrap;
 }
 .pe-chat-row.active .pe-chat-name { color: var(--accent-text); }
-.pe-state-badge {
-  margin-left: 6px;
-  padding: 1px 4px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  font-size: 9px;
-  font-weight: 500;
-  color: var(--muted);
-}
 .pe-row-actions {
   display: flex;
   justify-content: flex-end;
@@ -1874,7 +1850,6 @@ button:disabled { opacity: 0.45; cursor: default; }
   text-align: left;
   font-size: 12px;
 }
-.finder-line { color: var(--accent-text); margin-left: 6px; }
 .finder-meta { color: var(--accent-text); margin-left: 6px; font-size: 11px; }
 
 /* ─────────────────────────── 浮层：三方合并 ─────────────────────────── */

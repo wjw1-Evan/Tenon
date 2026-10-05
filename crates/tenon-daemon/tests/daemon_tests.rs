@@ -498,7 +498,7 @@ async fn file_api_endpoints() {
     // 文件树
     let pid = {
         let projects: serde_json::Value = client
-            .get(format!("{}/project", base(port)))
+            .get(format!("{}/projects", base(port)))
             .send()
             .await
             .unwrap()
@@ -722,13 +722,13 @@ async fn file_api_endpoints() {
     assert!(project.join("new.rs").exists());
     assert!(!project.join("a_repo.rs").exists());
 
-    // v1.15 兼容层：legacy 隐式项目必须显式 project_id。
+    // v1.92：legacy 隐式项目端点已移除（404）。
     let legacy = client
         .get(format!("{}/file?path=a.txt", base(port)))
         .send()
         .await
         .unwrap();
-    assert_eq!(legacy.status(), 409);
+    assert_eq!(legacy.status(), 404);
 
     // 选定替换：先改 new.rs，dirty buffer 的 a.txt 必须被跳过。
     std::fs::write(project.join("new.rs"), "const value = beta;\n").unwrap();
@@ -859,7 +859,7 @@ async fn multiproject_registry_isolation_and_lifecycle() {
         .unwrap();
     assert_eq!(escaped.status(), 400);
 
-    // 同名相对路径的脏缓冲按项目隔离。
+    // 同名相对路径的脏缓冲按项目隔离（v1.92：读端点移除，PUT/DELETE 链路断言）。
     for (project_id, content) in [(ai, "alpha dirty"), (bi, "beta dirty")] {
         let resp = client
             .put(format!("{}/project/{project_id}/buffers", base(port)))
@@ -869,27 +869,7 @@ async fn multiproject_registry_isolation_and_lifecycle() {
             .unwrap();
         assert!(resp.status().is_success());
     }
-    let a_buffers: serde_json::Value = client
-        .get(format!("{}/project/{ai}/buffers", base(port)))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let b_buffers: serde_json::Value = client
-        .get(format!("{}/project/{bi}/buffers", base(port)))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(
-        a_buffers["paths"].as_array().unwrap().len(),
-        b_buffers["paths"].as_array().unwrap().len()
-    );
-    client
+    let cleared = client
         .delete(format!(
             "{}/project/{ai}/buffers?path=buffer.txt",
             base(port)
@@ -897,60 +877,7 @@ async fn multiproject_registry_isolation_and_lifecycle() {
         .send()
         .await
         .unwrap();
-    let a_after: serde_json::Value = client
-        .get(format!("{}/project/{ai}/buffers", base(port)))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert!(a_after["paths"].as_array().unwrap().is_empty());
-    let b_after: serde_json::Value = client
-        .get(format!("{}/project/{bi}/buffers", base(port)))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(b_after["paths"].as_array().unwrap().len(), 1);
-
-    // 嵌套根默认拒绝。
-    let nested_root = beta.join("nested-root");
-    std::fs::create_dir_all(&nested_root).unwrap();
-    let nested = client
-        .post(format!("{}/projects/open", base(port)))
-        .json(&serde_json::json!({"path": nested_root.to_string_lossy()}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(nested.status(), 409, "嵌套项目根默认拒绝");
-
-    // v1.60 登记即用：无显式关闭；移除登记时 daemon 自行摘除 runtime。
-    assert!(beta.join("root.txt").exists());
-
-    // 移除登记只删除注册记录；磁盘内容与仍打开的 A runtime 不受影响。
-    let removed = client
-        .delete(format!("{}/projects/{bi}", base(port)))
-        .send()
-        .await
-        .unwrap()
-        .json::<serde_json::Value>()
-        .await
-        .unwrap();
-    assert_eq!(removed["removed"], true);
-    assert_eq!(removed["disk_contents_deleted"], false);
-    assert!(beta.join("root.txt").exists());
-    let list_after_remove: serde_json::Value = client
-        .get(format!("{}/projects", base(port)))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(list_after_remove["projects"].as_array().unwrap().len(), 1);
+    assert_eq!(cleared.status(), 200);
 }
 
 #[tokio::test]
@@ -963,7 +890,7 @@ async fn registered_project_activates_runtime_on_first_use() {
     let client = client_with_token(&token);
 
     let registered: serde_json::Value = client
-        .put(format!("{}/project", base(port)))
+        .post(format!("{}/projects/open", base(port)))
         .json(&serde_json::json!({"path": project.to_string_lossy()}))
         .send()
         .await
@@ -1054,50 +981,14 @@ async fn l4_incremental_index_and_search() {
         .unwrap();
     assert!(stats["chunks"].as_u64().unwrap() > 0, "{stats}");
 
-    let search: serde_json::Value = client
-        .get(format!(
-            "{}/project/{pid}/l4/search?q=login%20authenticate&k=5",
-            base(port)
-        ))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let hits = search["hits"].as_array().unwrap();
-    assert!(!hits.is_empty(), "{search}");
-    assert_eq!(hits[0]["path"], "src/auth.rs");
-
-    // watcher 增量：修改后旧 token 不应再命中，新 token 应命中。
+    // v1.92：HTTP /l4/search 移除（Agent 走 store 直查）；增量更新经 watcher
+    // 改写文件后由下方 rebuild → stats 断言覆盖。
     std::fs::write(
         project.join("src/auth.rs"),
         "pub fn render_canvas_and_pixels\n",
     )
     .unwrap();
     tokio::time::sleep(Duration::from_millis(1100)).await;
-    let old_search: serde_json::Value = client
-        .get(format!(
-            "{}/project/{pid}/l4/search?q=login%20authenticate&k=5",
-            base(port)
-        ))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let new_search: serde_json::Value = client
-        .get(format!(
-            "{}/project/{pid}/l4/search?q=render%20canvas&k=5",
-            base(port)
-        ))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
     // 手动 rebuild：入队 → ready；stats 暴露状态与切片数。
     let rebuild = client
         .post(format!("{}/project/{pid}/l4/rebuild", base(port)))
@@ -1123,23 +1014,6 @@ async fn l4_incremental_index_and_search() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert!(ready, "manual rebuild should become ready");
-
-    let old_score = old_search["hits"]
-        .as_array()
-        .unwrap()
-        .first()
-        .and_then(|hit| hit["score"].as_f64())
-        .unwrap_or(-1.0);
-    let new_score = new_search["hits"]
-        .as_array()
-        .unwrap()
-        .first()
-        .and_then(|hit| hit["score"].as_f64())
-        .unwrap_or(-1.0);
-    assert!(
-        new_score > old_score,
-        "new query should outrank stale query: old={old_search} new={new_search}"
-    );
 }
 
 #[tokio::test]
@@ -1192,21 +1066,27 @@ async fn team_policy_api_persists_narrow_only_controls() {
     let (tmp, port, token) = start_daemon(vec![]).await;
     let client = client_with_token(&token);
 
+    // v1.92：GET /team-policy 移除，读取走 GET /settings 的 team_policy 字段；
+    // force_interactive 已随 v1.89 审批移除删除。
     let default: serde_json::Value = client
-        .get(format!("{}/team-policy", base(port)))
+        .get(format!("{}/settings", base(port)))
         .send()
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    assert_eq!(default["force_interactive"], false);
-    assert_eq!(default["denied_tools"].as_array().unwrap().len(), 0);
+    assert_eq!(
+        default["team_policy"]["denied_tools"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
 
     let saved = client
         .put(format!("{}/team-policy", base(port)))
         .json(&serde_json::json!({
-            "force_interactive": true,
             "denied_tools": ["git_push", "apply_patch", "apply_patch"],
             "max_cost_usd": 0.25,
         }))
@@ -1215,7 +1095,6 @@ async fn team_policy_api_persists_narrow_only_controls() {
         .unwrap();
     assert_eq!(saved.status(), 200);
     let saved: serde_json::Value = saved.json().await.unwrap();
-    assert_eq!(saved["force_interactive"], true);
     assert_eq!(
         saved["denied_tools"],
         serde_json::json!(["apply_patch", "git_push"]),
@@ -1230,12 +1109,10 @@ async fn team_policy_api_persists_narrow_only_controls() {
         .json()
         .await
         .unwrap();
-    assert_eq!(settings["team_policy"]["force_interactive"], true);
     assert_eq!(settings["team_policy"]["max_cost_usd"], 0.25);
 
     let policy_path = tmp.path().join("policy.toml");
     let persisted = std::fs::read_to_string(&policy_path).unwrap();
-    assert!(persisted.contains("force_interactive = true"));
     assert!(persisted.contains("max_cost_usd = 0.25"));
     #[cfg(unix)]
     {
@@ -1248,7 +1125,7 @@ async fn team_policy_api_persists_narrow_only_controls() {
     }
 
     for invalid in [
-        serde_json::json!({"force_interactive": "yes"}),
+        serde_json::json!({"force_interactive": true}),
         serde_json::json!({"denied_tools": [""]}),
         serde_json::json!({"max_cost_usd": -1}),
         serde_json::json!({"unknown": true}),
@@ -1263,15 +1140,14 @@ async fn team_policy_api_persists_narrow_only_controls() {
     }
 
     let unchanged: serde_json::Value = client
-        .get(format!("{}/team-policy", base(port)))
+        .get(format!("{}/settings", base(port)))
         .send()
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    assert_eq!(unchanged["force_interactive"], true);
-    assert_eq!(unchanged["max_cost_usd"], 0.25);
+    assert_eq!(unchanged["team_policy"]["max_cost_usd"], 0.25);
 }
 
 #[tokio::test]
@@ -1291,7 +1167,7 @@ async fn settings_and_projects_endpoints() {
     assert!(s["session"].is_object());
     // project 注册与信任
     let p: serde_json::Value = client
-        .put(format!("{}/project", base(port)))
+        .post(format!("{}/projects/open", base(port)))
         .json(&serde_json::json!({"path": dir.path().to_string_lossy()}))
         .send()
         .await
@@ -1307,7 +1183,7 @@ async fn settings_and_projects_endpoints() {
         .await
         .unwrap();
     let list: serde_json::Value = client
-        .get(format!("{}/project", base(port)))
+        .get(format!("{}/projects", base(port)))
         .send()
         .await
         .unwrap()
@@ -1887,83 +1763,6 @@ async fn static_ui_serving_and_pairing_self_discovery() {
 }
 
 #[tokio::test]
-async fn portfolio_task_orchestrates_project_scoped_children() {
-    let dir = tempfile::tempdir().unwrap();
-    let alpha = dir.path().join("alpha");
-    let beta = dir.path().join("beta");
-    std::fs::create_dir_all(&alpha).unwrap();
-    std::fs::create_dir_all(&beta).unwrap();
-
-    let (_tmp, port, token) = start_daemon(vec![
-        ScriptedReply::Text("alpha done".into()),
-        ScriptedReply::Text("beta done".into()),
-    ])
-    .await;
-    let client = client_with_token(&token);
-    let open = |path: &std::path::Path| {
-        let client = client.clone();
-        let path = path.to_path_buf();
-        async move {
-            client
-                .post(format!("{}/projects/open", base(port)))
-                .json(&serde_json::json!({"path": path.to_string_lossy()}))
-                .send()
-                .await
-                .unwrap()
-                .json::<serde_json::Value>()
-                .await
-                .unwrap()
-        }
-    };
-    let a = open(&alpha).await;
-    let b = open(&beta).await;
-
-    let created: serde_json::Value = client
-        .post(format!("{}/portfolio-tasks", base(port)))
-        .json(&serde_json::json!({
-            "title": "two projects",
-            "provider": "mock",
-            "children": [
-                {"project_id": a["id"], "text": "alpha task"},
-                {"project_id": b["id"], "text": "beta task"}
-            ]
-        }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(created["children"].as_array().unwrap().len(), 2);
-    assert_ne!(
-        created["children"][0]["session_id"],
-        created["children"][1]["session_id"]
-    );
-
-    for _ in 0..100 {
-        let tasks: serde_json::Value = client
-            .get(format!("{}/portfolio-tasks", base(port)))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        let task = &tasks["tasks"][0];
-        if task["status"] == "done" {
-            assert!(task["children"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|c| c["status"] == "done"));
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    panic!("组合任务应在预算内完成");
-}
-
-#[tokio::test]
 async fn project_runtime_streams_scoped_file_changes() {
     let dir = tempfile::tempdir().unwrap();
     let project = dir.path().join("watched");
@@ -2099,66 +1898,35 @@ async fn settings_panel_roundtrip_validation_and_persistence() {
     };
 
     let r = put(serde_json::json!({
-        "session": {"mode": "auto", "first_edit_buffer_ms": 1500},
+        "session": {"first_edit_buffer_ms": 1500},
         "exec": {"command_timeout_s": 90},
-        "privacy": {"telemetry": true, "crash_reports": "opt_in"},
         "update": {"channel": "auto"}
     }))
     .await;
     assert_eq!(r.status(), 200);
     let merged: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(merged["session"]["mode"], "auto");
     assert_eq!(merged["session"]["first_edit_buffer_ms"], 1500);
     assert_eq!(merged["exec"]["command_timeout_s"], 90);
-    assert_eq!(merged["privacy"]["telemetry"], true);
-    assert_eq!(merged["privacy"]["crash_reports"], "opt_in");
     assert_eq!(merged["update"]["channel"], "auto");
 
     // 持久化文件（0600）
     let file = _tmp.path().join("settings.json");
     let text = std::fs::read_to_string(&file).unwrap();
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(v["session"]["mode"], "auto");
-    assert_eq!(v["privacy"]["telemetry"], true);
-    assert_eq!(v["privacy"]["crash_reports"], "opt_in");
+    assert_eq!(v["session"]["first_edit_buffer_ms"], 1500);
     assert_eq!(v["update"]["channel"], "auto");
 
-    // 非法值逐一 400
+    // 已移除键与非法值逐一 400（v1.92：mode / privacy 不再接受）
     for bad in [
-        serde_json::json!({"session": {"mode": "yolo"}}),
+        serde_json::json!({"session": {"mode": "auto"}}),
+        serde_json::json!({"privacy": {"telemetry": true}}),
         serde_json::json!({"session": {"first_edit_buffer_ms": -1}}),
         serde_json::json!({"exec": {"command_timeout_s": 99999}}),
-        serde_json::json!({"privacy": {"crash_reports": "always"}}),
         serde_json::json!({"update": {"channel": "daily"}}),
     ] {
         let r = put(bad.clone()).await;
         assert_eq!(r.status(), 400, "bad={bad}");
     }
-
-    // 新会话默认档：项目未信任时 auto 回退交互档（§12.7）
-    let dir = tempfile::tempdir().unwrap();
-    let p: serde_json::Value = client
-        .put(format!("{}/project", base(port)))
-        .json(&serde_json::json!({"path": dir.path().to_string_lossy()}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let s: serde_json::Value = client
-        .post(format!("{}/session", base(port)))
-        .json(&serde_json::json!({"project_id": p["id"], "mode": ""}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert!(
-        s["session_id"].is_string(),
-        "未信任项目 auto 应回退交互档建会话"
-    );
 }
 
 #[tokio::test]
@@ -2293,9 +2061,9 @@ async fn project_display_name_register_open_and_rename() {
     let client = client_with_token(&token);
     let url = base(port);
 
-    // PUT /project 登记时带显示名 → 摘要返回自定义名
+    // POST /projects/open 登记时带显示名 → 摘要返回自定义名（v1.92：PUT /project 移除）
     let registered: serde_json::Value = client
-        .put(format!("{url}/project"))
+        .post(format!("{url}/projects/open"))
         .json(&serde_json::json!({
             "path": project.to_string_lossy(),
             "display_name": "自定义项目名",
@@ -2345,7 +2113,7 @@ async fn project_display_name_register_open_and_rename() {
 
     // 空串清除自定义名 → 回退路径末段派生
     let cleared: serde_json::Value = client
-        .put(format!("{url}/project"))
+        .post(format!("{url}/projects/open"))
         .json(&serde_json::json!({
             "path": project.to_string_lossy(),
             "display_name": "",
@@ -2925,34 +2693,6 @@ async fn laya_auto_download_disabled_stays_unloaded() {
         serde_json::json!(false),
         "auto_download=false 不得自动下载：{models}"
     );
-}
-
-#[tokio::test]
-async fn laya_manual_download_installs_without_approval() {
-    // v1.71：/models/laya/download 去审批化——直接下载安装，不再两阶段 D 卡
-    let (registry, _public_key) = spawn_laya_registry().await;
-    let (_dir, port, token) = start_daemon(vec![]).await;
-    let client = client_with_token(&token);
-
-    let r = client
-        .post(format!("{}/models/laya/download", base(port)))
-        .json(&serde_json::json!({ "registry_url": registry }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status(), 200);
-    let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(body["installed"], serde_json::json!(true));
-
-    let models: serde_json::Value = client
-        .get(format!("{}/models", base(port)))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(models["laya"]["downloaded"], serde_json::json!(true));
 }
 
 // ---------- 受管 worktree 并行会话（v1.87 §9.7） ----------

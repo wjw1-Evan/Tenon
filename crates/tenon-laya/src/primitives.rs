@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// 五个集成点（§9.8 表 #1-5，逐项可开关）。
+/// 三个集成点（§9.8 表 #1-3，逐项可开关；v1.92 收敛——预筛与批量 triage 已移除）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Feature {
@@ -11,12 +11,8 @@ pub enum Feature {
     Intent,
     /// #2 命令风险辅助：规则库外命令补盲区（不改变 A/B/C/D 分级）
     Risk,
-    /// #3 上下文预筛：L1 工作集候选切片相关性打分，仅 top-k 进上下文
-    Prefilter,
-    /// #4 路由启发：纯读任务建议轻模型
+    /// #3 路由启发：纯读任务建议轻模型
     Routing,
-    /// #5 批量 triage：批量任务类别标注，辅助子代理拆分
-    Triage,
 }
 
 impl Feature {
@@ -24,23 +20,26 @@ impl Feature {
         match self {
             Feature::Intent => "intent",
             Feature::Risk => "risk",
-            Feature::Prefilter => "prefilter",
             Feature::Routing => "routing",
-            Feature::Triage => "triage",
         }
     }
 
-    /// 从 config `[models.laya].features` 列表解析开关集。
+    /// 从 config `[models.laya].features` 列表解析开关集
+    /// （旧配置中的 prefilter / triage 项被静默忽略）。
     pub fn enabled_set(features: &[String]) -> std::collections::HashSet<Feature> {
         let mut set = std::collections::HashSet::new();
         for f in features {
             match f.as_str() {
-                "intent" => set.insert(Feature::Intent),
-                "risk" => set.insert(Feature::Risk),
-                "prefilter" => set.insert(Feature::Prefilter),
-                "routing" => set.insert(Feature::Routing),
-                "triage" => set.insert(Feature::Triage),
-                _ => false,
+                "intent" => {
+                    set.insert(Feature::Intent);
+                }
+                "risk" => {
+                    set.insert(Feature::Risk);
+                }
+                "routing" => {
+                    set.insert(Feature::Routing);
+                }
+                _ => {}
             };
         }
         set
@@ -131,50 +130,6 @@ impl IntentLabel {
     }
 }
 
-/// 批量 triage 标签（集成点 #5）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TriageLabel {
-    Bug,
-    Feature,
-    Docs,
-    Chore,
-    Refactor,
-}
-
-impl TriageLabel {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            TriageLabel::Bug => "bug",
-            TriageLabel::Feature => "feature",
-            TriageLabel::Docs => "docs",
-            TriageLabel::Chore => "chore",
-            TriageLabel::Refactor => "refactor",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Self> {
-        Some(match s {
-            "bug" => TriageLabel::Bug,
-            "feature" => TriageLabel::Feature,
-            "docs" => TriageLabel::Docs,
-            "chore" => TriageLabel::Chore,
-            "refactor" => TriageLabel::Refactor,
-            _ => return None,
-        })
-    }
-
-    pub fn all() -> [TriageLabel; 5] {
-        [
-            TriageLabel::Bug,
-            TriageLabel::Feature,
-            TriageLabel::Docs,
-            TriageLabel::Chore,
-            TriageLabel::Refactor,
-        ]
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,12 +139,13 @@ mod tests {
         let set = Feature::enabled_set(&[
             "intent".into(),
             "risk".into(),
-            "prefilter".into(),
             "routing".into(),
+            // 旧配置残留项被静默忽略
+            "prefilter".into(),
             "triage".into(),
         ]);
-        assert_eq!(set.len(), 5);
-        let partial = Feature::enabled_set(&["intent".into(), "triage".into()]);
+        assert_eq!(set.len(), 3);
+        let partial = Feature::enabled_set(&["intent".into()]);
         assert!(partial.contains(&Feature::Intent));
         assert!(!partial.contains(&Feature::Risk));
         assert!(Feature::enabled_set(&["bogus".into()]).is_empty());
@@ -199,9 +155,6 @@ mod tests {
     fn labels_roundtrip() {
         for l in IntentLabel::all() {
             assert_eq!(IntentLabel::parse(l.as_str()), Some(l));
-        }
-        for l in TriageLabel::all() {
-            assert_eq!(TriageLabel::parse(l.as_str()), Some(l));
         }
     }
 }

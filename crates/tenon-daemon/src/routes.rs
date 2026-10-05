@@ -51,18 +51,12 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
         .route("/projects", get(list_projects))
         .route("/projects/open", post(open_project))
         .route("/projects/{id}", delete(delete_project))
-        .route(
-            "/portfolio-tasks",
-            get(list_portfolio_tasks).post(create_portfolio_task),
-        )
         // ---------- 编辑器与文件（§15） ----------
         .route("/project/{id}/tree", get(project_tree))
         .route("/project/{id}/files/fuzzy", get(fuzzy_files))
         .route(
             "/project/{id}/buffers",
-            put(set_dirty_buffer)
-                .get(list_dirty_buffers)
-                .delete(clear_dirty_buffer),
+            put(set_dirty_buffer).delete(clear_dirty_buffer),
         )
         .route("/project/{id}/language-packs", get(detect_language_packs))
         .route(
@@ -75,19 +69,12 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
         .route("/project/{id}/git/view", get(git_source_view))
         .route("/project/{id}/search", get(search))
         .route("/project/{id}/search/replace", post(apply_search_replace))
-        .route("/project/{id}/lsp", post(lsp_proxy))
+        .route("/project/{id}/lsp", post(project_lsp_proxy))
         .route("/project/{id}/inline-complete", post(inline_complete))
         .route("/project/{id}/lsp/apply", post(apply_lsp_workspace_edit))
-        // 兼容旧客户端：处理函数仍要求显式 project_id；v1.15 禁止隐式首项目。
-        .route("/file", get(legacy_read_file).put(legacy_write_file))
-        .route("/file/ops", post(legacy_file_ops))
-        .route("/search", get(legacy_search))
-        .route("/lsp", post(lsp_proxy))
-        .route("/lsp/openvsx", post(register_openvsx))
         .route("/plugins", get(list_plugins).put(search_registry))
         .route("/plugins/install", post(install_plugin))
         // ---------- 管理（§15） ----------
-        .route("/project", get(list_projects).put(register_project))
         .route("/project/trust", put(set_project_trust))
         .route(
             "/project/{id}/ui-state",
@@ -96,16 +83,14 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
         .route("/models", get(list_models))
         .route("/pairing", get(pairing_info))
         .route("/evals", get(list_evals))
-        .route("/models/laya/download", post(laya_download))
         .route("/lan/enable", post(lan_enable))
         .route("/lan/pair", post(lan_pair))
         .route("/lan/revoke", post(lan_revoke))
-        .route("/project/{id}/l4/search", get(l4_search))
         .route("/project/{id}/l4/stats", get(l4_stats))
         .route("/project/{id}/l4/rebuild", post(l4_rebuild))
         .route("/costs", get(costs))
         .route("/settings", get(get_settings).put(put_settings))
-        .route("/team-policy", get(get_team_policy).put(put_team_policy))
+        .route("/team-policy", put(put_team_policy))
         .route("/updates", get(get_updates))
         .route("/updates/check", post(check_updates))
         .route("/updates/apply", post(apply_updates))
@@ -125,12 +110,11 @@ fn api_err(status: StatusCode, msg: impl Into<String>) -> Response {
 
 type ApiResult<T> = Result<T, (StatusCode, String)>;
 
-/// 共用的 project-scoped AgentSession 工厂：普通会话与组合任务子会话必须同语义。
+/// 共用的 project-scoped AgentSession 工厂。
 async fn create_agent_session(
     state: &Arc<DaemonState>,
     project: &tenon_store::Project,
     provider: Arc<dyn tenon_models::ModelProvider>,
-    mode: &str,
     working_dir: Option<String>,
     session_id: Option<String>,
     managed_worktree: Option<std::path::PathBuf>,
@@ -147,28 +131,13 @@ async fn create_agent_session(
         state.config.checkpoint.max_untracked_mb,
     )
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("快照库: {e}")))?;
-    // 会话默认档：请求未显式指定（空）时取设置面板的全局默认；
-    // §12.7：mode=auto 仅对已 TOFU 信任项目生效，未信任回退交互档
-    let mode = if mode.is_empty() {
-        state.default_session_mode()
-    } else {
-        mode.to_string()
-    };
-    let mode = if mode == "auto" && !project.trusted {
-        "interactive".to_string()
-    } else {
-        mode
-    };
-    let mode = if mode == "auto" {
-        Mode::Auto
-    } else {
-        Mode::Interactive
-    };
+    // v1.92：审批移除后 interactive/auto 档位无行为差异，mode 整链删除——
+    // AgentConfig 恒按交互档构建（§9.1 状态机不受影响）。
     let mut agent_cfg = AgentConfig::for_project(
         std::path::PathBuf::from(&project.path),
         &project.id,
         project.trusted,
-        mode,
+        Mode::Interactive,
     );
     agent_cfg.first_edit_buffer_ms = state.config.session.first_edit_buffer_ms;
     {
@@ -182,7 +151,6 @@ async fn create_agent_session(
     }
     agent_cfg.circuit = (&state.config.agent.circuit).into();
     let team_policy = state.team_policy.read().expect("team policy lock").clone();
-    team_policy.apply_to(&mut agent_cfg.policy);
     agent_cfg.circuit.max_cost_usd = team_policy.clamp_cost(agent_cfg.circuit.max_cost_usd);
     agent_cfg.fix_rounds = state.config.agent.fix_loop.max_rounds;
     agent_cfg.command_timeout_s = state.config.agent.exec.command_timeout_s;
@@ -197,6 +165,16 @@ async fn create_agent_session(
     agent_cfg.dirty = Some(state.dirty_buffers_for(&project.id).await);
     agent_cfg.lsp = Some(state.lsp.clone());
     agent_cfg.team_denied_tools = team_policy.denied_tools;
+    // §9.8 v1.92 接线：enabled 时把 Laya 运行时注入会话配置（#1 意图预判 /
+    // #2 命令风险补盲区随之生效；未下载 / 未加载由运行时内部回退现状）。
+    if state.config.models.laya.enabled {
+        agent_cfg.laya = Some(state.laya.clone());
+    }
+    // §13.3 v1.92 接线：AGENTS.md「直读，只能收窄」——读取会话工作根的
+    // AGENTS.md，解析 `<!-- tenon:rules -->` 限制块并入策略（缺文件即默认）。
+    let project_rules = std::fs::read_to_string(snapshot_workspace.join("AGENTS.md"))
+        .map(|md| ProjectRules::parse_agents_md(&md).0)
+        .unwrap_or_default();
     let write_lock = state.write_lock_for(&project.id).await;
     AgentSession::create(
         state.store.clone(),
@@ -204,7 +182,7 @@ async fn create_agent_session(
         provider,
         agent_cfg,
         write_lock,
-        ProjectRules::default(),
+        project_rules,
     )
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
@@ -388,170 +366,6 @@ async fn delete_project(State(state): State<Arc<DaemonState>>, Path(id): Path<St
     }
 }
 
-// ---------- 项目组合任务（§6.4 / §15：跨项目只编排，不共享上下文） ----------
-
-async fn list_portfolio_tasks(State(state): State<Arc<DaemonState>>) -> Response {
-    let tasks = state.portfolio_tasks.lock().await;
-    let mut list: Vec<crate::state::PortfolioTask> = tasks.values().cloned().collect();
-    list.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-    Json(json!({ "tasks": list })).into_response()
-}
-
-#[derive(Deserialize)]
-struct PortfolioChildRequest {
-    project_id: String,
-    text: String,
-    #[serde(default)]
-    mode: String,
-    #[serde(default, alias = "cwd")]
-    working_dir: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct PortfolioTaskBody {
-    #[serde(default)]
-    title: String,
-    children: Vec<PortfolioChildRequest>,
-    #[serde(default)]
-    provider: String,
-}
-
-async fn create_portfolio_task(
-    State(state): State<Arc<DaemonState>>,
-    Json(body): Json<PortfolioTaskBody>,
-) -> Response {
-    if body.children.is_empty() {
-        return api_err(StatusCode::BAD_REQUEST, "组合任务至少需要一个项目子任务");
-    }
-    let provider = match state.provider_or_default(&body.provider).await {
-        Ok(p) => p,
-        Err(e) => return api_err(StatusCode::BAD_REQUEST, e),
-    };
-    // 先全部校验再创建子会话，避免部分失败留下悬空任务。
-    let mut projects = Vec::with_capacity(body.children.len());
-    for child in &body.children {
-        if child.text.trim().is_empty() {
-            return api_err(StatusCode::BAD_REQUEST, "子任务文本不能为空");
-        }
-        let Some(root) = state.ensure_project_runtime(&child.project_id).await else {
-            return api_err(StatusCode::NOT_FOUND, "project not open");
-        };
-        let project = {
-            let mut store = state.store.lock().await;
-            match store.project(&child.project_id) {
-                Ok(Some(p)) => p,
-                _ => return api_err(StatusCode::NOT_FOUND, "project not found"),
-            }
-        };
-        if std::path::Path::new(&project.path) != root {
-            return api_err(StatusCode::CONFLICT, "项目根不一致");
-        }
-        if let Some(working_dir) = child.working_dir.as_deref() {
-            let joined = root.join(working_dir);
-            match std::fs::canonicalize(&joined) {
-                Ok(cwd) if cwd.starts_with(root) => {}
-                _ => return api_err(StatusCode::BAD_REQUEST, "PATH_ESCAPE"),
-            }
-        }
-        projects.push(project);
-    }
-
-    let mut children = Vec::with_capacity(body.children.len());
-    let mut spawned = Vec::with_capacity(body.children.len());
-    for (request, project) in body.children.iter().zip(projects) {
-        let session = match create_agent_session(
-            &state,
-            &project,
-            provider.clone(),
-            &request.mode,
-            request.working_dir.clone(),
-            None,
-            None,
-        )
-        .await
-        {
-            Ok(s) => s,
-            Err((status, message)) => return api_err(status, message),
-        };
-        let session_id = register_session_entry(&state, &project, session.clone()).await;
-        children.push(crate::state::PortfolioChild {
-            id: format!("child-{session_id}-{}", children.len()),
-            project_id: project.id,
-            session_id,
-            text: request.text.clone(),
-            status: "queued".into(),
-        });
-        spawned.push(session);
-    }
-
-    let task_id = format!(
-        "portfolio-{}-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or_default(),
-        children.len()
-    );
-    let now = chrono::Utc::now().to_rfc3339();
-    let task = crate::state::PortfolioTask {
-        id: task_id.clone(),
-        title: if body.title.trim().is_empty() {
-            "跨项目任务".into()
-        } else {
-            body.title
-        },
-        status: "running".into(),
-        children: children.clone(),
-        created_at: now.clone(),
-        updated_at: now,
-    };
-    state
-        .portfolio_tasks
-        .lock()
-        .await
-        .insert(task_id.clone(), task);
-
-    for (session, child) in spawned.into_iter().zip(children) {
-        let state2 = state.clone();
-        let task_id2 = task_id.clone();
-        tokio::spawn(async move {
-            let _permit = state2.execution_permits.acquire().await;
-            let status = match session.run_task(&child.text).await {
-                tenon_agent::session::TaskOutcome::Done(_) => "done",
-                tenon_agent::session::TaskOutcome::Paused { .. } => "paused",
-                tenon_agent::session::TaskOutcome::Error(_) => "error",
-            };
-            {
-                let mut tasks = state2.portfolio_tasks.lock().await;
-                if let Some(task) = tasks.get_mut(&task_id2) {
-                    if let Some(item) = task.children.iter_mut().find(|c| c.id == child.id) {
-                        item.status = status.into();
-                    }
-                    task.updated_at = chrono::Utc::now().to_rfc3339();
-                    task.status = if task
-                        .children
-                        .iter()
-                        .any(|c| matches!(c.status.as_str(), "queued" | "running" | "paused"))
-                    {
-                        if task.children.iter().any(|c| c.status == "paused") {
-                            "paused".into()
-                        } else {
-                            "running".into()
-                        }
-                    } else if task.children.iter().any(|c| c.status == "error") {
-                        "error".into()
-                    } else {
-                        "done".into()
-                    };
-                }
-            }
-        });
-    }
-
-    let tasks = state.portfolio_tasks.lock().await;
-    Json(json!(tasks.get(&task_id))).into_response()
-}
-
 // ---------- 会话与回滚 ----------
 
 #[derive(Deserialize)]
@@ -570,9 +384,6 @@ struct CreateSessionBody {
     worktree: Option<String>,
     #[serde(default)]
     provider: String,
-    /// interactive | auto
-    #[serde(default)]
-    mode: String,
 }
 
 async fn create_session(
@@ -647,7 +458,6 @@ async fn create_session(
         &state,
         &project,
         provider,
-        &body.mode,
         body.working_dir.clone(),
         managed_session_id.clone(),
         managed_worktree.clone(),
@@ -1215,12 +1025,7 @@ async fn session_checkpoints(
 }
 
 #[derive(Deserialize)]
-struct RollbackBody {
-    /// restore（checkpoint 级整体恢复）| revert（按事件撤销，默认）。
-    #[serde(default)]
-    #[allow(dead_code)]
-    granularity: String,
-}
+struct RollbackBody {}
 
 async fn checkpoint_rollback(
     State(state): State<Arc<DaemonState>>,
@@ -1284,10 +1089,6 @@ async fn model_suggest(
 #[derive(Deserialize)]
 struct SwitchModelBody {
     provider: String,
-    /// 预留：同 provider 多模型时覆盖默认模型（当前随 provider 默认）。
-    #[serde(default)]
-    #[allow(dead_code)]
-    model: String,
 }
 
 /// 会话切换模型（§11：上下文随迁；model_fallback 事件入 Trace）。
@@ -1420,9 +1221,6 @@ async fn project_tree(
 #[derive(Deserialize)]
 struct FilePathQuery {
     path: String,
-    /// 仅 legacy `/file` 使用；project-scoped 路由忽略。
-    #[serde(default)]
-    project_id: Option<String>,
 }
 
 async fn read_file(
@@ -1616,8 +1414,6 @@ async fn git_source_view(
 
 #[derive(Deserialize)]
 struct FileOpsBody {
-    #[serde(default)]
-    project_id: Option<String>,
     ops: Vec<tenon_fs::FileOp>,
 }
 
@@ -1645,8 +1441,6 @@ struct SearchQuery {
     q: String,
     #[serde(default)]
     replace: Option<String>,
-    #[serde(default)]
-    project_id: Option<String>,
 }
 
 async fn search(
@@ -1728,112 +1522,8 @@ async fn apply_search_replace(
     Json(json!({"applied": report.applied, "skipped": skipped})).into_response()
 }
 
-// ---------- Legacy 兼容层：必须显式 project_id，禁止隐式首项目 ----------
-
-async fn legacy_read_file(
-    State(state): State<Arc<DaemonState>>,
-    Query(q): Query<FilePathQuery>,
-) -> Response {
-    let Some(project_id) = q.project_id.clone() else {
-        return api_err(StatusCode::CONFLICT, "PROJECT_REQUIRED");
-    };
-    read_file(
-        State(state),
-        Path(project_id),
-        Query(FilePathQuery {
-            path: q.path,
-            project_id: None,
-        }),
-    )
-    .await
-}
-
-#[derive(Deserialize)]
-struct LegacyWriteFileBody {
-    project_id: String,
-    path: String,
-    content: String,
-}
-
-async fn legacy_write_file(
-    State(state): State<Arc<DaemonState>>,
-    Json(body): Json<LegacyWriteFileBody>,
-) -> Response {
-    write_file(
-        State(state),
-        Path(body.project_id),
-        Json(WriteFileBody {
-            path: body.path,
-            content: body.content,
-        }),
-    )
-    .await
-}
-
-async fn legacy_file_ops(
-    State(state): State<Arc<DaemonState>>,
-    Json(body): Json<FileOpsBody>,
-) -> Response {
-    let Some(project_id) = body.project_id.clone() else {
-        return api_err(StatusCode::CONFLICT, "PROJECT_REQUIRED");
-    };
-    file_ops(
-        State(state),
-        Path(project_id),
-        Json(FileOpsBody {
-            project_id: None,
-            ops: body.ops,
-        }),
-    )
-    .await
-}
-
-async fn legacy_search(
-    State(state): State<Arc<DaemonState>>,
-    Query(q): Query<SearchQuery>,
-) -> Response {
-    let Some(project_id) = q.project_id.clone() else {
-        return api_err(StatusCode::CONFLICT, "PROJECT_REQUIRED");
-    };
-    search(
-        State(state),
-        Path(project_id),
-        Query(SearchQuery {
-            q: q.q,
-            replace: q.replace,
-            project_id: None,
-        }),
-    )
-    .await
-}
-
-/// Open VSX 语言子集实验兼容（§13.3）：languageContribution → 内部语言包。
-async fn register_openvsx(Json(body): Json<Value>) -> Response {
-    let Some(package_json) = body.get("package_json").and_then(|p| p.as_str()) else {
-        return api_err(StatusCode::BAD_REQUEST, "缺少 package_json");
-    };
-    match tenon_lsp::convert_extension(package_json) {
-        Ok(converted) => {
-            tenon_lsp::register_dynamic_pack(converted.pack.clone());
-            Json(json!({
-                "registered": true,
-                "language": converted.language,
-                "extension": converted.extension,
-                "experimental": true,
-            }))
-            .into_response()
-        }
-        Err(e) => api_err(StatusCode::BAD_REQUEST, e.to_string()),
-    }
-}
-
 #[derive(Deserialize)]
 struct LspBody {
-    /// v1.15：显式项目；保留 project_path 仅用于旧客户端迁移。
-    #[serde(default)]
-    project_id: Option<String>,
-    #[serde(default)]
-    project_path: Option<String>,
     path: String,
     /// completion | hover | definition | references | diagnostics | format
     action: String,
@@ -1996,20 +1686,15 @@ async fn apply_lsp_workspace_edit(
     .into_response()
 }
 
-async fn lsp_proxy(State(state): State<Arc<DaemonState>>, Json(body): Json<LspBody>) -> Response {
-    let project_root = if let Some(id) = body.project_id.as_deref() {
-        state.ensure_project_runtime(id).await
-    } else if let Some(path) = body.project_path.as_deref() {
-        let mut store = state.store.lock().await;
-        match store.upsert_project(path) {
-            Ok(project) => Some(std::path::PathBuf::from(project.path)),
-            Err(_) => None,
-        }
-    } else {
-        None
-    };
-    let Some(project_root) = project_root else {
-        return api_err(StatusCode::CONFLICT, "PROJECT_REQUIRED");
+/// LSP 代理（project-scoped，§8.5 / §15）：路径参数为唯一项目来源（v1.92 修复
+/// 假作用域——此前 Path 参数被忽略、实际依赖 body 传项目）。
+async fn project_lsp_proxy(
+    State(state): State<Arc<DaemonState>>,
+    Path(project_id): Path<String>,
+    Json(body): Json<LspBody>,
+) -> Response {
+    let Some(project_root) = state.ensure_project_runtime(&project_id).await else {
+        return api_err(StatusCode::NOT_FOUND, "project not found");
     };
     // §8.5 / §15：共享 LSP 宿主语义端点
     match state
@@ -2237,15 +1922,6 @@ async fn set_dirty_buffer(
     Json(json!({"ok": true, "dirty": true})).into_response()
 }
 
-async fn list_dirty_buffers(
-    State(state): State<Arc<DaemonState>>,
-    Path(id): Path<String>,
-) -> Response {
-    let buffers = state.dirty_buffers_for(&id).await;
-    let paths = buffers.list();
-    Json(json!({ "paths": paths })).into_response()
-}
-
 #[derive(Deserialize)]
 struct BufferQuery {
     path: String,
@@ -2413,45 +2089,6 @@ async fn list_projects(State(state): State<Arc<DaemonState>>) -> Response {
 }
 
 #[derive(Deserialize)]
-struct RegisterProjectBody {
-    path: String,
-    /// 可选显示名；空串清除自定义名回退路径派生。
-    #[serde(default)]
-    display_name: Option<String>,
-}
-
-async fn register_project(
-    State(state): State<Arc<DaemonState>>,
-    Json(body): Json<RegisterProjectBody>,
-) -> Response {
-    let mut store = state.store.lock().await;
-    let project = match store.upsert_project(&body.path) {
-        Ok(p) => p,
-        Err(e) => return api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    };
-    let named = if let Some(name) = body.display_name.as_deref() {
-        let trimmed = name.trim();
-        if trimmed != project.display_name {
-            if let Err(e) = store.set_project_display_name(&project.id, trimmed) {
-                return api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
-            }
-        }
-        let resolved = if trimmed.is_empty() {
-            derived_project_name(&project.path)
-        } else {
-            trimmed.to_string()
-        };
-        tenon_store::Project {
-            display_name: resolved,
-            ..project
-        }
-    } else {
-        project
-    };
-    Json(json!(named)).into_response()
-}
-
-#[derive(Deserialize)]
 struct TrustBody {
     project_id: String,
     trusted: bool,
@@ -2577,39 +2214,6 @@ async fn list_models(State(state): State<Arc<DaemonState>>) -> Response {
     .into_response()
 }
 
-#[derive(Deserialize)]
-struct LayaDownloadBody {
-    /// registry 覆盖（测试 / 调试；None = 官方静态 registry）。
-    #[serde(default)]
-    registry_url: Option<String>,
-}
-
-/// 手动下载 / 升级 Laya（§9.8 v1.71）：与启动自动下载同链路——签名清单校验 →
-/// 下载（SHA-256 校验）→ 安装热装载；无审批卡（产品自管签名资产，非代理动作）。
-async fn laya_download(
-    State(state): State<Arc<DaemonState>>,
-    Json(body): Json<LayaDownloadBody>,
-) -> Response {
-    let registry = match tenon_laya::registry::fetch_manifest(body.registry_url.as_deref()).await {
-        Ok(m) => m,
-        Err(e) => return api_err(StatusCode::BAD_GATEWAY, format!("registry 不可达: {e}")),
-    };
-    let plan = match tenon_laya::registry::plan_install_with_key(
-        &registry,
-        state.laya_public_key.as_deref(),
-    ) {
-        Ok(p) => p,
-        Err(e) => return api_err(StatusCode::BAD_GATEWAY, format!("清单校验失败: {e}")),
-    };
-    match tenon_laya::registry::download_model(&plan).await {
-        Ok(bytes) => match state.laya.install(&bytes).await {
-            Ok(()) => Json(json!({"installed": true, "version": plan.version})).into_response(),
-            Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-        },
-        Err(e) => api_err(StatusCode::BAD_GATEWAY, e.to_string()),
-    }
-}
-
 // ---------- 局域网配对（M3 §12.6） ----------
 
 #[derive(Deserialize)]
@@ -2655,34 +2259,6 @@ async fn lan_revoke(
 ) -> Response {
     let revoked = state.lan_pairing.revoke(&body.device);
     Json(json!({ "revoked": revoked })).into_response()
-}
-
-#[derive(Deserialize)]
-struct L4SearchQuery {
-    q: String,
-    #[serde(default = "default_l4_k")]
-    k: usize,
-}
-
-fn default_l4_k() -> usize {
-    10
-}
-
-/// L4 本地召回（§10.1）：deterministic embedding + 余弦排序。
-async fn l4_search(
-    State(state): State<Arc<DaemonState>>,
-    Path(project_id): Path<String>,
-    Query(query): Query<L4SearchQuery>,
-) -> Response {
-    if query.q.trim().is_empty() {
-        return api_err(StatusCode::BAD_REQUEST, "q must not be empty");
-    }
-    let embedding = tenon_fs::l4::embed(&query.q, &query.q);
-    let mut store = state.store.lock().await;
-    match store.l4_search(&project_id, &embedding, query.k.clamp(1, 100)) {
-        Ok(hits) => Json(json!({ "hits": hits })).into_response(),
-        Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
 }
 
 /// L4 索引统计（§10.1）：UI / 诊断用。
@@ -2735,20 +2311,20 @@ async fn l4_rebuild(
     }
 }
 
+/// 成本归因（§15 v1.92 收敛）：会话级查询，`?session=` 必带（月度聚合无消费方）。
 async fn costs(
     State(state): State<Arc<DaemonState>>,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
+    let Some(session_id) = q.get("session") else {
+        return api_err(StatusCode::BAD_REQUEST, "session 参数必填（?session=<id>）");
+    };
     let mut store = state.store.lock().await;
-    if let Some(session_id) = q.get("session") {
-        let (inp, out, cost) = store.session_usage_totals(session_id).unwrap_or_default();
-        return Json(
-            json!({"session": session_id, "input_tokens": inp, "output_tokens": out, "cost_usd": cost}),
-        )
-        .into_response();
-    }
-    let monthly = store.monthly_usage().unwrap_or_default();
-    Json(json!({"monthly": monthly})).into_response()
+    let (inp, out, cost) = store.session_usage_totals(session_id).unwrap_or_default();
+    Json(
+        json!({"session": session_id, "input_tokens": inp, "output_tokens": out, "cost_usd": cost}),
+    )
+    .into_response()
 }
 
 async fn get_settings(State(state): State<Arc<DaemonState>>) -> Response {
@@ -2756,23 +2332,11 @@ async fn get_settings(State(state): State<Arc<DaemonState>>) -> Response {
     let ov = state.settings_overrides.lock().unwrap().clone();
     let mut session = serde_json::to_value(&state.config.session).unwrap_or_default();
     if let Some(obj) = session.as_object_mut() {
-        if let Some(m) = &ov.mode {
-            obj.insert("mode".into(), serde_json::Value::String(m.clone()));
-        }
         if let Some(v) = ov.first_edit_buffer_ms {
             obj.insert("first_edit_buffer_ms".into(), serde_json::json!(v));
         }
         if let Some(v) = ov.command_timeout_s {
             obj.insert("command_timeout_s".into(), serde_json::json!(v));
-        }
-    }
-    let mut privacy = serde_json::to_value(&state.config.privacy).unwrap_or_default();
-    if let Some(obj) = privacy.as_object_mut() {
-        if let Some(v) = ov.privacy_telemetry {
-            obj.insert("telemetry".into(), serde_json::Value::Bool(v));
-        }
-        if let Some(v) = &ov.privacy_crash_reports {
-            obj.insert("crash_reports".into(), serde_json::Value::String(v.clone()));
         }
     }
     let mut update = serde_json::to_value(&state.config.update).unwrap_or_default();
@@ -2809,9 +2373,7 @@ async fn get_settings(State(state): State<Arc<DaemonState>>) -> Response {
         "models": models,
         "agent": state.config.agent,
         "checkpoint": state.config.checkpoint,
-        "privacy": privacy,
         "update": update,
-        "locale": state.config.locale,
         "team_policy": state.team_policy.read().expect("team policy lock").clone(),
     }))
     .into_response()
@@ -2845,16 +2407,6 @@ async fn put_settings(State(state): State<Arc<DaemonState>>, Json(body): Json<Va
     get_settings(State(state)).await
 }
 
-async fn get_team_policy(State(state): State<Arc<DaemonState>>) -> Response {
-    let policy = state.team_policy.read().expect("team policy lock").clone();
-    Json(json!({
-        "force_interactive": policy.force_interactive,
-        "denied_tools": policy.denied_tools,
-        "max_cost_usd": policy.max_cost_usd,
-    }))
-    .into_response()
-}
-
 async fn put_team_policy(
     State(state): State<Arc<DaemonState>>,
     Json(body): Json<Value>,
@@ -2869,7 +2421,12 @@ async fn put_team_policy(
         return api_err(StatusCode::INTERNAL_SERVER_ERROR, e);
     }
     *state.team_policy.write().expect("team policy lock") = policy;
-    get_team_policy(State(state)).await
+    let policy = state.team_policy.read().expect("team policy lock").clone();
+    Json(json!({
+        "denied_tools": policy.denied_tools,
+        "max_cost_usd": policy.max_cost_usd,
+    }))
+    .into_response()
 }
 
 fn updates_status(state: &DaemonState) -> Response {
