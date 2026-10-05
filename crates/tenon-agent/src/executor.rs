@@ -2851,7 +2851,7 @@ mod tests {
             let read = execute_tool(&c, "read_file", &serde_json::json!({"path": path}));
             assert!(read.ok, "read {}", path);
             let keyword = expected.split_whitespace().nth(2).unwrap_or("content");
-            assert!(read.content.len() > 0, "read {} has content", path);
+            assert!(read.content.contains(keyword), "read {} has keyword", path);
         }
         // Grep for Engine
         let grep = execute_tool(&c, "grep", &serde_json::json!({"pattern": "Engine"}));

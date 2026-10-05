@@ -1055,12 +1055,14 @@ async fn session_set_title_and_circuit_limits() {
     let (_d, session, _store, _p) =
         setup(vec![ScriptedReply::Text("ok".into())]).await;
     session.set_title("My Test Session").await.unwrap();
-    session.set_circuit_limits(tenon_core::circuit::CircuitLimits {
-        max_files: 5,
-        max_lines: 100,
-        max_tokens: 50_000,
-        max_cost_usd: 1.0,
-    });
+    session
+        .set_circuit_limits(tenon_core::circuit::CircuitLimits {
+            max_files: 5,
+            max_lines: 100,
+            max_tokens: 50_000,
+            max_cost_usd: 1.0,
+        })
+        .await;
 }
 
 #[tokio::test]
@@ -1177,13 +1179,10 @@ async fn session_readonly_config_blocks_writes() {
         store.clone(), snapshots, provider, config, ProjectWriteLock::new(), rules,
     ).await.unwrap();
     let outcome = session.run_task("try to write").await;
-    match outcome {
-        TaskOutcome::Done(card) => {
-            // Readonly should block the file write
-            assert!(!dir.path().join("should-be-blocked.txt").exists(),
-                "readonly mode should prevent file creation");
-        }
-        _ => {}
+    if let TaskOutcome::Done(_) = outcome {
+        // Readonly should block the file write
+        assert!(!dir.path().join("should-be-blocked.txt").exists(),
+            "readonly mode should prevent file creation");
     }
 }
 
