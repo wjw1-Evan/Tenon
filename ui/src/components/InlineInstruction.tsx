@@ -12,19 +12,19 @@ export interface InlineTarget {
   excerpt?: string;
 }
 
-/** 把选区上下文 + 用户指令组装成会话任务文本（T8：选中区外零改动）。 */
-export function buildInlineTask(instruction: string, target: InlineTarget): string {
+/** 把选区上下文 + 用户指令组装成会话任务文本（T8：选中区外零改动）；文案随应用语言。 */
+export function buildInlineTask(instruction: string, target: InlineTarget, t: Translate): string {
   const range =
     target.startLine !== undefined && target.endLine !== undefined
-      ? `${target.startLine}-${target.endLine} 行`
-      : "整个文件";
+      ? t("inline.task_range", { start: target.startLine, end: target.endLine })
+      : t("inline.task_whole_file");
   const excerpt = target.excerpt?.trim()
-    ? `选中代码：\n\`\`\`\n${target.excerpt.trim().slice(0, 1200)}\n\`\`\`\n`
+    ? `${t("inline.task_excerpt")}\n\`\`\`\n${target.excerpt.trim().slice(0, 1200)}\n\`\`\`\n`
     : "";
   return [
-    `行内指令：在 ${target.path} 的${range}内，${instruction.trim()}`,
+    t("inline.task_prefix", { path: target.path, range, instruction: instruction.trim() }),
     excerpt,
-    "约束：只修改上述目标区域，选中区外零改动；完成后确认无新诊断或回归。",
+    t("inline.task_constraint"),
   ]
     .filter(Boolean)
     .join("\n");

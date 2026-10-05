@@ -3,7 +3,7 @@
 // （点击行即隐式激活并展开），默认内嵌最近 10 条会话；行尾「源码」按钮切换文件树。
 import { useEffect, useState } from "react";
 import type { ProjectSummary, TenonApi } from "../lib/api";
-import type { Translate } from "../lib/i18n";
+import { useResolvedLocale, type Translate } from "../lib/i18n";
 import { FileTree, type FileTreeChange } from "./FileTree";
 
 const PE_EXPANDED_KEY = "tenon:peExpanded";
@@ -77,7 +77,7 @@ function latestUpdatedAt(project: ProjectSummary): string | null {
 }
 
 /** 相对时间只用于侧栏扫读；精确时间保留在行 title，不做 daemon 依赖。 */
-function formatUpdatedAt(value: string | null, t: Translate): string {
+function formatUpdatedAt(value: string | null, t: Translate, locale: string): string {
   if (!value) return t("projects.updated_never");
   const time = Date.parse(value);
   if (Number.isNaN(time)) return t("projects.updated_never");
@@ -89,7 +89,7 @@ function formatUpdatedAt(value: string | null, t: Translate): string {
   if (hours < 24) return t("relative.hours_ago", { count: hours });
   const days = Math.floor(hours / 24);
   if (days < 30) return t("relative.days_ago", { count: days });
-  return new Date(time).toLocaleDateString();
+  return new Date(time).toLocaleDateString(locale);
 }
 
 /** 会话显示名：自动标题优先（v1.58）；无标题回退模型名，同名多会话附短 id 后缀。 */
@@ -186,6 +186,7 @@ export function ProjectExplorer({
   onOpenFile,
   onFileTreeChange,
 }: Props) {
+  const localeTag = useResolvedLocale();
   const [expanded, setExpanded] = useState<Set<string>>(() => loadSet(PE_EXPANDED_KEY));
   // 行内嵌源码文件树的展开集合（v1.70），与文件夹展开互不影响。
   const [filesOpen, setFilesOpen] = useState<Set<string>>(() => loadSet(PE_FILES_KEY));
@@ -463,9 +464,9 @@ export function ProjectExplorer({
                     </span>
                     <span
                       className="pe-updated"
-                      title={updatedAt ? new Date(updatedAt).toLocaleString() : undefined}
+                      title={updatedAt ? new Date(updatedAt).toLocaleString(localeTag) : undefined}
                     >
-                      {formatUpdatedAt(updatedAt, t)}
+                      {formatUpdatedAt(updatedAt, t, localeTag)}
                     </span>
                   </button>
                   <div className="pe-row-actions">
