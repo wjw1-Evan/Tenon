@@ -270,6 +270,15 @@ button:disabled { opacity: 0.45; cursor: default; }
 
 .app-head select { min-width: 0; max-width: 200px; }
 
+/* 顶栏外观档（v1.119）：下拉改单图标按钮三态循环（跟随系统→浅色→深色），方形钮继承全局 button 铬。 */
+.app-head .theme-btn {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 26px;
+  padding: 0;
+}
+
 /* 模型路由（v1.46 对话框选择器；v1.51 起内嵌代理面板任务输入框底行，顶栏不再放置） */
 .model-panel { position: relative; display: flex; align-items: center; gap: 6px; }
 .model-trigger {

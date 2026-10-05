@@ -1001,40 +1001,7 @@ export default function App({
         data-testid="workspace"
       >
         <nav className="activity-rail" aria-label={t("rail.label")}>
-          {/* v1.106：常驻侧栏切换钮——收起后 rail 仍可见，经此钮或任意视图图标恢复。 */}
-          <button
-            type="button"
-            className="rail-btn"
-            data-testid="rail-sidebar-toggle"
-            title={sidebarOpen ? t("palette.collapse_sidebar") : t("palette.expand_sidebar")}
-            aria-label={sidebarOpen ? t("palette.collapse_sidebar") : t("palette.expand_sidebar")}
-            aria-expanded={sidebarOpen}
-            onClick={() => setSidebarOpen((v) => !v)}
-          >
-            <svg
-              width={17}
-              height={17}
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={1.8}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden
-            >
-              {sidebarOpen ? (
-                <>
-                  <path d="m11 17-5-5 5-5" />
-                  <path d="m18 17-5-5 5-5" />
-                </>
-              ) : (
-                <>
-                  <path d="m6 17 5-5-5-5" />
-                  <path d="m13 17 5-5-5-5" />
-                </>
-              )}
-            </svg>
-          </button>
+          {/* v1.120：v1.106 的 rail 顶部切换钮已删——侧栏开合收敛 rail 同视图再点 / 命令面板 toggle.sidebar。 */}
           <button
             type="button"
             className={sidebarOpen && sideView === "projects" ? "rail-btn active" : "rail-btn"}
@@ -1483,27 +1450,68 @@ function LanguagePicker({ value, t }: { value: Locale; t: Translate }) {
 
 /** 外观档（§7.5）：深色 / 浅色 / 跟随系统；即时生效 + 双写
  *  localStorage（快路径）与 daemon /ui-prefs（跨启动权威，端口动态
- *  导致 localStorage 按 origin 隔离不可依赖）。 */
+ *  导致 localStorage 按 origin 隔离不可依赖）。
+ *  v1.119：下拉 select 改单图标按钮三态循环（跟随系统 → 浅色 → 深色）。 */
+const THEME_CYCLE: ThemePreference[] = ["system", "light", "dark"];
+
+function ThemeIcon({ pref }: { pref: ThemePreference }) {
+  const svg = {
+    width: 14,
+    height: 14,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 2,
+    strokeLinecap: "round",
+    strokeLinejoin: "round",
+    "aria-hidden": true,
+  } as const;
+  if (pref === "system") {
+    return (
+      <svg {...svg}>
+        <rect x="2" y="3" width="20" height="14" rx="2" />
+        <path d="M8 21h8M12 17v4" />
+      </svg>
+    );
+  }
+  if (pref === "light") {
+    return (
+      <svg {...svg}>
+        <circle cx="12" cy="12" r="4" />
+        <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+      </svg>
+    );
+  }
+  return (
+    <svg {...svg}>
+      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+    </svg>
+  );
+}
+
 function ThemePicker({ api, t }: { api: TenonApi; t: Translate }) {
   const [pref, setPref] = useState<ThemePreference>(() => loadThemePreference());
   // 跟随系统档：系统深浅切换时重应用
   useEffect(() => watchSystemTheme(() => applyTheme(pref)), [pref]);
+  const setTheme = (v: ThemePreference) => {
+    setPref(v);
+    saveThemePreference(v);
+    applyTheme(v);
+    api.setUiPrefs({ theme: v });
+  };
+  // 钮面图标示当前档，点击推进下一档（末端回绕）；label 合成当前档名供读屏与悬停
+  const label = `${t("topbar.theme")}: ${t(`theme.${pref}`)}`;
   return (
-    <select
-      aria-label={t("topbar.theme")}
+    <button
+      type="button"
+      className="theme-btn"
+      aria-label={label}
+      title={label}
       data-testid="theme-picker"
-      value={pref}
-      onChange={(e) => {
-        const v = e.target.value as ThemePreference;
-        setPref(v);
-        saveThemePreference(v);
-        applyTheme(v);
-        api.setUiPrefs({ theme: v });
-      }}
+      data-theme-pref={pref}
+      onClick={() => setTheme(THEME_CYCLE[(THEME_CYCLE.indexOf(pref) + 1) % THEME_CYCLE.length])}
     >
-      <option value="system">{t("theme.system")}</option>
-      <option value="dark">{t("theme.dark")}</option>
-      <option value="light">{t("theme.light")}</option>
-    </select>
+      <ThemeIcon pref={pref} />
+    </button>
   );
 }

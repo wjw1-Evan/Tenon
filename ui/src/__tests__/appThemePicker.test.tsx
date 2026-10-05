@@ -57,37 +57,45 @@ beforeEach(() => {
 });
 
 describe("App theme picker", () => {
-  it("changing theme select calls setUiPrefs with theme value", async () => {
+  it("clicking theme button advances to light and PUTs ui-prefs theme", async () => {
     render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/nope" />);
     await waitFor(() => {
-      const themeSelect = document.querySelector('[data-testid="theme-picker"]');
-      expect(themeSelect || screen.getByTestId("project-list")).toBeTruthy();
+      const themeBtn = document.querySelector('[data-testid="theme-picker"]');
+      expect(themeBtn || screen.getByTestId("project-list")).toBeTruthy();
     }, { timeout: 8000 });
 
-    const themeSelect = document.querySelector('[data-testid="theme-picker"]') as HTMLSelectElement;
-    if (themeSelect) {
-      fireEvent.change(themeSelect, { target: { value: "dark" } });
-      // setUiPrefs 被 fire-and-forget 调用
-      await waitFor(() => {
-        const put = fetchCalls.find(([url, init]) => url.includes("/ui-prefs") && init?.method === "PUT");
-        expect(put).toBeTruthy();
-      }, { timeout: 3000 });
-      const putCall = fetchCalls.find(([url, init]) => url.includes("/ui-prefs") && init?.method === "PUT");
-      const body = JSON.parse(String((putCall![1] as RequestInit).body));
-      expect(body.theme).toBe("dark");
-    }
+    const themeBtn = document.querySelector('[data-testid="theme-picker"]') as HTMLButtonElement;
+    expect(themeBtn).toBeTruthy();
+    expect(themeBtn.dataset.themePref).toBe("system");
+    fireEvent.click(themeBtn);
+    // 档位推进 system → light，文档根 data-theme 即时生效
+    expect(themeBtn.dataset.themePref).toBe("light");
+    expect(document.documentElement.dataset.theme).toBe("light");
+    // setUiPrefs 被 fire-and-forget 调用
+    await waitFor(() => {
+      const put = fetchCalls.find(([url, init]) => url.includes("/ui-prefs") && init?.method === "PUT");
+      expect(put).toBeTruthy();
+    }, { timeout: 3000 });
+    const putCall = fetchCalls.find(([url, init]) => url.includes("/ui-prefs") && init?.method === "PUT");
+    const body = JSON.parse(String((putCall![1] as RequestInit).body));
+    expect(body.theme).toBe("light");
   });
 
-  it("theme select renders all three options", async () => {
+  it("theme button cycles all three prefs and wraps back to system", async () => {
     render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/nope" />);
     await waitFor(() => {
-      const select = document.querySelector('[data-testid="theme-picker"]') as HTMLSelectElement;
-      expect(select || screen.getByTestId("project-list")).toBeTruthy();
+      const btn = document.querySelector('[data-testid="theme-picker"]');
+      expect(btn || screen.getByTestId("project-list")).toBeTruthy();
     }, { timeout: 8000 });
-    const select = document.querySelector('[data-testid="theme-picker"]') as HTMLSelectElement;
-    if (select) {
-      expect(select.options.length).toBe(3);
-    }
+    const btn = document.querySelector('[data-testid="theme-picker"]') as HTMLButtonElement;
+    expect(btn).toBeTruthy();
+    fireEvent.click(btn);
+    expect(btn.dataset.themePref).toBe("light");
+    fireEvent.click(btn);
+    expect(btn.dataset.themePref).toBe("dark");
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    fireEvent.click(btn);
+    expect(btn.dataset.themePref).toBe("system");
   });
 });
 
