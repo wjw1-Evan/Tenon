@@ -459,4 +459,20 @@ mod tests {
         assert!(command_on_path("node"), "node 应在 PATH");
         assert!(!command_on_path("definitely-not-a-real-lsp-server"));
     }
+
+    #[tokio::test]
+    async fn close_project_without_hosts_returns_zero() {
+        let manager = LspManager::new();
+        let root = std::env::temp_dir().join("tenon-test-lsp-empty");
+        let closed = manager.close_project(&root).await;
+        assert_eq!(closed, 0);
+    }
+
+    #[test]
+    fn command_on_path_various() {
+        assert!(command_on_path("node"));
+        assert!(command_on_path("cargo"));
+        assert!(!command_on_path(""));
+        assert!(!command_on_path("fake_cmd_12345"));
+    }
 }
