@@ -2,6 +2,7 @@
 // 基线指标（通过率 / 成本 / 步数 / 风险动作数 / 安全违规）+ L4 上下文质量。
 import { useEffect, useState } from "react";
 import type { TenonApi } from "../lib/api";
+import type { Translate } from "../lib/i18n";
 
 interface EvalRun {
   id: string;
@@ -11,7 +12,7 @@ interface EvalRun {
   created_at: string;
 }
 
-export function EvalsPanel({ api }: { api: TenonApi }) {
+export function EvalsPanel({ api, t }: { api: TenonApi; t: Translate }) {
   const [runs, setRuns] = useState<EvalRun[]>([]);
 
   useEffect(() => {
@@ -20,21 +21,21 @@ export function EvalsPanel({ api }: { api: TenonApi }) {
 
   return (
     <div className="evals-panel" data-testid="evals-panel">
-      <div className="evals-head">AI Evals 报告（本地生成）</div>
-      {runs.length === 0 && <div className="muted">暂无报告（tenon-evals 运行后生成）</div>}
+      <div className="evals-head">{t("evals.title")}</div>
+      {runs.length === 0 && <div className="muted">{t("evals.empty")}</div>}
       <table>
         <thead>
           <tr>
             <th>target</th>
-            <th>时间</th>
-            <th>判定</th>
-            <th>通过率</th>
+            <th>{t("evals.col_time")}</th>
+            <th>{t("evals.col_verdict")}</th>
+            <th>{t("evals.col_pass_rate")}</th>
             <th>tokens</th>
             <th>steps</th>
-            <th>风险动作</th>
-            <th>违规</th>
-            <th>L4 命中</th>
-            <th>L4 均分</th>
+            <th>{t("evals.col_risk_actions")}</th>
+            <th>{t("evals.col_violations")}</th>
+            <th>{t("evals.col_l4_hit")}</th>
+            <th>{t("evals.col_l4_score")}</th>
           </tr>
         </thead>
         <tbody>

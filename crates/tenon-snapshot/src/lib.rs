@@ -73,7 +73,6 @@ pub struct SnapshotStore {
     /// 未跟踪大文件排除阈值（字节）。
     max_untracked_bytes: u64,
     lock: Mutex<()>,
-    empty_tree: std::sync::OnceLock<String>,
 }
 
 fn worktree_hash(workspace: &Path) -> String {
@@ -145,7 +144,6 @@ impl SnapshotStore {
             work_tree: workspace.to_path_buf(),
             max_untracked_bytes: max_untracked_mb * 1024 * 1024,
             lock: Mutex::new(()),
-            empty_tree: std::sync::OnceLock::new(),
         };
         store.configure_and_seed()?;
         Ok(store)
@@ -326,45 +324,6 @@ impl SnapshotStore {
         Ok(tree.trim().to_string())
     }
 
-    fn empty_tree(&self) -> Result<String> {
-        if let Some(t) = self.empty_tree.get() {
-            return Ok(t.clone());
-        }
-        let t = self.git(&["mktree"])?.trim().to_string();
-        let _ = self.empty_tree.set(t.clone());
-        Ok(t)
-    }
-
-    /// 两棵树之间的差异（name-status）：`(status, path)`，status ∈ A/M/D。
-    pub fn diff_trees(&self, a: &str, b: Option<&str>) -> Result<Vec<(char, String)>> {
-        let empty = if b.is_none() {
-            self.empty_tree()?
-        } else {
-            String::new()
-        };
-        let b_owned: &str = match b {
-            Some(x) => x,
-            None => &empty,
-        };
-        let out = self.git(&[
-            "diff-tree",
-            "-r",
-            "-z",
-            "--name-status",
-            "--no-commit-id",
-            a,
-            b_owned,
-        ])?;
-        let mut result = Vec::new();
-        let mut parts = out.split('\0').filter(|s| !s.is_empty());
-        while let (Some(status), Some(path)) = (parts.next(), parts.next()) {
-            if let Some(c) = status.chars().next() {
-                result.push((c, path.to_string()));
-            }
-        }
-        Ok(result)
-    }
-
     fn blob_of(&self, tree: &str, path: &str) -> Result<Option<String>> {
         match self.git(&["cat-file", "blob", &format!("{tree}:{path}")]) {
             Ok(s) => Ok(Some(s)),
@@ -511,7 +470,7 @@ impl SnapshotStore {
         Ok(())
     }
 
-    /// 目标树中是否存在某文件。
+    /// 快照树是否含指定路径（gitignore / 大文件排除行为的验证 oracle，§10.3）。
     pub fn tree_contains(&self, tree: &str, path: &str) -> Result<bool> {
         Ok(self.blob_of(tree, path)?.is_some())
     }
@@ -655,19 +614,6 @@ mod tests {
             !store.work_tree().join("new.txt").exists(),
             "快照中不存在的新文件被移除"
         );
-    }
-
-    #[test]
-    fn diff_trees_lists_changes() {
-        let (_d, _s, store) = setup("ws3");
-        write(store.work_tree(), "a.txt", "1\n");
-        let t1 = store.snapshot().unwrap();
-        write(store.work_tree(), "a.txt", "2\n");
-        write(store.work_tree(), "b.txt", "new\n");
-        let t2 = store.snapshot().unwrap();
-        let diffs = store.diff_trees(&t1, Some(&t2)).unwrap();
-        assert!(diffs.contains(&('M', "a.txt".to_string())));
-        assert!(diffs.contains(&('A', "b.txt".to_string())));
     }
 
     #[test]

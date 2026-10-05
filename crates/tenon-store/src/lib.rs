@@ -1186,23 +1186,6 @@ impl Store {
 
     // ---------- L4 向量切片（sqlite-vec 就位前的兼容存储；Q3/§10.1） ----------
 
-    pub fn upsert_l4_chunk(
-        &mut self,
-        project_id: &str,
-        path: &str,
-        symbol: Option<&str>,
-        text: &str,
-        embedding: Option<&[f32]>,
-    ) -> Result<i64> {
-        let blob = embedding.map(f32_slice_to_blob);
-        self.conn.execute(
-            "INSERT INTO l4_chunks (project_id, path, symbol, text, embedding, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![project_id, path, symbol, text, blob, Self::now()],
-        )?;
-        Ok(self.conn.last_insert_rowid())
-    }
-
     /// 原子替换某个文件的全部 L4 切片（watcher 增量更新）。
     pub fn replace_l4_file(
         &mut self,
@@ -1748,10 +1731,31 @@ mod tests {
         let mut s = mem();
         let dir = tempfile::tempdir().unwrap();
         let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
-        s.upsert_l4_chunk(&p.id, "a.rs", Some("foo"), "fn foo", Some(&[1.0, 0.0, 0.0]))
-            .unwrap();
-        s.upsert_l4_chunk(&p.id, "b.rs", Some("bar"), "fn bar", Some(&[0.0, 1.0, 0.0]))
-            .unwrap();
+        // 生产同源种子：走 replace_l4_file（upsert_l4_chunk 已删）
+        s.replace_l4_file(
+            &p.id,
+            "a.rs",
+            &[L4ChunkRecord {
+                symbol: Some("foo".into()),
+                start_line: 1,
+                end_line: 1,
+                text: "fn foo".into(),
+                embedding: vec![1.0, 0.0, 0.0],
+            }],
+        )
+        .unwrap();
+        s.replace_l4_file(
+            &p.id,
+            "b.rs",
+            &[L4ChunkRecord {
+                symbol: Some("bar".into()),
+                start_line: 1,
+                end_line: 1,
+                text: "fn bar".into(),
+                embedding: vec![0.0, 1.0, 0.0],
+            }],
+        )
+        .unwrap();
         let hits = s.l4_search(&p.id, &[0.9, 0.1, 0.0], 2).unwrap();
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].path, "a.rs", "最相近的切片应排第一");

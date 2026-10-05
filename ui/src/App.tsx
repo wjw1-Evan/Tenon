@@ -195,11 +195,7 @@ export default function App({
       } catch {
         // 仅当前会话生效
       }
-      setRouteNote(
-        next
-          ? "AI 行内补全已开启（实验）"
-          : "AI 行内补全已关闭"
-      );
+      setRouteNote(next ? t("inline.enabled_note") : t("inline.disabled_note"));
       window.setTimeout(() => setRouteNote(null), 3000);
       return next;
     });
@@ -770,8 +766,8 @@ export default function App({
   const bottomTabTitles: Record<typeof bottomTab, string> = {
     source: t("source.title"),
     timeline: t("panel.timeline"),
-    trace: "AgentTrace",
-    evals: "AI Evals",
+    trace: t("panel.trace"),
+    evals: t("panel.evals"),
   };
 
   // M0：挂载即自动打开项目并建会话（M1 换项目选择页 + TOFU 卡）
@@ -1078,7 +1074,7 @@ export default function App({
                   />
                 )}
                 {sideView === "packs" && (
-                  <LanguagePackWizard api={api} projectId={projectId} />
+                  <LanguagePackWizard api={api} projectId={projectId} t={t} />
                 )}
               </div>
             </aside>
@@ -1228,12 +1224,14 @@ export default function App({
           <ThreePaneMerge
             conflict={dirtyConflict}
             labels={{
-              ours: "代理改动",
-              theirs: "你的改动（未保存）",
-              base: "自动合并结果",
-              apply: "应用选中版本并保存",
-              keepMine: "保留我的版本",
-              useAgent: "应用代理版本",
+              title: t("merge.title"),
+              conflictNote: t("merge.conflict_note"),
+              ours: t("merge.ours"),
+              theirs: t("merge.theirs"),
+              base: t("merge.base"),
+              apply: t("merge.apply"),
+              keepMine: t("merge.keep_mine"),
+              useAgent: t("merge.use_agent"),
             }}
             onResolve={(path, chosen, clear) => {
               void (async () => {
@@ -1345,9 +1343,9 @@ export default function App({
             </div>
           )}
           {bottomTab === "trace" && (
-            <AgentTracePanel api={api} sessionId={sessionId} />
+            <AgentTracePanel api={api} sessionId={sessionId} t={t} />
           )}
-          {bottomTab === "evals" && <EvalsPanel api={api} />}
+          {bottomTab === "evals" && <EvalsPanel api={api} t={t} />}
         </footer>
       )}
       <InlineInstruction

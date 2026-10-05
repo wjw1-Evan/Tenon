@@ -7,6 +7,8 @@ import type { DirtyConflict } from "../components/ThreePaneMerge";
 afterEach(cleanup);
 
 const labels = {
+    title: "人机共编冲突",
+    conflictNote: "（两侧同区改动——请手动选择保留版本）",
   ours: "我的改动",
   theirs: "代理改动",
   base: "合并结果",

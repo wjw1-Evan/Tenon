@@ -6,10 +6,11 @@ import type { TenonApi } from "../lib/api";
 
 afterEach(cleanup);
 const noop = () => {};
+const t = (key: string) => key;
 
 function mount(open = true) {
   return render(
-    <FileFinder open={open} onClose={noop} api={{} as unknown as TenonApi} t={noop}
+    <FileFinder open={open} onClose={noop} api={{} as unknown as TenonApi} t={t}
       projectId="p1" activePath={null} onOpen={noop} />
   );
 }

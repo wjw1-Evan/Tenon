@@ -13,7 +13,16 @@ export interface DirtyConflict {
 interface Props {
   conflict: DirtyConflict;
   onResolve: (path: string, chosenContent: string, clearBuffer: boolean) => void;
-  labels: { ours: string; theirs: string; base: string; apply: string; keepMine: string; useAgent: string };
+  labels: {
+    title: string;
+    conflictNote: string;
+    ours: string;
+    theirs: string;
+    base: string;
+    apply: string;
+    keepMine: string;
+    useAgent: string;
+  };
 }
 
 export function ThreePaneMerge({ conflict, onResolve, labels }: Props) {
@@ -32,9 +41,9 @@ export function ThreePaneMerge({ conflict, onResolve, labels }: Props) {
   return (
     <div className="merge-pane" data-testid="three-pane-merge">
       <div className="merge-head">
-        <strong>人机共编冲突</strong>
+        <strong>{labels.title}</strong>
         <code>{conflict.path}</code>
-        {mergeError && <span className="muted">（两侧同区改动——请手动选择保留版本）</span>}
+        {mergeError && <span className="muted">{labels.conflictNote}</span>}
       </div>
       <div className="merge-cols">
         <div className="merge-col">

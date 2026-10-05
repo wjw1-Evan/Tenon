@@ -4,6 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LanguagePackWizard } from "../components/LanguagePackWizard";
 import type { TenonApi } from "../lib/api";
 
+const zhMessages: Record<string, string> = {
+  "lp.title": "语言包（项目感知推荐）",
+  "lp.ready": "已就绪",
+  "lp.just_installed": "刚安装 ✓",
+  "lp.install": "一键安装",
+};
+const t = (key: string) => zhMessages[key] ?? key;
+
 const detectMock = vi.fn();
 const installMock = vi.fn();
 
@@ -20,7 +28,7 @@ afterEach(cleanup);
 
 describe("LanguagePackWizard", () => {
   it("returns null when no projectId", () => {
-    const { container } = render(<LanguagePackWizard api={api()} projectId={null} />);
+    const { container } = render(<LanguagePackWizard api={api()} projectId={null} t={t} />);
     expect(container.querySelector(".lp-wizard")).toBeNull();
     expect(detectMock).not.toHaveBeenCalled();
   });
@@ -32,7 +40,7 @@ describe("LanguagePackWizard", () => {
         { language: "python", command: "pip", detected: true, server_installed: false, runtime_hint: "需要 pyright" },
       ],
     });
-    render(<LanguagePackWizard api={api()} projectId="p1" />);
+    render(<LanguagePackWizard api={api()} projectId="p1" t={t} />);
 
     await waitFor(() => expect(detectMock).toHaveBeenCalledWith("p1"));
     expect(screen.getByTestId("lp-typescript")).toBeTruthy();
@@ -49,7 +57,7 @@ describe("LanguagePackWizard", () => {
     });
     installMock.mockResolvedValue({ installed: true });
     const onInstalled = vi.fn();
-    render(<LanguagePackWizard api={api()} projectId="p2" onInstalled={onInstalled} />);
+    render(<LanguagePackWizard api={api()} projectId="p2" t={t} onInstalled={onInstalled} />);
 
     await waitFor(() => expect(screen.getByTestId("lp-install-rust")).toBeTruthy());
     fireEvent.click(screen.getByTestId("lp-install-rust"));
@@ -60,7 +68,7 @@ describe("LanguagePackWizard", () => {
 
   it("hides entirely when no packs are returned", async () => {
     detectMock.mockResolvedValue({ packs: [] });
-    const { container } = render(<LanguagePackWizard api={api()} projectId="p3" />);
+    const { container } = render(<LanguagePackWizard api={api()} projectId="p3" t={t} />);
     await waitFor(() => expect(detectMock).toHaveBeenCalled());
     expect(container.querySelector(".lp-wizard")).toBeNull();
   });

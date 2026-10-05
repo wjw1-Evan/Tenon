@@ -2,6 +2,7 @@
 // 工具调用明细 / token 与成本 / 风险动作 / token 速度——本地生成、全可查。
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { TenonApi } from "../lib/api";
+import type { Translate } from "../lib/i18n";
 
 interface TraceEvent {
   id: number;
@@ -13,6 +14,7 @@ interface TraceEvent {
 interface Props {
   api: TenonApi;
   sessionId: string | null;
+  t: Translate;
 }
 
 /// token 速度采样（两次测量窗口间的增量 / 时间差）。
@@ -22,7 +24,7 @@ interface SpeedSample {
   prevAt: number; // performance.now()
 }
 
-export function AgentTracePanel({ api, sessionId }: Props) {
+export function AgentTracePanel({ api, sessionId, t }: Props) {
   const [events, setEvents] = useState<TraceEvent[]>([]);
   const [tokens, setTokens] = useState<{ inp: number; out: number; cost: number }>({
     inp: 0,
@@ -87,25 +89,25 @@ export function AgentTracePanel({ api, sessionId }: Props) {
 
   return (
     <div className="trace-panel" data-testid="agent-trace">
-      <div className="trace-head">AgentTrace（本地审计）</div>
+      <div className="trace-head">{t("trace.title")}</div>
       <div className="trace-metrics" data-testid="trace-metrics">
-        <span>输入 {tokens.inp} tok</span>
-        <span>输出 {tokens.out} tok</span>
+        <span>{t("trace.tokens_in")} {tokens.inp} tok</span>
+        <span>{t("trace.tokens_out")} {tokens.out} tok</span>
         {inpSpeed !== null && inpSpeed > 0 && (
           <span data-testid="inp-speed">{inpSpeed} tok/s ↑</span>
         )}
         {outSpeed !== null && outSpeed > 0 && (
           <span data-testid="out-speed">{outSpeed} tok/s ↓</span>
         )}
-        <span>成本 ${tokens.cost.toFixed(4)}</span>
-        <span>风险动作 {riskActions.length} 次</span>
+        <span>{t("trace.cost")} ${tokens.cost.toFixed(4)}</span>
+        <span>{t("trace.risk_actions")} {riskActions.length}</span>
       </div>
       <table className="trace-table">
         <thead>
           <tr>
             <th>seq</th>
-            <th>类型</th>
-            <th>详情</th>
+            <th>{t("trace.col_type")}</th>
+            <th>{t("trace.col_detail")}</th>
           </tr>
         </thead>
         <tbody>

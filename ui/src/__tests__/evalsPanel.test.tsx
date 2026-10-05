@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 import { EvalsPanel } from "../components/EvalsPanel";
 import type { TenonApi } from "../lib/api";
 
+const t = (key: string) => key;
+
 describe("EvalsPanel", () => {
   it("renders persisted L4 recall gate metrics from daemon reports", async () => {
     const api = {
@@ -28,7 +30,7 @@ describe("EvalsPanel", () => {
       }),
     } as unknown as TenonApi;
 
-    render(<EvalsPanel api={api} />);
+    render(<EvalsPanel api={api} t={t} />);
     await waitFor(() => expect(screen.getByText("M0-baseline-mock")).toBeTruthy());
     expect(screen.getByText("90%")).toBeTruthy();
     expect(screen.getByText("80%")).toBeTruthy();
