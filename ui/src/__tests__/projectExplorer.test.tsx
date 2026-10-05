@@ -180,22 +180,37 @@ describe("ProjectExplorer multi-project control surface", () => {
 
   // v1.107：「源码」内嵌文件树已迁右区源码树，项目行仅存「移除」操作。
 
-  // v1.110：展开区「任务 | 源码」行内切换——默认任务，切源码显文件树，per-project 记忆。
+  // v1.114：源码入口收为分组行尾 hover 图标开关——默认任务，切源码显文件树，per-project 记忆。
   it("toggles per-project task/source views and renders the file tree", async () => {
     renderExplorer([project("open-a")]);
     // 默认任务视图：会话列表可见，无文件树。
     await waitFor(() => expect(screen.getByTestId("chat-list-open-a")).toBeInTheDocument());
     expect(screen.queryByTestId("file-tree")).not.toBeInTheDocument();
-    // 切「源码」：文件树出现，选择记忆于 tenon:peView。
-    fireEvent.click(within(screen.getByTestId("pe-view-open-a")).getByText("projects.tab_source"));
+    // 切「源码」（图标开关 aria-label）：文件树出现，选择记忆于 tenon:peView。
+    fireEvent.click(screen.getByTestId("pe-source-open-a"));
     await waitFor(() => expect(screen.getByTestId("file-tree")).toBeInTheDocument());
     expect(JSON.parse(localStorage.getItem("tenon:peView") ?? "{}")).toEqual({
       "open-a": "files",
     });
     // 切回「任务」：文件树收起，会话列表回归。
-    fireEvent.click(within(screen.getByTestId("pe-view-open-a")).getByText("projects.tab_tasks"));
+    fireEvent.click(screen.getByTestId("pe-source-open-a"));
     await waitFor(() => expect(screen.queryByTestId("file-tree")).not.toBeInTheDocument());
     expect(screen.getByTestId("chat-list-open-a")).toBeInTheDocument();
+  });
+
+  // v1.114：新任务入口重排——标题行「＋ 新任务」作用 active 项目，分组行尾 hover ⎡。
+  it("creates sessions from the header button and the per-group worktree action", () => {
+    const { onCreateSession } = renderExplorer([project("open-a")]);
+    fireEvent.click(screen.getByTestId("project-new-task"));
+    expect(onCreateSession).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "open-a" }),
+      false
+    );
+    fireEvent.click(screen.getByTestId("session-new-worktree-open-a"));
+    expect(onCreateSession).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "open-a" }),
+      true
+    );
   });
 
   // v1.58 对话标题：对话行标题优先，无标题回退模型名。
@@ -292,7 +307,7 @@ describe("ProjectExplorer worktree sessions (v1.87)", () => {
   it("creates plain and managed worktree sessions from per-project entries", () => {
     const a = projectWithSessions("proj-a", [{ id: "s-a1", status: "idle" }]);
     const { onCreateSession } = renderExplorer([a]);
-    fireEvent.click(screen.getByTestId(`session-new-proj-a`));
+    fireEvent.click(screen.getByTestId(`project-new-task`));
     expect(onCreateSession).toHaveBeenCalledWith(
       expect.objectContaining({ id: "proj-a" }),
       false

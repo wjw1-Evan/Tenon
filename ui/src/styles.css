@@ -431,7 +431,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   padding: 6px 12px;
   font-size: 12px;
 }
-/* 视图标题行（v1.101）：视图名 + 常驻添加入口，替代孤行工具行与 Name / Updated 列头 */
+/* 视图标题行（v1.101；v1.114 新任务主按钮——作用 active 项目，添加项目移列表底部） */
 .pe-head {
   flex-shrink: 0;
   display: flex;
@@ -440,80 +440,141 @@ button:disabled { opacity: 0.45; cursor: default; }
   gap: 6px;
   padding: 2px 2px 8px;
 }
-.pe-add {
+.pe-head-actions { display: flex; align-items: center; gap: 4px; }
+.pe-new-task {
   flex-shrink: 0;
-  width: 22px;
-  height: 22px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 7px;
   background: var(--raised);
   color: var(--fg);
-  font-size: 13px;
-  line-height: 1;
+  font-size: 11.5px;
+  padding: 3px 9px;
   cursor: pointer;
+  white-space: nowrap;
 }
-.pe-add:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-text); }
-.pe-add:disabled { opacity: 0.45; cursor: not-allowed; }
+.pe-new-task:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-text); }
+.pe-new-task:disabled { opacity: 0.45; cursor: not-allowed; }
 
-/* 项目文件夹树（v1.63）：登记项目平铺为可折叠文件夹行，展开内嵌会话列表 */
+/* 项目分组树（v1.114 Codex 任务流）：项目 = 小字分组标题，任务行平铺组下 */
 .pe-tree {
   flex: 1;
   overflow-y: auto;
   list-style: none;
   margin: 0;
-  padding: 4px;
+  padding: 2px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
-.pe-folder-row {
+.pe-group-row {
   display: flex;
   align-items: center;
-  border-radius: 7px;
+  border-radius: 6px;
   position: relative;
-  /* 高亮挂在整行容器：hover / active 覆盖含行尾操作的完整一行 */
 }
-.pe-folder-row:hover { background: var(--raised); }
-.pe-folder-row.active,
-.pe-folder-row.active:hover { background: var(--accent-soft); }
-.pe-folder-btn {
+.pe-group-row:hover { background: var(--raised); }
+.pe-group-row.active { background: var(--accent-soft); }
+.pe-group-btn {
   flex: 1;
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px;
+  gap: 6px;
+  padding: 4px 6px;
   border: none;
   background: transparent;
-  border-radius: 7px;
-  font-size: 12.5px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
   text-align: left;
-  color: var(--fg);
+  color: var(--muted);
   cursor: pointer;
 }
-.pe-folder-row.active .pe-folder-btn { color: var(--accent-text); }
+.pe-group-row.active .pe-group-btn { color: var(--accent-text); }
 .pe-caret {
   flex-shrink: 0;
   color: var(--muted);
   transition: transform 120ms ease;
 }
-.pe-folder-btn[aria-expanded="true"] .pe-caret { transform: rotate(90deg); }
-.pe-folder-btn.active .pe-caret { color: var(--accent-text); }
-.pe-folder-icon { flex-shrink: 0; color: var(--muted); }
-.pe-folder-btn.active .pe-folder-icon { color: var(--accent-text); }
-/* 行尾操作：hover / 键盘聚焦时覆盖显现，不挤压 Codex 式项目主列 */
-.pe-folder-row .pe-row-actions {
+.pe-group-btn[aria-expanded="true"] .pe-caret { transform: rotate(90deg); }
+.pe-group-name {
+  max-width: 46%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pe-group-row.active .pe-group-name { color: var(--accent-text); }
+.pe-group-meta {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+  font-weight: 400;
+  color: var(--muted);
+}
+.pe-updated {
+  flex-shrink: 0;
+  margin-left: auto;
+  min-width: 52px;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 400;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 分组行尾 hover 操作区（v1.114）：源码树开关 / worktree 新任务 / 移除登记 */
+.pe-group-actions {
   position: absolute;
   top: 50%;
-  right: 4px;
+  right: 3px;
   z-index: 1;
   display: none;
+  align-items: center;
+  gap: 1px;
   transform: translateY(-50%);
   background: inherit;
-  padding-left: 16px;
+  padding-left: 14px;
 }
-.pe-folder-row:hover .pe-row-actions,
-.pe-folder-row:focus-within .pe-row-actions { display: flex; }
+.pe-group-row:hover .pe-group-actions,
+.pe-group-row:focus-within .pe-group-actions { display: flex; }
+.pe-gact {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.pe-gact:hover:not(:disabled) { background: var(--surface); color: var(--fg); }
+.pe-gact.on { color: var(--accent-text); }
+.pe-gact.danger:hover:not(:disabled) { color: var(--error, #d43d3d); }
+.pe-gact:disabled { opacity: 0.4; cursor: not-allowed; }
+/* 列表底部常驻添加项目行（v1.114 回归 v1.43 语义） */
+.pe-add-row {
+  flex-shrink: 0;
+  width: 100%;
+  padding: 6px 8px;
+  margin-top: 2px;
+  border: none;
+  border-top: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.pe-add-row:hover:not(:disabled) { color: var(--fg); background: var(--raised); }
+.pe-add-row:disabled { opacity: 0.45; cursor: not-allowed; }
 /* 展开列表超过 Codex 默认最近 10 条时的显式开关 */
 .pe-show-all {
   width: 100%;
@@ -527,53 +588,26 @@ button:disabled { opacity: 0.45; cursor: default; }
 }
 .pe-show-all:hover { background: var(--raised); }
 
-/* 会话行：受管 worktree 行内操作（合并 / 丢弃，v1.87）+ 新会话入口 */
+/* 任务行（v1.114 Codex 规格）：受管 worktree 合并/丢弃 + 归档/删除 hover 浮现 */
 .pe-chat-item { display: flex; align-items: center; gap: 2px; }
 .pe-chat-item .pe-chat-row { flex: 1; min-width: 0; }
 .pe-chat-item .pe-row-actions { display: none; gap: 2px; }
 .pe-chat-item:hover .pe-row-actions,
 .pe-chat-item:focus-within .pe-row-actions { display: inline-flex; }
-.pe-session-actions {
-  display: flex;
-  gap: 4px;
-  padding: 4px 0 2px;
-  flex-wrap: wrap;
-}
 
-/* 展开区「任务 | 源码」行内切换（v1.110）：per-project 记忆，默认任务 */
+/* 展开组内容（v1.114）：源码树 / 任务列表 */
 .pe-detail { display: flex; flex-direction: column; min-width: 0; }
-.pe-view-toggle {
-  display: inline-flex;
-  gap: 2px;
-  padding: 2px;
-  margin: 2px 0 6px 26px;
-  width: fit-content;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--raised);
-}
-.pe-view-toggle button {
-  border: none;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--muted);
-  font-size: 11px;
-  padding: 2px 10px;
-  cursor: pointer;
-}
-.pe-view-toggle button:hover { color: var(--fg); }
-.pe-view-toggle button.active { background: var(--surface); color: var(--fg-strong); }
-.pe-files { margin-left: 26px; min-width: 0; }
+.pe-files { margin: 0 0 4px 18px; min-width: 0; }
 .pe-files .file-tree-shell { max-height: 52vh; overflow-y: auto; }
 
-/* 展开文件夹下的会话列表：缩进对齐文件夹行内容（caret + 图标 + 间距） */
+/* 任务列表：缩进对齐分组标题（caret + 间距） */
 .pe-chat-list {
   list-style: none;
   margin: 0;
-  padding: 0 0 2px 26px;
+  padding: 0 0 3px 18px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
 .pe-chat-row {
   display: flex;
@@ -585,7 +619,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   border: none;
   background: transparent;
   border-radius: 6px;
-  font-size: 12.5px;
+  font-size: 12px;
   text-align: left;
   color: var(--fg);
   cursor: pointer;
@@ -595,79 +629,73 @@ button:disabled { opacity: 0.45; cursor: default; }
   background: var(--accent-soft);
   color: var(--accent-text);
 }
-/* v1.101：状态圆点（§7.5 状态色，色值由 STATE_COLORS 内联）；状态文字转 hover title */
-.pe-chat-dot {
+/* v1.114 状态图标（§7.5 状态色单一来源不变）：运行 spinner / ✓ / ✗ / 色点 */
+.pe-status-spin {
+  flex-shrink: 0;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1.6px solid var(--accent-soft-strong, var(--border-strong));
+  border-top-color: var(--accent-text);
+  animation: pe-spin 900ms linear infinite;
+}
+@keyframes pe-spin { to { transform: rotate(360deg); } }
+.pe-status-icon {
+  flex-shrink: 0;
+  width: 13px;
+  height: 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.pe-status-icon.ok { color: var(--ok, #2da44e); }
+.pe-status-icon.err { color: var(--error, #d43d3d); }
+.pe-status-dot {
   flex-shrink: 0;
   width: 7px;
   height: 7px;
   border-radius: 50%;
+  margin: 0 3px;
 }
-/* v1.101：已回滚 / 无标题回退会话整行灰显降噪，交互时恢复 */
+/* v1.101：已回滚 / 无标题回退任务整行灰显降噪，交互时恢复 */
 .pe-chat-row.muted { opacity: 0.55; }
 .pe-chat-row.muted:hover:not(:disabled),
 .pe-chat-row.muted.active { opacity: 1; }
-.pe-project-name {
-  display: block;
-  width: 100%;
-  font-weight: 600;
-  color: var(--fg-strong);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.pe-folder-btn.active .pe-project-name,
-.pe-folder-btn.active .pe-updated { color: var(--accent-text); }
-.pe-project-main {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-.pe-updated {
-  flex-shrink: 0;
-  min-width: 68px;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 400;
-  text-align: right;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .pe-chat-name {
   flex: 1;
   min-width: 0;
-  font-weight: 550;
+  font-weight: 500;
   color: var(--fg-strong);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .pe-chat-row.active .pe-chat-name { color: var(--accent-text); }
+/* v1.114：任务行尾相对时间（Codex 右对齐 muted 小字） */
+.pe-chat-time {
+  flex-shrink: 0;
+  min-width: 44px;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 400;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pe-chat-row.active .pe-chat-time { color: var(--accent-text); }
 .pe-row-actions {
   display: flex;
   justify-content: flex-end;
   gap: 5px;
   padding: 0 6px;
 }
-/* 文件夹行徽标可收缩截断，优先保项目名；会话行状态列不收缩 */
-.pe-project-meta {
-  flex-shrink: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 11px;
-  font-weight: 400;
-  color: var(--muted);
-}
 .pe-empty {
   padding: 5px 8px;
   font-size: 12px;
   color: var(--muted);
 }
-/* 项目视图主体（v1.70 起 tab 移除，单一文件夹树占满剩余高度，自身滚动） */
+/* 项目视图主体（v1.114 单一分组树占满剩余高度，自身滚动；底部添加项目行） */
 .pe-chats { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
 
 /* ─────────────────────────── 工作区 ─────────────────────────── */
@@ -1209,16 +1237,42 @@ button:disabled { opacity: 0.45; cursor: default; }
   margin-bottom: 0;
   padding-bottom: 0;
 }
+  /* v1.109 用户消息居右（v1.111 撤销钮挂气泡下方） */
+  align-self: flex-end;
+  max-width: 85%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+}
 .turn-task {
-  border-left: 3px solid var(--accent);
-  background: var(--accent-soft);
+  /* v1.109 用户消息气泡：居右（max-width 限宽），与居左 AI 回复按侧区分 */
+  background: var(--accent-soft-strong);
   color: var(--fg-strong);
-  border-radius: var(--radius-s);
-  padding: 7px 10px;
+  border-radius: var(--radius-m);
+  padding: 7px 11px;
   font-size: 12.5px;
   line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
+}
+  font-size: 11px;
+  color: var(--muted);
+  padding: 1px 0;
+}
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 1px 4px;
+  cursor: pointer;
+  border-radius: var(--radius-s);
+}
+  color: var(--error-text);
+  background: var(--error-soft);
+}
+  opacity: 0.5;
+  cursor: default;
 }
 .turn-body {
   margin-left: 4px;
@@ -1917,6 +1971,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   flex-direction: column;
 }
 .editor-overlay-body .editor-pane { flex: 1; min-width: 0; }
+
 .merge-pane {
   width: min(1000px, 93vw);
   max-height: 88vh;

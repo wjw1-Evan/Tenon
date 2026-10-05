@@ -68,11 +68,41 @@ interface Props {
   onFileTreeChange: (change: FileTreeChange) => void;
 }
 
-/** 状态文案：优先使用 state.* 翻译，缺失回退原始状态。 */
-function stateLabel(t: Translate, status: string) {
-  const key = `state.${status}`;
-  const label = t(key);
-  return label === key ? status : label;
+/** v1.114：状态图标自带视觉语义，state.* 文案转行 title（stateLabel 随 v1.101 圆点方案退役）。 */
+
+/** 任务状态图标（v1.114 Codex 规格）：运行态 spinner 圆环、done=✓、error=✗，
+ *  其余状态回退 §7.5 STATE_COLORS 色点（单一来源不变）。 */
+function StatusIcon({ status }: { status: string }) {
+  if (RUNNING_STATES.has(status as AgentStateName)) {
+    return <span className="pe-status-spin" data-state={status} aria-hidden="true" />;
+  }
+  if (status === "done") {
+    return (
+      <span className="pe-status-icon ok" data-state={status} aria-hidden="true">
+        <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.6} strokeLinecap="round" strokeLinejoin="round">
+          <path d="M20 6 9 17l-5-5" />
+        </svg>
+      </span>
+    );
+  }
+  if (status === "error") {
+    return (
+      <span className="pe-status-icon err" data-state={status} aria-hidden="true">
+        <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.6} strokeLinecap="round" strokeLinejoin="round">
+          <path d="M18 6 6 18" />
+          <path d="m6 6 12 12" />
+        </svg>
+      </span>
+    );
+  }
+  return (
+    <span
+      className="pe-status-dot"
+      aria-hidden="true"
+      data-state={status}
+      style={{ background: STATE_COLORS[status as AgentStateName] ?? "#8a8f98" }}
+    />
+  );
 }
 
 /** 文件夹行紧凑徽标：运行中会话 / 脏缓冲（成本不入行，见 §7.1）。 */
@@ -146,26 +176,6 @@ function countSessionNames(sessions: ProjectSummary["sessions"]) {
 function basenameOf(path: string): string {
   const parts = path.replace(/[\\/]+$/, "").split(/[\\/]/);
   return parts[parts.length - 1] ?? "";
-}
-
-/** 文件夹图标：线性风格，对齐活动栏 rail 图标。 */
-function FolderIcon() {
-  return (
-    <svg
-      className="pe-folder-icon"
-      width={14}
-      height={14}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.8}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M3 7V5a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-    </svg>
-  );
 }
 
 /** 折叠箭头：线性 chevron，展开时经 CSS 旋转 90°（跨平台字形一致）。 */
@@ -402,15 +412,19 @@ export function ProjectExplorer({
               onClick={() => onSelectSession(project.id, session.id)}
               title={session.worktree_path ? `${session.id} · ${session.worktree_path}` : session.id}
             >
-              <span className="pe-chat-dot" aria-hidden="true" data-state={session.status} title={stateLabel(t, session.status)}
-                style={{ background: STATE_COLORS[session.status as AgentStateName] ?? "#8a8f98" }}
-              />
+              <StatusIcon status={session.status} />
               <span className="pe-chat-name">
                 {sessionDisplayName(
                   session,
                   counts.get(displayBaseName(session)) ?? 1
                 )}
                 {session.worktree_path ? " ⎇" : ""}
+              </span>
+              <span
+                className="pe-chat-time"
+                title={session.updated_at ? new Date(session.updated_at).toLocaleString(localeTag) : undefined}
+              >
+                {formatUpdatedAt(session.updated_at ?? null, t, localeTag)}
               </span>
             </button>
             {session.worktree_path && (
@@ -512,16 +526,7 @@ export function ProjectExplorer({
                       onClick={() => onSelectSession(project.id, session.id)}
                       title={session.id}
                     >
-                      <span
-                        className="pe-chat-dot"
-                        aria-hidden="true"
-                        data-state={session.status}
-                        title={stateLabel(t, session.status)}
-                        style={{
-                          background:
-                            STATE_COLORS[session.status as AgentStateName] ?? "#8a8f98",
-                        }}
-                      />
+                      <StatusIcon status={session.status} />
                       <span className="pe-chat-name">
                         {sessionDisplayName(session)}
                         {session.worktree_path ? " ⎇" : ""}
@@ -553,48 +558,32 @@ export function ProjectExplorer({
             )}
           </li>
         )}
-        {/* 新会话入口（v1.87 §7.3）：主根 / 受管 worktree（可与主根并行执行）。 */}
-        <li className="pe-session-actions">
-          <button
-            type="button"
-            className="pe-action"
-            data-testid={`session-new-${project.id}`}
-            onClick={() => onCreateSession(project, false)}
-          >
-            + {t("projects.new_session")}
-          </button>
-          <button
-            type="button"
-            className="pe-action"
-            data-testid={`session-new-worktree-${project.id}`}
-            title={t("projects.new_worktree_session")}
-            onClick={() => onCreateSession(project, true)}
-          >
-            + ⎇ {t("projects.new_session")}
-          </button>
-        </li>
+        {/* v1.114：新任务入口上移——视图标题行「＋ 新任务」+ 分组行尾 hover「⎡」。 */}
       </ul>
     );
   };
 
   return (
     <div className="project-explorer" data-testid="project-explorer">
-      {/* 视图标题行（v1.101；v1.115 撤销 v1.106 收起钮——侧栏开合收敛
-          rail 切换钮 / rail 同视图再点 / 命令面板）：视图名 + 常驻添加入口。 */}
+      {/* 视图标题行（v1.101；v1.114 新任务主按钮——作用 active 项目，
+          添加项目让位至列表底部常驻行；v1.115 撤销 v1.106 收起钮，
+          侧栏开合收敛 rail 切换钮 / rail 同视图再点 / 命令面板）。 */}
       <div className="pe-head">
         <span className="side-title">{t("panel.projects")}</span>
         <span className="pe-head-actions">
           <button
             type="button"
-            className="pe-add"
-            data-testid="project-add"
-            aria-label={t("projects.add_title")}
-            disabled={busyId === "__add__"}
-            aria-expanded={adding}
-            title={t("projects.add_title")}
-            onClick={() => setAdding(true)}
+            className="pe-new-task"
+            data-testid="project-new-task"
+            disabled={!projectId || busyId === "__add__"}
+            title={t("projects.new_task")}
+            aria-label={t("projects.new_task")}
+            onClick={() => {
+              const active = projects.find((project) => project.id === projectId);
+              if (active) onCreateSession(active, false);
+            }}
           >
-            +
+            + {t("projects.new_task")}
           </button>
         </span>
       </div>
@@ -604,16 +593,17 @@ export function ProjectExplorer({
             const isOpen = expanded.has(project.id);
             const updatedAt = latestUpdatedAt(project);
             const badges = folderBadges(t, project);
+            const sourceOn = (peView[project.id] ?? "tasks") === "files";
             return (
-              <li key={project.id} className="pe-folder">
+              <li key={project.id} className="pe-group">
                 <div
                   className={
-                    project.id === projectId ? "pe-folder-row active" : "pe-folder-row"
+                    project.id === projectId ? "pe-group-row active" : "pe-group-row"
                   }
                 >
                   <button
                     type="button"
-                    className="pe-folder-btn"
+                    className="pe-group-btn"
                     data-testid={`project-item-${project.id}`}
                     aria-expanded={isOpen}
                     disabled={busyId === project.id}
@@ -621,11 +611,8 @@ export function ProjectExplorer({
                     onClick={() => toggleFolder(project)}
                   >
                     <ChevronIcon />
-                    <FolderIcon />
-                    <span className="pe-project-main">
-                      <span className="pe-project-name">{project.display_name}</span>
-                      {badges && <span className="pe-project-meta">{badges}</span>}
-                    </span>
+                    <span className="pe-group-name">{project.display_name}</span>
+                    {badges && <span className="pe-group-meta">{badges}</span>}
                     <span
                       className="pe-updated"
                       title={updatedAt ? new Date(updatedAt).toLocaleString(localeTag) : undefined}
@@ -633,10 +620,35 @@ export function ProjectExplorer({
                       {formatUpdatedAt(updatedAt, t, localeTag)}
                     </span>
                   </button>
-                  <div className="pe-row-actions">
+                  {/* 分组行尾 hover 操作区（v1.114）：源码树开关 / worktree 新任务 / 移除登记。 */}
+                  <div className="pe-group-actions" data-testid={`pe-view-${project.id}`}>
                     <button
                       type="button"
-                      className="pe-action danger"
+                      className={sourceOn ? "pe-gact on" : "pe-gact"}
+                      data-testid={`pe-source-${project.id}`}
+                      aria-label={t("projects.tab_source")}
+                      aria-pressed={sourceOn}
+                      title={t("projects.tab_source")}
+                      onClick={() => setPeView(project.id, sourceOn ? "tasks" : "files")}
+                    >
+                      <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M3 7V5a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      className="pe-gact"
+                      data-testid={`session-new-worktree-${project.id}`}
+                      aria-label={t("projects.new_worktree_session")}
+                      disabled={busyId === project.id}
+                      title={t("projects.new_worktree_session")}
+                      onClick={() => onCreateSession(project, true)}
+                    >
+                      ⎡
+                    </button>
+                    <button
+                      type="button"
+                      className="pe-gact danger"
                       data-testid={`project-remove-${project.id}`}
                       aria-label={t("projects.remove")}
                       disabled={busyId === project.id || project.sessions.length > 0}
@@ -653,27 +665,7 @@ export function ProjectExplorer({
                 </div>
                 {isOpen && (
                   <div className="pe-detail">
-                    <div className="pe-view-toggle" data-testid={`pe-view-${project.id}`}>
-                      <button
-                        type="button"
-                        className={(peView[project.id] ?? "tasks") === "tasks" ? "active" : ""}
-                        aria-pressed={(peView[project.id] ?? "tasks") === "tasks"}
-                        onClick={() => setPeView(project.id, "tasks")}
-                      >
-                        {t("projects.tab_tasks")}
-                      </button>
-                      <button
-                        type="button"
-                        className={(peView[project.id] ?? "tasks") === "files" ? "active" : ""}
-                        aria-pressed={(peView[project.id] ?? "tasks") === "files"}
-                        onClick={() => setPeView(project.id, "files")}
-                      >
-                        {t("projects.tab_source")}
-                      </button>
-                    </div>
-                    {(peView[project.id] ?? "tasks") === "tasks" ? (
-                      renderSessions(project)
-                    ) : (
+                    {sourceOn ? (
                       <div className="pe-files">
                         <FileTree
                           api={api}
@@ -684,6 +676,8 @@ export function ProjectExplorer({
                           onOperation={onFileTreeChange}
                         />
                       </div>
+                    ) : (
+                      renderSessions(project)
                     )}
                   </div>
                 )}
@@ -692,6 +686,17 @@ export function ProjectExplorer({
           })}
           {projects.length === 0 && <li className="pe-empty">{t("projects.empty")}</li>}
         </ul>
+        {/* 列表底部常驻添加入口（v1.114 回归 v1.43 语义；v1.101 标题行「+」让位新任务按钮）。 */}
+        <button
+          type="button"
+          className="pe-add-row"
+          data-testid="project-add"
+          disabled={busyId === "__add__"}
+          aria-expanded={adding}
+          onClick={() => setAdding(true)}
+        >
+          + {t("projects.add_title")}
+        </button>
       </section>
 
       {adding && (

@@ -143,7 +143,7 @@ describe("三档布局（§7.2 v1.110）", () => {
     expect(screen.queryByTestId("editor-overlay")).toBeNull();
 
     // 切「源码」：文件树出现；单击文件 → 编辑器浮层弹出。
-    fireEvent.click(within(screen.getByTestId("pe-view-p1")).getByText("Source"));
+    fireEvent.click(screen.getByTestId("pe-source-p1"));
     await waitFor(() => expect(screen.getByTestId("file-tree")).toBeTruthy());
     fireEvent.click(within(screen.getByTestId("file-tree")).getByText("a.txt"));
     await waitFor(() => expect(screen.getByTestId("editor-overlay")).toBeTruthy());
@@ -259,7 +259,7 @@ describe("三档布局（§7.2 v1.110）", () => {
     // 侧栏浮层唤出 → 源码视图 → 单击文件 → 编辑器浮层（线程仍在流主区）。
     fireEvent.click(screen.getByTestId("rail-projects"));
     await waitFor(() => expect(screen.getByTestId("float-backdrop")).toBeTruthy());
-    fireEvent.click(within(screen.getByTestId("pe-view-p1")).getByText("Source"));
+    fireEvent.click(screen.getByTestId("pe-source-p1"));
     await waitFor(() => expect(screen.getByTestId("file-tree")).toBeTruthy());
     fireEvent.click(within(screen.getByTestId("file-tree")).getByText("a.txt"));
     await waitFor(() => expect(screen.getByTestId("editor-overlay")).toBeTruthy());
