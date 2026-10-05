@@ -2405,4 +2405,62 @@ mod tests {
         let out = execute_tool(&c, "grep", &serde_json::json!({"pattern": "^start"}));
         assert!(out.ok);
     }
+
+    #[test]
+    fn read_file_binary_like_no_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("bin.dat"), [0u8, 1u8, 2u8, 255u8]).unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "read_file", &serde_json::json!({"path": "bin.dat"}));
+        // Binary may succeed or fail (invalid UTF-8) - verify no panic
+        let _ = out;
+    }
+
+    #[test]
+    fn apply_patch_to_existing_preserves_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src/models")).unwrap();
+        std::fs::write(dir.path().join("src/models/user.ts"), "// old").unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "src/models/user.ts", "range": null, "content": "// updated\n"
+        }));
+        assert!(out.ok);
+        // Directory still exists
+        assert!(dir.path().join("src/models").is_dir());
+        // Content updated
+        let content = std::fs::read_to_string(dir.path().join("src/models/user.ts")).unwrap();
+        assert!(content.contains("updated"));
+    }
+
+    #[test]
+    fn grep_in_nested_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src/deeply/nested")).unwrap();
+        std::fs::write(dir.path().join("src/deeply/nested/deep.ts"), "deeply_nested_fn()").unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "grep", &serde_json::json!({"pattern": "deeply_nested"}));
+        assert!(out.ok);
+    }
+
+    #[test]
+    fn bash_sandbox_available_or_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "bash", &serde_json::json!({
+            "command": "pwd", "timeout_s": 5
+        }));
+        // Sandbox may be available or not - just verify no panic
+        let _ = out;
+    }
+
+    #[test]
+    fn team_denied_install_deps() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        c.team_denied_tools = vec!["install_deps".into()];
+        let out = execute_tool(&c, "install_deps", &serde_json::json!({"command": "npm install"}));
+        assert!(!out.ok);
+        assert!(out.content.contains("团队策略禁用"));
+    }
 }
