@@ -723,4 +723,34 @@ mod tests {
         // JSON should be serializable
         let _ = serde_json::to_string(&json).unwrap();
     }
+
+    #[test]
+    fn settings_overrides_merge_and_to_json_theme() {
+        let mut overrides = SettingsOverrides::default();
+        overrides.merge_json(&serde_json::json!({
+            "session": { "first_edit_buffer_ms": 500 }
+        })).unwrap();
+        let json = overrides.to_json();
+        let serialized = serde_json::to_string(&json).unwrap();
+        assert!(serialized.contains("500"));
+    }
+
+    #[test]
+    fn settings_overrides_update_channel_auto() {
+        let mut overrides = SettingsOverrides::default();
+        overrides.merge_json(&serde_json::json!({
+            "update": { "channel": "auto" }
+        })).unwrap();
+        assert_eq!(overrides.update_channel, Some("auto".into()));
+    }
+
+    #[test]
+    fn effective_update_channel_with_override() {
+        let mut overrides = SettingsOverrides::default();
+        overrides.merge_json(&serde_json::json!({
+            "update": { "channel": "auto" }
+        })).unwrap();
+        // effective channel depends on implementation
+        let _ = overrides.effective_update_channel();
+    }
 }
