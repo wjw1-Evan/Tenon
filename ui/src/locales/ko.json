@@ -16,8 +16,6 @@
   "projects.remove_blocked": "기록 세션이 있어 제거할 수 없습니다",
   "projects.active": "개의 활성 세션",
   "projects.dirty": "저장 안 됨",
-  "projects.column.name": "이름",
-  "projects.column.updated": "업데이트",
   "projects.updated_never": "—",
   "projects.show_more": "모두 표시",
   "projects.show_less": "접기",

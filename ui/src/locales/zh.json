@@ -16,8 +16,6 @@
   "projects.remove_blocked": "存在历史会话，暂不能移除",
   "projects.active": "个活跃会话",
   "projects.dirty": "未保存",
-  "projects.column.name": "名称",
-  "projects.column.updated": "更新",
   "projects.updated_never": "—",
   "projects.show_more": "显示全部",
   "projects.show_less": "收起",

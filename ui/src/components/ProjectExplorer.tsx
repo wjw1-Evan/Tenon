@@ -1,9 +1,11 @@
 // 项目浏览器（左侧栏「项目」视图，v1.88 对齐 Codex projects sidebar 内容布局）：
-// 添加入口常驻，Name / Updated 列头统一项目索引密度；每项目一行可折叠文件夹
-// （点击行即隐式激活并展开），默认内嵌最近 10 条会话；行尾「源码」按钮切换文件树。
+// 视图标题行右端常驻添加入口（v1.101 移除孤行工具行与 Name / Updated 列头）；
+// 每项目一行可折叠文件夹（点击行即隐式激活并展开），默认内嵌最近 10 条会话；
+// 行尾「源码」按钮切换文件树。
 import { useEffect, useState } from "react";
 import type { ProjectSummary, TenonApi } from "../lib/api";
 import { useResolvedLocale, type Translate } from "../lib/i18n";
+import { STATE_COLORS, type AgentStateName } from "../lib/stateColors";
 import { FileTree, type FileTreeChange } from "./FileTree";
 
 const PE_EXPANDED_KEY = "tenon:peExpanded";
@@ -92,9 +94,27 @@ function formatUpdatedAt(value: string | null, t: Translate, locale: string): st
   return new Date(time).toLocaleDateString(locale);
 }
 
-/** 会话显示名：自动标题优先（v1.58）；无标题回退模型名，同名多会话附短 id 后缀。 */
+/** 显示层标题清洗（v1.101）：剥离截断 prompt 引導前缀与首尾引号；只影响显示，不改库。 */
+const TITLE_PROMPT_PREFIX_RE =
+  /^the user(?:'|’)?s?\s+(?:message|says?|wants?|asks?|requests?)[^:]{0,32}:\s*/i;
+
+function cleanDisplayTitle(raw: string): string {
+  let s = raw.trim();
+  let prev = "";
+  while (s !== prev) {
+    prev = s;
+    s = s.replace(TITLE_PROMPT_PREFIX_RE, "").trim();
+  }
+  return s.replace(/^["'“”「『«]+|["'”』»]+$/g, "").trim();
+}
+
+/** 会话显示基名：自动标题（清洗后）优先（v1.58）；无标题回退模型名，再回退短 id。 */
+function displayBaseName(session: ProjectSummary["sessions"][number]): string {
+  return cleanDisplayTitle(session.title ?? "") || session.model || session.id;
+}
+
 function sessionDisplayName(session: ProjectSummary["sessions"][number], duplicates = 1) {
-  const base = session.title?.trim() || session.model || session.id;
+  const base = displayBaseName(session);
   return duplicates > 1 ? `${base} ·${session.id.slice(-4)}` : base;
 }
 
@@ -102,8 +122,7 @@ function sessionDisplayName(session: ProjectSummary["sessions"][number], duplica
 function countSessionNames(sessions: ProjectSummary["sessions"]) {
   const counts = new Map<string, number>();
   for (const session of sessions) {
-    const key = session.title?.trim() || session.model || session.id;
-    counts.set(key, (counts.get(key) ?? 0) + 1);
+    counts.set(displayBaseName(session), (counts.get(displayBaseName(session)) ?? 0) + 1);
   }
   return counts;
 }
@@ -323,25 +342,32 @@ export function ProjectExplorer({
         : orderedSessions;
     return (
       <ul className="pe-chat-list" data-testid={`chat-list-${project.id}`}>
-        {sessions.map((session) => (
+        {sessions.map((session) => {
+          // v1.101：已回滚 / 无标题回退（显示模型名）会话整行灰显降噪。
+          const fallbackName = displayBaseName(session) === (session.model || session.id);
+          const muted = session.status === "rolled_back" || fallbackName;
+          return (
           <li key={session.id} className="pe-chat-item">
             <button
               type="button"
               data-testid={`chat-row-${session.id}`}
               className={
-                session.id === activeSessionId ? "pe-chat-row active" : "pe-chat-row"
+                (session.id === activeSessionId ? "pe-chat-row active" : "pe-chat-row") +
+                (muted ? " muted" : "")
               }
               onClick={() => onSelectSession(project.id, session.id)}
               title={session.worktree_path ? `${session.id} · ${session.worktree_path}` : session.id}
             >
+              <span className="pe-chat-dot" aria-hidden="true" data-state={session.status} title={stateLabel(t, session.status)}
+                style={{ background: STATE_COLORS[session.status as AgentStateName] ?? "#8a8f98" }}
+              />
               <span className="pe-chat-name">
                 {sessionDisplayName(
                   session,
-                  counts.get(session.title?.trim() || session.model || session.id) ?? 1
+                  counts.get(displayBaseName(session)) ?? 1
                 )}
                 {session.worktree_path ? " ⎇" : ""}
               </span>
-              <span className="pe-chat-status">{stateLabel(t, session.status)}</span>
             </button>
             {session.worktree_path && (
               <span className="pe-row-actions">
@@ -366,7 +392,8 @@ export function ProjectExplorer({
               </span>
             )}
           </li>
-        ))}
+          );
+        })}
         {orderedSessions.length > RECENT_SESSION_LIMIT && (
           <li>
             <button
@@ -415,8 +442,9 @@ export function ProjectExplorer({
 
   return (
     <div className="project-explorer" data-testid="project-explorer">
-      {/* Codex projects sidebar：常驻添加入口；列表用 Name / Updated 统一节奏。 */}
-      <div className="pe-toolbar">
+      {/* 视图标题行（v1.101）：视图名 + 常驻添加入口；projects 视图自渲染标题，通用 side-head 不再叠加。 */}
+      <div className="pe-head">
+        <span className="side-title">{t("panel.projects")}</span>
         <button
           type="button"
           className="pe-add"
@@ -430,16 +458,13 @@ export function ProjectExplorer({
           +
         </button>
       </div>
-      <div className="pe-columns">
-        <span>{t("projects.column.name")}</span>
-        <span>{t("projects.column.updated")}</span>
-      </div>
       <section className="pe-section pe-chats">
         <ul className="pe-tree" data-testid="project-list">
           {projects.map((project) => {
             const isOpen = expanded.has(project.id);
             const showFiles = filesOpen.has(project.id);
             const updatedAt = latestUpdatedAt(project);
+            const badges = folderBadges(t, project);
             return (
               <li key={project.id} className="pe-folder">
                 <div
@@ -460,7 +485,7 @@ export function ProjectExplorer({
                     <FolderIcon />
                     <span className="pe-project-main">
                       <span className="pe-project-name">{project.display_name}</span>
-                      <span className="pe-project-meta">{folderBadges(t, project)}</span>
+                      {badges && <span className="pe-project-meta">{badges}</span>}
                     </span>
                     <span
                       className="pe-updated"

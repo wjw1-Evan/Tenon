@@ -16,8 +16,6 @@
   "projects.remove_blocked": "尚有歷史會話，暫無法移除",
   "projects.active": "個活躍會話",
   "projects.dirty": "未儲存",
-  "projects.column.name": "名稱",
-  "projects.column.updated": "更新",
   "projects.updated_never": "—",
   "projects.show_more": "顯示全部",
   "projects.show_less": "收合",

@@ -16,8 +16,6 @@
   "projects.remove_blocked": "Remove history sessions first",
   "projects.active": "active",
   "projects.dirty": "dirty",
-  "projects.column.name": "Name",
-  "projects.column.updated": "Updated",
   "projects.updated_never": "—",
   "projects.show_more": "Show all",
   "projects.show_less": "Collapse",

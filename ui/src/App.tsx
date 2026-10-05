@@ -1044,15 +1044,16 @@ export default function App({
                   : { width: effLeft, minWidth: 140, maxWidth: 480 }
               }
             >
-              <div className="side-head">
-                <span className="side-title">
-                  {sideView === "projects"
-                    ? t("panel.projects")
-                    : sideView === "search"
+              {/* projects 视图标题行由 ProjectExplorer 自渲染（含「+」，v1.101），通用标题仅其余视图需要 */}
+              {sideView !== "projects" && (
+                <div className="side-head">
+                  <span className="side-title">
+                    {sideView === "search"
                       ? t("search.title")
                       : t("panel.packs")}
-                </span>
-              </div>
+                  </span>
+                </div>
+              )}
               <div className="side-body">
                 {sideView === "projects" && (
                   <ProjectExplorer

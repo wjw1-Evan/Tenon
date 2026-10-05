@@ -16,8 +16,6 @@
   "projects.remove_blocked": "履歴セッションがあるため削除できません",
   "projects.active": "個のアクティブセッション",
   "projects.dirty": "未保存",
-  "projects.column.name": "名前",
-  "projects.column.updated": "更新",
   "projects.updated_never": "—",
   "projects.show_more": "すべて表示",
   "projects.show_less": "折りたたむ",
