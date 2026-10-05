@@ -31,6 +31,12 @@ describe("会话过程流：回合分组", () => {
     expect(screen.getByText("任务二")).toBeTruthy();
     // 两个回合
     expect(screen.getAllByTestId("turn")).toHaveLength(2);
+    // 用户消息气泡独立于 AI 内容容器（turn-body）之外，按侧区分
+    const turn1 = screen.getAllByTestId("turn")[0];
+    const userBubble = turn1.querySelector('[data-testid="turn-user"]')!;
+    expect(userBubble).toBeTruthy();
+    expect(userBubble.querySelector(".turn-task")!.textContent).toBe("任务一");
+    expect(turn1.querySelector(".turn-body")!.contains(userBubble)).toBe(false);
     // 工具步骤卡显示目标摘要（args.command）
     expect(screen.getByText(/cargo test/)).toBeTruthy();
     // decision 渲染为回合 markdown 正文
@@ -155,16 +161,173 @@ describe("会话过程流：工具步骤卡", () => {
     expect(await screen.findByText(/thread\.denied bash · readonly/)).toBeTruthy();
   });
 
-  it("信息类事件降级为轻量行", async () => {
+  it("信息行仅保留回滚语义（v1.112 降噪：压缩 / 记忆 / 降级不显示）", async () => {
     const events = [
       { id: 1, seq: 1, type: "rollback", payload: {} },
       { id: 2, seq: 2, type: "compaction", payload: {} },
-      { id: 3, seq: 3, type: "sensing", payload: {} },
+      { id: 3, seq: 3, type: "memory_saved", payload: {} },
+      { id: 4, seq: 4, type: "model_fallback", payload: {} },
+      { id: 5, seq: 5, type: "sensing", payload: {} },
     ];
     render(<AgentPanel api={mockApi(events)} t={t} sessionId="s1" />);
     expect(await screen.findByText(/thread\.rollback/)).toBeTruthy();
-    expect(screen.getByText(/thread\.compaction/)).toBeTruthy();
+    expect(screen.queryByText(/thread\.compaction/)).toBeNull();
+    expect(screen.queryByText(/thread\.memory_saved/)).toBeNull();
+    expect(screen.queryByText(/thread\.model_fallback/)).toBeNull();
     expect(screen.queryByText(/sensing/)).toBeNull();
+  });
+
+  it("v1.112 只读步骤聚合为单行动词计数，不落卡", async () => {
+    const ro = (seq: number, tool: string, ok = true) => ({
+      id: seq, seq, type: "command_run",
+      payload: { tool, args: { path: "x" }, output: { ok, content: "..." } },
+    });
+    const events = [
+      { id: 1, seq: 1, type: "user_input", payload: { text: "任务" } },
+      ro(2, "read_file"),
+      ro(3, "read_file"),
+      ro(4, "grep"),
+      { id: 5, seq: 5, type: "patch_applied", payload: { tool: "apply_patch", args: { file: "a.rs" }, output: { ok: true, content: "", changed_files: ["a.rs"] } } },
+    ];
+    render(<AgentPanel api={mockApi(events)} t={t} sessionId="s1" />);
+    const summary = await screen.findByTestId("turn-readonly");
+    expect(summary.textContent).toContain("tool.read_file 2");
+    expect(summary.textContent).toContain("tool.grep 1");
+    // 只读步骤不产生独立步骤卡
+    const cards = screen.getAllByTestId("turn-step");
+    expect(cards).toHaveLength(1);
+  });
+
+  it("失败的只读步骤仍单独红显卡，不计入聚合行", async () => {
+    const events = [
+      { id: 1, seq: 1, type: "user_input", payload: { text: "任务" } },
+      { id: 2, seq: 2, type: "command_run", payload: { tool: "read_file", args: { path: "x" }, output: { ok: false, content: "not found" } } },
+      { id: 3, seq: 3, type: "command_run", payload: { tool: "grep", args: {}, output: { ok: true, content: "hit" } } },
+    ];
+    render(<AgentPanel api={mockApi(events)} t={t} sessionId="s1" />);
+    const card = await screen.findByTestId("turn-step");
+    expect(card.className).toContain("turn-step-fail");
+    expect(screen.getByText("not found")).toBeTruthy();
+    const summary = screen.getByTestId("turn-readonly");
+    expect(summary.textContent).toContain("tool.grep 1");
+    expect(summary.textContent).not.toContain("tool.read_file");
+  });
+
+  it("verification 为空不渲染证据空壳", async () => {
+    const events = [
+      { id: 1, seq: 1, type: "diagnostics", payload: { verification: "" } },
+    ];
+    render(<AgentPanel api={mockApi(events)} t={t} sessionId="s1" />);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(screen.queryByText(/evidence\.title/)).toBeNull();
+  });
+});
+
+describe("v1.111 消息级撤销", () => {
+  function mockUndoApi(events: Array<Record<string, unknown>>, status = "idle") {
+    return {
+      models: vi.fn().mockResolvedValue(models),
+      trace: vi.fn().mockResolvedValue({ events, latest_seq: events.length }),
+      getSession: vi.fn().mockResolvedValue({ session_id: "s1", status, latest_seq: events.length, outcome: null }),
+      sendMessage: vi.fn().mockResolvedValue({}),
+      control: vi.fn().mockResolvedValue({ ok: true }),
+      checkpoints: vi.fn().mockResolvedValue({
+        checkpoints: [
+          { id: "cp1", tree: "t1", files: ["a.rs"], created_at: "", event_seq: 2 },
+          { id: "cp2", tree: "t2", files: ["b.rs"], created_at: "", event_seq: 4 },
+        ],
+      }),
+      rollbackCheckpoint: vi.fn().mockResolvedValue({ rolled_back: ["a.rs"] }),
+    } as unknown as TenonApi;
+  }
+
+  const twoTurnEvents = [
+    { id: 1, seq: 1, type: "user_input", payload: { text: "任务一" } },
+    { id: 2, seq: 2, type: "patch_applied", payload: { tool: "apply_patch", args: { file: "a.rs" }, output: { ok: true, content: "", changed_files: ["a.rs"] } } },
+    { id: 3, seq: 3, type: "user_input", payload: { text: "任务二" } },
+    { id: 4, seq: 4, type: "patch_applied", payload: { tool: "apply_patch", args: { file: "b.rs" }, output: { ok: true, content: "", changed_files: ["b.rs"] } } },
+  ];
+
+  it("仅最后一个含改动的回合显示撤销钮", async () => {
+    render(<AgentPanel api={mockUndoApi(twoTurnEvents)} t={t} sessionId="s1" />);
+    await screen.findByText("任务二");
+    const turns = screen.getAllByTestId("turn");
+    expect(turns[0].querySelector('[data-testid="turn-undo"]')).toBeNull();
+    expect(turns[1].querySelector('[data-testid="turn-undo"]')).toBeTruthy();
+  });
+
+  it("无改动回合不显示撤销钮", async () => {
+    const events = [
+      { id: 1, seq: 1, type: "user_input", payload: { text: "纯问答" } },
+      { id: 2, seq: 2, type: "decision", payload: { intent: "答案" } },
+    ];
+    render(<AgentPanel api={mockUndoApi(events)} t={t} sessionId="s1" />);
+    await screen.findByText("答案");
+    expect(screen.queryByTestId("turn-undo")).toBeNull();
+  });
+
+  it("点击撤销：确认后按回合首步 seq 匹配 checkpoint 并回滚", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const api = mockUndoApi(twoTurnEvents);
+    render(<AgentPanel api={api} t={t} sessionId="s1" />);
+    const undo = await screen.findByTestId("turn-undo");
+    fireEvent.click(undo);
+    await waitFor(() => expect(api.rollbackCheckpoint).toHaveBeenCalledWith("cp2"));
+    expect(confirmSpy).toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
+
+  it("确认取消则不发起任何请求", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const api = mockUndoApi(twoTurnEvents);
+    render(<AgentPanel api={api} t={t} sessionId="s1" />);
+    const undo = await screen.findByTestId("turn-undo");
+    fireEvent.click(undo);
+    // 取消即中止：checkpoints 与 rollback 均不调用
+    await new Promise((r) => setTimeout(r, 30));
+    expect(api.checkpoints).not.toHaveBeenCalled();
+    expect(api.rollbackCheckpoint).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
+
+  it("运行态撤销钮禁用", async () => {
+    render(<AgentPanel api={mockUndoApi(twoTurnEvents, "executing")} t={t} sessionId="s1" />);
+    const undo = await screen.findByTestId("turn-undo");
+    expect(undo).toBeDisabled();
+  });
+
+  // v1.123 气泡下按钮组：复制恒可用（写剪贴板 + 已复制回弹）；重做与撤销配对、撤销后可用。
+  it("每回合渲染复制钮，点击写入剪贴板并回显已复制", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    try {
+      render(<AgentPanel api={mockUndoApi(twoTurnEvents)} t={t} sessionId="s1" />);
+      await screen.findByText("任务二");
+      // 无改动回合也有复制钮；撤销/重做只在最后含改动回合
+      expect(screen.getByTestId("turn-copy-1")).toBeTruthy();
+      expect(screen.queryByTestId("turn-redo")?.closest(".turn-user")).toBe(
+        screen.getAllByTestId("turn-user")[1]
+      );
+      fireEvent.click(screen.getByTestId("turn-copy-3"));
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith("任务二"));
+      expect(await screen.findByText("thread.copied")).toBeTruthy();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("重做钮默认禁用，撤销成功后可用并调 unrollback，成功即收", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const api = mockUndoApi(twoTurnEvents);
+    render(<AgentPanel api={api} t={t} sessionId="s1" />);
+    const redo = await screen.findByTestId("turn-redo");
+    expect(redo).toBeDisabled();
+    fireEvent.click(await screen.findByTestId("turn-undo"));
+    await waitFor(() => expect(redo).toBeEnabled());
+    fireEvent.click(redo);
+    await waitFor(() => expect(api.control).toHaveBeenCalledWith("s1", "unrollback"));
+    await waitFor(() => expect(redo).toBeDisabled());
+    confirmSpy.mockRestore();
   });
 });
 

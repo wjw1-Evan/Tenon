@@ -1265,6 +1265,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   margin-bottom: 0;
   padding-bottom: 0;
 }
+.turn-user {
   /* v1.109 用户消息居右（v1.111 撤销钮挂气泡下方） */
   align-self: flex-end;
   max-width: 85%;
@@ -1284,10 +1285,14 @@ button:disabled { opacity: 0.45; cursor: default; }
   white-space: pre-wrap;
   word-break: break-word;
 }
+.turn-readonly {
   font-size: 11px;
   color: var(--muted);
   padding: 1px 0;
 }
+/* 用户气泡下功能按钮组（v1.123）：复制 / 撤销 / 重做——撤销 hover 用错误色提示破坏性 */
+.turn-actions { display: flex; gap: 4px; margin-top: 2px; }
+.turn-action {
   border: none;
   background: none;
   color: var(--muted);
@@ -1296,9 +1301,15 @@ button:disabled { opacity: 0.45; cursor: default; }
   cursor: pointer;
   border-radius: var(--radius-s);
 }
+.turn-action:hover:not(:disabled) {
+  color: var(--fg);
+  background: var(--raised);
+}
+.turn-action[data-testid="turn-undo"]:hover:not(:disabled) {
   color: var(--error-text);
   background: var(--error-soft);
 }
+.turn-action:disabled {
   opacity: 0.5;
   cursor: default;
 }
