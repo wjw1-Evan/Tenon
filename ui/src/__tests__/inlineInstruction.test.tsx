@@ -3,10 +3,15 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { InlineInstruction, buildInlineTask } from "../components/InlineInstruction";
+import { createTranslator } from "../lib/i18n";
 
 const t = (key: string) =>
   // 占位符模板需可替换，其余键原样返回
   key === "inline.range" ? "{path} lines {start}-{end}" : key;
+
+// 任务模板文案走真实资源表（双语随应用语言，§4.2），同时校验键存在。
+const zh = createTranslator("zh-CN");
+const en = createTranslator("en");
 
 describe("buildInlineTask", () => {
   it("选区模式：带文件、行区间、选区摘要与零改动约束（T8）", () => {
@@ -15,7 +20,7 @@ describe("buildInlineTask", () => {
       startLine: 12,
       endLine: 48,
       excerpt: "function load() { return fetch('/x'); }",
-    });
+    }, zh);
     expect(text).toContain("src/auth.ts 的12-48 行内");
     expect(text).toContain("改写为 async 并补错误处理");
     expect(text).toContain("function load()");
@@ -24,10 +29,16 @@ describe("buildInlineTask", () => {
   });
 
   it("无选区退化为整文件模式，不含选区摘要", () => {
-    const text = buildInlineTask("补充类型标注", { path: "src/util.ts" });
+    const text = buildInlineTask("补充类型标注", { path: "src/util.ts" }, zh);
     expect(text).toContain("src/util.ts 的整个文件内");
     expect(text).not.toContain("选中代码");
     expect(text).toContain("选中区外零改动");
+  });
+
+  it("英文源语言同样成立（source of truth）", () => {
+    const text = buildInlineTask("add types", { path: "src/util.ts" }, en);
+    expect(text).toContain("in src/util.ts, within the whole file: add types");
+    expect(text).toContain("zero changes outside it");
   });
 });
 
