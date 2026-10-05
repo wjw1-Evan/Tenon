@@ -371,8 +371,6 @@ export class TenonApi {
         tree: string;
         files: string[];
         created_at: string;
-        // v1.111：关联事件 seq（null = 任务级快照）——消息级撤销按 seq 匹配回合首步。
-        event_seq: number | null;
       }>;
     }>(`/session/${sessionId}/checkpoints`);
   }

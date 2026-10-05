@@ -1801,4 +1801,104 @@ mod tests {
         }));
         assert!(out.ok);
     }
+
+    #[test]
+    fn apply_patch_creates_deeply_nested_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "a/b/c/d/e/deep.txt", "range": null, "content": "deep content"
+        }));
+        assert!(out.ok);
+        assert!(dir.path().join("a/b/c/d/e/deep.txt").exists());
+    }
+
+    #[test]
+    fn read_file_after_apply_patch_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let content = "round-trip content\nwith multiple lines\n";
+        execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "rt.txt", "range": null, "content": content
+        }));
+        let out = execute_tool(&c, "read_file", &serde_json::json!({"path": "rt.txt"}));
+        assert!(out.ok);
+        assert_eq!(out.content, content);
+    }
+
+    #[test]
+    fn grep_with_regex_pattern() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("regex.txt"), "foo123bar\nfoo456bar").unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "grep", &serde_json::json!({"pattern": "foo\\d+bar"}));
+        assert!(out.ok);
+    }
+
+    #[test]
+    fn list_dir_sorts_entries_alphabetically() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("z.txt"), "").unwrap();
+        std::fs::write(dir.path().join("a.txt"), "").unwrap();
+        std::fs::write(dir.path().join("m.txt"), "").unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "list_dir", &serde_json::json!({}));
+        assert!(out.ok);
+        let lines: Vec<&str> = out.content.split("\n").collect();
+        assert_eq!(lines[0], "a.txt");
+        assert_eq!(lines[1], "m.txt");
+        assert_eq!(lines[2], "z.txt");
+    }
+
+    #[test]
+    fn team_denied_read_file_blocks_read() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("secret.txt"), "classified").unwrap();
+        let mut c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        c.team_denied_tools = vec!["read_file".into()];
+        let out = execute_tool(&c, "read_file", &serde_json::json!({"path": "secret.txt"}));
+        assert!(!out.ok);
+        assert!(out.content.contains("团队策略"));
+    }
+
+    #[test]
+    fn apply_patch_overwrites_dotfile() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".editorconfig"), "old = true").unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": ".editorconfig", "range": null, "content": "root = true\n"
+        }));
+        assert!(out.ok);
+        let content = std::fs::read_to_string(dir.path().join(".editorconfig")).unwrap();
+        assert!(content.contains("root = true"));
+    }
+
+    #[test]
+    fn readonly_blocks_git_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let init = std::process::Command::new("git")
+            .args(["init", "--initial-branch=main"])
+            .current_dir(dir.path())
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@l")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@l")
+            .output()
+            .unwrap();
+        assert!(init.status.success());
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        c.readonly.store(true, Ordering::Relaxed);
+        let out = execute_tool(&c, "git_commit", &serde_json::json!({"message": "blocked"}));
+        assert!(!out.ok);
+    }
+
+    #[test]
+    fn readonly_blocks_git_push() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        c.readonly.store(true, Ordering::Relaxed);
+        let out = execute_tool(&c, "git_push", &serde_json::json!({"remote": "origin"}));
+        assert!(!out.ok);
+    }
 }
