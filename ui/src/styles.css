@@ -564,6 +564,10 @@ button:disabled { opacity: 0.45; cursor: default; }
 }
 .pe-group-row:hover .pe-group-actions,
 .pe-group-row:focus-within .pe-group-actions { display: flex; }
+/* 操作区背景继承行背景（active 行为半透明 accent-soft）遮不住时间文字——
+   hover 时时间直接让位，避免与 ⎡ × 叠印 */
+.pe-group-row:hover .pe-updated,
+.pe-group-row:focus-within .pe-updated { visibility: hidden; }
 .pe-gact {
   flex-shrink: 0;
   width: 20px;
@@ -2199,9 +2203,58 @@ button:disabled { opacity: 0.45; cursor: default; }
 @media (max-width: 639px) {
   .settings-grid { grid-template-columns: 1fr; }
 }
-
-/* 设置面板（§7.2 / §15） */
-.settings-pane { width: min(720px, 94vw); }
+/* 设置面板（§7.2 / §15）：v1.121 采用 Codex 式分类导航模态框。 */
+.settings-pane {
+  width: min(880px, 94vw);
+  max-height: min(720px, 88vh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.settings-head {
+  flex-shrink: 0;
+  margin-bottom: 0;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.settings-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  gap: 16px;
+  padding-top: 12px;
+}
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 8px;
+}
+.settings-nav-item {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  border-radius: var(--radius-m);
+  padding: 7px 9px;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.settings-nav-item:hover { background: var(--raised); color: var(--fg); }
+.settings-nav-item.active {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-weight: 550;
+}
+.settings-panel {
+  min-width: 0;
+  overflow: auto;
+  padding: 2px 4px 2px 0;
+}
+.settings-panel .settings-section:first-child { margin-top: 0; }
 .settings-grid {
   display: grid;
   grid-template-columns: auto 1fr;
@@ -2228,9 +2281,13 @@ button:disabled { opacity: 0.45; cursor: default; }
 .provider-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
 .provider-row {
   display: grid;
-  grid-template-columns: 72px 110px 1fr 1fr 1fr auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
   align-items: center;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  background: color-mix(in srgb, var(--raised) 58%, transparent);
 }
 .provider-row select,
 .provider-row input {
@@ -2243,8 +2300,16 @@ button:disabled { opacity: 0.45; cursor: default; }
   width: 100%;
   min-width: 0;
 }
-.provider-name { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.provider-name {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .provider-remove {
+  justify-self: end;
   background: none;
   border: none;
   color: var(--muted);
@@ -2263,6 +2328,18 @@ button:disabled { opacity: 0.45; cursor: default; }
   font-size: 12px;
 }
 .laya-status { margin-top: 10px; font-size: 12px; }
+@media (max-width: 799px) {
+  .settings-body { grid-template-columns: 1fr; gap: 10px; }
+  .settings-nav {
+    flex-direction: row;
+    gap: 5px;
+    overflow-x: auto;
+    padding: 0 0 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  .settings-nav-item { white-space: nowrap; }
+  .settings-panel { padding-right: 0; }
+}
 
 .tree-row.drop-target, .tree.drop-target { outline: 1px dashed var(--accent); outline-offset: 2px; background: rgba(47,111,237,.10); }
 
