@@ -90,3 +90,63 @@ describe("FileFinder additional", () => {
     expect(input.value).toBe("");
   });
 });
+
+describe("FileFinder uncovered paths", () => {
+  it("symbol mode without activePath shows error", () => {
+    const fuzzyMock = vi.fn();
+    const lspMock = vi.fn();
+    const api = { fuzzyFiles: fuzzyMock, lsp: lspMock } as unknown as TenonApi;
+    render(
+      <FileFinder open={true} onClose={vi.fn()} api={api} t={(k) => k}
+        projectId="p1" activePath={null} onOpen={vi.fn()} />
+    );
+    const input = screen.getByTestId("file-finder-input");
+    fireEvent.change(input, { target: { value: "@symbol" } });
+    // 无 activePath + symbol mode → finder.symbol_need_file error
+    waitFor(() => {
+      expect(lspMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it("ArrowUp decrements active index", () => {
+    const fuzzyMock = vi.fn();
+    fuzzyMock.mockResolvedValue({
+      hits: [
+        { path: "a.ts", name: "a.ts", kind: "file", score: 1 },
+        { path: "b.ts", name: "b.ts", kind: "file", score: 0.8 },
+      ],
+    });
+    const onOpen = vi.fn();
+    const api = { fuzzyFiles: fuzzyMock, lsp: vi.fn() } as unknown as TenonApi;
+    render(
+      <FileFinder open={true} onClose={vi.fn()} api={api} t={(k) => k}
+        projectId="p1" activePath={null} onOpen={onOpen} />
+    );
+    const input = screen.getByTestId("file-finder-input");
+    fireEvent.change(input, { target: { value: "a" } });
+    // 下箭头到第二个，上箭头回到第一个
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    fireEvent.keyDown(input, { key: "ArrowUp" });
+    fireEvent.keyDown(input, { key: "Enter" });
+    waitFor(() => expect(onOpen).toHaveBeenCalledWith("a.ts"));
+  });
+
+  it("fileUriToRelative handles Windows paths via symbol results", async () => {
+    const lspMock = vi.fn().mockResolvedValue({
+      result: [
+        { name: "WinFunc", location: { uri: "file:///C:/proj/src/win.ts", range: { start: { line: 0, character: 0 } } } },
+      ],
+    });
+    const api = { fuzzyFiles: vi.fn(), lsp: lspMock } as unknown as TenonApi;
+    render(
+      <FileFinder open={true} onClose={vi.fn()} api={api} t={(k) => k}
+        projectId="p1" projectRoot="C:/proj" activePath="src/win.ts" onOpen={vi.fn()} />
+    );
+    const input = screen.getByTestId("file-finder-input");
+    fireEvent.change(input, { target: { value: "@WinFunc" } });
+    // Windows URI → fileUriToRelative → "C:/proj/src/win.ts"
+    await waitFor(() => {
+      expect(lspMock).toHaveBeenCalled();
+    }, { timeout: 3000 });
+  });
+});

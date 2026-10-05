@@ -86,3 +86,69 @@ describe("DiagnosticsPanel", () => {
     expect(lspMock).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("DiagnosticsPanel 补充", () => {
+  it("no language pack error shows degraded message", async () => {
+    lspMock.mockRejectedValue(new Error("语言包不可用：typescript"));
+    const { getByTestId } = render(
+      <DiagnosticsPanel
+        api={api()}
+        t={(key) => key}
+        projectId="p1"
+        path="a.ts"
+        refreshToken={0}
+        sessionId={null}
+        onOpenFile={vi.fn()}
+        onFix={vi.fn()}
+      />
+    );
+    await waitFor(() => {
+      expect(getByTestId("diagnostics-no-language-pack")).toBeTruthy();
+    });
+  });
+
+  it("severities render error/warning/info labels", async () => {
+    lspMock.mockResolvedValue({
+      result: {
+        items: [
+          { range: { start: { line: 0, character: 0 } }, severity: 1, message: "err" },
+          { range: { start: { line: 1, character: 0 } }, severity: 2, message: "warn" },
+          { range: { start: { line: 2, character: 0 } }, severity: 3, message: "info" },
+        ],
+      },
+    });
+    render(
+      <DiagnosticsPanel
+        api={api()}
+        t={(key) => key}
+        projectId="p1"
+        path="a.ts"
+        refreshToken={0}
+        sessionId={null}
+        onOpenFile={vi.fn()}
+        onFix={vi.fn()}
+      />
+    );
+    await waitFor(() => {
+      const summary = document.querySelector('[data-testid="diagnostic-summary"]');
+      expect(summary?.textContent).toContain("diagnostic.error");
+      expect(summary?.textContent).toContain("diagnostic.warning");
+    });
+  });
+
+  it("non-path renders no_file message", () => {
+    render(
+      <DiagnosticsPanel
+        api={api()}
+        t={(key) => key}
+        projectId={null}
+        path={null}
+        refreshToken={0}
+        sessionId={null}
+        onOpenFile={vi.fn()}
+        onFix={vi.fn()}
+      />
+    );
+    expect(screen.getByText("diagnostic.no_file")).toBeTruthy();
+  });
+});

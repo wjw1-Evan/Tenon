@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DiffPanel, diffFromPatchEvent, parseDiffLines } from "../components/DiffPanel";
 
 describe("diff 面板（M0 交付）", () => {
@@ -74,5 +74,28 @@ describe("DiffPanel 补充", () => {
   it("empty diff shows caller-localized placeholder", () => {
     render(<DiffPanel diff="" emptyText="（无改动）" />);
     expect(screen.getByTestId("diff-panel")).toHaveTextContent("（无改动）");
+  });
+});
+
+describe("DiffPanel ResizeObserver", () => {
+  it("renders with ResizeObserver available", () => {
+    // jsdom 不自带 ResizeObserver，手动 stub 触发覆盖
+    const observers: Array<{ observe: (el: Element) => void; disconnect: () => void }> = [];
+    class FakeRO {
+      callback: ResizeObserverCallback;
+      constructor(cb: ResizeObserverCallback) { this.callback = cb; observers.push(this as never); }
+      observe() {}
+      disconnect() {}
+    }
+    vi.stubGlobal("ResizeObserver", FakeRO);
+    const { unmount } = render(<DiffPanel diff={null} viewportHeight={200} />);
+    // 触发 resize 回调
+    if (observers.length > 0) {
+      (observers[0] as unknown as { callback: (entries: ResizeObserverEntry[]) => void }).callback(
+        [{ contentRect: { height: 300 } }] as unknown as ResizeObserverEntry[]
+      );
+    }
+    unmount();
+    vi.unstubAllGlobals();
   });
 });
