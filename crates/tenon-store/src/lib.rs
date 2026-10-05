@@ -1857,4 +1857,123 @@ mod managed_worktree_tests {
             "/tmp/wt/s1"
         );
     }
+
+    #[test]
+    fn ui_prefs_roundtrip() {
+        let mut s = mem();
+        s.set_ui_pref("theme", "dark").unwrap();
+        s.set_ui_pref("lang", "zh").unwrap();
+        let prefs = s.ui_prefs().unwrap();
+        assert!(prefs.len() >= 2);
+        assert!(prefs.iter().any(|(k, v)| k == "theme" && v == "dark"));
+    }
+
+    #[test]
+    fn project_ui_state_roundtrip() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        assert!(s.project_ui_state(&p.id).unwrap().is_none());
+        s.set_project_ui_state(&p.id, r#"{"tabs":["a.ts"]}"#).unwrap();
+        let state = s.project_ui_state(&p.id).unwrap().unwrap();
+        assert!(state.contains("a.ts"));
+    }
+
+    #[test]
+    fn model_usage_and_project_totals() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let sid = s.create_session(&p.id, "mock").unwrap().id;
+        s.record_model_usage(&sid, "mock", "mock-1", 100, 200, 0.05).unwrap();
+        let (inp, out, cost) = s.project_usage_totals(&p.id).unwrap();
+        assert_eq!(inp, 100);
+        assert_eq!(out, 200);
+        assert!(cost > 0.0);
+    }
+
+    #[test]
+    fn checkpoint_insert_and_list() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let sid = s.create_session(&p.id, "mock").unwrap().id;
+        s.insert_checkpoint(&sid, "tree-abc", &["a.ts".into()], None).unwrap();
+        let cps = s.checkpoints(&sid).unwrap();
+        assert_eq!(cps.len(), 1);
+        assert_eq!(cps[0].tree, "tree-abc");
+        let cp = s.checkpoint(&cps[0].id).unwrap().unwrap();
+        assert_eq!(cp.tree, "tree-abc");
+    }
+
+    #[test]
+    fn tool_call_insert_and_list() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let sid = s.create_session(&p.id, "mock").unwrap().id;
+        s.insert_tool_call(&sid, 1, "apply_patch", Level::C, 10).unwrap();
+        let calls = s.tool_calls(&sid).unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].tool, "apply_patch");
+    }
+
+    #[test]
+    fn plugin_insert_and_list() {
+        let mut s = mem();
+        s.insert_plugin("lsp-1", "1.0.0", &["fs.read".into()], "sig").unwrap();
+        let plugins = s.list_plugins().unwrap();
+        assert_eq!(plugins.len(), 1);
+        assert_eq!(plugins[0].id, "lsp-1");
+    }
+
+    #[test]
+    fn eval_run_insert_and_list() {
+        let mut s = mem();
+        let run = s.insert_eval_run("mock", &serde_json::json!({"pass": true}), "pass").unwrap();
+        assert_eq!(run.verdict, "pass");
+        let runs = s.eval_runs().unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].verdict, "pass");
+    }
+
+    #[test]
+    fn project_display_name_and_trust_update() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        s.set_project_display_name(&p.id, "My Project").unwrap();
+        let updated = s.project(&p.id).unwrap().unwrap();
+        assert_eq!(updated.display_name, "My Project");
+        s.set_project_trusted(&p.id, true).unwrap();
+        let trusted = s.project(&p.id).unwrap().unwrap();
+        assert!(trusted.trusted);
+    }
+
+    #[test]
+    fn session_title_and_model_update() {
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let sid = s.create_session(&p.id, "mock").unwrap().id;
+        s.set_session_title(&sid, "Fix bug").unwrap();
+        s.set_session_model(&sid, "gpt-4").unwrap();
+        let session = s.session(&sid).unwrap().unwrap();
+        assert_eq!(session.title, "Fix bug");
+        assert_eq!(session.model, "gpt-4");
+    }
+
+
+    #[test]
+    fn list_all_sessions_across_projects() {
+        let mut s = mem();
+        let dir1 = tempfile::tempdir().unwrap();
+        let dir2 = tempfile::tempdir().unwrap();
+        let p1 = s.upsert_project(dir1.path().to_str().unwrap()).unwrap();
+        let p2 = s.upsert_project(dir2.path().to_str().unwrap()).unwrap();
+        s.create_session(&p1.id, "mock").unwrap();
+        s.create_session(&p2.id, "mock").unwrap();
+        let all = s.list_all_sessions().unwrap();
+        assert!(all.len() >= 2);
+    }
 }
