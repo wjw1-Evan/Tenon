@@ -2312,4 +2312,65 @@ mod tests {
         let list = execute_tool(&c, "list_dir", &serde_json::json!({}));
         assert!(list.ok);
     }
+
+    #[test]
+    fn apply_patch_read_list_three_level_integration() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+
+        let files = [
+            ("src/models/user.ts", "export interface User { id: string; name: string; }\n"),
+            ("src/services/user-service.ts", "import { User } from '../models/user';\n"),
+            ("src/index.ts", "export { User } from './models/user';\n"),
+        ];
+        for (path, content) in files {
+            let out = execute_tool(&c, "apply_patch", &serde_json::json!({
+                "file": path, "range": null, "content": content
+            }));
+            assert!(out.ok, "failed to create {}", path);
+        }
+
+        // List src
+        let list = execute_tool(&c, "list_dir", &serde_json::json!({"path": "src"}));
+        assert!(list.ok);
+        assert!(list.content.contains("models/"));
+        assert!(list.content.contains("services/"));
+        assert!(list.content.contains("index.ts"));
+
+        // Read user model
+        let read = execute_tool(&c, "read_file", &serde_json::json!({"path": "src/models/user.ts"}));
+        assert!(read.ok);
+        assert!(read.content.contains("interface User"));
+
+        // Grep for User across files
+        let grep = execute_tool(&c, "grep", &serde_json::json!({"pattern": "User"}));
+        assert!(grep.ok);
+    }
+
+    #[test]
+    fn readonly_denied_team_and_tool_level_interactions() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("readable.txt"), "safe").unwrap();
+        let mut c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        c.readonly.store(true, Ordering::Relaxed);
+        c.team_denied_tools = vec!["bash".into(), "run_tests".into()];
+
+        // A级（只读）工具 → readonly OK, not denied → works
+        let read = execute_tool(&c, "read_file", &serde_json::json!({"path": "readable.txt"}));
+        assert!(read.ok);
+
+        // B级工具 + readonly → blocked
+        let patch = execute_tool(&c, "apply_patch", &serde_json::json!({
+            "file": "ro.txt", "range": null, "content": "blocked"
+        }));
+        assert!(!patch.ok);
+
+        // B级工具 + denied → blocked (readonly check happens after team check for bash)
+        let bash = execute_tool(&c, "bash", &serde_json::json!({"command": "echo", "timeout_s": 5}));
+        assert!(!bash.ok);
+
+        // NOT denied C级 tool + NOT readonly (install_deps not in denied) → works or sandbox error
+        let deps = execute_tool(&c, "install_deps", &serde_json::json!({"command": "echo deps"}));
+        let _ = deps; // sandbox may or may not be available
+    }
 }
