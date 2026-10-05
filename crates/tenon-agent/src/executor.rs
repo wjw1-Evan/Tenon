@@ -1378,9 +1378,13 @@ mod tests {
     fn apply_patch_empty_content() {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "empty.txt", "range": null, "content": ""
-        }));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "empty.txt", "range": null, "content": ""
+            }),
+        );
         assert!(out.ok);
     }
 
@@ -1389,9 +1393,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("src")).unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "src/deep/nested.rs", "range": null, "content": "fn deep() {}"
-        }));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "src/deep/nested.rs", "range": null, "content": "fn deep() {}"
+            }),
+        );
         assert!(out.ok, "create parent dirs: {}", out.content);
     }
 
@@ -1433,7 +1441,11 @@ mod tests {
         std::fs::write(dir.path().join("f.txt"), "data").unwrap();
 
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        let out = execute_tool(&c, "git_commit", &serde_json::json!({"message": "add file"}));
+        let out = execute_tool(
+            &c,
+            "git_commit",
+            &serde_json::json!({"message": "add file"}),
+        );
         assert!(out.ok, "{}", out.content);
     }
 
@@ -1459,16 +1471,24 @@ mod tests {
     fn apply_patch_path_escape_blocked() {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "../../etc/passwd", "range": null, "content": "evil"
-        }));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "../../etc/passwd", "range": null, "content": "evil"
+            }),
+        );
         assert!(!out.ok, "path escape should be blocked");
     }
 
     #[test]
     fn read_file_path_escape_blocked() {
         let (_d, c) = ctx();
-        let out = execute_tool(&c, "read_file", &serde_json::json!({"path": "../../../etc/passwd"}));
+        let out = execute_tool(
+            &c,
+            "read_file",
+            &serde_json::json!({"path": "../../../etc/passwd"}),
+        );
         assert!(!out.ok);
     }
 
@@ -1476,9 +1496,14 @@ mod tests {
     fn apply_patch_overwrites_and_preserves_newline() {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "nl.txt", "range": null, "content": "line1\nline2\nline3\n"
-        })).ok;
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "nl.txt", "range": null, "content": "line1\nline2\nline3\n"
+            }),
+        );
+        assert!(out.ok);
         let content = std::fs::read_to_string(dir.path().join("nl.txt")).unwrap();
         assert!(content.ends_with('\n'));
     }
@@ -1497,7 +1522,11 @@ mod tests {
     #[test]
     fn list_dir_nonexistent_returns_error() {
         let (_d, c) = ctx();
-        let out = execute_tool(&c, "list_dir", &serde_json::json!({"path": "nonexistent-dir"}));
+        let out = execute_tool(
+            &c,
+            "list_dir",
+            &serde_json::json!({"path": "nonexistent-dir"}),
+        );
         assert!(!out.ok);
     }
 
@@ -1506,7 +1535,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut c = ToolContext::new(dir.path(), Duration::from_secs(30));
         c.team_denied_tools = vec!["bash".into()];
-        let out = execute_tool(&c, "bash", &serde_json::json!({"command": "echo hi", "timeout_s": 5}));
+        let out = execute_tool(
+            &c,
+            "bash",
+            &serde_json::json!({"command": "echo hi", "timeout_s": 5}),
+        );
         assert!(!out.ok);
         assert!(out.content.contains("团队策略禁用"));
     }
@@ -1516,7 +1549,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
         c.readonly.store(true, Ordering::Relaxed);
-        let out = execute_tool(&c, "install_deps", &serde_json::json!({"command": "npm install"}));
+        let out = execute_tool(
+            &c,
+            "install_deps",
+            &serde_json::json!({"command": "npm install"}),
+        );
         assert!(!out.ok);
     }
 
@@ -1534,9 +1571,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
         c.readonly.store(true, Ordering::Relaxed);
-        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "blocked.txt", "range": null, "content": "blocked"
-        }));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "blocked.txt", "range": null, "content": "blocked"
+            }),
+        );
         assert!(!out.ok);
     }
 
@@ -1546,7 +1587,11 @@ mod tests {
         std::fs::write(dir.path().join("readable.txt"), "safe to read").unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
         c.readonly.store(true, Ordering::Relaxed);
-        let out = execute_tool(&c, "read_file", &serde_json::json!({"path": "readable.txt"}));
+        let out = execute_tool(
+            &c,
+            "read_file",
+            &serde_json::json!({"path": "readable.txt"}),
+        );
         assert!(out.ok, "readonly should allow A-level read");
     }
 
@@ -1575,9 +1620,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
         let big = "x".repeat(100_000);
-        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "big.txt", "range": null, "content": big
-        }));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "big.txt", "range": null, "content": big
+            }),
+        );
         assert!(out.ok);
         let metadata = std::fs::metadata(dir.path().join("big.txt")).unwrap();
         assert!(metadata.len() > 0);
@@ -1627,11 +1676,15 @@ mod tests {
     fn apply_patch_preserves_subdirectory_structure() {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        let out = execute_tool(&c, "apply_patch", &serde_json::json!({
-            "file": "src/deeply/nested/module.rs",
-            "range": null,
-            "content": "pub struct Deep;\n"
-        }));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "src/deeply/nested/module.rs",
+                "range": null,
+                "content": "pub struct Deep;\n"
+            }),
+        );
         assert!(out.ok);
         assert!(dir.path().join("src/deeply/nested/module.rs").exists());
     }
