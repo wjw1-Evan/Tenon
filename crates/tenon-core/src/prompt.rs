@@ -237,4 +237,30 @@ mod tests {
             "token 预算内（节首行与标点留少量余量）"
         );
     }
+
+    #[test]
+    fn build_system_prompt_with_memories() {
+        let memories = vec![
+            MemoryItem {
+                kind: "fact".into(),
+                scope: "project".into(),
+                content: "Uses TypeScript".into(),
+                importance: 3,
+            },
+        ];
+        let p = build_system_prompt(&ProjectRules::default(), &SessionMemory::default(), &memories);
+        assert!(p.contains("TypeScript"));
+    }
+
+    #[test]
+    fn build_system_prompt_with_session_memory_goals() {
+        let memory = SessionMemory {
+            goals: vec!["Complete refactoring".into()],
+            decisions: vec!["Use Vue instead".into()],
+            pending_steps: vec![],
+            recent_turns: vec![],
+        };
+        let p = build_system_prompt(&ProjectRules::default(), &memory, &[]);
+        assert!(!p.is_empty());
+    }
 }
