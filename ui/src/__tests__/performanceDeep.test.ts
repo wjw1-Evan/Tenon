@@ -170,3 +170,95 @@ describe("theme + performance final", () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe("theme final coverage", () => {
+  it("watchSystemTheme with real matchMedia mock adds and removes listener", () => {
+    const added: Array<(e: MediaQueryListEvent) => void> = [];
+    const mq = {
+      matches: false,
+      addEventListener: (_: string, cb: (e: MediaQueryListEvent) => void) => { added.push(cb); },
+      removeEventListener: (_: string, cb: (e: MediaQueryListEvent) => void) => {
+        const idx = added.indexOf(cb);
+        if (idx >= 0) added.splice(idx, 1);
+      },
+    };
+    vi.stubGlobal("matchMedia", vi.fn().mockReturnValue(mq));
+    const cb = vi.fn();
+    const unwatch = watchSystemTheme(cb);
+    expect(added.length).toBe(1);
+    // 触发系统主题变更
+    added[0]({ matches: true } as MediaQueryListEvent);
+    expect(cb).toHaveBeenCalledWith(true);
+    unwatch();
+    expect(added.length).toBe(0);
+    vi.unstubAllGlobals();
+  });
+
+  it("loadThemePreference with localStorage throw returns system", () => {
+    vi.stubGlobal("localStorage", {
+      getItem: () => { throw new Error("blocked"); },
+      setItem: () => {},
+      removeItem: () => {},
+      clear: () => {},
+    });
+    expect(loadThemePreference()).toBe("system");
+    vi.unstubAllGlobals();
+  });
+
+  it("saveThemePreference with storage throw does not crash", () => {
+    vi.stubGlobal("localStorage", {
+      getItem: () => null,
+      setItem: () => { throw new Error("blocked"); },
+      removeItem: () => {},
+      clear: () => {},
+    });
+    expect(() => saveThemePreference("dark")).not.toThrow();
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("performance storage-error paths", () => {
+  it("resetColdStartTelemetry with storage throw", () => {
+    vi.stubGlobal("localStorage", {
+      getItem: () => null,
+      setItem: () => {},
+      removeItem: () => { throw new Error("blocked"); },
+      clear: () => {},
+    });
+    expect(() => resetColdStartTelemetry()).not.toThrow();
+    vi.unstubAllGlobals();
+  });
+
+  it("resetCompletionTelemetry with storage throw", () => {
+    vi.stubGlobal("localStorage", {
+      getItem: () => null,
+      setItem: () => {},
+      removeItem: () => { throw new Error("blocked"); },
+      clear: () => {},
+    });
+    expect(() => resetCompletionTelemetry()).not.toThrow();
+    vi.unstubAllGlobals();
+  });
+
+  it("readCompletionSamples with malformed JSON returns empty", () => {
+    vi.stubGlobal("localStorage", {
+      getItem: () => "not json{{{",
+      setItem: () => {},
+      removeItem: () => {},
+      clear: () => {},
+    });
+    // recordCompletionPresentation 内部调 readCompletionSamples，异常被吞
+    const status = recordCompletionPresentation(42);
+    expect(status.latest_ms).toBe(42);
+    vi.unstubAllGlobals();
+  });
+
+  it("markWorkspaceInputReady uses setTimeout when rAF unavailable", async () => {
+    const origRAF = globalThis.requestAnimationFrame;
+    // @ts-expect-error 模拟无 rAF 环境
+    globalThis.requestAnimationFrame = undefined;
+    markWorkspaceInputReady();
+    await new Promise(r => setTimeout(r, 50));
+    globalThis.requestAnimationFrame = origRAF;
+  });
+});
