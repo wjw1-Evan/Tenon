@@ -31,6 +31,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      # tauri-build 校验 externalBin 资源存在；CI 只做静态检查，占位即可
+      #（真实 sidecar 由 release.yml 构建并归集）
+      - name: 占位 daemon sidecar
+        run: |
+          mkdir -p app/src-tauri/binaries
+          echo placeholder > "app/src-tauri/binaries/tenon-daemon-$(rustc -vV | sed -n 's/host: //p')"
       - name: fmt
         run: cargo fmt --all -- --check
       - name: clippy
@@ -109,6 +115,7 @@ jobs:
       # §8.7：runtime 已打开的项目切换核心链路 P50 预算。
       - name: project switch budget
         run: cargo test -p tenon-daemon --release --test daemon_tests warm_project_switch -- --ignored --nocapture
-      # §18.4 内核基准：merge / snapshot / sandbox-exec 持续输出趋势基线。
+      # §18.4 内核基准：merge / snapshot 持续输出趋势基线。sandbox exec bench
+      # 需要宿主特权（Seatbelt / 用户命名空间），托管 runner 不可用——本地跑。
       - name: kernel benches
-        run: cargo bench -p tenon-core -p tenon-sandbox -p tenon-snapshot --benches
+        run: cargo bench -p tenon-core -p tenon-snapshot --benches
