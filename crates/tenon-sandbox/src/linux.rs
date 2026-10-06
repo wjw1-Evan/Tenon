@@ -293,22 +293,27 @@ mod tests {
         assert_eq!(filter.len(), 14);
         // 末条必须 RET
         assert_eq!(filter[13].code, BPF_RET | BPF_K);
-        // jump 目标均在界内（idx+1+offset ≤ 13）
+        // jump 目标均在界内（idx+1+offset ≤ 13）；offset=0 为顺序下落（落点
+        // 是 LD/JEQ 链节点而非 RET），仅对真正跳转（offset>0）断言落在 RET
         for (i, f) in filter.iter().enumerate() {
             if f.code == BPF_JMP | BPF_JEQ | BPF_K {
                 let t_true = i + 1 + f.jt as usize;
                 let t_false = i + 1 + f.jf as usize;
                 assert!(t_true <= 13 && t_false <= 13, "idx {i} 越界");
-                assert_eq!(
-                    filter[t_true].code,
-                    BPF_RET | BPF_K,
-                    "idx {i} jt 目标应 RET"
-                );
-                assert_eq!(
-                    filter[t_false].code,
-                    BPF_RET | BPF_K,
-                    "idx {i} jf 目标应 RET"
-                );
+                if f.jt != 0 {
+                    assert_eq!(
+                        filter[t_true].code,
+                        BPF_RET | BPF_K,
+                        "idx {i} jt 目标应 RET"
+                    );
+                }
+                if f.jf != 0 {
+                    assert_eq!(
+                        filter[t_false].code,
+                        BPF_RET | BPF_K,
+                        "idx {i} jf 目标应 RET"
+                    );
+                }
             }
         }
     }
