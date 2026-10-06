@@ -88,7 +88,9 @@ impl LinuxSandbox {
             // 托管 CI 禁用非特权 userns，§12.3 v1.150）EPERM → 降级跳过：
             // 网络隔离由层 3 seccomp inet 过滤兜底，写限仍由层 2 Landlock 承担
             if unshare_network().is_err() {
-                eprintln!("[tenon-sandbox] unshare(CLONE_NEWNET) 不可用，层 1 降级（seccomp 兜底断网）");
+                eprintln!(
+                    "[tenon-sandbox] unshare(CLONE_NEWNET) 不可用，层 1 降级（seccomp 兜底断网）"
+                );
             }
         }
         // 层 2：Landlock 写限（旧内核 ENOSYS → 尽力降级，不致命）
