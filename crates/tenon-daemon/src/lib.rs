@@ -462,10 +462,29 @@ impl Drop for InstanceLock {
     }
 }
 
+#[cfg(unix)]
 fn pid_alive(pid: i32) -> bool {
     // kill(pid, 0)：ESRCH = 不存在；EPERM = 存活但无权限
     let r = unsafe { libc::kill(pid, 0) };
     r == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+#[cfg(windows)]
+fn pid_alive(pid: i32) -> bool {
+    // Windows 原生兜底面（设计主路径为 WSL2，§12.3）：OpenProcess
+    // PROCESS_QUERY_LIMITED_INFORMATION 探测进程存在性，查到句柄即存活。
+    unsafe {
+        let handle = windows_sys::Win32::System::Threading::OpenProcess(
+            windows_sys::Win32::System::Threading::PROCESS_QUERY_LIMITED_INFORMATION,
+            0,
+            pid as u32,
+        );
+        if handle == 0 {
+            return false;
+        }
+        windows_sys::Win32::Foundation::CloseHandle(handle);
+        true
+    }
 }
 
 /// 生成 ed25519 签名密钥对（M0：签名与 updater 密钥，§17）。

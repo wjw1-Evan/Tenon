@@ -41,6 +41,10 @@ toml = { workspace = true }
 libc = "0.2"
 ed25519-dalek = "2"
 
+[target.'cfg(windows)'.dependencies]
+# 与工作树既有 tauri 传递依赖同版本（Cargo.lock 不新增版本）；仅 pid_alive 存活探测用
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio-tungstenite = "0.28"

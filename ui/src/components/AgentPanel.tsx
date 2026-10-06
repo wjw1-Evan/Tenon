@@ -722,9 +722,9 @@ export function AgentPanel({
           </div>
         )}
       </div>
-      <SubtasksLive items={liveSubtasks} t={t} />
 
-      <div
+      {/* §7.5（v1.148）：常驻进度卡——未完成清单钉在输入区上方，完成自动收起 */}
+      <SubtasksLive items={liveSubtasks} t={t} />
 
       <div
         className={inputDrop ? "agent-input drop-target" : "agent-input"}
