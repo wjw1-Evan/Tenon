@@ -779,7 +779,8 @@ button:disabled { opacity: 0.45; cursor: default; }
 .zone-left {
   display: flex;
   flex-direction: column;
-  padding: 10px;
+  /* 横向收紧（用户令「减少两侧外间距 充分利用两侧空间」）：10px → 6px */
+  padding: 10px 6px;
   background: var(--bg);
   border-right: 1px solid var(--border);
 }
@@ -877,7 +878,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   display: flex;
   flex-direction: column;
   min-height: 0;
-  padding: 6px 8px 6px 10px;
+  padding: 6px 4px;
 }
 .pe-source-head {
   flex: none;
@@ -1018,7 +1019,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 3px 6px;
+  padding: 3px 4px;
   border-radius: var(--radius-s);
   min-width: 0;
   transition: background 0.12s;
@@ -1036,7 +1037,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   text-align: left;
   background: none;
   border: none;
-  padding: 2px 4px;
+  padding: 2px 2px;
   font-size: 12.5px;
   color: var(--fg);
   overflow: hidden;
