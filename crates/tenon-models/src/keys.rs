@@ -211,7 +211,7 @@ fn set_platform_secret(service: &str, name: &str, value: &str) {
             .stdin(std::process::Stdio::piped())
             .spawn()
             .ok();
-        if let Some(mut child) = child.as_mut() {
+        if let Some(child) = child.as_mut() {
             use std::io::Write;
             if let Some(stdin) = child.stdin.as_mut() {
                 let _ = stdin.write_all(value.as_bytes());
