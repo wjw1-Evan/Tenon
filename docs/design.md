@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v1.143** |
-| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.143） |
+| 版本 | **v1.145** |
+| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.145） |
 | 状态 | 定稿（v1.10 决策闭环），M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 | 历史评审 | v0.1 / v0.3 两轮共 41 项、v1.0 复审 21 项问题的结论已全部并入本方案（过程文档已清理） |
@@ -175,8 +175,8 @@ Codex CLI 已开源且核心为 Rust 实现（codex-rs 工作区，另有遗留 
 | 安全 | checkpoint（独立 shadow git 快照库，§10.3）、回滚 / 撤销回滚、TOFU、崩溃恢复 | P0/P1 |
 | 模型 | OpenAI / Anthropic / DeepSeek / Ollama + OpenAI 兼容端点；显式路由；成本显示 | P0/P1 |
 | 模型 | 本地决策模型 Laya：自动下载 + 意图预判 / 命令风险辅助 / 路由启发（§9.8 集成点 #1-3）+ agent 可调用判定工具 laya_decide（#4，v1.124） | P0（M1 后段核心）/ P1（深化） |
-| 插件 | 外部进程插件 + MCP；官方 registry、签名、权限 diff | P1 |
-| 插件 | 代理技能（Skills）：SKILL.md 双作用域目录、技能目录注入提示 + `skill_use` 按需加载、设置面板管理（§13.4） | P1（v1.130） |
+| 插件 | MCP 插件：GitHub 市场清单获取 + 运行时接线（§13.5，v1.145）；官方签名 registry 保留为官方通道（§12.5） | P1（v1.145） |
+| 插件 | 代理技能（Skills）：SKILL.md 双作用域目录、技能目录注入提示 + `skill_use` 按需加载、设置面板管理（§13.4）；GitHub 市场获取（§13.5） | P1（v1.130 / v1.145） |
 | 治理 | AgentTrace、本地报告；团队策略文件、AI Evals | P1/P2 |
 | 平台 | 浏览器访问（本机 127.0.0.1 为 P1；局域网配对后移 M3，Q4）；Windows WSL2 安装包 | P1/P2 |
 
@@ -302,7 +302,7 @@ GlobalScheduler（全局并发 / 成本 / 通知）
 | 直执风险事件 | C/D 级动作 | 级别、动作详情、目标域名 / 参数、执行结果；不等待确认 |
 | Checkpoint 时间轴 | 侧栏 | 事件流 + 快照点，任意回滚 / 撤销回滚（unrevert） |
 | 语言包安装向导 | 检测到语言缺包 | 一键安装、运行时检测与官方指引 |
-| 设置 | 全局（Cmd/Ctrl+, 或命令面板） | **v1.121 起为 Codex 式模态框：左侧 General / Models / Permissions / Plugins / Skills / Updates 分类导航，右侧只渲染当前分类**；General 承载编辑器保存方式（v1.75）与代理参数（首改缓冲 / 命令超时）；Models / Permissions / Plugins / Updates 分别承载模型（v1.40）、权限策略（v1.85：工具黑名单、单任务成本上限；强制交互档随 v1.89 审批移除而删除）、插件管理（v1.84）、技能管理（v1.130，§13.4）、更新执行器（v1.83：更新通道 manual \| auto；遥测 / 崩溃报告无采集端，不设无效开关，v1.92）；外观档与语言仅保留顶栏入口（v1.92 去重） |
+| 设置 | 全局（Cmd/Ctrl+, 或命令面板） | **v1.121 起为 Codex 式模态框：左侧 General / Models / Permissions / Plugins / Skills / Updates 分类导航，右侧只渲染当前分类**；General 承载编辑器保存方式（v1.75）与代理参数（首改缓冲 / 命令超时）；Models / Permissions / Plugins / Updates 分别承载模型（v1.40）、权限策略（v1.85：工具黑名单、单任务成本上限；强制交互档随 v1.89 审批移除而删除）、MCP 插件管理（v1.84 设立，v1.145 重构为 GitHub 市场获取 + 已装管理，§13.5）、技能管理（v1.130，§13.4；v1.145 增市场获取子视图）、更新执行器（v1.83：更新通道 manual \| auto；遥测 / 崩溃报告无采集端，不设无效开关，v1.92）；外观档与语言仅保留顶栏入口（v1.92 去重） |
 | 命令面板 | Cmd+Shift+P | 全部命令可达（无障碍要求） |
 | Evals 报告 | M3 | 五指标 + 对比版本 |
 
@@ -510,7 +510,7 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 | `http_fetch` | C | 直接执行；目标域名写入审计事件 |
 | `git_commit` / `git_push` | D | 直接执行；命令与结果全量入 Trace |
 | `create_pr` | C+D | 直接执行；目标平台与 PR 元数据全量入 Trace；经本机 `gh` CLI 凭据执行（v1.79） |
-| `plugin_*` | 按声明 | 外部进程插件提供，映射分级 |
+| `mcp_{server}_{tool}`（MCP 插件工具） | 按声明（默认 D；`net:*` → C） | MCP 外部进程插件工具目录（§13.3 / §13.5，v1.145 接线）；只读会话一律拒绝；调用全量入 Trace |
 
 ### 9.3 事中防护
 
@@ -695,7 +695,7 @@ A/B/C/D 仅是风险与执行边界标记，不再是审批门槛；去 Plan 安
 
 ### 12.5 插件与语言包供应链
 
-仅官方 registry、签名 + 版本锁定、安装权限 diff 写入 Trace、插件最小权限自有沙箱、调用全量入 Trace、保留字防 typosquatting。安装不再等待批准；校验失败或保留字命中仍拒绝。
+双通道（v1.145）：**官方通道**——仅官方静态 registry、签名 + 版本锁定、安装权限 diff 写入 Trace、插件最小权限自有沙箱、调用全量入 Trace、保留字防 typosquatting（registry 尚未运营，保留为官方插件未来通道）；**社区通道（GitHub 市场，§13.5）**——无签名信任模型，安全靠客户端硬约束：启动器白名单 + argv 直启无 shell 面 + env 仅环境变量引用 + 用户显式安装（命令行面先展示）+ MCP 进程沙箱（系统只读、网络按声明）+ 调用全量入 Trace。安装不再等待批准；校验失败或保留字命中仍拒绝。
 
 ### 12.6 本地服务与浏览器访问
 
@@ -728,15 +728,16 @@ requires:
 signature: "<sig>"
 ```
 
-### 13.2 安装与升级流程
+### 13.2 安装与升级流程（v1.145 修订：双通道）
 
-registry 检索 → 展示**权限 diff**（相对已装版本新增权限高亮）→ 用户确认（D 级）→ 签名校验 + 版本锁定 → 沙箱内启动；升级同样走 diff 确认；语言包升级需过 Evals 门（§18.3）。
+- **社区通道（本期落地，§13.5）**：市场源清单检索 → 条目列表（skill：安装 / 更新；mcp：命令行面展示）→ 用户显式安装（D 级直执 + Trace，v1.89 后无确认卡）→ 安装期安全校验（§13.5 约束）→ 技能落 `~/.tenon/skills/`、MCP 写 settings `mcp.servers` 新会话生效；更新按清单 `version` 比对 sidecar；
+- **官方通道（未来）**：registry 检索 → 权限 diff（相对已装版本新增权限高亮）→ 签名校验 + 版本锁定 → 沙箱内启动；升级同样走 diff 确认；语言包升级需过 Evals 门（§18.3）。
 
 ### 13.3 生态兼容
 
 | 来源 | 策略 |
 |---|---|
-| MCP | 外部进程插件直连；工具映射动作分级，默认 C/D |
+| MCP | 外部进程插件直连（v1.145 接线：daemon 按会话注入 McpHost 多服务器管理、工具以 `mcp_{server}_{tool}` 进会话目录、分级默认 D / `net:*` → C、只读会话拒绝）；安装经 GitHub 市场（§13.5） |
 | AGENTS.md | 直读，只能收窄权限（v1.92 接线：会话创建读取项目根 `<!-- tenon:rules -->` 块） |
 | Skills | 代理技能（SKILL.md）：双作用域目录 + 技能目录注入 + `skill_use` 按需加载，管理与安全边界见 §13.4（v1.130 落地第一期） |
 
@@ -763,6 +764,51 @@ registry 检索 → 展示**权限 diff**（相对已装版本新增权限高亮
 
 **UI（v1.121 设置信息架构）**：设置面板新增 Skills 分类——合并清单（名称 / 描述 / 作用域徽标 / 启停开关）、点选条目展开 SKILL.md 源码编辑（等宽 textarea；新建预填 frontmatter 模板；删除 confirm 门，全局直删、项目走文件操作）；项目作用域经项目选择器切换（列已打开项目）。
 
+### 13.5 技能与插件市场（GitHub 获取，v1.145）
+
+**定位与动因**：插件与技能的获取通道。修订前现状：插件检索指向的官方静态 registry 尚未运营（搜索恒不可达），安装产物也无运行时消费；技能仅有本地手写 CRUD——两者都没有可用的内容来源，而技能（SKILL.md 已是主流 agent 生态事实格式）与 MCP server 的真实内容都在 GitHub。本期落地 **GitHub 市场清单通道**（社区生态，即装即用），并闭环 MCP 桥接线（v1.93 留档项）；官方静态 registry（签名 + 版本锁定，§12.5）保留为官方插件的未来通道，双通道并存、互不替代。
+
+**市场源与清单**：
+
+- 市场源 = 一个 GitHub 仓库 `owner/repo`，其根目录（或 `.tenon/` 目录）含 `marketplace.json` 清单，列出收录条目：
+
+  ```json
+  {
+    "name": "示例市场",
+    "entries": [
+      { "kind": "skill", "name": "pdf", "description": "PDF 文档处理工作流",
+        "source": "owner/skills-repo", "path": "skills/pdf", "ref": "main", "version": "1.2.0" },
+      { "kind": "mcp", "name": "github", "description": "GitHub API 操作",
+        "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"],
+        "permissions": ["net:*"], "version": "1.0.0" }
+    ]
+  }
+  ```
+
+- 字段约束：`kind` ∈ skill | mcp；`name` 同 §13.4 规范 id（mcp 条目另限 `^[a-z][a-z0-9-]{0,31}$`，保证工具命名解析无歧义，见下）；`source` 缺省 = 市场源仓库自身；`path` = 仓库内技能目录（skill 必填）；`ref` 缺省 `main`（分支 / tag / commit 均可）；`version` 供更新比对；
+- **mcp 条目安全约束（安装期校验，违者拒绝）**：`command` 必须在启动器白名单（`npx` / `uvx` / `bunx` / `node` / `python` / `python3` / `docker`）；`args` 全为字符串且不含控制字符（argv 直启，无 shell 执行面）；`env` 值仅允许 `env:VAR` 形式的环境变量引用（§11 密钥不落盘同轨，settings 不存明文密钥）；`permissions` 当前仅 `net:*` 一键。
+
+**镜像链（国内可达性优先，v1.102 Laya 分发同法）**：清单与文件获取均走多镜像顺序尝试、任一可用即止——清单：jsDelivr（`cdn.jsdelivr.net/gh/{owner}/{repo}@{ref}/marketplace.json`）→ `raw.githubusercontent.com`；技能目录列举：jsDelivr data API → GitHub API git/trees；技能文件内容：jsDelivr CDN → raw.githubusercontent。全部失败才报错。上限：每技能 ≤64 文件、单文件 ≤1MB、合计 ≤4MB（SKILL.md 本身仍受 §13.4 256KB 约束）。
+
+**安装 / 更新 / 卸载**：
+
+- 技能：按清单拉取 `path` 目录全部文件写入全局 `~/.tenon/skills/<name>/`，并落 `.tenon-market.json` sidecar（source / path / ref / version / installed_at）——sidecar 仅为溯源数据：目录即真源不变（§13.4），技能扫描忽略之，`skill_use` 仍只读 SKILL.md；重名 409，**同 source + path 视为更新**（覆盖重写目录）；卸载 = 删目录（市场条目专用入口；本地手写技能仍走 §13.4 CRUD）；
+- 更新：清单 `version` 新于已装 sidecar 即在 UI 提示，安装端点覆盖重写；
+- MCP 插件：安装 = 上述安全校验通过后写入 settings.json `mcp.servers[name]`（command / args / env / permissions / source 溯源），**新会话生效**；UI 安装前完整展示命令行面（用户点击安装即同意该命令）；卸载 = 删除该条目。
+
+**运行时接线（MCP 桥，v1.145 落地）**：
+
+- `tenon-mcp` 新增 `McpHost`：按会话创建时的 settings 快照持有多个命名服务器配置，**首次使用懒 spawn**（stdio + initialize 握手 + tools/list），调用失败下次调用重启，随 ToolContext 释放回收；daemon 在会话创建处注入（同 `skills_global_dir` 注入点）；
+- 工具目录：工具以 **`mcp_{server}_{tool}`** 进模型工具 schema——server 名禁用下划线（`^[a-z][a-z0-9-]{0,31}$`），按首个下划线切分即无歧义；MCP `inputSchema` 直接透传为参数 schema（非 object 时兜底 `{"type":"object"}`）；描述前缀标注来源 server；
+- 分级：`McpLevelPolicy` 按该服务器 `permissions` 判定——声明 `net:*` → C，否则 **D**（默认保守）；会话侧分级判定对 `mcp_` 前缀工具查策略，不再落入未知工具 C 兜底（§13.3 铁律：MCP 永不静默升 A/B）；C/D 在 v1.89 后均为直执 + 全量 Trace；
+- 只读会话：MCP 工具一律拒绝（外部进程能力面非只读）；团队策略 `denied_tools` 按完整工具名精确匹配；只读先验轮（§9.8 首轮收窄）白名单天然不含 MCP 工具；
+- 执行：`tools/call` JSON-RPC，输出经密钥脱敏（§12.4）与 20k 字符截断后进上下文，调用经常规工具路径入 Trace（tool_calls 表，不新增事件类型）；
+- 沙箱：MCP 服务器进程系统只读 + 网络按 `permissions`（声明 `net:*` 才放网）；进程崩溃由下次调用重启承接，不阻塞会话其余工具。
+
+**API（§15）**：`GET /market/sources`、`PUT /market/sources`（整体替换 `{sources: ["owner/repo", ...]}`，每项校验 owner/repo 形态）、`GET /market/{owner}/{repo}`（镜像链拉取清单原文，10s 超时，进程内 5 分钟缓存）、`POST /market/install`（`{source, kind, name}`）、`POST /market/uninstall`（`{kind, name}`）。**旧官方 registry 检索 / 安装端点退役**——`GET /plugins` / `PUT /plugins` / `POST /plugins/install` 删除（`plugins` 表保留旧库审计不新增记录，同 `approvals` 先例；`tenon-registry` crate 转为承载市场清单客户端，签名清单能力保留待官方通道启用）。
+
+**UI（§7.5 设置面板）**：Skills 与 Plugins 分类共用「市场」子视图——市场源管理（添加 / 移除 `owner/repo`）、条目列表（kind 徽标 / 描述 / 版本 / 已装·更新·安装态）、MCP 条目安装前展示命令行面；Plugins 分类重构为 MCP 插件管理——已装列表（读 settings `mcp.servers`：启停 / 删除 / 来源徽标）+ 手动添加表单（command 校验同市场条目）；v1.84 的 registry 搜索框移除。全部文案五语言。
+
 ---
 
 ## 14. 数据与存储设计
@@ -778,11 +824,11 @@ registry 检索 → 展示**权限 diff**（相对已装版本新增权限高亮
 ├── cache/
 │   ├── index/           # L4 符号 / 倒排索引（自建文件）；向量在 db.sqlite（sqlite-vec，Q3）
 │   └── models/          # 本地模型缓存（Ollama 自管）
-├── plugins/             # 已安装插件与语言包
+├── plugins/             # 已安装插件与语言包（v1.145：市场仓库型 MCP 插件落此；npx/uvx 型免落盘）
 ├── runtimes/            # 语言包专用锁定版运行时（Node 等，仅语言包沙箱可见，不污染系统）
 ├── models/              # 产品自管本地模型（Laya 决策模型，§9.8；Ollama 模型仍由其自管于 cache/models）
 ├── worktrees/           # 子代理（§9.5）与会话级受管 worktree（§9.7，v1.87），内核托管
-├── skills/             # 代理技能（SKILL.md，全局作用域，§13.4；项目级在仓库 .tenon/skills/）
+├── skills/             # 代理技能（SKILL.md，全局作用域，§13.4；项目级在仓库 .tenon/skills/）；市场安装条目附 .tenon-market.json 来源 sidecar（§13.5，v1.145）
 ├── archive/             # 冷归档（压缩事件日志，见 §14.2）
 └── logs/
 ```
@@ -865,13 +911,17 @@ registry 检索 → 展示**权限 diff**（相对已装版本新增权限高亮
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
-| GET / POST | `/plugins` | 插件与语言包管理（权限 diff、安装、升级） |
 | GET | `/skills?project=` | 代理技能合并清单（§13.4，v1.130）：项目同名覆盖全局后的生效集——name / description / scope / enabled / dir；`project` 缺省仅全局 |
 | GET | `/skills/{name}?project=` | 读 SKILL.md 原文（content / scope / path）；项目路径 canonicalize + 前缀校验 |
 | POST | `/skills` | 新建全局技能 `{name, content}`（目录名即 id，重名 409，≤256KB） |
 | PUT | `/skills/{name}` | 写全局技能原文 `{content}`（≤256KB） |
 | DELETE | `/skills/{name}` | 删全局技能目录；项目技能删除走 `/project/:id/file/ops` |
-| GET / PUT | `/settings` | 全局设置。GET 返回合并后的生效值；PUT 接受已知键子集（`session.first_edit_buffer_ms` / `exec.command_timeout_s`；v1.40 增 `models.default` / `models.providers.<name>.{kind,base_url,wire_api,model,api_key_env}`），校验后写入 `~/.tenon/settings.json`（0600）并即时生效——**新会话**按新值构建（既有会话保持各自配置）；`session.mode` 与 `privacy.*` 键已随 v1.92 移除（无行为消费方，不设无效开关）；v1.130 增 `skills.disabled`（技能名称数组，整体替换——停用条目不进技能目录、`skill_use` 拒绝，新会话生效，§13.4）。models 校验（v1.40）：provider 名 `^[a-z][a-z0-9_-]{0,63}$`、kind ∈ openai / anthropic / openai_responses、base_url 须 http(s)、`models.default` 须指向已配置 provider；`models.providers` 整体替换覆盖表（UI 每次保存发全量，支持删除；同名单条目按字段合并，未覆盖字段保留配置文件值）；GET 合并视图 provider 条目带 `overridden` 标记（纯配置文件条目不可经设置删除，只能编辑生成覆盖），`models.default=""` 清除覆盖回退配置值；**含 `api_key` 明文的请求 400 拒绝**——密钥仅以 `api_key_env` 引用（§11：daemon 环境变量优先，缺失读取 OS 凭据库），PUT 成功即重建 provider 表 |
+| GET | `/market/sources` | 市场源清单（settings `market.sources` 视图，§13.5） |
+| PUT | `/market/sources` | 整体替换市场源 `{sources: ["owner/repo", ...]}`（每项 `^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`） |
+| GET | `/market/{owner}/{repo}` | 拉取市场清单原文（镜像链：jsDelivr → raw.githubusercontent；10s 超时，进程内 5 分钟缓存，§13.5） |
+| POST | `/market/install` | 安装市场条目 `{source, kind: skill\|mcp, name}`——技能落 `~/.tenon/skills/`（重名 409，同 source+path 更新）；MCP 校验白名单后写 `mcp.servers` 新会话生效 |
+| POST | `/market/uninstall` | 卸载市场条目 `{kind, name}`——技能删目录（仅市场 sidecar 条目）、MCP 删 `mcp.servers` 条目 |
+| GET / PUT | `/settings` | 全局设置。GET 返回合并后的生效值；PUT 接受已知键子集（`session.first_edit_buffer_ms` / `exec.command_timeout_s`；v1.40 增 `models.default` / `models.providers.<name>.{kind,base_url,wire_api,model,api_key_env}`），校验后写入 `~/.tenon/settings.json`（0600）并即时生效——**新会话**按新值构建（既有会话保持各自配置）；`session.mode` 与 `privacy.*` 键已随 v1.92 移除（无行为消费方，不设无效开关）；v1.130 增 `skills.disabled`（技能名称数组，整体替换——停用条目不进技能目录、`skill_use` 拒绝，新会话生效，§13.4）。v1.145 增 `market.sources`（市场源 owner/repo 数组，整体替换，默认空，§13.5）与 `mcp.servers`（MCP 服务器表 `{name: {command, args, env?, enabled, permissions?, source?}}`：command 启动器白名单、args 无控制字符、env 值仅 `env:VAR` 引用、整体替换、新会话生效，§13.5）。models 校验（v1.40）：provider 名 `^[a-z][a-z0-9_-]{0,63}$`、kind ∈ openai / anthropic / openai_responses、base_url 须 http(s)、`models.default` 须指向已配置 provider；`models.providers` 整体替换覆盖表（UI 每次保存发全量，支持删除；同名单条目按字段合并，未覆盖字段保留配置文件值）；GET 合并视图 provider 条目带 `overridden` 标记（纯配置文件条目不可经设置删除，只能编辑生成覆盖），`models.default=""` 清除覆盖回退配置值；**含 `api_key` 明文的请求 400 拒绝**——密钥仅以 `api_key_env` 引用（§11：daemon 环境变量优先，缺失读取 OS 凭据库），PUT 成功即重建 provider 表 |
 | GET | `/models` | 模型清单与 Laya 状态（版本 / 已下载 / 加载 / 设备，§9.8）；设置面板模型分区（v1.40）消费它渲染默认模型下拉与 Laya 状态卡 |
 | GET | `/costs` | 成本归因（会话级；`?session=` 必带，v1.92 收敛——月度聚合无消费方）；返回体含 `cached_tokens` / `duration_ms`（v1.129，命中率与均速由消费方派生） |
 | POST | `/ws-ticket` | 一次性 WS 票据 |
@@ -979,7 +1029,7 @@ WS 事件与会话 events 表一一对应，均含 `project_id`；断线重连�
 | 人机共编冲突 | watcher 脏缓冲检查 + 三方合并 + 行级所有权 + 回滚 |
 | 仓库 prompt injection | 只读开关 / 工具黑名单不可被模型放宽 + AGENTS.md 只收窄 + 全量审计 |
 | 恶意网页攻击本地服务 | 随机端口 + Token 头 / WS 一次性 ticket + Origin/Host 校验 + CORS 仅白名单放行 |
-| 供应链（插件 / 语言包） | 官方 registry + 签名 + 权限 diff + 插件沙箱 |
+| 供应链（插件 / 语言包） | 官方通道：registry + 签名 + 权限 diff + 插件沙箱（未来）；社区通道（v1.145 GitHub 市场，§13.5）：启动器白名单 + argv 无 shell 面 + env 仅引用 + 用户显式安装（命令面先展示）+ MCP 进程沙箱 + 全量 Trace |
 | checkpoint 失效 | 独立 shadow git 快照库（零写用户仓库）+ 定时 gc（§10.3）；库不可用时拒绝新的 B 级写入 |
 | 依赖安装与断网矛盾 | 网络三态（断网 / 镜像 / 域名） |
 | WSL2 文件系统性能与上手门槛 | 仓库建议置于 WSL FS；NTFS 性能提示；无 WSL2 提供降级档 + 安装向导引导（§12.3） |
@@ -1017,6 +1067,7 @@ WS 事件与会话 events 表一一对应，均含 `project_id`；断线重连�
 | Laya | 产品自管本地决策模型：分类 / 打分 / 布尔三原语，CPU ~30ms 级、零 token，承接代理循环结构化判定（§9.8）；v1.124 起经 `laya_decide` 工具对 agent 开放（A 级只读） |
 | 对话记忆（L5） | 跨会话持久化的对话沉淀：用户偏好 / 项目事实 / 决策 / 工作流要点；project 层按 project_id 隔离，global 层仅用户偏好，注入提示按不可信数据对待（§10.1，v1.104） |
 | Skills（代理技能） | SKILL.md 格式的可复用方法指令集：全局 `~/.tenon/skills/` 与项目 `.tenon/skills/` 双作用域，技能目录注入提示、`skill_use` 按需加载正文，按不可信数据对待（§13.4，v1.130） |
+| 技能与插件市场（Market） | GitHub 市场清单获取通道：`owner/repo` 市场源 + `marketplace.json` 条目（skill / mcp），多镜像链拉取、sidecar 溯源、安装 / 更新 / 卸载管理；MCP 插件经此安装后接线进会话工具目录（§13.5，v1.145） |
 
 ### 附录 B · 关键决策记录（ADR 摘要）
 
