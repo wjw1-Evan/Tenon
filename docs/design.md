@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v1.145** |
-| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.145） |
+| 版本 | **v1.147** |
+| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.147） |
 | 状态 | 定稿（v1.10 决策闭环），M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 | 历史评审 | v0.1 / v0.3 两轮共 41 项、v1.0 复审 21 项问题的结论已全部并入本方案（过程文档已清理） |
@@ -335,7 +335,7 @@ GlobalScheduler（全局并发 / 成本 / 通知）
 
 **切换 / 并行操作项目**：项目中心选择目标项目或把项目停靠为新窗格；所有文件 / 搜索 / LSP / 会话请求携带目标 `project_id`。用户可同时保留 A 的执行中任务并在 B 继续；风险动作在所属项目的代理面板审计（v1.89：无审批面板）。任意登记项目点击即切换并隐式激活，无打开 / 关闭步骤（v1.60）。 项目中心（v1.33）暴露路径添加与移除登记（不删盘）。 添加项目（v1.43）为模态对话框：桌面壳弹出系统目录选择器取得绝对路径（浏览器模式 v1.133 起新增内嵌目录选择浮层——`GET /fs/dirs` 逐层进入，亦可手输），项目名可手输、缺省自动取路径末段；登记 / 重开均携带可选 `display_name` 落库（空串回退派生），项目列表按自定义名展示。**同项目并行任务（v1.87）**：项目主根已有会话 EXECUTING 时，新任务可勾选「在独立 worktree 中运行」——daemon 为该会话创建受管 worktree 并行执行，完成后在会话列表就地「合并 / 丢弃」收尾（§9.7）；**跨项目监控（v1.87；v1.98 收敛）**：项目行徽标实时反映各项目运行中状态（v1.87 的全局活动条已移除），点击项目行即切换检查，后台任务无需逐项目展开。
 
-**下达任务**：会话输入 / 行内指令 / 诊断「AI 修复」→ 进入自主循环（§9.1）→ 首改 2s 缓冲（Esc 可断）→ 改动实时高亮 → 证据卡片；C/D 直执动作生成 direct_action 审计事件。
+**下达任务**：会话输入 / 行内指令 / 诊断「AI 修复」→ 进入自主循环（§9.1）→ 首改 2s 缓冲（Esc 可断）→ 改动实时高亮 → 证据卡片；C/D 直执动作生成 direct_action 审计事件。运行态再发送自动入队不拒绝（发送消息队列，v1.147 §9.1）：回合自然完成自动续跑，停止 / 暂停冻结队列待手动续发。
 
 **直执审计**：C / D / C+D 动作不再出卡等待；级别、具体动作、影响范围与执行结果写入 Trace。用户可在 Checkpoint 时间轴回滚相关节点；只读开关（命令面板「只读模式 开 / 关」，控制命令工具步间即时生效，v1.93）或工具黑名单是事前硬边界。
 
@@ -357,8 +357,9 @@ GlobalScheduler（全局并发 / 成本 / 通知）
 
 - **状态色**：感知（蓝）、执行（黄）、验证（紫）、风险直执（橙）、失败（红）、完成（绿）；
 - **核心组件**：会话流卡片、证据卡片、直执风险卡、诊断条、AI 修改高亮区、时间轴节点、语言包安装卡；
-- **会话过程流（v1.109，Codex 形态；v1.112 降噪）**：线程主视图内事件流按 `user_input` 切分回合——用户任务气泡（**居右**，accent 底色圆角，与居左 AI 内容按侧区分；气泡下功能按钮组（v1.123 引入；v1.127 修订：复制恒可用 / 撤销挂**每个含改动的回合**——恢复到发送该消息前的工作区状态，该消息之后其他回合改动随树回退 / 重做挂最近被撤销回合、unrollback、成功即收；v1.131：组尾 muted 显示该回合所用模型，取 Decision 事件 `model` 字段；v1.134：模型名完整显示不截断；**v1.135 撤销语义修订（用户令）——撤销 = 三合一：①回合任务文本回填输入框；②文件修改随树回滚（原语义）；③线程截断——该气泡及其后全部信息隐藏：会话级截断水位 [from,to]（schema v11），水位内事件对线程 / Trace 隐藏、行留库可审计，unrollback 清水位即恢复，会话状态复位 idle**；重做从气泡钮改挂线程「已撤销」提示条（unrollback 入口；发送新消息即收）；**v1.136：重做功能移除（用户令「删除 重做 功能」）——撤销即终态操作（文字回填 + 回滚 + 截断不再可逆），线程提示条与 `thread.redo / thread.undo_notice` 键移除；unrollback 能力保留于检查点时间轴「撤销回滚」钮、命令面板与 control API，截断水位仍可经 API 清除**）→ 步骤卡（**仅写类 / 风险类工具**：编辑、运行、安装、请求、git 写操作折叠卡：状态图标 + 动词摘要 + 目标摘要，展开看 args 与输出，失败红显默认展开；A 级只读工具不落卡，按回合聚合为单行 muted 摘要「读取 2 · 搜索 1」）→ 风险直执卡（级别徽标）→ 验证证据卡（verification 非空才渲染）→ 助手 markdown 正文（居左、左缘竖线贯穿；受限渲染器 `markdownLite`，零依赖、全量转义）；运行态活跃回合底部 spinner 行承接「正在做什么」与流式草稿；信息行仅保留回滚 / 撤销回滚（降级 / 压缩 / 记忆更新不显示，轨迹面板可见）；完整事件表仍由底部「轨迹」tab 承载，会话流只渲染面向用户的子集；
+- **会话过程流（v1.109，Codex 形态；v1.112 降噪）**：线程主视图内事件流按 `user_input` 切分回合——用户任务气泡（**居右**，accent 底色圆角，与居左 AI 内容按侧区分；气泡下功能按钮组（v1.123 引入；v1.127 修订：复制恒可用 / 撤销挂**每个含改动的回合**——恢复到发送该消息前的工作区状态，该消息之后其他回合改动随树回退 / 重做挂最近被撤销回合、unrollback、成功即收；v1.131：组尾 muted 显示该回合所用模型，取 Decision 事件 `model` 字段；v1.134：模型名完整显示不截断；**v1.135 撤销语义修订（用户令）——撤销 = 三合一：①回合任务文本回填输入框；②文件修改随树回滚（原语义）；③线程截断——该气泡及其后全部信息隐藏：会话级截断水位 [from,to]（schema v11），水位内事件对线程 / Trace 隐藏、行留库可审计，unrollback 清水位即恢复，会话状态复位 idle**；重做从气泡钮改挂线程「已撤销」提示条（unrollback 入口；发送新消息即收）；**v1.136：重做功能移除（用户令「删除 重做 功能」）——撤销即终态操作（文字回填 + 回滚 + 截断不再可逆），线程提示条与 `thread.redo / thread.undo_notice` 键移除；unrollback 能力保留于检查点时间轴「撤销回滚」钮、命令面板与 control API，截断水位仍可经 API 清除**）→ **子任务清单卡（v1.146）**：回合内最新一次 `subtasks` 事件渲染为清单卡——标题行「子任务 · n/m」（n=已完成数）+ 列表行（状态图标 ○ 待执行 / ▶ 进行中 / ✓ 完成 + 一句话标题；全部完成整卡灰显收敛）；同回合更早的状态演进事件不渲染（轨迹面板全量可见），`subtasks` 的 `command_run` 记录照只读聚合排除、不落步骤卡 → 步骤卡（**仅写类 / 风险类工具**：编辑、运行、安装、请求、git 写操作折叠卡：状态图标 + 动词摘要 + 目标摘要，展开看 args 与输出，失败红显默认展开；A 级只读工具不落卡，按回合聚合为单行 muted 摘要「读取 2 · 搜索 1」）→ 风险直执卡（级别徽标）→ 验证证据卡（verification 非空才渲染）→ 助手 markdown 正文（居左、左缘竖线贯穿；受限渲染器 `markdownLite`，零依赖、全量转义）；运行态活跃回合底部 spinner 行承接「正在做什么」与流式草稿；信息行仅保留回滚 / 撤销回滚（降级 / 压缩 / 记忆更新不显示，轨迹面板可见）；完整事件表仍由底部「轨迹」tab 承载，会话流只渲染面向用户的子集；
 - **任务输入区上下文条（v1.126，参照 Codex / ZCode 输入上方选择器）**：任务输入框（textarea，v1.51 组合容器之上）新增常驻上下文条（无 active 项目不渲染）——**草稿态**（v1.116）为两个原生 `<select>`：项目选择（全部已打开项目；切换 = 激活目标项目并保持 / 进入其草稿，同侧栏点项目行语义）+ 工作区选择（主工作区 / 新受管 worktree——「分支选择」在 Tenon 的对应物即会话级受管 worktree（v1.87），映射 `draftByProject` 意图；非 git 仓库项目选受管项在首发建会话时经 daemon 错误呈现）；**会话态**为只读标识（项目名 + ⎇ 受管 worktree 徽标，会话强绑定 `project_id` 不可切换）；草稿输入文本 per-project 持有（并行草稿互不串扰，发送成功随草稿清除，弃草稿重进恢复）；注入类入口（诊断 AI 修复 / 行内指令）在主根草稿态走草稿首发链路，受管 worktree 草稿不接（主根上下文不注入 worktree 副本）；
+- **发送消息队列（v1.147，Codex 形态；双参考方案的 UI 暂存条形态备选未采用）**：会话运行态下发送不拒绝、自动入 daemon 侧会话级 FIFO 队列（§9.1）——线程内当前回合下方渲染**排队气泡**：用户任务气泡同款居右样式，尾部 muted「已排队」徽标 + ✕ 移除钮；点击气泡文本回填输入框并移除条目（即编辑重发）；回合自然完成自动出队首条转正为常规回合，剩余队列逐条续跑；暂停 / 停止 / 出错不自动出队——队列冻结常驻，条目显示发送钮可手动续发（停止后发送即正常新回合，完成后续接自动出队）；运行态输入区 foot 恢复「发送」钮（Cmd/Ctrl+Enter 同语义 = 入队）与「停止」钮并列；spinner 行显示「队列 n」计数徽标；队列随 GET `/session/:id` 状态响应 `queue` 字段下发，多窗口一致；文案五语言；
 - **AI 改动可视**：所有代理写入的行带「AI」角标，直到用户编辑该区域或确认；
 - **外观档**：深色（默认）/ 浅色 / 跟随系统（`prefers-color-scheme`）三档；顶栏为**单图标按钮三态循环**（v1.119：跟随系统 🖥 → 浅色 ☀ → 深色 ☾，点击推进下一档、末端回绕，图标与 aria-label / tooltip 随当前档位），切换即时生效，`data-theme` 属性驱动 CSS 变量整套换色，状态色两套均可读；偏好双写——`localStorage` 为快路径，daemon `ui_prefs` 存储（§14.1）为跨启动 / 跨端（桌面 + 浏览器）权威（daemon 端口动态，localStorage 按 origin 隔离不可跨启动）；
 - **任务完成提示音（v1.122）**：Agent 回合自运行态（§9.1 感知→修复五态）转入 done 时播放应用内双音提示——WebAudio 运行时合成两枚上行正弦短音（总长 <400ms），零音频资源文件；浏览器 autoplay 策略下无用户激活（AudioContext suspended）则静默跳过；error / paused / 会话切换重置不触发；仅 active 会话触发（后台项目 attention 仍以徽标为准）。偏好存 daemon `ui_prefs` 键 `sound.done`（"on" 默认 / "off"，即时生效，与保存方式 v1.75 同法，不入 localStorage——非视觉偏好无闪烁问题），命令面板「任务完成提示音 开 / 关」（`toggle.sound_done`，标签随当前档位显动作语义）切换；设置面板项待 v1.121 设置重排落地后并入 General 类目；
@@ -496,6 +497,8 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 
 > DECIDING 之前存在可选的 Laya 本地意图预判（§9.8）：不新增状态、不改变上述转移规则；模型不可用时整体跳过，行为与本节状态机一致。
 
+**发送消息队列与回合边界（v1.147，Codex 形态）**：运行态（SENSING…SUMMARIZING）收到发送消息转入 daemon 侧**会话级 FIFO 队列**——内存瞬时态，随会话 runtime 存活（daemon 重启即消失，与运行回合同生命周期），单会话上限 10 条、超出 409；**不落 events 表**：`user_input` 仍在出队实际发送时落库，回合切分 / 撤销截断水位（§7.3）/ 标题生成（v1.91）语义均不变，且出队消息必非会话首条（队列仅在运行态存在）。出队规则：**仅回合自然完成**（Done）后自动出队首条续跑，同一执行许可内逐条 drain（全局并发配额不因队列放大，§6.4 / §9.7）；PAUSED / stop / ERROR / 熔断不自动出队——队列冻结保留，stop 后会话空闲、条目可手动发送（即正常新回合，完成后续接自动出队），resume 恢复执行后回到自动出队。v1.93 `run_task` 重入守卫保留为兜底（正常路径经队列，不再触达拒绝）。
+
 ### 9.2 内置工具协议
 
 | 工具 | 级 | 说明 |
@@ -504,6 +507,7 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 | `git_read`（status/log/diff） | A | 只读 git |
 | `lsp_query`（定义/引用/符号/hover） | A | 共享 LSP 多路复用 |
 | `skill_use`（读取技能全文） | A | 技能目录注入系统提示，正文按需加载进上下文（§13.4，v1.130） |
+| `subtasks`（子任务清单，v1.146） | A | 多步任务主动分解与状态维护：`{items:[{title,status}]}` 全量状态替换（幂等；1–12 项，status ∈ `pending / in_progress / done`）；分发与边界见下文 |
 | `apply_patch` | B | 结构化编辑（file + range + content），产生事件与 checkpoint |
 | `run_tests` / `run_build` | B | 沙箱内，断网态；单命令超时默认 120s（附录 E） |
 | `install_deps` | B | 沙箱内，镜像代理态 |
@@ -511,6 +515,8 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 | `git_commit` / `git_push` | D | 直接执行；命令与结果全量入 Trace |
 | `create_pr` | C+D | 直接执行；目标平台与 PR 元数据全量入 Trace；经本机 `gh` CLI 凭据执行（v1.79） |
 | `mcp_{server}_{tool}`（MCP 插件工具） | 按声明（默认 D；`net:*` → C） | MCP 外部进程插件工具目录（§13.3 / §13.5，v1.145 接线）；只读会话一律拒绝；调用全量入 Trace |
+
+**子任务清单（v1.146，用户令「对话发布任务 主动创建子任务来执行」）**：`subtasks` 走会话循环内联分发（§9.8 #4 `laya_decide` 同款——不经 `execute_tool` 同步面），参数 `{items:[{title,status}]}`（1–12 项、title 非空 ≤200 字符）为**全量状态替换**——幂等且对模型漂移鲁棒，每次调用重发整张清单；校验失败返回错误提示、不改现有状态。分级语义：零工作区副作用（只写会话内计划状态），故为 A 级、只读会话可用；但不进只读先验轮白名单（§9.8 纯问答首轮无需清单）。每次调用先落 `subtasks` 事件（§14.2，payload `{items:[{title,status}]}`）再走常规工具事件与 `tool_calls` Trace 行。系统提示（§9.6）向模型写明使用时机：**≥2 个有序步骤的任务先建清单（建议 2–8 项、每项一句话），开始 / 完成一项即更新状态，任务收尾时全部 `done`；单步任务与纯问答不用**。子代理并行执行不在本工具语义内（§9.5 另行版本）；清单是执行进度的用户可见承载，不构成跳过验证 / 熔断的理由（§9.3 / §9.4 不变）。
 
 ### 9.3 事中防护
 
@@ -532,7 +538,7 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 
 ### 9.6 提示组装与模型适配
 
-**系统提示组成**：身份与目标 / 安全铁律（只读开关与工具黑名单不可放宽、输出证据契约）/ 项目规则 L3（AGENTS.md，只收窄）/ 会话记忆 L2 / 跨会话记忆 L5（参考数据非指令，v1.104）/ 可用技能目录（名称 + 描述，正文经 `skill_use` 按需加载，v1.130 §13.4）/ 工具 schema / 输出契约（意图一句话 → 结构化动作 → 证据）。
+**系统提示组成**：身份与目标 / 安全铁律（只读开关与工具黑名单不可放宽、输出证据契约）/ 项目规则 L3（AGENTS.md，只收窄）/ 会话记忆 L2 / 跨会话记忆 L5（参考数据非指令，v1.104）/ 可用技能目录（名称 + 描述，正文经 `skill_use` 按需加载，v1.130 §13.4）/ 子任务清单使用规则（v1.146 §9.2：多步任务先建清单、状态随做随更）/ 工具 schema / 输出契约（意图一句话 → 结构化动作 → 证据）。
 
 **模型能力矩阵**：
 
@@ -695,7 +701,7 @@ A/B/C/D 仅是风险与执行边界标记，不再是审批门槛；去 Plan 安
 
 ### 12.5 插件与语言包供应链
 
-双通道（v1.145）：**官方通道**——仅官方静态 registry、签名 + 版本锁定、安装权限 diff 写入 Trace、插件最小权限自有沙箱、调用全量入 Trace、保留字防 typosquatting（registry 尚未运营，保留为官方插件未来通道）；**社区通道（GitHub 市场，§13.5）**——无签名信任模型，安全靠客户端硬约束：启动器白名单 + argv 直启无 shell 面 + env 仅环境变量引用 + 用户显式安装（命令行面先展示）+ MCP 进程沙箱（系统只读、网络按声明）+ 调用全量入 Trace。安装不再等待批准；校验失败或保留字命中仍拒绝。
+双通道（v1.145）：**官方通道**——仅官方静态 registry、签名 + 版本锁定、安装权限 diff 写入 Trace、插件最小权限自有沙箱、调用全量入 Trace、保留字防 typosquatting（registry 尚未运营，保留为官方插件未来通道）；**社区通道（GitHub 市场，§13.5）**——无签名信任模型，安全靠客户端硬约束：启动器白名单 + argv 直启无 shell 面 + env 仅环境变量引用 + 用户显式安装（命令行面先展示）+ 输出脱敏 + 调用全量入 Trace（MCP 进程自有沙箱随插件运行时深化，与语言包沙箱同路线）。安装不再等待批准；校验失败或保留字命中仍拒绝。
 
 ### 12.6 本地服务与浏览器访问
 
@@ -803,7 +809,7 @@ signature: "<sig>"
 - 分级：`McpLevelPolicy` 按该服务器 `permissions` 判定——声明 `net:*` → C，否则 **D**（默认保守）；会话侧分级判定对 `mcp_` 前缀工具查策略，不再落入未知工具 C 兜底（§13.3 铁律：MCP 永不静默升 A/B）；C/D 在 v1.89 后均为直执 + 全量 Trace；
 - 只读会话：MCP 工具一律拒绝（外部进程能力面非只读）；团队策略 `denied_tools` 按完整工具名精确匹配；只读先验轮（§9.8 首轮收窄）白名单天然不含 MCP 工具；
 - 执行：`tools/call` JSON-RPC，输出经密钥脱敏（§12.4）与 20k 字符截断后进上下文，调用经常规工具路径入 Trace（tool_calls 表，不新增事件类型）；
-- 沙箱：MCP 服务器进程系统只读 + 网络按 `permissions`（声明 `net:*` 才放网）；进程崩溃由下次调用重启承接，不阻塞会话其余工具。
+- 沙箱：v1.145 与语言服务器同路线（§12 铁律的 B 级语义以「启动器白名单 + argv 直启 + 最小 env + 输出脱敏 + 全量 Trace」承载，长驻 stdio 进程暂不进 Seatbelt/Landlock 包装）——自有沙箱随插件运行时深化另行版本；进程崩溃由下次调用重启承接，不阻塞会话其余工具。
 
 **API（§15）**：`GET /market/sources`、`PUT /market/sources`（整体替换 `{sources: ["owner/repo", ...]}`，每项校验 owner/repo 形态）、`GET /market/{owner}/{repo}`（镜像链拉取清单原文，10s 超时，进程内 5 分钟缓存）、`POST /market/install`（`{source, kind, name}`）、`POST /market/uninstall`（`{kind, name}`）。**旧官方 registry 检索 / 安装端点退役**——`GET /plugins` / `PUT /plugins` / `POST /plugins/install` 删除（`plugins` 表保留旧库审计不新增记录，同 `approvals` 先例；`tenon-registry` crate 转为承载市场清单客户端，签名清单能力保留待官方通道启用）。
 
@@ -849,7 +855,7 @@ signature: "<sig>"
 | l4_chunks | id, project_id, path, symbol, start_line, end_line, text, embedding | L4 检索切片、行区间、文本与本地向量（sqlite-vec 演进路径，§10.1） |
 | memories | id, scope, project_id, kind, content, importance, embedding, source_session, created_at, updated_at, last_seen_at | L5 跨会话对话记忆（§10.1，v1.104）：project 层按 project_id 隔离；global 层仅 kind=preference，永不承载仓库内容 |
 
-事件类型枚举：`user_input / sensing / decision / model_delta / patch_applied / command_run / direct_action / diagnostics / checkpoint / compaction / rollback / unrollback / model_fallback / decider_call / error / session_title / memory_saved`（direct_action 是 v1.89 C/D 直执审计：工具 / 级别 / 关键参数；rollback / unrollback 对应 §10.3 回滚与撤销回滚；model_delta 为 §9.6 合并后的模型增量（Final 的 usage / tool calls 仍只按权威 Final 入账）；decider_call 为 §9.8 Laya 本地判定：类型 / 结果 / 耗时，不含输入原文（v1.124 起 `origin` 标记来源：缺省 = daemon 自动集成点，`agent_tool` = 模型经 `laya_decide` 工具主动调用）；session_title 为 v1.59 对话标题生成完成（payload `{title}`，UI 据此即时刷新对话列表）；memory_saved 为 v1.104 L5 记忆提取入库完成（payload `{count, ids}`，不含记忆原文）；均入 Trace 可审计）。旧库中的 `approval_request / approval_decision / approval_timeout` 只读回放兼容，新运行不再产生。
+事件类型枚举：`user_input / sensing / decision / model_delta / patch_applied / command_run / direct_action / diagnostics / checkpoint / compaction / rollback / unrollback / model_fallback / decider_call / error / session_title / memory_saved / subtasks`（direct_action 是 v1.89 C/D 直执审计：工具 / 级别 / 关键参数；rollback / unrollback 对应 §10.3 回滚与撤销回滚；model_delta 为 §9.6 合并后的模型增量（Final 的 usage / tool calls 仍只按权威 Final 入账）；decider_call 为 §9.8 Laya 本地判定：类型 / 结果 / 耗时，不含输入原文（v1.124 起 `origin` 标记来源：缺省 = daemon 自动集成点，`agent_tool` = 模型经 `laya_decide` 工具主动调用）；session_title 为 v1.59 对话标题生成完成（payload `{title}`，UI 据此即时刷新对话列表）；memory_saved 为 v1.104 L5 记忆提取入库完成（payload `{count, ids}`，不含记忆原文）；subtasks 为 v1.146 子任务清单状态（§9.2，payload `{items:[{title,status}]}` 全量快照，UI 每回合以最新一次为准渲染）；均入 Trace 可审计）。旧库中的 `approval_request / approval_decision / approval_timeout` 只读回放兼容，新运行不再产生。
 
 **增长治理**（v1.93 接线）：events / tool_calls 冷热分层——热数据留 SQLite，关闭超 `archive.events_days`（默认 90 天，daemon 每日定时执行）的会话压缩归档至 `~/.tenon/archive/`（仍全本地、可检索回载）；model_usage 明细随会话归档，项目 / 会话聚合经 `project_usage_totals` / `session_usage_totals` 即时查询（按月 / 按日聚合表无消费方，已删）；approvals 表仅作 v1.89 前旧库兼容。**手动归档（v1.103）**：`sessions.archived_at` 非空即在侧栏隐藏、可随时还原，数据不出库；自动压缩归档扫描含已手动归档会话（老归档按 `events_days` 最终压缩出库）；手动删除为事务级联硬删（events / tool_calls / checkpoints / model_usage / approvals / session 行），shadow 快照不随删（gc 老化）。
 
@@ -874,7 +880,9 @@ signature: "<sig>"
 | 方法 | 路径 | 用途 |
 |---|---|---|
 | POST | `/session` | 创建会话；body 必须带 `project_id`，可附项目内 `cwd` / `worktree_id`；可附 `worktree: "managed"` 创建会话级受管 worktree 并行执行（v1.87，§9.7），响应携带 worktree 路径 |
-| POST | `/session/:id/message` | 发送任务；会话首条消息触发模型生成对话标题（v1.91：单轮带标记、low reasoning、`max_tokens=128`，失败 / 历史遗留会话回退首条消息本地截断，不阻塞任务） |
+| POST | `/session/:id/message` | 发送任务；空闲即后台执行、状态经 GET `/session/:id` 轮询，运行态转排队不拒绝（§9.1 发送消息队列 v1.147，响应 `{queued, position}`）；会话首条消息触发模型生成对话标题（v1.91：单轮带标记、low reasoning、`max_tokens=128`，失败 / 历史遗留会话回退首条消息本地截断，不阻塞任务） |
+| GET | `/session/:id` | 会话状态（state 等运行时摘要，UI 轮询权威）；响应含发送消息队列 `queue: [{id, text}]`（v1.147，多窗口一致，随既有轮询刷新） |
+| DELETE | `/session/:id/queue/:msg_id` | 移除一条排队消息（v1.147 §9.1；编辑 = 移除后重新发送） |
 | POST | `/session/:id/control` | pause（挂起任务）/ resume（继续原任务，v1.93 实装）/ stop / rollback（快捷回滚至最近 checkpoint，等价于 `/checkpoint/:id/rollback` 最近点，勿单独实现第二条路径）/ unrollback（撤销最近回滚，§10.3）/ set_readonly（v1.93 实装，工具步间即时生效） |
 | POST | `/session/:id/worktree/merge` | 受管 worktree 会话收尾·合并（v1.87）：先 checkpoint 项目根，再按会话改动文件集三方合入；冲突返回 §8.6 合并预览，不静默覆盖（B 级，可回滚） |
 | POST | `/session/:id/worktree/discard` | 受管 worktree 会话收尾·丢弃（v1.87）：显式确认后删除受管 worktree 与其快照分片，不动用户根 |
@@ -1029,7 +1037,7 @@ WS 事件与会话 events 表一一对应，均含 `project_id`；断线重连�
 | 人机共编冲突 | watcher 脏缓冲检查 + 三方合并 + 行级所有权 + 回滚 |
 | 仓库 prompt injection | 只读开关 / 工具黑名单不可被模型放宽 + AGENTS.md 只收窄 + 全量审计 |
 | 恶意网页攻击本地服务 | 随机端口 + Token 头 / WS 一次性 ticket + Origin/Host 校验 + CORS 仅白名单放行 |
-| 供应链（插件 / 语言包） | 官方通道：registry + 签名 + 权限 diff + 插件沙箱（未来）；社区通道（v1.145 GitHub 市场，§13.5）：启动器白名单 + argv 无 shell 面 + env 仅引用 + 用户显式安装（命令面先展示）+ MCP 进程沙箱 + 全量 Trace |
+| 供应链（插件 / 语言包） | 官方通道：registry + 签名 + 权限 diff + 插件沙箱（未来）；社区通道（v1.145 GitHub 市场，§13.5）：启动器白名单 + argv 无 shell 面 + env 仅引用 + 用户显式安装（命令面先展示）+ 输出脱敏 + 全量 Trace |
 | checkpoint 失效 | 独立 shadow git 快照库（零写用户仓库）+ 定时 gc（§10.3）；库不可用时拒绝新的 B 级写入 |
 | 依赖安装与断网矛盾 | 网络三态（断网 / 镜像 / 域名） |
 | WSL2 文件系统性能与上手门槛 | 仓库建议置于 WSL FS；NTFS 性能提示；无 WSL2 提供降级档 + 安装向导引导（§12.3） |
@@ -1068,6 +1076,7 @@ WS 事件与会话 events 表一一对应，均含 `project_id`；断线重连�
 | 对话记忆（L5） | 跨会话持久化的对话沉淀：用户偏好 / 项目事实 / 决策 / 工作流要点；project 层按 project_id 隔离，global 层仅用户偏好，注入提示按不可信数据对待（§10.1，v1.104） |
 | Skills（代理技能） | SKILL.md 格式的可复用方法指令集：全局 `~/.tenon/skills/` 与项目 `.tenon/skills/` 双作用域，技能目录注入提示、`skill_use` 按需加载正文，按不可信数据对待（§13.4，v1.130） |
 | 技能与插件市场（Market） | GitHub 市场清单获取通道：`owner/repo` 市场源 + `marketplace.json` 条目（skill / mcp），多镜像链拉取、sidecar 溯源、安装 / 更新 / 卸载管理；MCP 插件经此安装后接线进会话工具目录（§13.5，v1.145） |
+| 发送消息队列 | 运行态发送转入的会话级 FIFO（§9.1，v1.147）：回合自然完成自动出队续跑，暂停 / 停止 / 出错冻结、手动续发；内存瞬时态不落 events 表，`user_input` 出队时才落库 |
 
 ### 附录 B · 关键决策记录（ADR 摘要）
 
