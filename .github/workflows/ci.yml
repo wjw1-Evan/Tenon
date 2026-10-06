@@ -47,7 +47,7 @@ jobs:
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: test
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast
         env:
           # GLM 联调测试在无 config.local.toml 时自动跳过
           TENON_SKIP_LIVE: "1"
