@@ -93,8 +93,8 @@ describe("三档布局（§7.2 v1.110）", () => {
     expect(screen.queryByTestId("editor-overlay")).toBeNull();
   });
 
-  it("源码工作台弹出：线程主区不动，✕ 收回对话（v1.138）", async () => {
-    // 项目打开成功 + 文件树含 a.txt：点「源码」弹工作台，对话保持可用。
+  it("源码钮拆分侧栏：下区文件树，线程主区不动（v1.139）", async () => {
+    // 项目打开成功 + 文件树含 a.txt：点「源码」→ 侧栏下区出现文件树，对话不受影响。
     vi.stubGlobal(
       "fetch",
       vi.fn().mockImplementation((input: RequestInfo | URL) => {
@@ -138,26 +138,28 @@ describe("三档布局（§7.2 v1.110）", () => {
     render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/repo" />);
     await waitFor(() => expect(screen.getByTestId("task-input-box")).toBeTruthy());
     await waitFor(() => expect(screen.getByTestId("chat-list-p1")).toBeTruthy());
-    expect(screen.queryByTestId("source-workbench")).toBeNull();
+    expect(screen.queryByTestId("pe-source-pane")).toBeNull();
 
-    // 点「源码」：工作台弹出（文件树 + 内嵌编辑器），线程主区不动（不被替换 / 不隐藏）。
+    // 点「源码」：侧栏上下拆分——下区文件树出现；线程主区不动；会话级不落盘。
     fireEvent.click(screen.getByTestId("pe-source-p1"));
-    await waitFor(() => expect(screen.getByTestId("source-workbench")).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId("pe-source-pane")).toBeTruthy());
     expect(screen.getByTestId("file-tree")).toBeTruthy();
     expect(screen.getByTestId("task-input-box")).toBeTruthy();
     expect(document.querySelector<HTMLElement>(".zone-thread")?.style.display).toBe("");
-    // 会话级状态不落盘（v1.137 的 tenon:peView 持久化已撤）。
     expect(localStorage.getItem("tenon:peView")).toBeNull();
 
-    // 单击文件：tab 落在工作台内嵌编辑器（无独立浮层）。
+    // 单击文件：编辑器浮层弹出（v1.110 形态回归）。
     fireEvent.click(within(screen.getByTestId("file-tree")).getByText("a.txt"));
-    await waitFor(() => expect(screen.getByTestId("editor-pane")).toBeTruthy());
-    expect(screen.queryByTestId("editor-overlay")).toBeNull();
+    await waitFor(() => expect(screen.getByTestId("editor-overlay")).toBeTruthy());
+    expect(screen.getByTestId("editor-pane")).toBeTruthy();
 
-    // ✕ 收回：弹出层退场，对话原样可见。
-    fireEvent.click(screen.getByTestId("source-workbench-close"));
-    await waitFor(() => expect(screen.queryByTestId("source-workbench")).toBeNull());
-    expect(screen.getByTestId("task-input-box")).toBeTruthy();
+    // ✕ 关闭浮层回对话；源码区仍在；✕ 收起源码区后侧栏回整栏任务流。
+    fireEvent.click(screen.getByTestId("editor-overlay-close"));
+    await waitFor(() => expect(screen.queryByTestId("editor-overlay")).toBeNull());
+    expect(screen.getByTestId("pe-source-pane")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("pe-source-close"));
+    await waitFor(() => expect(screen.queryByTestId("pe-source-pane")).toBeNull());
+    expect(screen.getByTestId("chat-list-p1")).toBeTruthy();
   });
 
   it("窄屏无线程浮层：线程留在文档流，侧栏按需唤出", async () => {
@@ -212,8 +214,8 @@ describe("三档布局（§7.2 v1.110）", () => {
     expect(localStorage.getItem("tenon:leftWidth")).toBe("400");
   });
 
-  it("窄屏：源码工作台同样弹出，线程与侧栏浮层不受影响（v1.138）", async () => {
-    // 项目打开成功 + 文件树含 a.txt：窄屏下工作台仍为弹出层（与视口无关）。
+  it("窄屏：侧栏浮层内源码区照常拆分，点文件弹编辑器浮层（v1.139）", async () => {
+    // 项目打开成功 + 文件树含 a.txt：窄屏下源码区随侧栏浮层呈现。
     vi.stubGlobal(
       "fetch",
       vi.fn().mockImplementation((input: RequestInfo | URL) => {
@@ -261,21 +263,21 @@ describe("三档布局（§7.2 v1.110）", () => {
       expect(screen.getByTestId("workspace").getAttribute("data-band")).toBe("narrow")
     );
 
-    // 侧栏浮层唤出 → 点「源码」：工作台弹出，线程留在文档流（输入框仍在）。
+    // 侧栏浮层唤出 → 点「源码」：下区文件树出现，线程留在文档流。
     fireEvent.click(screen.getByTestId("rail-projects"));
     await waitFor(() => expect(screen.getByTestId("float-backdrop")).toBeTruthy());
     fireEvent.click(screen.getByTestId("pe-source-p1"));
-    await waitFor(() => expect(screen.getByTestId("source-workbench")).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId("pe-source-pane")).toBeTruthy());
     expect(screen.getByTestId("file-tree")).toBeTruthy();
     expect(screen.getByTestId("task-input-box")).toBeTruthy();
 
-    // 单击文件落内嵌编辑器（无独立浮层）；✕ 收回后侧栏浮层与遮罩不受影响。
+    // 单击文件 → 编辑器浮层（✕ 关闭后源码区与浮层遮罩不受影响）。
     fireEvent.click(within(screen.getByTestId("file-tree")).getByText("a.txt"));
-    await waitFor(() => expect(screen.getByTestId("editor-pane")).toBeTruthy());
-    expect(screen.queryByTestId("editor-overlay")).toBeNull();
-    fireEvent.click(screen.getByTestId("source-workbench-close"));
-    await waitFor(() => expect(screen.queryByTestId("source-workbench")).toBeNull());
-    expect(screen.getByTestId("task-input-box")).toBeTruthy();
+    await waitFor(() => expect(screen.getByTestId("editor-overlay")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("editor-overlay-close"));
+    await waitFor(() => expect(screen.queryByTestId("editor-overlay")).toBeNull());
+    expect(screen.getByTestId("pe-source-pane")).toBeTruthy();
     expect(screen.getByTestId("float-backdrop")).toBeTruthy();
   });
 });
+

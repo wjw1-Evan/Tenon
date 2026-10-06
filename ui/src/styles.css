@@ -871,43 +871,26 @@ button:disabled { opacity: 0.45; cursor: default; }
   background: var(--surface);
 }
 
-/* 源码工作台弹出层（§7.2 v1.138）：文件树（可调宽）| 内嵌编辑器同屏弹出；线程主区不动 */
-.source-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 45;
-  background: var(--bg);
+/* 侧栏源码区（§7.2 v1.139）：上下拆分侧栏——下区为 active 项目文件树，主区线程不动 */
+.pe-source-pane {
+  flex: none;
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  border-top: 1px solid var(--border);
+  padding: 6px 8px 6px 10px;
 }
-.source-overlay-head {
-  flex-shrink: 0;
+.pe-source-head {
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
+  padding-bottom: 4px;
 }
-.source-overlay-body { flex: 1; min-height: 0; display: flex; }
-.source-tree-pane {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  padding: 6px 0 6px 10px;
-  overflow: hidden;
-}
-.source-tree-pane .file-tree-shell { flex: 1; min-height: 0; overflow-y: auto; }
-.source-editor-pane {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  border-left: 1px solid var(--border);
-}
-.source-editor-pane .editor-pane { flex: 1; min-width: 0; }
+.pe-source-pane .file-tree-shell { flex: 1; min-height: 0; overflow-y: auto; }
+/* 源码区出现时任务流列表让出下半区（弹层 / :has 均为现代浏览器能力，主开发通道可用） */
+.project-explorer:has(.pe-source-pane) .pe-section { flex: 1 1 0; min-height: 100px; }
 
 .muted { color: var(--muted); }
 
@@ -2128,7 +2111,32 @@ button:disabled { opacity: 0.45; cursor: default; }
 }
 :root[data-theme="light"] .merge-overlay { background: rgba(15, 23, 42, 0.34); }
 
-/* v1.110 编辑器浮层（.editor-overlay*）已随 v1.138 由 .source-overlay 统一承载，样式退役 */
+/* 浮层：编辑器（v1.110；v1.139 随侧栏源码区回归）——打开文件弹出，✕ 关闭返回线程 */
+.editor-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+}
+.editor-overlay-head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.editor-overlay-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.editor-overlay-body .editor-pane { flex: 1; min-width: 0; }
 
 .merge-pane {
   width: min(1000px, 93vw);

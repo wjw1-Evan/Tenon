@@ -1,16 +1,20 @@
 // 项目浏览器（左侧栏「项目」视图，v1.88 对齐 Codex projects sidebar 内容布局）：
 // 视图标题行右端常驻添加入口（v1.101 移除孤行工具行与 Name / Updated 列头）；
-// 每项目一行可折叠文件夹（点击行即隐式激活并展开），展开区恒为该项目会话列表
-// （v1.137：行内「任务 | 源码」文件树分支随源码工作台迁出侧栏；v1.138 钮改
-// 源码工作台弹出层开合入口，弹出为 App 会话级状态）。
+// 每项目一行可折叠文件夹（点击行即隐式激活并展开），展开区恒为该项目会话列表；
+// 「源码」钮上下拆分侧栏（v1.139）：下区 = active 项目文件树（pe-source-pane），
+// 点文件行经 App 弹出编辑器浮层，主区线程不动。
 import { useEffect, useState } from "react";
 import type { ProjectSummary, TenonApi } from "../lib/api";
 import { useResolvedLocale, type Translate } from "../lib/i18n";
 import { RUNNING_STATES, STATE_COLORS, type AgentStateName } from "../lib/stateColors";
+import { FileTree, type FileTreeChange } from "./FileTree";
+import { ResizeHandle } from "./ResizeHandle";
 
 const PE_EXPANDED_KEY = "tenon:peExpanded";
 /** Codex 项目行展开后默认只物化最近会话，长列表显式展开。 */
 const RECENT_SESSION_LIMIT = 10;
+/** 侧栏源码区高度（v1.139）：localStorage 记忆。 */
+const PE_SOURCE_HEIGHT_KEY = "tenon:sideSourceHeight";
 
 function loadSet(key: string): Set<string> {
   try {
@@ -37,10 +41,18 @@ interface Props {
   /** 各项目当前激活会话（§7.5 项目级 UI 状态）。 */
   sessionsByProject: Record<string, string>;
   openError: string | null;
-  /** 源码工作台弹出层开合（§7.2 v1.138，App 会话级状态）：钮面回显目标视图名。 */
+  /** 侧栏源码区开合（§7.2 v1.139，App 会话级状态）：开 = 侧栏上下拆分，下区为 active 项目文件树。 */
   sourceOpen: boolean;
-  /** 打开源码工作台（v1.138）：隐式激活该项目后弹出（线程主区不动）。 */
+  /** 打开源码区（v1.139）：隐式激活该项目后拆分侧栏（主区线程不动）。 */
   onOpenSource: (project: ProjectSummary) => void;
+  /** 收起源码区（v1.139）：侧栏回到整栏任务流。 */
+  onCloseSource: () => void;
+  /** 源码区文件树增量刷新（§6.4 / §8.1 ProjectRuntime 事件版本）。 */
+  refreshToken: number;
+  /** 源码区单击文件行：经 App 弹出编辑器浮层（v1.110）。 */
+  onOpenFile: (path: string) => void;
+  /** 源码区文件操作（v1.72 移动 / 删除）回调。 */
+  onFileTreeChange: (change: FileTreeChange) => void;
   onSwitchProject: (project: ProjectSummary) => void;
   /** displayName 提供时落库为项目显示名；空 / 缺省回退路径末段（§6.4）。 */
   onOpenProject: (path: string, displayName?: string) => Promise<void> | void;
@@ -250,6 +262,10 @@ export function ProjectExplorer({
   openError,
   sourceOpen,
   onOpenSource,
+  onCloseSource,
+  refreshToken,
+  onOpenFile,
+  onFileTreeChange,
   onSwitchProject,
   onOpenProject,
   onRemoveProject,
@@ -260,6 +276,10 @@ export function ProjectExplorer({
 }: Props) {
   const localeTag = useResolvedLocale();
   const [expanded, setExpanded] = useState<Set<string>>(() => loadSet(PE_EXPANDED_KEY));
+  // 侧栏源码区高度（v1.139）：localStorage 记忆。
+  const [sourceHeight, setSourceHeight] = useState(
+    () => Number(localStorage.getItem(PE_SOURCE_HEIGHT_KEY)) || 260
+  );
   const [adding, setAdding] = useState(false);
   const [path, setPath] = useState("");
   const [name, setName] = useState("");
@@ -669,15 +689,16 @@ export function ProjectExplorer({
                     <span className="pe-group-name">{project.display_name}</span>
                     {badges && <span className="pe-group-meta">{badges}</span>}
                   </button>
-                  {/* 项目名后「任务 / 源码」钮（v1.118 文字钮；v1.138 = 源码工作台弹出层开合入口），
-                      钮面显示目标视图名，点击隐式激活该项目并弹出（线程主区不动）。 */}
+                  {/* 项目名后「任务 / 源码」钮（v1.118 文字钮；v1.139 = 侧栏上下拆分开合），
+                      钮面显示目标视图名；active 项目源码区开时点「任务」收起源码区，
+                      其余项目点「源码」隐式激活并拆分。 */}
                   <button
                     type="button"
                     className="pe-view-toggle"
                     data-testid={`pe-source-${project.id}`}
                     aria-label={t(sourceActive ? "projects.tab_tasks" : "projects.tab_source")}
                     title={t(sourceActive ? "projects.tab_tasks" : "projects.tab_source")}
-                    onClick={() => onOpenSource(project)}
+                    onClick={() => (sourceActive ? onCloseSource() : onOpenSource(project))}
                   >
                     {t(sourceActive ? "projects.tab_tasks" : "projects.tab_source")}
                   </button>
@@ -741,6 +762,54 @@ export function ProjectExplorer({
           {t("projects.add_title")}
         </button>
       </section>
+
+      {/* 侧栏源码区（§7.2 v1.139）：下区 = active 项目文件树——与任务输入框同屏，
+          文件 / 文件夹可直接拖入输入框插 @路径；点文件行经 App 弹出编辑器浮层。 */}
+      {sourceOpen && projectId && (
+        <>
+          <ResizeHandle
+            dir="vertical"
+            testId="resize-side-source"
+            onResize={(d) =>
+              setSourceHeight((h) => {
+                const v = Math.min(560, Math.max(140, h - d));
+                localStorage.setItem(PE_SOURCE_HEIGHT_KEY, String(v));
+                return v;
+              })
+            }
+          />
+          <div
+            className="pe-source-pane"
+            data-testid="pe-source-pane"
+            style={{ height: sourceHeight }}
+          >
+            <div className="pe-source-head">
+              <span className="side-title">{t("projects.tab_source")}</span>
+              <button
+                type="button"
+                className="pe-collapse"
+                data-testid="pe-source-close"
+                title={t("editor.close")}
+                aria-label={t("editor.close")}
+                onClick={onCloseSource}
+              >
+                <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M18 6 6 18" />
+                  <path d="m6 6 12 12" />
+                </svg>
+              </button>
+            </div>
+            <FileTree
+              api={api}
+              t={t}
+              projectId={projectId}
+              refreshToken={refreshToken}
+              onOpenFile={onOpenFile}
+              onOperation={onFileTreeChange}
+            />
+          </div>
+        </>
+      )}
 
       {adding && (
         <form

@@ -1,6 +1,7 @@
-// 主工作区（设计方案 §7.2 v1.138）：项目侧栏 | 代理线程主区（恒为任务对话，满宽）；
-// 源码管理 = 全屏弹出层（文件树 + 内嵌编辑器，✕ 收回对话）；底部 时间轴/轨迹/评估。
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from "react";
+// 主工作区（设计方案 §7.2 v1.139）：项目侧栏（「源码」钮上下拆分：上=项目任务流，
+// 下=active 项目文件树）| 代理线程主区（恒为任务对话，满宽）；点文件弹编辑器浮层
+// （v1.110 形态）；底部 时间轴/轨迹/评估。
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ResizeHandle } from "./components/ResizeHandle";
 import { TenonApi } from "./lib/api";
 import type { ProjectSummary } from "./lib/api";
@@ -290,18 +291,13 @@ export default function App({
   const [sidebarOpen, setSidebarOpen] = useState(true);
   // 编辑器应用内浮层（v1.110）：单击文件 / 模糊打开 / 搜索 / 诊断 / 跟随模式
   // 打开文件即弹出；✕ 关闭返回线程；会话内状态不持久化（重启后不自动弹出）。
+  // 编辑器应用内浮层（§7.2 v1.110）：侧栏源码区 / 模糊 / 搜索 / 诊断打开文件即弹出；
+  // ✕ 关闭返回线程；会话内状态不持久化（重启后不自动弹出）。
+  const [editorOpen, setEditorOpen] = useState(false);
   const [sideView, setSideView] = useState<SideView>(loadSideView);
-  // 源码工作台弹出层（§7.2 v1.138）：会话级开合，不持久化（v1.110 弹出先例）；
-  // 线程主区恒为任务对话，不被弹出层替换。
+  // 侧栏源码区（§7.2 v1.139）：上下拆分侧栏——下区为 active 项目文件树；
+  // 会话级开合不落盘（v1.110 先例），主区线程不动。
   const [sourceOpen, setSourceOpen] = useState(false);
-  const sourceOpenRef = useRef(sourceOpen);
-  useEffect(() => {
-    sourceOpenRef.current = sourceOpen;
-  }, [sourceOpen]);
-  // 文件引用追加（§7.2 v1.138）：弹出层内拖文件 → 收层回对话并追加 @路径（不发送）。
-  const [appendInputToken, setAppendInputToken] = useState<{ token: number; text: string } | null>(
-    null
-  );
   // 视口自适应（§7.2 v1.74）：三档布局；narrow 下侧栏 / 代理面板转互斥浮层。
   const viewport = useViewport();
   const band = viewport.band;
@@ -348,10 +344,6 @@ export default function App({
   // 可调布局（§7.2：两区可折叠可调宽；localStorage 记忆；v1.110 移除右栏；v1.115 默认宽收窄 220→180）
   const [leftWidth, setLeftWidth] = useState(() => Number(localStorage.getItem("tenon:leftWidth")) || 180);
   const [bottomHeight, setBottomHeight] = useState(() => Number(localStorage.getItem("tenon:bottomHeight")) || 180);
-  // 源码工作台文件树宽（§7.2 v1.137）
-  const [sourceTreeWidth, setSourceTreeWidth] = useState(
-    () => Number(localStorage.getItem("tenon:sourceTreeWidth")) || 220
-  );
 
   const tabs = projectId ? tabsByProject[projectId] ?? [] : [];
   const activePath = projectId ? activePathByProject[projectId] ?? null : null;
@@ -376,19 +368,19 @@ export default function App({
   // narrow 侧栏浮层可见性（v1.78）。
   const sideVisible = narrow ? sideFloat : sidebarOpen;
   // v1.110：浮层内最后一个 tab 关闭（关闭按钮 / WS removed / 文件树删除）时随之收起；
-  // 打开瞬间的空 tab 窗口（readFile 未返回）不算关闭，防止弹出层刚弹即被收。
+  // 打开瞬间的空 tab 窗口（readFile 未返回）不算关闭，防止浮层刚弹即被收。
   const editorHadTabRef = useRef(false);
   useEffect(() => {
-    if (!sourceOpen) {
+    if (!editorOpen) {
       editorHadTabRef.current = false;
       return;
     }
     if (tabs.length > 0) {
       editorHadTabRef.current = true;
     } else if (editorHadTabRef.current) {
-      setSourceOpen(false);
+      setEditorOpen(false);
     }
-  }, [sourceOpen, tabs.length]);
+  }, [editorOpen, tabs.length]);
 
   useEffect(() => {
     tabsByProjectRef.current = tabsByProject;
@@ -653,9 +645,9 @@ export default function App({
 
   const openFile = useCallback(
     async (path: string, line?: number, opts?: { fromFollow?: boolean }) => {
-      // 打开文件即弹出源码工作台（§7.2 v1.138：树 + 编辑器同屏弹出层，与视口无关）；
-      // 跟随模式不抢屏（v1.113）：只就绪数据，弹出层由用户主动打开。
-      if (!sourceOpenRef.current && !opts?.fromFollow) setSourceOpen(true);
+      // 打开文件即弹出编辑器浮层（v1.110，与视口无关）；
+      // 跟随模式不抢屏（v1.113）：只就绪数据，浮层由用户主动打开。
+      if (!opts?.fromFollow) setEditorOpen(true);
       if (tabs.some((tab) => tab.path === path)) {
         setActivePath(path);
         if (line) setGotoLine({ path, line, token: Date.now() });
@@ -670,30 +662,14 @@ export default function App({
     [api, projectId, tabs]
   );
 
-  /** 打开源码工作台（§7.2 v1.138）：侧栏项目行「源码」钮——隐式激活该项目后弹出
-   *  工作台（线程主区不动，对话随时可用，✕ 收回）。 */
-  const openSourceWorkbench = useCallback(
+  /** 打开侧栏源码区（§7.2 v1.139）：侧栏项目行「源码」钮——隐式激活该项目后拆分侧栏
+   *  上下两区（下区 = 该项目文件树；主区线程不动）。 */
+  const openSourcePane = useCallback(
     async (project: ProjectSummary) => {
       if (project.id !== projectIdRef.current) await activateProject(project);
       setSourceOpen(true);
     },
     [activateProject]
-  );
-
-  /** 源码工作台弹层拖入文件（§7.2 v1.138）：非文件树行的 x-tenon-path 落下 = 收层回对话
-   *  并把 @路径 追加进输入框（v1.110 拖入对话框动线的弹层化迁移；树内行间移动由 FileTree 自理）。 */
-  const handleWorkbenchDrop = useCallback(
-    (event: ReactDragEvent) => {
-      const path = event.dataTransfer.getData("application/x-tenon-path");
-      if (!path || !projectId) return;
-      if (event.target instanceof Element && event.target.closest('[data-testid="file-tree"]')) {
-        return;
-      }
-      event.preventDefault();
-      setSourceOpen(false);
-      setAppendInputToken({ token: Date.now(), text: `@${path} ` });
-    },
-    [projectId]
   );
 
   /** 统一保存（§8.2 v1.75）：待写盘条目走 AutoSaver flush，否则未保存缓冲直接写盘。 */
@@ -887,7 +863,7 @@ export default function App({
         run: () => editorApiRef.current?.redo(),
       },
       { id: "toggle.sidebar", label: t("palette.toggle_sidebar"), run: () => setSidebarOpen((v) => !v) },
-      // v1.138：toggle.source = 源码工作台弹出层开合（线程主区不动）。
+      // v1.139：toggle.source = 侧栏源码区开合（上下拆分，主区线程不动）。
       {
         id: "toggle.source",
         label: t("palette.toggle_source"),
@@ -1269,7 +1245,11 @@ export default function App({
                     sessionsByProject={sessionsByProject}
                     openError={openError}
                     sourceOpen={sourceOpen}
-                    onOpenSource={(project) => void openSourceWorkbench(project)}
+                    onOpenSource={(project) => void openSourcePane(project)}
+                    onCloseSource={() => setSourceOpen(false)}
+                    refreshToken={fileTreeVersion}
+                    onOpenFile={(path) => void openFile(path)}
+                    onFileTreeChange={handleFileTreeChange}
                     onSwitchProject={(project) => void switchProject(project)}
                     onOpenProject={(path, displayName) =>
                       openProject(path, displayName).catch((error) => setOpenError(String(error)))}
@@ -1359,7 +1339,6 @@ export default function App({
             followMode={followMode}
             onToggleFollow={toggleFollow}
             injectedTask={injectedTask ?? undefined}
-            appendInputToken={appendInputToken ?? undefined}
             onModelSwitched={(m) => {
               // 切换提示（§11：上下文随迁，model_fallback 事件入 Trace）
               setRouteNote(t("model.switched", { model: m }));
@@ -1367,19 +1346,19 @@ export default function App({
             }}
           />
         </section>
-        {/* 源码工作台弹出层（§7.2 v1.138）：文件树 + 内嵌编辑器同屏弹出（v1.110 弹出模式宿主），
-            线程主区不动；✕ 收回对话；弹层内非文件树行的 x-tenon-path 拖入 = 收层回对话并追加 @路径。 */}
-        {sourceOpen && projectId && (
-          <div className="source-overlay" data-testid="source-workbench">
-            <div className="source-overlay-head">
-              <span className="side-title">{t("projects.tab_source")}</span>
+        {/* 编辑器应用内浮层（§7.2 v1.139 / v1.110 形态回归）：侧栏源码区 / 模糊 / 搜索 /
+            诊断打开文件即弹出，✕ 关闭返回线程；EditorPane 多标签 / 分栏语义不变。 */}
+        {editorOpen && (
+          <div className="editor-overlay" data-testid="editor-overlay">
+            <div className="editor-overlay-head">
+              <span className="side-title">{t("panel.editor")}</span>
               <button
                 type="button"
                 className="pe-collapse"
-                data-testid="source-workbench-close"
+                data-testid="editor-overlay-close"
                 title={t("editor.close")}
                 aria-label={t("editor.close")}
-                onClick={() => setSourceOpen(false)}
+                onClick={() => setEditorOpen(false)}
               >
                 <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                   <path d="M18 6 6 18" />
@@ -1387,45 +1366,7 @@ export default function App({
                 </svg>
               </button>
             </div>
-            <div
-              className="source-overlay-body"
-              data-testid="source-workbench-body"
-              onDragOver={(event) => {
-                if (event.dataTransfer.types.includes("application/x-tenon-path")) {
-                  event.preventDefault();
-                }
-              }}
-              onDrop={handleWorkbenchDrop}
-            >
-              <div
-                className="source-tree-pane"
-                data-testid="source-tree-pane"
-                style={{ width: effectiveLeft(sourceTreeWidth, viewport.width) }}
-              >
-                <FileTree
-                  api={api}
-                  t={t}
-                  projectId={projectId}
-                  refreshToken={fileTreeVersion}
-                  onOpenFile={(path) => void openFile(path)}
-                  onOperation={handleFileTreeChange}
-                />
-              </div>
-              {!narrow && (
-                <ResizeHandle
-                  dir="horizontal"
-                  testId="resize-source-tree"
-                  onResize={(d) =>
-                    setSourceTreeWidth((w) => {
-                      const v = Math.min(480, Math.max(160, w + d));
-                      localStorage.setItem("tenon:sourceTreeWidth", String(v));
-                      return v;
-                    })
-                  }
-                />
-              )}
-              <div className="source-editor-pane">{editorElement}</div>
-            </div>
+            <div className="editor-overlay-body">{editorElement}</div>
           </div>
         )}
       </div>

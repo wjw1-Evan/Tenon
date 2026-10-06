@@ -190,6 +190,13 @@ function TreeDir({
           type="button"
           className="tree-name"
           aria-expanded={open}
+          draggable={!busy}
+          onDragStart={(event) => {
+            // 文件夹行可拖（v1.139）：与文件行同一私有 MIME——投入任务输入框插 @目录路径，
+            // 落到其他目录行仍为移动语义。
+            event.dataTransfer.setData?.("application/x-tenon-path", entry.path);
+            event.dataTransfer.effectAllowed = "move";
+          }}
           onClick={() => setOpen((v) => !v)}
         >
           {open ? "▾" : "▸"} {entry.name}

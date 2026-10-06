@@ -38,6 +38,8 @@ function renderExplorer(
   const onSelectSession = vi.fn();
   const onCreateSession = vi.fn();
   const onOpenSource = vi.fn();
+  const onCloseSource = vi.fn();
+  const onOpenFile = vi.fn();
   const apiMock = api(apiOverrides);
   render(
     <ProjectExplorer
@@ -49,6 +51,10 @@ function renderExplorer(
       openError={null}
       sourceOpen={callbacks.sourceOpen ?? false}
       onOpenSource={onOpenSource}
+      onCloseSource={onCloseSource}
+      refreshToken={1}
+      onOpenFile={onOpenFile}
+      onFileTreeChange={() => {}}
       onSwitchProject={onSwitchProject}
       onOpenProject={onOpenProject}
       onRemoveProject={onRemoveProject}
@@ -58,7 +64,7 @@ function renderExplorer(
       onSessionRemoved={callbacks.onSessionRemoved}
     />
   );
-  return { onSwitchProject, onOpenProject, onRemoveProject, onSelectSession, onCreateSession, onOpenSource, api: apiMock };
+  return { onSwitchProject, onOpenProject, onRemoveProject, onSelectSession, onCreateSession, onOpenSource, onCloseSource, onOpenFile, api: apiMock };
 }
 
 describe("ProjectExplorer multi-project control surface", () => {
@@ -184,24 +190,31 @@ describe("ProjectExplorer multi-project control surface", () => {
 
   // v1.107：「源码」内嵌文件树已迁右区源码树，项目行仅存「移除」操作。
 
-  // v1.138：钮 = 源码工作台弹出层开合入口——点击回调 onOpenSource（隐式激活该项目并弹出，线程主区不动）。
-  it("opens the source workbench via onOpenSource", async () => {
+  // v1.139：钮 = 侧栏上下拆分开合——点击回调 onOpenSource（隐式激活该项目并拆分侧栏，主区不动）。
+  it("opens the sidebar source pane via onOpenSource", async () => {
     const { onOpenSource } = renderExplorer([project("open-a")]);
     await waitFor(() => expect(screen.getByTestId("chat-list-open-a")).toBeInTheDocument());
-    expect(screen.queryByTestId("file-tree")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("pe-source-pane")).not.toBeInTheDocument();
     const tasksLabel = screen.getByTestId("pe-source-open-a").textContent ?? "";
     fireEvent.click(screen.getByTestId("pe-source-open-a"));
     expect(onOpenSource).toHaveBeenCalledWith(expect.objectContaining({ id: "open-a" }));
-    // 受控回显前钮面不变（翻转由 App 弹出状态下发）。
+    // 受控回显前钮面不变（翻转由 App 源码区开状态下发）。
     expect(screen.getByTestId("pe-source-open-a").textContent).toBe(tasksLabel);
   });
 
-  it("shows the back-to-tasks face while the workbench is open for the active project", async () => {
-    renderExplorer([project("open-a")], {}, { sourceOpen: true });
+  it("renders the source pane with the active project file tree and closes via the face", async () => {
+    const { onCloseSource } = renderExplorer([project("open-a")], {}, { sourceOpen: true });
     await waitFor(() => expect(screen.getByTestId("chat-list-open-a")).toBeInTheDocument());
-    // 弹出中：active 项目钮面显示目标视图「任务」；侧栏仍无行内文件树（v1.137 起收敛到弹出层）。
+    // 下区 = active 项目文件树（testid file-tree 在源码区内）；钮面显示目标视图「任务」。
+    expect(screen.getByTestId("pe-source-pane")).toBeInTheDocument();
+    expect(screen.getByTestId("file-tree")).toBeInTheDocument();
     expect(screen.getByTestId("pe-source-open-a").textContent).toBe("projects.tab_tasks");
-    expect(screen.queryByTestId("file-tree")).not.toBeInTheDocument();
+    // 钮面「任务」= 收起源码区。
+    fireEvent.click(screen.getByTestId("pe-source-open-a"));
+    expect(onCloseSource).toHaveBeenCalled();
+    // 头部 ✕ 同样收起源码区。
+    fireEvent.click(screen.getByTestId("pe-source-close"));
+    expect(onCloseSource).toHaveBeenCalledTimes(2);
   });
 
   // v1.114：新任务入口重排——标题行「＋ 新任务」作用 active 项目，分组行尾 hover 分支图标（v1.125 由「⎡」换 SVG）。

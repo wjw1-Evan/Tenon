@@ -1,6 +1,7 @@
-// 源码工作台动线闭环（§7.2 v1.138）：弹出层宿主——✕ 收回对话；拖入路由收层 + @路径追加。
+// 侧栏源码区动线（§7.2 v1.139）：上下拆分侧栏——任务流恒在、源码树驻下部；
+// 文件 / 文件夹直接拖入任务输入框插 @路径；点文件经 App 弹出编辑器浮层。
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import App from "../App";
 
 function stubRepoFetch() {
@@ -44,7 +45,10 @@ function stubRepoFetch() {
         body = { path: "a.txt", content: "hello", total_bytes: 5 };
       } else if (url.includes("/tree")) {
         body = {
-          entries: [{ path: "a.txt", name: "a.txt", kind: "file", git_status: "" }],
+          entries: [
+            { path: "src", name: "src", kind: "dir", git_status: "" },
+            { path: "a.txt", name: "a.txt", kind: "file", git_status: "" },
+          ],
         };
       } else if (url.includes("/session")) {
         body = { session_id: "s1", project_id: "p1" };
@@ -70,36 +74,62 @@ beforeEach(() => {
 
 afterEach(() => vi.unstubAllGlobals());
 
-describe("源码工作台动线（§7.2 v1.138）", () => {
-  it("弹出工作台时线程保持可见，✕ 收回对话", async () => {
+describe("侧栏源码区动线（§7.2 v1.139）", () => {
+  it("点「源码」拆分侧栏：下区文件树出现，线程主区与任务流不受影响", async () => {
     render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/repo" />);
     await waitFor(() => expect(screen.getByTestId("task-input-box")).toBeTruthy());
     fireEvent.click(screen.getByTestId("pe-source-p1"));
-    await waitFor(() => expect(screen.getByTestId("source-workbench")).toBeTruthy());
-    // 线程主区不被替换：任务输入框仍在（对话随时可用）。
+    await waitFor(() => expect(screen.getByTestId("pe-source-pane")).toBeTruthy());
+    // 上区任务流与主区线程均不受影响（对话随时可用）。
+    expect(screen.getByTestId("chat-list-p1")).toBeTruthy();
     expect(screen.getByTestId("task-input-box")).toBeTruthy();
     expect(document.querySelector<HTMLElement>(".zone-thread")?.style.display).toBe("");
-    fireEvent.click(screen.getByTestId("source-workbench-close"));
-    await waitFor(() => expect(screen.queryByTestId("source-workbench")).toBeNull());
+    // 会话级不落盘（v1.137 的 tenon:peView 已撤）。
+    expect(localStorage.getItem("tenon:peView")).toBeNull();
+
+    // ✕ 收起源码区：侧栏回整栏任务流。
+    fireEvent.click(screen.getByTestId("pe-source-close"));
+    await waitFor(() => expect(screen.queryByTestId("pe-source-pane")).toBeNull());
+    expect(screen.getByTestId("chat-list-p1")).toBeTruthy();
+  });
+
+  it("点源码区文件行弹出编辑器浮层（✕ 关闭回对话）", async () => {
+    render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/repo" />);
+    await waitFor(() => expect(screen.getByTestId("task-input-box")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("pe-source-p1"));
+    await waitFor(() => expect(screen.getByTestId("pe-source-pane")).toBeTruthy());
+    fireEvent.click(within(screen.getByTestId("pe-source-pane")).getByText("a.txt"));
+    await waitFor(() => expect(screen.getByTestId("editor-overlay")).toBeTruthy());
+    expect(screen.getByTestId("editor-pane")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("editor-overlay-close"));
+    await waitFor(() => expect(screen.queryByTestId("editor-overlay")).toBeNull());
+    // 源码区仍在，线程原样。
+    expect(screen.getByTestId("pe-source-pane")).toBeTruthy();
     expect(screen.getByTestId("task-input-box")).toBeTruthy();
   });
 
-  it("弹出层内拖入文件收层回对话并把 @路径 追加进输入框（不发送）", async () => {
+  it("源码区文件 / 文件夹直接拖入任务输入框插 @路径（同屏，不发送）", async () => {
     render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/repo" />);
     await waitFor(() => expect(screen.getByTestId("task-input-box")).toBeTruthy());
     fireEvent.click(screen.getByTestId("pe-source-p1"));
-    await waitFor(() => expect(screen.getByTestId("source-workbench")).toBeTruthy());
-    // jsdom 不完整实现 DataTransfer（同 fileTreeDrag 桩法）：弹层非文件树行落下 x-tenon-path
-    //（落在编辑器窗格，冒泡到 source-overlay-body 的 onDrop）。
-    fireEvent.drop(screen.getByTestId("source-workbench-body"), {
+    await waitFor(() => expect(screen.getByTestId("pe-source-pane")).toBeTruthy());
+    // jsdom 不完整实现 DataTransfer（同 fileTreeDrag 桩法）：文件行拖入输入框。
+    const inputBox = screen.getByTestId("task-input-box");
+    fireEvent.drop(inputBox, {
       dataTransfer: {
         getData: (type: string) => (type === "application/x-tenon-path" ? "a.txt" : ""),
       },
     });
-    await waitFor(() => expect(screen.queryByTestId("source-workbench")).toBeNull());
     const input = screen.getByTestId("task-input") as HTMLTextAreaElement;
     await waitFor(() => expect(input.value).toBe("@a.txt "));
-    // 不自动发送：输入仍在框内，等用户补全任务语义。
+    // 文件夹行同 MIME：拖入插 @目录。
+    fireEvent.drop(inputBox, {
+      dataTransfer: {
+        getData: (type: string) => (type === "application/x-tenon-path" ? "src" : ""),
+      },
+    });
+    await waitFor(() => expect(input.value).toBe("@a.txt @src "));
+    // 不自动发送：输入仍在框内。
     expect(screen.getByTestId("task-input-box")).toBeTruthy();
   });
 });

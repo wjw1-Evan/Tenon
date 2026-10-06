@@ -170,6 +170,10 @@ describe("untitled sessions stay out of the task list (v1.116)", () => {
         openError={null}
         sourceOpen={false}
         onOpenSource={vi.fn()}
+        onCloseSource={vi.fn()}
+        refreshToken={1}
+        onOpenFile={vi.fn()}
+        onFileTreeChange={() => {}}
         onSwitchProject={vi.fn()}
         onOpenProject={vi.fn()}
         onRemoveProject={vi.fn()}
