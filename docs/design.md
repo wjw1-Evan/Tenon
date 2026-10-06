@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v1.148** |
-| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.148） |
+| 版本 | **v1.150** |
+| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.150） |
 | 状态 | 定稿（v1.10 决策闭环），M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 | 历史评审 | v0.1 / v0.3 两轮共 41 项、v1.0 复审 21 项问题的结论已全部并入本方案（过程文档已清理） |
@@ -693,7 +693,7 @@ A/B/C/D 仅是风险与执行边界标记，不再是审批门槛；去 Plan 安
 | Linux | namespace + seccomp | 同上 |
 | Windows | daemon 于 WSL2，复用 Linux 沙箱；检测不到 WSL2 时仍启用写守卫与项目边界，完整沙箱经 WSL2 补齐 | 完整沙箱经 WSL2 |
 
-网络三态：**断网**（测试/构建/纯分析）→ **镜像代理**（仅预授权 registry：npm/pypi/nuget/crates…，B 级）→ **域名代理**（请求 URL 的 host 直接放行并入事件，C 级）。系统只读、写限当前会话绑定的项目根 / 显式 worktree、每项目语言服务器隔离。多项目打开时为每个执行进程分别物化 project roots；跨项目路径既不是可写根，也不进入 A 级检索范围。
+网络三态：**断网**（测试/构建/纯分析）→ **镜像代理**（仅预授权 registry：npm/pypi/nuget/crates…，B 级）→ **域名代理**（请求 URL 的 host 直接放行并入事件，C 级）。**层间独立降级（v1.150）**：Linux 断网态的 network namespace（层 1）在受限环境（加固主机 / 托管 CI 禁用非特权 userns）不可用时降级跳过、不致命——网络隔离由层 3 seccomp inet 过滤兜底、写限仍由层 2 Landlock 承担，断网语义不变。系统只读、写限当前会话绑定的项目根 / 显式 worktree、每项目语言服务器隔离。多项目打开时为每个执行进程分别物化 project roots；跨项目路径既不是可写根，也不进入 A 级检索范围。
 
 ### 12.4 密钥处理
 
@@ -813,7 +813,7 @@ signature: "<sig>"
 
 **API（§15）**：`GET /market/sources`、`PUT /market/sources`（整体替换 `{sources: ["owner/repo", ...]}`，每项校验 owner/repo 形态）、`GET /market/{owner}/{repo}`（镜像链拉取清单原文，10s 超时，进程内 5 分钟缓存）、`POST /market/install`（`{source, kind, name}`）、`POST /market/uninstall`（`{kind, name}`）。**旧官方 registry 检索 / 安装端点退役**——`GET /plugins` / `PUT /plugins` / `POST /plugins/install` 删除（`plugins` 表保留旧库审计不新增记录，同 `approvals` 先例；`tenon-registry` crate 转为承载市场清单客户端，签名清单能力保留待官方通道启用）。
 
-**UI（§7.5 设置面板）**：Skills 与 Plugins 分类共用「市场」子视图——市场源管理（添加 / 移除 `owner/repo`）、条目列表（kind 徽标 / 描述 / 版本 / 已装·更新·安装态）、MCP 条目安装前展示命令行面；Plugins 分类重构为 MCP 插件管理——已装列表（读 settings `mcp.servers`：启停 / 删除 / 来源徽标）+ 手动添加表单（command 校验同市场条目）；v1.84 的 registry 搜索框移除。源清单拉取失败时源行显示「加载失败」徽标与「重试」钮（单源重取，失败不阻塞其余源，v1.149）。全部文案五语言。
+**UI（§7.5 设置面板）**：Skills 与 Plugins 分类共用「市场」子视图——市场源管理（添加 / 移除 `owner/repo`）、条目列表（kind 徽标 / 描述 / 版本 / 已装·更新·安装态）、MCP 条目安装前展示命令行面；Plugins 分类重构为 MCP 插件管理——已装列表（读 settings `mcp.servers`：启停 / 删除 / 来源徽标）+ 手动添加表单（command 校验同市场条目）；v1.84 的 registry 搜索框移除。全部文案五语言。
 
 ---
 

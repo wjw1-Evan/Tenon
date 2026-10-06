@@ -84,8 +84,12 @@ impl LinuxSandbox {
     /// 在当前（子）进程应用全部沙箱层；返回首个致命错误（无 = 成功）。
     pub fn apply(&self) -> Result<(), io::Error> {
         if self.offline {
-            // 层 1：network namespace（无接口 = 无网络）
-            unshare_network()?;
+            // 层 1：network namespace（无接口 = 无网络）。受限环境（加固主机 /
+            // 托管 CI 禁用非特权 userns，§12.3 v1.150）EPERM → 降级跳过：
+            // 网络隔离由层 3 seccomp inet 过滤兜底，写限仍由层 2 Landlock 承担
+            if unshare_network().is_err() {
+                eprintln!("[tenon-sandbox] unshare(CLONE_NEWNET) 不可用，层 1 降级（seccomp 兜底断网）");
+            }
         }
         // 层 2：Landlock 写限（旧内核 ENOSYS → 尽力降级，不致命）
         let _ = apply_landlock(&self.write_paths);
