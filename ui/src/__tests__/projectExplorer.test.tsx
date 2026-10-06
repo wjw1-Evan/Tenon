@@ -1,7 +1,7 @@
 // 多项目控制面 UI（v1.63 项目文件夹树 + v1.60 登记即用）：切换 / 移除 / 添加均在显式 project_id 上执行。
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ProjectExplorer } from "../components/ProjectExplorer";
+import { ProjectExplorer, type PeView } from "../components/ProjectExplorer";
 import type { ProjectSummary, TenonApi } from "../lib/api";
 
 const treeMock = vi.fn();
@@ -26,13 +26,18 @@ function api(overrides: Partial<TenonApi> = {}) {
 function renderExplorer(
   projects: ProjectSummary[],
   apiOverrides: Partial<TenonApi> = {},
-  callbacks: { onRefreshProjects?: () => void; onSessionRemoved?: (projectId: string, sessionId: string) => void } = {}
+  callbacks: {
+    onRefreshProjects?: () => void;
+    onSessionRemoved?: (projectId: string, sessionId: string) => void;
+    peViewByProject?: Record<string, PeView>;
+  } = {}
 ) {
   const onSwitchProject = vi.fn();
   const onOpenProject = vi.fn().mockResolvedValue(undefined);
   const onRemoveProject = vi.fn().mockResolvedValue(undefined);
   const onSelectSession = vi.fn();
   const onCreateSession = vi.fn();
+  const onSetPeView = vi.fn();
   const apiMock = api(apiOverrides);
   render(
     <ProjectExplorer
@@ -42,7 +47,8 @@ function renderExplorer(
       projectId={projects[0]?.id ?? null}
       sessionsByProject={projects[0] ? { [projects[0].id]: "session-1" } : {}}
       openError={null}
-      refreshToken={1}
+      peViewByProject={callbacks.peViewByProject ?? {}}
+      onSetPeView={onSetPeView}
       onSwitchProject={onSwitchProject}
       onOpenProject={onOpenProject}
       onRemoveProject={onRemoveProject}
@@ -50,11 +56,9 @@ function renderExplorer(
       onCreateSession={onCreateSession}
       onRefreshProjects={callbacks.onRefreshProjects}
       onSessionRemoved={callbacks.onSessionRemoved}
-      onOpenFile={vi.fn()}
-      onFileTreeChange={() => {}}
     />
   );
-  return { onSwitchProject, onOpenProject, onRemoveProject, onSelectSession, onCreateSession, api: apiMock };
+  return { onSwitchProject, onOpenProject, onRemoveProject, onSelectSession, onCreateSession, onSetPeView, api: apiMock };
 }
 
 describe("ProjectExplorer multi-project control surface", () => {
@@ -180,25 +184,25 @@ describe("ProjectExplorer multi-project control surface", () => {
 
   // v1.107：「源码」内嵌文件树已迁右区源码树，项目行仅存「移除」操作。
 
-  // v1.118：源码入口收敛为项目名后常驻文字钮（钮面显示目标视图名）——默认任务，切源码显文件树，per-project 记忆。
-  it("toggles per-project task/source views and renders the file tree", async () => {
-    renderExplorer([project("open-a")]);
-    // 默认任务视图：会话列表可见，无文件树。
+  // v1.137：模式开关受控在 App——点击「源码」即回调（源码 = 主区整体跳转源码工作台）；
+  // 展开区恒为会话列表，侧栏不再渲染行内文件树（v1.110 分支移除）。
+  it("delegates task/source mode switching to App via onSetPeView", async () => {
+    const { onSetPeView } = renderExplorer([project("open-a")]);
     await waitFor(() => expect(screen.getByTestId("chat-list-open-a")).toBeInTheDocument());
     expect(screen.queryByTestId("file-tree")).not.toBeInTheDocument();
-    // 切「源码」（文字钮，钮面 = 目标视图名）：文件树出现，选择记忆于 tenon:peView。
     const tasksLabel = screen.getByTestId("pe-source-open-a").textContent ?? "";
     fireEvent.click(screen.getByTestId("pe-source-open-a"));
-    await waitFor(() => expect(screen.getByTestId("file-tree")).toBeInTheDocument());
-    expect(JSON.parse(localStorage.getItem("tenon:peView") ?? "{}")).toEqual({
-      "open-a": "files",
-    });
-    // 钮面文字随切换变化，切回后复原。
-    expect(screen.getByTestId("pe-source-open-a").textContent).not.toBe(tasksLabel);
-    fireEvent.click(screen.getByTestId("pe-source-open-a"));
-    await waitFor(() => expect(screen.queryByTestId("file-tree")).not.toBeInTheDocument());
-    expect(screen.getByTestId("chat-list-open-a")).toBeInTheDocument();
+    expect(onSetPeView).toHaveBeenCalledWith("open-a", "files");
+    // 受控回显前钮面不变（翻转由 App 持有状态后下发）。
     expect(screen.getByTestId("pe-source-open-a").textContent).toBe(tasksLabel);
+  });
+
+  it("renders sessions in the expanded area while the project is in source mode", async () => {
+    renderExplorer([project("open-a")], {}, { peViewByProject: { "open-a": "files" } });
+    await waitFor(() => expect(screen.getByTestId("chat-list-open-a")).toBeInTheDocument());
+    // 受控回显：源码模式下钮面显示目标视图「任务」；文件树归主区工作台，侧栏无行内树。
+    expect(screen.getByTestId("pe-source-open-a").textContent).toBe("projects.tab_tasks");
+    expect(screen.queryByTestId("file-tree")).not.toBeInTheDocument();
   });
 
   // v1.114：新任务入口重排——标题行「＋ 新任务」作用 active 项目，分组行尾 hover 分支图标（v1.125 由「⎡」换 SVG）。

@@ -49,6 +49,9 @@ interface Props {
   onToggleFollow?: () => void;
   /** 外部一键入口（诊断修复）注入任务；token 变化即发送。 */
   injectedTask?: { token: number; text: string };
+  /** 文件引用追加（§7.2 v1.137）：源码工作台拖入文件 → 切回任务模式后把 @路径 追加到
+   *  输入框末尾（不发送）；token 变化即追加一次。 */
+  appendInputToken?: { token: number; text: string };
   /** 会话级模型热切换回调（§11：上下文随迁提示由 App 呈现）。 */
   onModelSwitched?: (model: string) => void;
 }
@@ -184,6 +187,7 @@ export function AgentPanel({
   followMode,
   onToggleFollow,
   injectedTask,
+  appendInputToken,
   onModelSwitched,
 }: Props) {
   const [events, setEvents] = useState<EventItem[]>([]);
@@ -266,6 +270,25 @@ export function AgentPanel({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api, sessionId, injectedTask]);
+
+  // 文件引用追加（§7.2 v1.137）：源码工作台拖入文件 → App 切回任务模式并落入 @路径；
+  // 追加到输入末尾（不发送）。函数式更新防陈旧闭包覆盖并发键入；受管 worktree 草稿
+  // 不接（同 injectedTask 边界——文件属项目主根上下文）。
+  useEffect(() => {
+    if (!appendInputToken) return;
+    const text = appendInputToken.text;
+    const append = (base: string) => {
+      const trimmed = base.trimEnd();
+      return trimmed ? `${trimmed} ${text}` : text;
+    };
+    if (isDraft && draftWorktree !== true) {
+      setDraftInputs((prev) => ({ ...prev, [draftKey]: append(prev[draftKey] ?? "") }));
+    } else if (!isDraft) {
+      setInput(append);
+    }
+    inputRef.current?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appendInputToken]);
 
   // 事件流轮询（M0：/trace 增量拉取；M1 切 WS 推流）
   useEffect(() => {

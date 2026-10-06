@@ -316,7 +316,7 @@
   "relative.days_ago": "{count}d ago",
   "message.resume": "Resume",
   "palette.toggle_sidebar": "Toggle sidebar",
-  "palette.toggle_source": "Toggle source area",
+  "palette.toggle_source": "Toggle source mode",
   "palette.sound_done_on": "Turn on task-completion chime",
   "palette.sound_done_off": "Turn off task-completion chime",
   "panel.patch_diff": "Latest patch diff",

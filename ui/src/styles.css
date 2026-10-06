@@ -672,10 +672,8 @@ button:disabled { opacity: 0.45; cursor: default; }
 .pe-chat-item:hover .pe-row-actions,
 .pe-chat-item:focus-within .pe-row-actions { display: inline-flex; }
 
-/* 展开组内容（v1.114）：源码树 / 任务列表——与分组标题行留出间距 */
+/* 展开组内容（v1.114）：任务列表——与分组标题行留出间距（v1.137：行内源码树迁主区工作台） */
 .pe-detail { display: flex; flex-direction: column; min-width: 0; margin-top: 4px; }
-.pe-files { margin: 0 0 4px 18px; min-width: 0; }
-.pe-files .file-tree-shell { max-height: 52vh; overflow-y: auto; }
 
 /* 任务列表：缩进较分组标题略收（用户调优），行间留隙避免过密 */
 .pe-chat-list {
@@ -872,6 +870,31 @@ button:disabled { opacity: 0.45; cursor: default; }
   min-width: 0;
   background: var(--surface);
 }
+
+/* 源码工作台（§7.2 v1.137）：主区整体模式——文件树（可调宽）| 内嵌编辑器；线程隐藏挂载 */
+.zone-source {
+  flex: 1;
+  min-width: 260px;
+  display: flex;
+  background: var(--surface);
+}
+.source-tree-pane {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 6px 0 6px 10px;
+  overflow: hidden;
+}
+.source-tree-pane .file-tree-shell { flex: 1; min-height: 0; overflow-y: auto; }
+.source-editor-pane {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+}
+.source-editor-pane .editor-pane { flex: 1; min-width: 0; }
 
 .muted { color: var(--muted); }
 

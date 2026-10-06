@@ -316,7 +316,7 @@
   "relative.days_ago": "{count} 天前",
   "message.resume": "繼續",
   "palette.toggle_sidebar": "切換側欄",
-  "palette.toggle_source": "切換原始碼區",
+  "palette.toggle_source": "切換原始碼模式",
   "palette.sound_done_on": "開啟任務完成提示音",
   "palette.sound_done_off": "關閉任務完成提示音",
   "panel.patch_diff": "最新修補 Diff",

@@ -1,6 +1,7 @@
-// 主工作区（设计方案 §7.2 v1.110）：项目侧栏 | 代理线程主区（满宽）；
-// 编辑器为应用内浮层（单击文件弹出，✕ 返回线程）；底部 时间轴/轨迹/评估。
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+// 主工作区（设计方案 §7.2 v1.137）：项目侧栏 | 主区双模式——任务模式 = 代理线程（满宽），
+// 源码模式 = 源码工作台（文件树 + 内嵌编辑器，整体跳转；线程隐藏挂载）；任务模式下编辑器
+// 为应用内浮层（单击文件弹出，✕ 返回线程）；底部 时间轴/轨迹/评估。
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from "react";
 import { ResizeHandle } from "./components/ResizeHandle";
 import { TenonApi } from "./lib/api";
 import type { ProjectSummary } from "./lib/api";
@@ -25,7 +26,8 @@ import type { AgentStateName } from "./lib/stateColors";
 import { playDoneChime, shouldChimeOnTransition } from "./lib/notifySound";
 import { useShortcuts } from "./hooks";
 import type { FileTreeChange } from "./components/FileTree";
-import { ProjectExplorer } from "./components/ProjectExplorer";
+import { FileTree } from "./components/FileTree";
+import { ProjectExplorer, type PeView } from "./components/ProjectExplorer";
 import { SearchPanel } from "./components/SearchPanel";
 import { FileFinder } from "./components/FileFinder";
 import { EditorPane, type EditorSelection, type EditorTab } from "./components/EditorPane";
@@ -57,6 +59,20 @@ import { CommandPalette, type Command } from "./components/CommandPalette";
 /** 侧栏视图（布局 §7.2 重设计）：activity rail 单视图切换，localStorage 记忆。 */
 type SideView = "projects" | "search" | "packs";
 const SIDE_VIEW_KEY = "tenon:sideView";
+
+/** 主区模式（§7.2 v1.137）：per-project「任务 | 源码」（PeView 见 ProjectExplorer）——
+ *  源码 = 工作区整体跳转到源码工作台；localStorage 键沿用 v1.110 的 tenon:peView，
+ *  旧记录（行内视图时代）语义兼容直读，App 持有并持久化。 */
+const PE_VIEW_KEY = "tenon:peView";
+
+function loadPeView(): Record<string, PeView> {
+  try {
+    const raw = localStorage.getItem(PE_VIEW_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, PeView>) : {};
+  } catch {
+    return {};
+  }
+}
 
 function loadSideView(): SideView {
   try {
@@ -291,6 +307,33 @@ export default function App({
   // 打开文件即弹出；✕ 关闭返回线程；会话内状态不持久化（重启后不自动弹出）。
   const [editorOpen, setEditorOpen] = useState(false);
   const [sideView, setSideView] = useState<SideView>(loadSideView);
+  // 主区模式（§7.2 v1.137）：per-project「任务 | 源码」——源码 = 主区整体跳转到源码工作台，
+  // 线程隐藏挂载；点击会话行 / 新任务等线程动线自动切回任务模式。
+  const [peViewByProject, setPeViewByProject] = useState<Record<string, PeView>>(loadPeView);
+  const setPeView = useCallback((pid: string, view: PeView) => {
+    // 进源码模式收掉任务模式的编辑器浮层（文件打开由内嵌工作台接管）。
+    if (view === "files") setEditorOpen(false);
+    setPeViewByProject((prev) => {
+      if (prev[pid] === view) return prev;
+      const next = { ...prev, [pid]: view };
+      try {
+        localStorage.setItem(PE_VIEW_KEY, JSON.stringify(next));
+      } catch {
+        // 存储不可用时仅当次会话内生效
+      }
+      return next;
+    });
+  }, []);
+  /** active 项目是否处于源码模式（§7.2 v1.137）。ref 供 openFile 等稳定回调读取。 */
+  const sourceMode = projectId ? (peViewByProject[projectId] ?? "tasks") === "files" : false;
+  const sourceModeRef = useRef(sourceMode);
+  useEffect(() => {
+    sourceModeRef.current = sourceMode;
+  }, [sourceMode]);
+  // 文件引用追加（§7.2 v1.137）：源码模式拖文件到工作台 → 切回任务模式并追加 @路径（不发送）。
+  const [appendInputToken, setAppendInputToken] = useState<{ token: number; text: string } | null>(
+    null
+  );
   // 视口自适应（§7.2 v1.74）：三档布局；narrow 下侧栏 / 代理面板转互斥浮层。
   const viewport = useViewport();
   const band = viewport.band;
@@ -337,6 +380,10 @@ export default function App({
   // 可调布局（§7.2：两区可折叠可调宽；localStorage 记忆；v1.110 移除右栏；v1.115 默认宽收窄 220→180）
   const [leftWidth, setLeftWidth] = useState(() => Number(localStorage.getItem("tenon:leftWidth")) || 180);
   const [bottomHeight, setBottomHeight] = useState(() => Number(localStorage.getItem("tenon:bottomHeight")) || 180);
+  // 源码工作台文件树宽（§7.2 v1.137）
+  const [sourceTreeWidth, setSourceTreeWidth] = useState(
+    () => Number(localStorage.getItem("tenon:sourceTreeWidth")) || 220
+  );
 
   const tabs = projectId ? tabsByProject[projectId] ?? [] : [];
   const activePath = projectId ? activePathByProject[projectId] ?? null : null;
@@ -500,16 +547,21 @@ export default function App({
     setTabsByProject((prev) => ({ ...prev, [projectId]: updater(prev[projectId] ?? []) }));
   }, [projectId]);
 
-  /** 「对话」组点击：切换项目内激活会话（§7.5）；选择既有会话即弃草稿（v1.116）。 */
-  const selectSession = useCallback((pid: string, sid: string) => {
-    setDraftByProject((prev) => {
-      if (!(pid in prev)) return prev;
-      const next = { ...prev };
-      delete next[pid];
-      return next;
-    });
-    setSessionsByProject((prev) => ({ ...prev, [pid]: sid }));
-  }, []);
+  /** 「对话」组点击：切换项目内激活会话（§7.5）；选择既有会话即弃草稿（v1.116）。
+   *  v1.137：源码模式下线程不可见，选会话即切回任务模式。 */
+  const selectSession = useCallback(
+    (pid: string, sid: string) => {
+      setDraftByProject((prev) => {
+        if (!(pid in prev)) return prev;
+        const next = { ...prev };
+        delete next[pid];
+        return next;
+      });
+      setSessionsByProject((prev) => ({ ...prev, [pid]: sid }));
+      setPeView(pid, "tasks");
+    },
+    [setPeView]
+  );
 
   /** 新建会话入口（v1.87 §7.3；v1.116 草稿态）：不再立即建会话——记录待启动意图
    *  （主根 / 受管 worktree），线程切空任务输入；首条消息发出时才落库建会话。
@@ -517,6 +569,8 @@ export default function App({
   const createProjectSession = useCallback(
     async (project: ProjectSummary, worktree: boolean) => {
       if (project.id !== projectIdRef.current) await activateProject(project);
+      // 新任务动线落在任务模式（v1.137）：草稿输入在任务输入框。
+      setPeView(project.id, "tasks");
       setSessionsByProject((prev) => {
         if (!(project.id in prev)) return prev;
         const next = { ...prev };
@@ -525,7 +579,7 @@ export default function App({
       });
       setDraftByProject((prev) => ({ ...prev, [project.id]: worktree }));
     },
-    [activateProject]
+    [activateProject, setPeView]
   );
 
   /** 草稿任务首发（v1.116）：此刻才建会话（按意图附 worktree）并发送首条消息；
@@ -636,9 +690,9 @@ export default function App({
 
   const openFile = useCallback(
     async (path: string, line?: number, opts?: { fromFollow?: boolean }) => {
-      // 打开文件即弹出编辑器浮层（v1.110，与视口无关）；
-      // 跟随模式不抢屏（v1.113）：代理写入只就绪数据，浮层由用户主动打开。
-      if (!opts?.fromFollow) setEditorOpen(true);
+      // 任务模式：打开文件即弹出编辑器浮层（v1.110，与视口无关）；源码模式（v1.137）
+      // 主区已有内嵌工作台，不弹浮层；跟随模式不抢屏（v1.113）：只就绪数据。
+      if (!sourceModeRef.current && !opts?.fromFollow) setEditorOpen(true);
       if (tabs.some((tab) => tab.path === path)) {
         setActivePath(path);
         if (line) setGotoLine({ path, line, token: Date.now() });
@@ -651,6 +705,22 @@ export default function App({
       if (line) setGotoLine({ path, line, token: Date.now() });
     },
     [api, projectId, tabs]
+  );
+
+  /** 源码工作台拖入文件（§7.2 v1.137）：非文件树行的 x-tenon-path 落下 = 切回任务模式并
+   *  把 @路径 追加进输入框（v1.110 拖入对话框动线的模式化迁移；树内行间移动由 FileTree 自理）。 */
+  const handleWorkbenchDrop = useCallback(
+    (event: ReactDragEvent) => {
+      const path = event.dataTransfer.getData("application/x-tenon-path");
+      if (!path || !projectId) return;
+      if (event.target instanceof Element && event.target.closest('[data-testid="file-tree"]')) {
+        return;
+      }
+      event.preventDefault();
+      setPeView(projectId, "tasks");
+      setAppendInputToken({ token: Date.now(), text: `@${path} ` });
+    },
+    [projectId, setPeView]
   );
 
   /** 统一保存（§8.2 v1.75）：待写盘条目走 AutoSaver flush，否则未保存缓冲直接写盘。 */
@@ -844,8 +914,15 @@ export default function App({
         run: () => editorApiRef.current?.redo(),
       },
       { id: "toggle.sidebar", label: t("palette.toggle_sidebar"), run: () => setSidebarOpen((v) => !v) },
-      // v1.110：toggle.source = 编辑器浮层开合（源码区=侧栏源码视图 + 浮层编辑器）。
-      { id: "toggle.source", label: t("palette.toggle_source"), run: () => setEditorOpen((v) => !v) },
+      // v1.137：toggle.source = 当前项目任务 / 源码模式切换（源码 = 主区整体跳转工作台）。
+      {
+        id: "toggle.source",
+        label: t("palette.toggle_source"),
+        run: () => {
+          const pid = projectIdRef.current;
+          if (pid) setPeView(pid, sourceModeRef.current ? "tasks" : "files");
+        },
+      },
       // v1.122：任务完成提示音开合（ui_prefs sound.done）；标签显动作语义（与 inline_completion 同法）。
       {
         id: "toggle.sound_done",
@@ -893,7 +970,7 @@ export default function App({
         run: () => sessionId && api.control(sessionId, "unrollback"),
       },
     ],
-    [t, api, sessionId, agentState, inlineCompletionEnabled, toggleInlineCompletion, soundDone, changeSoundDone]
+    [t, api, sessionId, agentState, inlineCompletionEnabled, toggleInlineCompletion, soundDone, changeSoundDone, setPeView]
   );
 
   // 底部面板开合（v1.61）：展开态 tabs 行右端收起、收起态细条展开；标签与 tab 按钮共用一份
@@ -1047,6 +1124,72 @@ export default function App({
     };
   }, [api, projectId, refreshProjects]);
 
+  // 编辑器实例（§8.2）：任务模式 = 应用内浮层宿主（v1.110）；源码模式 = 工作台内嵌宿主
+  // （v1.137）。同一份 props 两种宿主，任意时刻仅渲染其一。
+  const editorElement = (
+    <EditorPane
+      t={t}
+      api={api}
+      projectId={projectId}
+      projectRoot={projects.find((project) => project.id === projectId)?.path}
+      sessionId={sessionId}
+      inlineCompletionEnabled={inlineCompletionEnabled}
+      refreshToken={fileTreeVersion}
+      tabs={tabs}
+      activePath={activePath}
+      splitPath={splitPath}
+      onSelectSplit={setSplitPath}
+      aiModifiedLines={aiLines}
+      unsavedPaths={unsaved}
+      unsavedTitle={t("editor.unsaved")}
+      goto={gotoLine}
+      onSelectionChange={setSelection}
+      onSelect={setActivePath}
+      onClose={(p) => {
+        void autosaverRef.current?.flush(p);
+        setUnsaved((prev) => {
+          if (!prev[p]) return prev;
+          const next = { ...prev };
+          delete next[p];
+          return next;
+        });
+        setTabs((prev) => prev.filter((tab) => tab.path !== p));
+        if (activePath === p) {
+          setActivePath(tabs.find((tab) => tab.path !== p)?.path ?? null);
+        }
+        if (splitPath === p) {
+          setSplitPath(tabs.find((tab) => tab.path !== p && tab.path !== activePath)?.path ?? null);
+        }
+      }}
+      onChange={(p, content) => {
+        setTabs((prev) => prev.map((tab) => (tab.path === p ? { ...tab, content } : tab)));
+        // §8.6：用户编辑 → 该文件 AI 角标解除 + 脏缓冲推送（去抖）
+        setAiLines((prev) => ({ ...prev, [p]: [] }));
+        // 保存模式门控（§8.2 v1.75）：手动模式下不调度去抖写盘，
+        // 由 Cmd/Ctrl+S / LSP flush 经 saveNow 显式保存。
+        if (saveMode === "auto") autosaverRef.current?.schedule(p, content);
+        setUnsaved((prev) => (prev[p] ? prev : { ...prev, [p]: true }));
+        const pid = projectIdRef.current;
+        if (pid) {
+          const dirtyKey = `${pid}\u0000${p}`;
+          const tid = dirtyTimers.current.get(dirtyKey);
+          if (tid) window.clearTimeout(tid);
+          dirtyTimers.current.set(
+            dirtyKey,
+            window.setTimeout(() => {
+              void api.putBuffer(pid, p, content).catch(() => {});
+            }, 400)
+          );
+        }
+      }}
+      onFlushFile={flushFileForLsp}
+      onWorkspaceApplied={refreshFilesAfterLsp}
+      bindEditorApi={(editorApi) => {
+        editorApiRef.current = editorApi;
+      }}
+    />
+  );
+
   return (
     <div className="app" data-testid="app">
       <header className="app-head" data-tauri-drag-region>
@@ -1155,7 +1298,8 @@ export default function App({
                     projectId={projectId}
                     sessionsByProject={sessionsByProject}
                     openError={openError}
-                    refreshToken={fileTreeVersion}
+                    peViewByProject={peViewByProject}
+                    onSetPeView={setPeView}
                     onSwitchProject={(project) => void switchProject(project)}
                     onOpenProject={(path, displayName) =>
                       openProject(path, displayName).catch((error) => setOpenError(String(error)))}
@@ -1174,8 +1318,6 @@ export default function App({
                         return next;
                       });
                     }}
-                    onOpenFile={openFile}
-                    onFileTreeChange={handleFileTreeChange}
                   />
                 )}
                 {sideView === "search" && (
@@ -1215,8 +1357,12 @@ export default function App({
             onClick={() => setSideFloat(false)}
           />
         )}
-        {/* v1.78 复刻 Codex 形态（§7.2）：线程（代理会话）恒为弹性主区。 */}
-        <section className="zone zone-thread" style={{ flex: 1, minWidth: 260 }}>
+        {/* v1.78 复刻 Codex 形态（§7.2）：任务模式下线程恒为弹性主区；源码模式（v1.137）
+            隐藏挂载——轮询 / WS / 草稿 / 滚动位置全保留，切回瞬时复原。 */}
+        <section
+          className="zone zone-thread"
+          style={sourceMode ? { display: "none" } : { flex: 1, minWidth: 260 }}
+        >
           <AgentPanel
             api={api}
             t={t}
@@ -1247,6 +1393,7 @@ export default function App({
             followMode={followMode}
             onToggleFollow={toggleFollow}
             injectedTask={injectedTask ?? undefined}
+            appendInputToken={appendInputToken ?? undefined}
             onModelSwitched={(m) => {
               // 切换提示（§11：上下文随迁，model_fallback 事件入 Trace）
               setRouteNote(t("model.switched", { model: m }));
@@ -1254,9 +1401,52 @@ export default function App({
             }}
           />
         </section>
-        {/* v1.110：编辑器应用内浮层——单击文件 / 模糊打开 / 搜索 / 诊断 / 跟随模式
-            打开文件即弹出，✕ 关闭返回线程；EditorPane 多标签 / 分栏语义整体迁入。 */}
-        {editorOpen && (
+        {/* 源码工作台（§7.2 v1.137）：文件树 + 内嵌编辑器整体占主区（线程隐藏挂载）；
+            工作台内非文件树行的 x-tenon-path 拖入 = 切回任务模式并追加 @路径。 */}
+        {sourceMode && projectId && (
+          <section
+            className="zone zone-source"
+            data-testid="source-workbench"
+            onDragOver={(event) => {
+              if (event.dataTransfer.types.includes("application/x-tenon-path")) {
+                event.preventDefault();
+              }
+            }}
+            onDrop={handleWorkbenchDrop}
+          >
+            <div
+              className="source-tree-pane"
+              data-testid="source-tree-pane"
+              style={{ width: effectiveLeft(sourceTreeWidth, viewport.width) }}
+            >
+              <FileTree
+                api={api}
+                t={t}
+                projectId={projectId}
+                refreshToken={fileTreeVersion}
+                onOpenFile={(path) => void openFile(path)}
+                onOperation={handleFileTreeChange}
+              />
+            </div>
+            {!narrow && (
+              <ResizeHandle
+                dir="horizontal"
+                testId="resize-source-tree"
+                onResize={(d) =>
+                  setSourceTreeWidth((w) => {
+                    const v = Math.min(480, Math.max(160, w + d));
+                    localStorage.setItem("tenon:sourceTreeWidth", String(v));
+                    return v;
+                  })
+                }
+              />
+            )}
+            <div className="source-editor-pane">{editorElement}</div>
+          </section>
+        )}
+        {/* 任务模式编辑器浮层（v1.110；v1.137 起仅任务模式——源码模式文件一律落入工作台内嵌编辑器）：
+            模糊打开 / 搜索 / 诊断 / 跟随模式打开文件即弹出，✕ 关闭返回线程。 */}
+        {editorOpen && !sourceMode && (
         <div className="editor-overlay" data-testid="editor-overlay">
           <div className="editor-overlay-head">
             <span className="side-title">{t("panel.editor")}</span>
@@ -1274,69 +1464,7 @@ export default function App({
               </svg>
             </button>
           </div>
-          <div className="editor-overlay-body">
-              <EditorPane
-            t={t}
-            api={api}
-            projectId={projectId}
-            projectRoot={projects.find((project) => project.id === projectId)?.path}
-            sessionId={sessionId}
-            inlineCompletionEnabled={inlineCompletionEnabled}
-            refreshToken={fileTreeVersion}
-            tabs={tabs}
-            activePath={activePath}
-            splitPath={splitPath}
-            onSelectSplit={setSplitPath}
-            aiModifiedLines={aiLines}
-            unsavedPaths={unsaved}
-            unsavedTitle={t("editor.unsaved")}
-            goto={gotoLine}
-            onSelectionChange={setSelection}
-            onSelect={setActivePath}
-            onClose={(p) => {
-              void autosaverRef.current?.flush(p);
-              setUnsaved((prev) => {
-                if (!prev[p]) return prev;
-                const next = { ...prev };
-                delete next[p];
-                return next;
-              });
-              setTabs((prev) => prev.filter((tab) => tab.path !== p));
-              if (activePath === p) {
-                setActivePath(tabs.find((tab) => tab.path !== p)?.path ?? null);
-              }
-              if (splitPath === p) {
-                setSplitPath(tabs.find((tab) => tab.path !== p && tab.path !== activePath)?.path ?? null);
-              }
-            }}
-            onChange={(p, content) => {
-              setTabs((prev) => prev.map((tab) => (tab.path === p ? { ...tab, content } : tab)));
-              // §8.6：用户编辑 → 该文件 AI 角标解除 + 脏缓冲推送（去抖）
-              setAiLines((prev) => ({ ...prev, [p]: [] }));
-              // 保存模式门控（§8.2 v1.75）：手动模式下不调度去抖写盘，
-              // 由 Cmd/Ctrl+S / LSP flush 经 saveNow 显式保存。
-              if (saveMode === "auto") autosaverRef.current?.schedule(p, content);
-              setUnsaved((prev) => (prev[p] ? prev : { ...prev, [p]: true }));
-              const pid = projectIdRef.current;
-              if (pid) {
-                const dirtyKey = `${pid}\u0000${p}`;
-                const tid = dirtyTimers.current.get(dirtyKey);
-                if (tid) window.clearTimeout(tid);
-                dirtyTimers.current.set(
-                  dirtyKey,
-                  window.setTimeout(() => {
-                    void api.putBuffer(pid, p, content).catch(() => {});
-                  }, 400)
-                );
-              }
-            }}
-            onFlushFile={flushFileForLsp}
-            onWorkspaceApplied={refreshFilesAfterLsp}
-            bindEditorApi={(editorApi) => {
-              editorApiRef.current = editorApi;
-            }}
-          />
-          </div>
+          <div className="editor-overlay-body">{editorElement}</div>
         </div>
         )}
       </div>

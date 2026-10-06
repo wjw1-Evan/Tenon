@@ -316,7 +316,7 @@
   "relative.days_ago": "{count} 天前",
   "message.resume": "恢复",
   "palette.toggle_sidebar": "切换侧栏",
-  "palette.toggle_source": "切换源码区",
+  "palette.toggle_source": "切换源码模式",
   "palette.sound_done_on": "开启任务完成提示音",
   "palette.sound_done_off": "关闭任务完成提示音",
   "panel.patch_diff": "最新补丁 Diff",

@@ -316,7 +316,7 @@
   "relative.days_ago": "{count}일 전",
   "message.resume": "재개",
   "palette.toggle_sidebar": "사이드바 전환",
-  "palette.toggle_source": "소스 영역 전환",
+  "palette.toggle_source": "소스 모드 전환",
   "palette.sound_done_on": "작업 완료 알림음 켜기",
   "palette.sound_done_off": "작업 완료 알림음 끄기",
   "panel.patch_diff": "최신 패치 Diff",

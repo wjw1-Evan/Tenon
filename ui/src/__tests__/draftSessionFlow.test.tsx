@@ -168,14 +168,13 @@ describe("untitled sessions stay out of the task list (v1.116)", () => {
         projectId={project.id}
         sessionsByProject={{}}
         openError={null}
-        refreshToken={1}
+        peViewByProject={{}}
+        onSetPeView={vi.fn()}
         onSwitchProject={vi.fn()}
         onOpenProject={vi.fn()}
         onRemoveProject={vi.fn()}
         onSelectSession={vi.fn()}
         onCreateSession={vi.fn()}
-        onOpenFile={vi.fn()}
-        onFileTreeChange={() => {}}
       />
     );
   }

@@ -1,15 +1,14 @@
 // 项目浏览器（左侧栏「项目」视图，v1.88 对齐 Codex projects sidebar 内容布局）：
 // 视图标题行右端常驻添加入口（v1.101 移除孤行工具行与 Name / Updated 列头）；
-// 每项目一行可折叠文件夹（点击行即隐式激活并展开），展开区顶部「任务 | 源码」
-// 行内切换（v1.110）：任务=会话列表，源码=该项目文件树（单击文件开编辑器浮层）。
+// 每项目一行可折叠文件夹（点击行即隐式激活并展开），展开区恒为该项目会话列表
+// （v1.137：行内「任务 | 源码」文件树分支随源码工作台迁出侧栏——peView 升级为
+// App 持有的工作区整体模式，本组件仅承载入口钮与受控回显）。
 import { useEffect, useState } from "react";
 import type { ProjectSummary, TenonApi } from "../lib/api";
 import { useResolvedLocale, type Translate } from "../lib/i18n";
 import { RUNNING_STATES, STATE_COLORS, type AgentStateName } from "../lib/stateColors";
-import { FileTree, type FileTreeChange } from "./FileTree";
 
 const PE_EXPANDED_KEY = "tenon:peExpanded";
-const PE_VIEW_KEY = "tenon:peView";
 /** Codex 项目行展开后默认只物化最近会话，长列表显式展开。 */
 const RECENT_SESSION_LIMIT = 10;
 
@@ -30,17 +29,8 @@ function persistSet(key: string, value: Set<string>) {
   }
 }
 
-/** 展开区视图（v1.110）：per-project「任务 | 源码」，默认任务。 */
-type PeView = "tasks" | "files";
-
-function loadPeView(): Record<string, PeView> {
-  try {
-    const raw = localStorage.getItem(PE_VIEW_KEY);
-    return raw ? (JSON.parse(raw) as Record<string, PeView>) : {};
-  } catch {
-    return {};
-  }
-}
+/** 展开区 / 主区模式（§7.2 v1.137）：per-project「任务 | 源码」，App 持有并持久化。 */
+export type PeView = "tasks" | "files";
 
 interface Props {
   api: TenonApi;
@@ -50,8 +40,10 @@ interface Props {
   /** 各项目当前激活会话（§7.5 项目级 UI 状态）。 */
   sessionsByProject: Record<string, string>;
   openError: string | null;
-  /** ProjectRuntime 文件事件版本；源码视图文件树增量刷新（§6.4 / §8.1）。 */
-  refreshToken: number;
+  /** 各项目主区模式（§7.2 v1.137）：受控回显，持久化在 App（tenon:peView）。 */
+  peViewByProject: Record<string, PeView>;
+  /** 模式切换（v1.137）：源码 = 主区整体跳转源码工作台。 */
+  onSetPeView: (projectId: string, view: PeView) => void;
   onSwitchProject: (project: ProjectSummary) => void;
   /** displayName 提供时落库为项目显示名；空 / 缺省回退路径末段（§6.4）。 */
   onOpenProject: (path: string, displayName?: string) => Promise<void> | void;
@@ -63,9 +55,6 @@ interface Props {
   onRefreshProjects?: () => void;
   /** 会话被归档 / 删除后回调（v1.103）：App 清理激活选择并刷新摘要。 */
   onSessionRemoved?: (projectId: string, sessionId: string) => void;
-  /** 源码视图打开文件（v1.110）：经 App openFile 弹出编辑器浮层。 */
-  onOpenFile: (path: string) => void;
-  onFileTreeChange: (change: FileTreeChange) => void;
 }
 
 /** v1.114：状态图标自带视觉语义，state.* 文案转行 title（stateLabel 随 v1.101 圆点方案退役）。 */
@@ -262,7 +251,8 @@ export function ProjectExplorer({
   projectId,
   sessionsByProject,
   openError,
-  refreshToken,
+  peViewByProject,
+  onSetPeView,
   onSwitchProject,
   onOpenProject,
   onRemoveProject,
@@ -270,24 +260,9 @@ export function ProjectExplorer({
   onCreateSession,
   onRefreshProjects,
   onSessionRemoved,
-  onOpenFile,
-  onFileTreeChange,
 }: Props) {
   const localeTag = useResolvedLocale();
   const [expanded, setExpanded] = useState<Set<string>>(() => loadSet(PE_EXPANDED_KEY));
-  // 展开区「任务 | 源码」行内切换（v1.110）：per-project 记忆，默认任务。
-  const [peView, setPeViewState] = useState<Record<string, PeView>>(loadPeView);
-  const setPeView = (pid: string, view: PeView) => {
-    setPeViewState((prev) => {
-      const next = { ...prev, [pid]: view };
-      try {
-        localStorage.setItem(PE_VIEW_KEY, JSON.stringify(next));
-      } catch {
-        // 存储不可用时仅当次会话内生效
-      }
-      return next;
-    });
-  };
   const [adding, setAdding] = useState(false);
   const [path, setPath] = useState("");
   const [name, setName] = useState("");
@@ -676,7 +651,7 @@ export function ProjectExplorer({
             const isOpen = expanded.has(project.id);
             const updatedAt = latestUpdatedAt(project);
             const badges = folderBadges(t, project);
-            const sourceOn = (peView[project.id] ?? "tasks") === "files";
+            const sourceOn = (peViewByProject[project.id] ?? "tasks") === "files";
             return (
               <li key={project.id} className="pe-group">
                 <div
@@ -697,14 +672,15 @@ export function ProjectExplorer({
                     <span className="pe-group-name">{project.display_name}</span>
                     {badges && <span className="pe-group-meta">{badges}</span>}
                   </button>
-                  {/* 项目名后「任务 / 源码」视图切换（v1.118 文字钮，显示目标视图名）。 */}
+                  {/* 项目名后「任务 / 源码」工作区模式开关（v1.118 文字钮；v1.137 整体跳转源码工作台，
+                      显示目标视图名，切换受控在 App）。 */}
                   <button
                     type="button"
                     className="pe-view-toggle"
                     data-testid={`pe-source-${project.id}`}
                     aria-label={t(sourceOn ? "projects.tab_tasks" : "projects.tab_source")}
                     title={t(sourceOn ? "projects.tab_tasks" : "projects.tab_source")}
-                    onClick={() => setPeView(project.id, sourceOn ? "tasks" : "files")}
+                    onClick={() => onSetPeView(project.id, sourceOn ? "tasks" : "files")}
                   >
                     {t(sourceOn ? "projects.tab_tasks" : "projects.tab_source")}
                   </button>
@@ -746,20 +722,8 @@ export function ProjectExplorer({
                 </div>
                 {isOpen && (
                   <div className="pe-detail">
-                    {sourceOn ? (
-                      <div className="pe-files">
-                        <FileTree
-                          api={api}
-                          t={t}
-                          projectId={project.id}
-                          refreshToken={refreshToken}
-                          onOpenFile={onOpenFile}
-                          onOperation={onFileTreeChange}
-                        />
-                      </div>
-                    ) : (
-                      renderSessions(project)
-                    )}
+                    {/* v1.137：展开区恒为会话列表——行内「源码」文件树分支随源码工作台迁出侧栏。 */}
+                    {renderSessions(project)}
                   </div>
                 )}
               </li>
