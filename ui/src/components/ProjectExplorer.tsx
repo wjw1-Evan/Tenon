@@ -476,6 +476,25 @@ export function ProjectExplorer({
                 )}
                 {session.worktree_path ? " ⎇" : ""}
               </span>
+              {/* §7.2（v1.148）：子任务进度徽标——仅未完成清单渲染，切走也能瞥进度 */}
+              {session.subtasks && session.subtasks.done < session.subtasks.total && (
+                <span
+                  className="pe-chat-subtasks"
+                  data-testid={`chat-subtasks-${session.id}`}
+                  title={`${t("thread.subtasks")} ${session.subtasks.done}/${session.subtasks.total}`}
+                >
+                  <span className="pe-chat-subtasks-bar" aria-hidden="true">
+                    <span
+                      style={{
+                        width: `${Math.round(
+                          (session.subtasks.done / session.subtasks.total) * 100,
+                        )}%`,
+                      }}
+                    />
+                  </span>
+                  {session.subtasks.done}/{session.subtasks.total}
+                </span>
+              )}
               <span
                 className="pe-chat-time"
                 title={session.updated_at ? new Date(session.updated_at).toLocaleString(localeTag) : undefined}

@@ -129,6 +129,24 @@ describe("ProjectExplorer multi-project control surface", () => {
     expect(screen.getByTestId(`project-remove-${historical.id}`)).toBeDisabled();
   });
 
+  // v1.148 §7.2：任务行子任务进度徽标——仅未完成清单渲染，完成 / 无清单不渲染
+  it("shows subtask progress badge on task rows while incomplete", () => {
+    const active = {
+      ...project("active"),
+      sessions: [
+        { id: "s1", status: "executing", model: "mock", title: "任务一", updated_at: "now", subtasks: { done: 1, total: 3 } },
+        { id: "s2", status: "executing", model: "mock", title: "任务二", updated_at: "now", subtasks: { done: 3, total: 3 } },
+        { id: "s3", status: "idle", model: "mock", title: "任务三", updated_at: "now" },
+      ],
+    };
+    renderExplorer([active]);
+    const badge = screen.getByTestId("chat-subtasks-s1");
+    expect(badge).toHaveTextContent("1/3");
+    expect(badge.getAttribute("title")).toBe("thread.subtasks 1/3");
+    expect(screen.queryByTestId("chat-subtasks-s2")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("chat-subtasks-s3")).not.toBeInTheDocument();
+  });
+
   it("adds another concurrently open project by absolute path", async () => {
     const { onOpenProject } = renderExplorer([project("active")]);
     fireEvent.click(screen.getByTestId("project-add"));

@@ -6710,3 +6710,91 @@ async fn skills_project_scope_overrides_global() {
         .unwrap();
     assert_eq!(r.status(), 404);
 }
+
+#[tokio::test]
+async fn projects_session_rows_carry_subtasks_progress() {
+    // v1.148 §15：GET /projects 会话行携带最新 subtasks 快照计数
+    //（侧栏任务行进度徽标数据源，随既有轮询链刷新，无清单为 null）。
+    let dir = tempfile::tempdir().unwrap();
+    let (_tmp, port, token) = start_daemon(vec![
+        ScriptedReply::Tool {
+            name: "subtasks".into(),
+            args: serde_json::json!({"items": [
+                {"title": "改造导出管道", "status": "done"},
+                {"title": "补充单测", "status": "in_progress"}
+            ]}),
+        },
+        ScriptedReply::Text("中途汇报".into()),
+    ])
+    .await;
+    let client = client_with_token(&token);
+    let registered: serde_json::Value = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({"path": dir.path().to_string_lossy()}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let project_id = registered["id"].as_str().unwrap().to_string();
+    client
+        .put(format!("{}/project/trust", base(port)))
+        .json(&serde_json::json!({"project_id": project_id, "trusted": true}))
+        .send()
+        .await
+        .unwrap();
+    let created: serde_json::Value = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({
+            "project_path": dir.path().to_string_lossy(),
+            "provider": "mock",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let sid = created["session_id"].as_str().unwrap().to_string();
+    let r = client
+        .post(format!("{}/session/{sid}/message", base(port)))
+        .json(&serde_json::json!({"text": "重构导出功能"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 202);
+
+    // 轮询 /projects 直到该会话行出现 subtasks 计数（任务后台执行）
+    let mut got: Option<(i64, i64)> = None;
+    for _ in 0..200 {
+        let list: serde_json::Value = client
+            .get(format!("{}/projects", base(port)))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        if let Some(row) = list["projects"][0]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"].as_str() == Some(sid.as_str()))
+        {
+            if row["subtasks"].is_object() {
+                got = Some((
+                    row["subtasks"]["done"].as_i64().unwrap(),
+                    row["subtasks"]["total"].as_i64().unwrap(),
+                ));
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        got,
+        Some((1, 2)),
+        "会话行应携带最新快照计数 1/2（未完成→徽标渲染）"
+    );
+}

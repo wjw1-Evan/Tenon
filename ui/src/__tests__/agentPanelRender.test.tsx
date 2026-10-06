@@ -1,6 +1,6 @@
 // AgentPanel 事件渲染覆盖：各类事件卡片 / 错误 / direct_action。
 import { describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { AgentPanel } from "../components/AgentPanel";
 import type { TenonApi } from "../lib/api";
 
@@ -156,6 +156,55 @@ describe("AgentPanel event rendering", () => {
       expect(screen.queryByTestId("turn-step")).toBeNull();
       expect(screen.queryByTestId("turn-readonly")).toBeNull();
     });
+  });
+
+  it("pins live subtasks card above input while incomplete (v1.148)", async () => {
+    const events = [
+      { id: 1, seq: 1, type: "user_input", payload: { text: "多步任务" } },
+      {
+        id: 2,
+        seq: 2,
+        type: "subtasks",
+        payload: {
+          items: [
+            { title: "第一步", status: "done" },
+            { title: "第二步", status: "in_progress" },
+            { title: "第三步", status: "pending" },
+          ],
+        },
+      },
+    ];
+    render(<AgentPanel api={mockApi(events)} t={t} sessionId="s1" />);
+    const live = await screen.findByTestId("subtasks-live");
+    expect(live.textContent).toContain("1/3");
+    expect(live.getAttribute("data-open")).toBe("true");
+    // 头部点击折叠 / 再展开
+    fireEvent.click(screen.getByTestId("subtasks-live-head"));
+    expect(screen.getByTestId("subtasks-live").getAttribute("data-open")).toBe("false");
+    fireEvent.click(screen.getByTestId("subtasks-live-head"));
+    expect(screen.getByTestId("subtasks-live").textContent).toContain("第三步");
+    // 线程内历史卡照常渲染
+    expect(screen.getByTestId("turn-subtasks")).toBeTruthy();
+  });
+
+  it("hides live subtasks card once all items are done (v1.148 收起)", async () => {
+    const events = [
+      { id: 1, seq: 1, type: "user_input", payload: { text: "任务" } },
+      {
+        id: 2,
+        seq: 2,
+        type: "subtasks",
+        payload: {
+          items: [
+            { title: "唯一项", status: "done" },
+          ],
+        },
+      },
+    ];
+    render(<AgentPanel api={mockApi(events)} t={t} sessionId="s1" />);
+    // 线程历史卡保留，常驻卡自动收起
+    await screen.findByTestId("turn-subtasks");
+    await waitFor(() => expect(screen.queryByTestId("subtasks-live")).toBeNull());
   });
 
   it("renders patch_applied card", async () => {

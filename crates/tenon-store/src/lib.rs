@@ -369,6 +369,7 @@ CREATE TABLE IF NOT EXISTS events (
     UNIQUE(session_id, seq)
 );
 CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id, seq);
+CREATE INDEX IF NOT EXISTS idx_events_type_session ON events(type, session_id, id);
 
 CREATE TABLE IF NOT EXISTS checkpoints (
     id TEXT PRIMARY KEY,
@@ -910,6 +911,44 @@ impl Store {
         )?;
         let rows = stmt.query_map([project_id], row_to_session)?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// 项目内各会话最新一次 `subtasks` 事件的完成计数（v1.148 §15：侧栏任务行
+    /// 进度徽标数据源）。返回 (session_id, done, total)；会话无 subtasks 事件
+    /// 则不出现。payload 损坏按无清单处理（呈现层降级，不做写入面）。
+    pub fn latest_subtasks_by_session(
+        &mut self,
+        project_id: &str,
+    ) -> Result<Vec<(String, u32, u32)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT e.session_id, e.payload FROM events e
+             WHERE e.type = 'subtasks'
+               AND e.id = (SELECT MAX(id) FROM events WHERE type = 'subtasks' AND session_id = e.session_id)
+               AND e.session_id IN (SELECT id FROM sessions WHERE project_id = ?1)",
+        )?;
+        let rows = stmt.query_map([project_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (session_id, payload) = row?;
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&payload) else {
+                continue;
+            };
+            let Some(items) = value.get("items").and_then(|v| v.as_array()) else {
+                continue;
+            };
+            let total = items.len() as u32;
+            if total == 0 {
+                continue;
+            }
+            let done = items
+                .iter()
+                .filter(|i| i.get("status").and_then(|s| s.as_str()) == Some("done"))
+                .count() as u32;
+            out.push((session_id, done, total));
+        }
+        Ok(out)
     }
 
     /// 手动归档（v1.103 §14.2）：侧栏隐藏、可还原，数据不出库。
@@ -2169,6 +2208,69 @@ mod tests {
         assert_eq!(got.status, SessionStatus::Executing);
         assert_eq!(got.model, "glm");
         assert_eq!(s.list_sessions(&p.id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn latest_subtasks_by_session_takes_newest_snapshot() {
+        // v1.148 §15：侧栏进度徽标数据源——每会话取最新一次 subtasks 快照计数，
+        // 跨项目隔离，无清单会话不出现。
+        let mut s = mem();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let a = s.create_session(&p.id, "mock").unwrap();
+        let b = s.create_session(&p.id, "mock").unwrap();
+        // 无清单会话不出现
+        assert!(s.latest_subtasks_by_session(&p.id).unwrap().is_empty());
+        // a：两代快照，取最新（3 项 2 完成）
+        s.append_event(
+            &a.id,
+            EventKind::Subtasks,
+            &json!({"items": [{"title": "x", "status": "done"}]}),
+        )
+        .unwrap();
+        s.append_event(
+            &a.id,
+            EventKind::Subtasks,
+            &json!({"items": [
+                {"title": "x", "status": "done"},
+                {"title": "y", "status": "done"},
+                {"title": "z", "status": "in_progress"}
+            ]}),
+        )
+        .unwrap();
+        // b：一代快照（1 项 0 完成）
+        s.append_event(
+            &b.id,
+            EventKind::Subtasks,
+            &json!({"items": [{"title": "q", "status": "pending"}]}),
+        )
+        .unwrap();
+        let mut got = s.latest_subtasks_by_session(&p.id).unwrap();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![(a.id.clone(), 2, 3), (b.id.clone(), 0, 1)],
+            "各会话取最新快照计数"
+        );
+        // 非 subtasks 事件不干扰
+        s.append_event(&a.id, EventKind::Decision, &json!({}))
+            .unwrap();
+        assert_eq!(s.latest_subtasks_by_session(&p.id).unwrap().len(), 2);
+        // 跨项目隔离
+        let dir2 = tempfile::tempdir().unwrap();
+        let p2 = s.upsert_project(dir2.path().to_str().unwrap()).unwrap();
+        let c = s.create_session(&p2.id, "mock").unwrap();
+        s.append_event(
+            &c.id,
+            EventKind::Subtasks,
+            &json!({"items": [{"title": "k", "status": "done"}]}),
+        )
+        .unwrap();
+        assert_eq!(
+            s.latest_subtasks_by_session(&p2.id).unwrap(),
+            vec![(c.id, 1, 1)]
+        );
+        assert_eq!(s.latest_subtasks_by_session(&p.id).unwrap().len(), 2);
     }
 
     #[test]
