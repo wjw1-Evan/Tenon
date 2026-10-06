@@ -165,7 +165,5 @@ describe("App file operations", () => {
 
 // 避免 import within 冲突
 function within2(el: HTMLElement) {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { within } = require("@testing-library/react") as typeof import("@testing-library/react");
-  return within(el);
+  return rtlWithin(el);
 }
