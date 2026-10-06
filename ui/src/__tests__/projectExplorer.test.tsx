@@ -577,4 +577,43 @@ describe("ProjectExplorer folder picker (v1.133)", () => {
     expect(screen.queryByTestId("project-add-picker")).not.toBeInTheDocument();
     expect(screen.getByTestId("project-add-form")).toBeInTheDocument();
   });
+
+  // v1.153 §7.2：分组行尾「重命名」→ 模态改名（预填当前显示名），保存后刷新项目摘要
+  it("renames a registered project via the row action and refreshes summaries", async () => {
+    const onRefreshProjects = vi.fn();
+    const renameProject = vi.fn().mockResolvedValue({ id: "open-a", display_name: "新名字" });
+    renderExplorer([project("open-a")], { renameProject }, { onRefreshProjects });
+    fireEvent.click(screen.getByTestId("project-rename-open-a"));
+    expect(screen.getByRole("dialog", { name: "projects.rename" })).toBeInTheDocument();
+    const input = screen.getByTestId("project-rename-name");
+    expect(input).toHaveValue("open-a");
+    // 路径只读展示作上下文
+    expect(screen.getByTestId("project-rename-form").textContent).toContain("/tmp/open-a");
+    fireEvent.change(input, { target: { value: "  新名字  " } });
+    fireEvent.click(screen.getByRole("button", { name: "settings.save" }));
+    await waitFor(() => expect(renameProject).toHaveBeenCalledWith("open-a", "新名字"));
+    await waitFor(() => expect(onRefreshProjects).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("dialog", { name: "projects.rename" })).not.toBeInTheDocument();
+  });
+
+  // 空名提交 = 清除自定义名回退路径末段（§6.4，与登记语义一致）
+  it("clears the custom display name when renamed to blank", async () => {
+    const renameProject = vi.fn().mockResolvedValue({ id: "open-a", display_name: "open-a" });
+    renderExplorer([project("open-a")], { renameProject });
+    fireEvent.click(screen.getByTestId("project-rename-open-a"));
+    fireEvent.change(screen.getByTestId("project-rename-name"), { target: { value: "   " } });
+    fireEvent.click(screen.getByRole("button", { name: "settings.save" }));
+    await waitFor(() => expect(renameProject).toHaveBeenCalledWith("open-a", ""));
+  });
+
+  // Esc 收起改名模态，不触发改名请求
+  it("closes the rename dialog on Escape without renaming", () => {
+    const renameProject = vi.fn();
+    renderExplorer([project("open-a")], { renameProject });
+    fireEvent.click(screen.getByTestId("project-rename-open-a"));
+    expect(screen.getByTestId("project-rename-form")).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByTestId("project-rename-form")).not.toBeInTheDocument();
+    expect(renameProject).not.toHaveBeenCalled();
+  });
 });

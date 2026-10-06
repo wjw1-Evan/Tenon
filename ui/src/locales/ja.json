@@ -18,6 +18,7 @@
   "projects.folder_error": "フォルダーの読み込みに失敗しました",
   "projects.cancel": "キャンセル",
   "projects.open": "開く",
+  "projects.rename": "名前を変更",
   "projects.remove": "削除",
   "projects.remove_blocked": "履歴セッションがあるため削除できません",
   "projects.active": "個のアクティブセッション",

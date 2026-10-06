@@ -18,6 +18,7 @@
   "projects.folder_error": "目錄載入失敗",
   "projects.cancel": "取消",
   "projects.open": "開啟",
+  "projects.rename": "重新命名",
   "projects.remove": "移除",
   "projects.remove_blocked": "尚有歷史會話，暫無法移除",
   "projects.active": "個活躍會話",

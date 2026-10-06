@@ -609,7 +609,7 @@ button:disabled { opacity: 0.45; cursor: default; }
 }
 .pe-view-toggle:hover { background: var(--raised); color: var(--fg); }
 .pe-group-row.active .pe-view-toggle { color: var(--accent-text); }
-/* 分组行尾 hover 操作区（v1.118）：worktree 新任务 / 移除登记 */
+/* 分组行尾 hover 操作区（v1.118）：重命名（v1.153）/ worktree 新任务 / 移除登记 */
 .pe-group-actions {
   position: absolute;
   top: 50%;

@@ -18,6 +18,7 @@
   "projects.folder_error": "Failed to load directory",
   "projects.cancel": "Cancel",
   "projects.open": "Open",
+  "projects.rename": "Rename",
   "projects.remove": "Remove",
   "projects.remove_blocked": "Remove history sessions first",
   "projects.active": "active",

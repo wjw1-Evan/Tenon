@@ -60,6 +60,7 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
         // ---------- 多项目控制面（§6.4 / §15） ----------
         .route("/projects", get(list_projects))
         .route("/projects/open", post(open_project))
+        .route("/projects/{id}/rename", post(rename_project))
         .route("/projects/{id}", delete(delete_project))
         // 目录浏览（v1.133 §15）：添加项目对话框浏览器模式目录选择器的数据源
         .route("/fs/dirs", get(fs_dirs))
@@ -387,6 +388,45 @@ async fn open_project(
         .into_response(),
         Err((status, message)) => api_err(status, message),
     }
+}
+
+#[derive(Deserialize)]
+struct RenameProjectBody {
+    /// 新显示名：trim 后落库；空串清除自定义名回退路径末段（§6.4）。
+    display_name: String,
+}
+
+/// POST /projects/:id/rename（v1.153 §15）：已登记项目改名——只改显示名元数据，
+/// 不动 path 与 project_id；无需项目处于激活态（§6.4 登记即用）。
+async fn rename_project(
+    State(state): State<Arc<DaemonState>>,
+    Path(id): Path<String>,
+    Json(body): Json<RenameProjectBody>,
+) -> Response {
+    let mut store = state.store.lock().await;
+    let found = match store.project(&id) {
+        Ok(found) => found,
+        Err(e) => return api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    };
+    let Some(mut project) = found else {
+        return api_err(StatusCode::NOT_FOUND, format!("未登记项目 {id}"));
+    };
+    let trimmed = body.display_name.trim();
+    if trimmed != project.display_name {
+        if let Err(e) = store.set_project_display_name(&project.id, trimmed) {
+            return api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
+        }
+    }
+    project.display_name = if trimmed.is_empty() {
+        derived_project_name(&project.path)
+    } else {
+        trimmed.to_string()
+    };
+    Json(json!({
+        "id": project.id,
+        "display_name": project.display_name,
+    }))
+    .into_response()
 }
 
 /// GET /fs/dirs 查询参数（v1.133 §15）。

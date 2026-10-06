@@ -342,6 +342,14 @@ export class TenonApi {
     });
   }
 
+  /** 重命名已登记项目（v1.153 §15）：空串清除自定义名回退路径末段。 */
+  renameProject(projectId: string, displayName: string) {
+    return this.request<{ id: string; display_name: string }>(`/projects/${projectId}/rename`, {
+      method: "POST",
+      json: { display_name: displayName },
+    });
+  }
+
   setTrust(projectId: string, trusted: boolean) {
     return this.request<{ ok: boolean }>("/project/trust", {
       method: "PUT",

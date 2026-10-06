@@ -219,6 +219,25 @@ function WorktreeIcon() {
   );
 }
 
+/** 线性铅笔图标（v1.153）：分组行尾「重命名」入口，与分支图标同规格。 */
+function PencilIcon() {
+  return (
+    <svg
+      width={12}
+      height={12}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2.4}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+    </svg>
+  );
+}
+
 /**
  * 选择项目目录（§6.4 添加项目模态）：桌面壳内走 Tauri 原生目录对话框；
  * 浏览器模式无绝对路径来源，由用户手输路径。
@@ -266,6 +285,11 @@ export function ProjectExplorer({
   const [name, setName] = useState("");
   /** 用户手动改过项目名后，路径变更不再覆盖名称。 */
   const [nameEdited, setNameEdited] = useState(false);
+  // 改名模态（v1.153）：renaming = 目标项目；空名提交 = 清除自定义名回退派生（§6.4）。
+  const [renaming, setRenaming] = useState<ProjectSummary | null>(null);
+  const [renameName, setRenameName] = useState("");
+  const [renameBusy, setRenameBusy] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [worktreeBusyId, setWorktreeBusyId] = useState<string | null>(null);
   /** 「已归档」折叠组展开集合（v1.103）；不落盘，默认收起。 */
@@ -342,6 +366,29 @@ export function ProjectExplorer({
     setNameEdited(false);
   };
 
+  // v1.153：改名提交（§15 POST /projects/:id/rename）——成功后刷新项目摘要，
+  // 失败留在模态内经 tree-error 呈现（与添加模态 openError 同款）。
+  const submitRename = async () => {
+    if (!renaming || renameBusy) return;
+    setRenameBusy(true);
+    setRenameError(null);
+    try {
+      await api.renameProject(renaming.id, renameName.trim());
+      setRenaming(null);
+      onRefreshProjects?.();
+    } catch (e) {
+      setRenameError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRenameBusy(false);
+    }
+  };
+
+  const closeRenameDialog = () => {
+    if (renameBusy) return;
+    setRenaming(null);
+    setRenameError(null);
+  };
+
   const mergeWorktree = async (sessionId: string) => {
     setWorktreeBusyId(sessionId);
     try {
@@ -401,10 +448,15 @@ export function ProjectExplorer({
     });
   }, [projectId]);
 
-  // Esc 先收目录选择浮层（v1.133），再收添加模态（打开中 busy 时不关）。
+  // Esc 先收目录选择浮层（v1.133），再收添加模态（打开中 busy 时不关）；
+  // 改名模态（v1.153）同理，busy 时不关。
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      if (renaming) {
+        closeRenameDialog();
+        return;
+      }
       if (adding && busyId !== "__add__") {
         if (pickerOpen) closePicker();
         else closeAddDialog();
@@ -413,7 +465,7 @@ export function ProjectExplorer({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [adding, busyId, pickerOpen]);
+  }, [adding, busyId, pickerOpen, renaming, renameBusy]);
 
   const browseForDirectory = async () => {
     const picked = await pickDirectory();
@@ -721,8 +773,23 @@ export function ProjectExplorer({
                   >
                     {formatUpdatedAt(updatedAt, t, localeTag)}
                   </span>
-                  {/* 分组行尾 hover 操作区（v1.118）：worktree 新任务 / 移除登记。 */}
+                  {/* 分组行尾 hover 操作区（v1.118）：重命名（v1.153）/ worktree 新任务 / 移除登记。 */}
                   <div className="pe-group-actions" data-testid={`pe-view-${project.id}`}>
+                    <button
+                      type="button"
+                      className="pe-gact"
+                      data-testid={`project-rename-${project.id}`}
+                      aria-label={t("projects.rename")}
+                      disabled={busyId === project.id}
+                      title={t("projects.rename")}
+                      onClick={() => {
+                        setRenaming(project);
+                        setRenameName(project.display_name);
+                        setRenameError(null);
+                      }}
+                    >
+                      <PencilIcon />
+                    </button>
                     <button
                       type="button"
                       className="pe-gact"
@@ -896,6 +963,65 @@ export function ProjectExplorer({
               </button>
               <button type="submit" disabled={!path.trim() || busyId === "__add__"}>
                 {t("projects.open")}
+              </button>
+            </div>
+          </div>
+        </form>
+      )}
+
+      {/* 改名模态（v1.153 §15）：预填当前显示名，路径只读展示作上下文；
+          清空提交 = 清除自定义名回退路径末段（与登记语义一致）。 */}
+      {renaming && (
+        <form
+          className="pe-overlay"
+          data-testid="project-rename-form"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) closeRenameDialog();
+          }}
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submitRename();
+          }}
+        >
+          <div
+            className="pe-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label={t("projects.rename")}
+          >
+            <div className="pe-dialog-head">
+              <strong>{t("projects.rename")}</strong>
+            </div>
+            <div className="pe-picker-path" title={renaming.path}>
+              {renaming.path}
+            </div>
+            <label className="pe-dialog-field">
+              <span>{t("projects.name")}</span>
+              <input
+                aria-label={t("projects.name")}
+                data-testid="project-rename-name"
+                value={renameName}
+                placeholder={t("projects.name_hint")}
+                autoFocus
+                onChange={(event) => setRenameName(event.target.value)}
+              />
+            </label>
+            {renameError && (
+              <div className="tree-error" role="alert">
+                {renameError}
+              </div>
+            )}
+            <div className="pe-dialog-actions">
+              <button
+                type="button"
+                className="pe-action"
+                data-testid="project-rename-cancel"
+                onClick={closeRenameDialog}
+              >
+                {t("projects.cancel")}
+              </button>
+              <button type="submit" disabled={renameBusy}>
+                {t("settings.save")}
               </button>
             </div>
           </div>

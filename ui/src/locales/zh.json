@@ -18,6 +18,7 @@
   "projects.folder_error": "目录加载失败",
   "projects.cancel": "取消",
   "projects.open": "打开",
+  "projects.rename": "重命名",
   "projects.remove": "移除",
   "projects.remove_blocked": "存在历史会话，暂不能移除",
   "projects.active": "个活跃会话",

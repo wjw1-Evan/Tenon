@@ -2060,6 +2060,80 @@ async fn project_display_name_register_open_and_rename() {
     assert_eq!(cleared["display_name"], "origin-name");
 }
 
+// v1.153 §15：POST /projects/:id/rename——已登记项目改名，只改显示名元数据，
+// 不动 path 与 project_id；trim 落库、空串回退派生、未知 id 404。
+#[tokio::test]
+async fn project_rename_endpoint_updates_display_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("rename-target");
+    std::fs::create_dir_all(&project).unwrap();
+
+    let (_tmp, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let url = base(port);
+
+    let registered: serde_json::Value = client
+        .post(format!("{url}/projects/open"))
+        .json(&serde_json::json!({ "path": project.to_string_lossy() }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let pid = registered["id"].as_str().unwrap().to_string();
+    assert_eq!(registered["display_name"], "rename-target");
+    // daemon canonicalize 后落库（macOS /var → /private/var），断言对齐规范化路径
+    let canonical = std::fs::canonicalize(&project)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+
+    // trim 落库 → 响应与摘要同步
+    let renamed: serde_json::Value = client
+        .post(format!("{url}/projects/{pid}/rename"))
+        .json(&serde_json::json!({ "display_name": "  新名字  " }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(renamed["id"], pid);
+    assert_eq!(renamed["display_name"], "新名字");
+    let listed: serde_json::Value = client
+        .get(format!("{url}/projects"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listed["projects"][0]["display_name"], "新名字");
+    assert_eq!(listed["projects"][0]["path"], canonical);
+
+    // 空串清除自定义名 → 回退路径末段派生
+    let cleared: serde_json::Value = client
+        .post(format!("{url}/projects/{pid}/rename"))
+        .json(&serde_json::json!({ "display_name": "" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(cleared["display_name"], "rename-target");
+
+    // 未知 id → 404
+    let missing = client
+        .post(format!("{url}/projects/no-such-id/rename"))
+        .json(&serde_json::json!({ "display_name": "x" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), 404, "未知项目 id 应 404");
+}
+
 #[tokio::test]
 async fn lsp_workspace_edit_applies_atomically_with_checkpoint_and_dirty_guard() {
     let dir = tempfile::tempdir().unwrap();

@@ -18,6 +18,7 @@
   "projects.folder_error": "폴더 로드 실패",
   "projects.cancel": "취소",
   "projects.open": "열기",
+  "projects.rename": "이름 바꾸기",
   "projects.remove": "제거",
   "projects.remove_blocked": "기록 세션이 있어 제거할 수 없습니다",
   "projects.active": "개의 활성 세션",
