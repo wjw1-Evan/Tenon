@@ -55,6 +55,7 @@ import {
 } from "./lib/viewport";
 import { SettingsDialog, type SettingsData } from "./components/SettingsDialog";
 import { UpdateNotesDialog } from "./components/UpdateNotesDialog";
+import { UpdateReadyToast } from "./components/UpdateReadyToast";
 import { CommandPalette, type Command } from "./components/CommandPalette";
 
 /** 侧栏视图（布局 §7.2 重设计）：activity rail 单视图切换，localStorage 记忆。 */
@@ -1514,6 +1515,8 @@ export default function App({
       )}
       {/* v1.152 更新日志启动弹窗：仅桌面壳环境自渲染（浏览器 Web 版不适用） */}
       <UpdateNotesDialog t={t} />
+      {/* v1.154 更新就绪通知卡：下载完成等待用户确认安装（仅桌面壳） */}
+      <UpdateReadyToast t={t} />
       <FileFinder
         open={finderOpen}
         onClose={() => setFinderOpen(false)}

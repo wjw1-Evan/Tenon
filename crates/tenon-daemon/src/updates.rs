@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::collections::BTreeMap;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 #[derive(Debug, thiserror::Error)]
@@ -274,53 +274,6 @@ pub fn apply_staged_update(staged_path: &Path, current_exe: &Path) -> Result<()>
     Ok(())
 }
 
-/// 扫描当前平台 staged 更新；文件名内嵌哈希，选择最大新版本。
-pub fn find_staged_update(
-    staging_dir: &Path,
-    target: &str,
-    current_version: &str,
-) -> Result<Option<StagedUpdate>> {
-    let mut best: Option<(String, PathBuf, String)> = None;
-    for entry in std::fs::read_dir(staging_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
-        let Some((version, hash)) = name
-            .strip_prefix("tenon-")
-            .and_then(|rest| rest.rsplit_once('-'))
-            .and_then(|(before, hash)| {
-                before
-                    .strip_suffix(&format!("-{target}"))
-                    .map(|version| (version, hash))
-            })
-        else {
-            continue;
-        };
-        if hash.len() != 64 || hex::decode(hash).is_err() {
-            continue;
-        }
-        if !version_is_newer(version, current_version)? {
-            continue;
-        }
-        if best
-            .as_ref()
-            .map(|(best_version, _, _)| version_is_newer(version, best_version).unwrap_or(false))
-            .unwrap_or(true)
-        {
-            best = Some((version.to_string(), path.clone(), hash.to_string()));
-        }
-    }
-    Ok(best.map(|(version, path, sha256)| StagedUpdate {
-        size_bytes: std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0),
-        version,
-        path: path.to_string_lossy().into_owned(),
-        sha256,
-        target: target.to_string(),
-    }))
-}
-
 /// 用户确认下次启动应用；请求文件只保存 path + 哈希，应用前再次重算。
 pub fn mark_staged_update(staged: &StagedUpdate, staging_dir: &Path) -> Result<()> {
     let path = staging_dir.join(".apply");
@@ -464,15 +417,11 @@ mod tests {
         assert_eq!(staged.version, "99.0.0");
         assert_eq!(staged.size_bytes, bytes.len() as u64);
 
-        let found = find_staged_update(&staging, &target, "0.1.0")
-            .unwrap()
-            .unwrap();
-        assert_eq!(found.sha256, staged.sha256);
         let current = dir.path().join("current-daemon");
         std::fs::write(&current, b"old").unwrap();
-        apply_staged_update(Path::new(&found.path), &current).unwrap();
+        apply_staged_update(Path::new(&staged.path), &current).unwrap();
         assert_eq!(std::fs::read(&current).unwrap(), bytes);
-        assert!(!Path::new(&found.path).exists());
+        assert!(!Path::new(&staged.path).exists());
     }
 
     #[tokio::test]
@@ -521,9 +470,17 @@ mod tests {
         )
         .await
         .unwrap();
-        let staged = find_staged_update(dir.path(), &target, "0.1.0")
-            .unwrap()
-            .unwrap();
+        let staged = StagedUpdate {
+            version: "99.0.0".into(),
+            target: target.clone(),
+            sha256: sha256_hex(bytes),
+            path: dir
+                .path()
+                .join(format!("tenon-99.0.0-{target}-{}", sha256_hex(bytes)))
+                .to_string_lossy()
+                .into_owned(),
+            size_bytes: bytes.len() as u64,
+        };
         std::fs::write(&staged.path, b"tampered").unwrap();
         let current = dir.path().join("current-daemon");
         std::fs::write(&current, b"old").unwrap();

@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v1.153** |
-| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.153） |
+| 版本 | **v1.154** |
+| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.154） |
 | 状态 | 定稿（v1.10 决策闭环），M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 | 历史评审 | v0.1 / v0.3 两轮共 41 项、v1.0 复审 21 项问题的结论已全部并入本方案（过程文档已清理） |
@@ -186,7 +186,7 @@ Codex CLI 已开源且核心为 Rust 实现（codex-rs 工作区，另有遗留 
 |---|---|
 | 性能 | 冷启动可输入 < 1.5s；LSP 索引就绪后首补全 < 400ms（冷启动到首个可用补全 < 3s）；10MB 文件打开 < 2s；搜索首结果 < 500ms；万行 diff 60fps（详见 §8.7） |
 | 安全 | 安全违规 = 0 一票否决；沙箱逃逸测试套件全通过；本地服务防 CSRF/DNS rebinding |
-| 隐私 | 本地数据（会话/Trace/索引/设置）默认不出本机；使用云端模型时代码上下文按用户显式配置发送并在 UI 明示；更新默认手动检查；崩溃/行为报告 opt-in 且明示内容；模型 Key 存系统钥匙串 |
+| 隐私 | 本地数据（会话/Trace/索引/设置）默认不出本机；使用云端模型时代码上下文按用户显式配置发送并在 UI 明示；更新自动下载（签名校验通过才落地），安装时机经用户确认重启（v1.154）；崩溃/行为报告 opt-in 且明示内容；模型 Key 存系统钥匙串 |
 | 可靠 | daemon 崩溃自动拉起；会话状态/事件/上下文 100% 可恢复（EXECUTING 中崩溃自动回滚到最近 checkpoint，不承诺原地续跑，见 §10.3）；「自动档 = 必可回滚」不变式 |
 | 兼容 | macOS 13+；Windows 10+（WSL2；无 WSL2 时降级档运行，见 §12.3）；Ubuntu 22.04+；三平台 WebView 兼容测试 |
 | 无障碍 | 全键盘操作；对比度达标；屏幕阅读器基础支持 |
@@ -243,9 +243,11 @@ Codex CLI 已开源且核心为 Rust 实现（codex-rs 工作区，另有遗留 
 
 **生命周期规则**：动态端口 + 握手；单实例锁（多窗口 / 多项目共享，daemon 不是“单项目进程”）；`--project` 仅作为首屏种子，运行中可通过项目 API 追加打开；退出时清理全部子进程；UI 崩溃不丢会话（状态全在 daemon + 磁盘）。
 
-**GitHub 发布与桌面更新（v1.90，参考 Codex 桌面端后台更新体验）**：tag `v*` 推送触发 GitHub Actions 的 macOS arm64 / macOS x86_64 / Linux x86_64 / Windows x86_64 矩阵。每个构建先按目标三件套产出 release daemon + `ui/dist` + Tauri 包，Tauri Updater 私钥只在 Actions Secret 中出现，构建器生成安装包与其 minisign `.sig`；发布任务聚合为静态 `latest.json`（`version` / `notes` / `pub_date` / `platforms.<os-arch>.{url,signature}`），连同安装包和签名上传到当前 GitHub Release。客户端固定消费该仓库 `releases/latest/download/latest.json`：GitHub 的 HTTPS 保证传输完整性，Tauri minisign 公钥内置于桌面壳保证发布者真实性；任一签名失败即中止且不触达安装器。桌面壳每 5 分钟读 daemon `/settings` 生效通道，且每 6 小时最多检查一次；只有 `update.channel=auto` 才出网，manual 默认静默不出网。发现新版本后后台下载、校验、安装并经 Tauri 进程重启收尾。发布 tag 必须与 Cargo workspace / `tauri.conf.json` 语义化版本一致。v1.86 的 daemon-only 执行器继续服务无壳 Web / headless；桌面壳 spawn 时设置 `TENON_UPDATE_SURFACE=shell`，daemon auto 循环在该表面让位给完整包更新，避免同时下载 sidecar 与完整包。
+**GitHub 发布与桌面更新（v1.90，参考 Codex 桌面端后台更新体验）**：tag `v*` 推送触发 GitHub Actions 的 macOS arm64 / macOS x86_64 / Linux x86_64 / Windows x86_64 矩阵。每个构建先按目标三件套产出 release daemon + `ui/dist` + Tauri 包，Tauri Updater 私钥只在 Actions Secret 中出现，构建器生成安装包与其 minisign `.sig`；发布任务聚合为静态 `latest.json`（`version` / `notes` / `pub_date` / `platforms.<os-arch>.{url,signature}`），连同安装包和签名上传到当前 GitHub Release。客户端固定消费该仓库 `releases/latest/download/latest.json`：GitHub 的 HTTPS 保证传输完整性，Tauri minisign 公钥内置于桌面壳保证发布者真实性；任一签名失败即中止且不触达安装器。桌面壳启动即检查、每 6 小时至多一次（v1.90 起 5 分钟读 daemon `/settings` 判 `update.channel` 的出网门槛随 v1.154 通道移除一并删除）。发现新版本后后台下载校验，**下载完成后不自动重启**——由 UI 通知卡提示、用户单击「立即更新」才安装重启（v1.154，见下）。发布 tag 必须与 Cargo workspace / `tauri.conf.json` 语义化版本一致。v1.86 的 daemon-only 执行器继续服务无壳 Web / headless；桌面壳 spawn 时设置 `TENON_UPDATE_SURFACE=shell`，daemon auto 循环在该表面让位给完整包更新，避免同时下载 sidecar 与完整包。
 
-**更新日志随包展示（v1.152）**：更新成功重启后桌面壳弹「已更新到 vX.Y.Z」更新日志启动弹窗（双参考方案选定模态弹窗——日志必达不错过；顶栏非阻断横幅备选未采用）——发布流水线聚合 latest.json 时经 GitHub generate-notes API 按 tag 预生成发布说明（本仓库中文 commit ⇒ 中文日志），写入 `notes` 字段（替代原「see GitHub Release」占位文案），GitHub Release 创建改 `--notes-file` 与 latest.json 同源同文；壳在 `download_and_install` 成功后、重启前把 `{version, notes}` 持久化到应用数据目录 `shell-prefs.json`（0600），重启后 UI 经 `get_update_notes` IPC 命令（peek 不消费）渲染弹窗，「知道了」触发 `dismiss_update_notes`（清 pending + 记 `last_seen_version`）——重启后零出网、离线可见。手动 dmg 装新版同样弹出（`last_seen_version` 与当前版本比对识别），但仅版本号 + GitHub Release 外链，不自动出网拉日志（manual 通道零出网设计线不变）。浏览器 Web 版无壳不适用。
+**更新固定自动 + 下载完成用户确认重启（v1.154）**：更新通道概念移除——`update.channel` 配置（manual \| auto）与设置面板 Updates 分类整体删除，更新恒为自动，无手动检查 / 手动应用入口；daemon 侧 `/updates`（状态）/ `/updates/check`（手动检查）/ `/updates/apply`（手动应用）三端点、`update_channel` 设置覆盖与检查状态记录一并移除，daemon-only auto 循环保留服务无壳 Web / headless（staged 更新仍在重启时生效，表面让位机制不变）。桌面壳改双段式交互：发现新版本仅后台 `download`（不 install 不重启），下载完成把 `{version, notes}` 持久化 `shell-prefs.json`（0600 `ready_update`）并向 UI emit `tenon://update-ready`（UI 启动时另有 `get_update_ready` IPC peek，防事件早于监听的竞态）；UI 右下角非阻断通知卡「已下载更新 vX.Y.Z」渲染更新内容（latest.json `notes`）——「立即更新」走 `install_update` IPC，壳先把 `ready_update` 转为 `pending_update`（新版首启 v1.152 日志弹窗接管）再 install + restart 到最新版本（备选外链打开 GitHub Release 页手动下载 dmg 同样升到最新），「下次再说」仅收起本次提示；重启后壳发现 `ready_update` 版本仍新于当前（上次下载完未装）即重新检查下载再提示。通知卡选非阻断形态：下载完成时机不可控（用户可能正在编辑 / 跑任务），更新又是可延迟动作，模态弹窗会强制打断（v1.152 双参考结论不适用——那是「日志必达」场景）；更新成功后的启动日志弹窗保持不变。
+
+**更新日志随包展示（v1.152；持久化时机随 v1.154 调整为 install 成功后）**：更新成功重启后桌面壳弹「已更新到 vX.Y.Z」更新日志启动弹窗（双参考方案选定模态弹窗——日志必达不错过；顶栏非阻断横幅备选未采用）——发布流水线聚合 latest.json 时经 GitHub generate-notes API 按 tag 预生成发布说明（本仓库中文 commit ⇒ 中文日志），写入 `notes` 字段（替代原「see GitHub Release」占位文案），GitHub Release 创建改 `--notes-file` 与 latest.json 同源同文；壳在 install 成功后、重启前把 `{version, notes}` 持久化到应用数据目录 `shell-prefs.json`（0600），重启后 UI 经 `get_update_notes` IPC 命令（peek 不消费）渲染弹窗，「知道了」触发 `dismiss_update_notes`（清 pending + 记 `last_seen_version`）——重启后零出网、离线可见。手动 dmg 装新版同样弹出（`last_seen_version` 与当前版本比对识别），但仅版本号 + GitHub Release 外链，不自动出网拉日志。浏览器 Web 版无壳不适用。
 
 **macOS 分发签名与公证（v1.151，修复下载 dmg 被 Gatekeeper 判「已损坏」）**：macOS 产物在 Tauri 构建期完成 Developer ID 签名 + 公证 + staple——CI 经 Actions Secrets 注入 `APPLE_CERTIFICATE`（base64 p12，Developer ID Application）+ `APPLE_CERTIFICATE_PASSWORD` + `APPLE_SIGNING_IDENTITY`（`Developer ID Application: <名称> (<TeamID>)`）完成签名，注入 `APPLE_API_ISSUER` + `APPLE_API_KEY`（App Store Connect 密钥 ID）+ `APPLE_API_KEY_P8`（.p8 私钥原文，构建期物化至临时路径供 `APPLE_API_KEY_PATH`）完成公证（Apple ID 方：`APPLE_ID` / `APPLE_PASSWORD` 专用密码 / `APPLE_TEAM_ID` 为备选通道）；bundler 对 .app、.app.tar.gz 更新包与 .dmg 全量签名公证，下载 dmg 双击即开。secrets 未配置（证书未就绪 / fork 自建）时构建保持无签名退化，下载安装需 `xattr -cr` 绕过——记录为已知限制；secret 空值一律不注入构建环境（空串与未设置语义不同，防误触发签名/公证路径）。minisign 更新签名职责不变，与 Apple 签名独立：Gatekeeper 管首次分发信任，minisign 管更新链完整性。
 
@@ -306,7 +308,7 @@ GlobalScheduler（全局并发 / 成本 / 通知）
 | 直执风险事件 | C/D 级动作 | 级别、动作详情、目标域名 / 参数、执行结果；不等待确认 |
 | Checkpoint 时间轴 | 侧栏 | 事件流 + 快照点，任意回滚 / 撤销回滚（unrevert） |
 | 语言包安装向导 | 检测到语言缺包 | 一键安装、运行时检测与官方指引 |
-| 设置 | 全局（Cmd/Ctrl+, 或命令面板） | **v1.121 起为 Codex 式模态框：左侧 General / Models / Permissions / Plugins / Skills / Updates 分类导航，右侧只渲染当前分类**；General 承载编辑器保存方式（v1.75）与代理参数（首改缓冲 / 命令超时）；Models / Permissions / Plugins / Updates 分别承载模型（v1.40）、权限策略（v1.85：工具黑名单、单任务成本上限；强制交互档随 v1.89 审批移除而删除）、MCP 插件管理（v1.84 设立，v1.145 重构为 GitHub 市场获取 + 已装管理，§13.5）、技能管理（v1.130，§13.4；v1.145 增市场获取子视图）、更新执行器（v1.83：更新通道 manual \| auto；遥测 / 崩溃报告无采集端，不设无效开关，v1.92）；外观档与语言仅保留顶栏入口（v1.92 去重） |
+| 设置 | 全局（Cmd/Ctrl+, 或命令面板） | **v1.121 起为 Codex 式模态框：左侧分类导航，右侧只渲染当前分类**；General 承载编辑器保存方式（v1.75）与代理参数（首改缓冲 / 命令超时）；Models / Permissions / Plugins / Skills 分别承载模型（v1.40）、权限策略（v1.85：工具黑名单、单任务成本上限；强制交互档随 v1.89 审批移除而删除）、MCP 插件管理（v1.84 设立，v1.145 重构为 GitHub 市场获取 + 已装管理，§13.5）、技能管理（v1.130，§13.4；v1.145 增市场获取子视图）；Updates 分类（v1.83：更新通道 manual \| auto；v1.92 收敛遥测开关）随更新固定自动整体移除（v1.154）；外观档与语言仅保留顶栏入口（v1.92 去重） |
 | 命令面板 | Cmd+Shift+P | 全部命令可达（无障碍要求） |
 | Evals 报告 | M3 | 五指标 + 对比版本 |
 
@@ -687,7 +689,7 @@ A/B/C/D 仅是风险与执行边界标记，不再是审批门槛；去 Plan 安
 
 **权限策略（TeamPolicy，v1.85；v1.89 修订）**：全局约束只允许收窄——`denied_tools` 在所有会话的工具入口前拒绝；`max_cost_usd` 与全局配置取更小值。字段经 `/team-policy` 校验后原子持久化到 `~/.tenon/policy.toml`（0600），仅对新会话生效；既有会话不回写放宽或收窄策略，避免运行中边界漂移。`force_interactive` 仅保留旧配置兼容，语义为无操作；没有 A/B 升级或快照关闭开关。
 
-**更新执行器（v1.86）**：更新清单必须包含平台 triple、大于当前版本、artifact SHA-256 与对该哈希的 ed25519 签名；配置必须钉扎公钥，无公钥直接 fail closed。下载限长、限时，先落同目录 `.tmp`，SHA-256 通过且权限收敛后才原子改名 staging；daemon 启动绑定端口前用 staged 产物原子替换当前可执行文件，替换失败保留旧版并记录状态。默认 manual 不出网；`auto` 只做周期检查与 staging，不运行不可信安装脚本，也没有运行中原地热替换——可用更新在 daemon/壳重启时生效。
+**更新执行器（v1.86；v1.154 收敛）**：更新清单必须包含平台 triple、大于当前版本、artifact SHA-256 与对该哈希的 ed25519 签名；配置必须钉扎公钥，无公钥直接 fail closed。下载限长、限时，先落同目录 `.tmp`，SHA-256 通过且权限收敛后才原子改名 staging；daemon 启动绑定端口前用 staged 产物原子替换当前可执行文件，替换失败保留旧版并记录状态。周期检查恒自动（`update.channel` 与手动检查 / 应用端点随 v1.154 移除），不运行不可信安装脚本，也没有运行中原地热替换——可用更新在 daemon/壳重启时生效。
 
 ### 12.3 沙箱与网络三态
 
@@ -897,9 +899,6 @@ signature: "<sig>"
 | GET | `/session/:id/trace` | Trace 查询 |
 | GET | `/session/:id/checkpoints` | checkpoint 时间轴（事件列表 + 快照点） |
 | PUT | `/team-policy` | 权限高级策略校验持久化（v1.85）；PUT 后新会话生效（读取经 GET /settings 的 team_policy 字段回填，独立 GET 端点已随 v1.92 移除） |
-| GET | `/updates` | 当前版本、通道、staged 更新与最近检查状态（v1.86） |
-| POST | `/updates/check` | 立即检查、验签下载并 staging；manual 入口 / auto 立即触发共用 |
-| POST | `/updates/apply` | 标记 staged 版本下次启动生效（v1.86；不做运行中热替换） |
 | POST | `/checkpoint/:id/rollback` | 回滚（checkpoint 级 restore / 按事件 revert，§7.3） |
 
 **编辑器与文件**（UI 为纯 React，文件与语言智能全在此 API 之上）：
@@ -964,7 +963,7 @@ WS 事件与会话 events 表一一对应，均含 `project_id`；断线重连�
 | 本地决策模型 | Laya（分类 / 打分 / 布尔三原语，CPU ~30ms 级） | 承接代理循环结构化判定，降延迟降 token（§9.8）；否 纯规则引擎（语义盲区大）、否 大模型全量判定（延迟与成本高） |
 | License | Apache-2.0 | 专利授权利于企业采用 |
 
-**隐私口径**：本地数据（会话 / Trace / 索引）不出本机；云模型调用按用户显式配置发送并在 UI 明示；更新默认手动检查；遥测 / 崩溃上报不实现采集端，也不提供无效开关（v1.92）。
+**隐私口径**：本地数据（会话 / Trace / 索引）不出本机；云模型调用按用户显式配置发送并在 UI 明示；更新自动下载（签名校验通过才落地）、安装时机经用户确认重启（v1.154）；遥测 / 崩溃上报不实现采集端，也不提供无效开关（v1.92）。
 
 ---
 
@@ -1104,7 +1103,7 @@ WS 事件与会话 events 表一一对应，均含 `project_id`；断线重连�
 | ADR-15 | 单 daemon 内多 ProjectRuntime，而非每项目一个 daemon / 每会话重传项目根 | 保留统一鉴权、审计、成本与崩溃恢复；项目资源可引用计数回收；多项目并发不扩大攻击面。参考 codex app-server：thread 携带 cwd / projectId / workspace roots，多个 thread 由同一服务端管理 | Runtime 状态机、全局调度与项目作用域 API 需要显式实现；单 daemon 故障影响所有项目，靠 WAL/事件溯源与崩溃恢复兜底 |
 | ADR-16 | 同项目并行会话用会话级受管 worktree，而非放宽项目主根写锁（v1.87） | 主根互斥保证用户工作区确定性；worktree 隔离让多任务真正并行（对齐 codex managed worktree 多线程模型），沙箱 / 快照 / 合并边界复用现成机制 | worktree 生命周期管理（合并冲突 / 磁盘占用）；并行总量仍受全局 `max_concurrent_agent_tasks` 约束 |
 | ADR-17 | 移除审批门禁，动作直接执行（v1.89） | 用户要求无审批打扰；沙箱、只读开关、黑名单、熔断器与节点回滚仍构成安全边界 | 不可逆动作缺少人工最后一关，外部副作用可能无法回滚 | C/D 全量审计、团队黑名单、只读开关与明确无回滚承诺 |
-| ADR-18 | 桌面壳更新用 Tauri Updater + GitHub 静态 `latest.json`（v1.90） | 完整包原子升级（壳 + UI + daemon sidecar），HTTPS + minisign 双校验，无需自建更新服务；Codex 式后台下载 / 退出重启 | 依赖 GitHub 可达性与 Actions 签名密钥安全；私钥丢失后必须轮换发布通道 | 签名失败不安装；manual 默认零出网；企业可改 `latest.json` 镜像（Tauri 配置支持多端点演进） |
+| ADR-18 | 桌面壳更新用 Tauri Updater + GitHub 静态 `latest.json`（v1.90） | 完整包原子升级（壳 + UI + daemon sidecar），HTTPS + minisign 双校验，无需自建更新服务；Codex 式后台下载 / 退出重启 | 依赖 GitHub 可达性与 Actions 签名密钥安全；私钥丢失后必须轮换发布通道 | 签名失败不安装；更新恒自动、下载完成后经用户确认重启（v1.154，通道门槛移除）；企业可改 `latest.json` 镜像（Tauri 配置支持多端点演进） |
 
 ### 附录 C · 已决事项（原 Open Questions，v1.2 全部定稿并前置本期）
 
@@ -1148,10 +1147,9 @@ WS 事件与会话 events 表一一对应，均含 `project_id`；断线重连�
 
 ```toml
 locale          = "auto"       # auto | zh-CN | en（Q5：英文为源语言）
-update.channel         = "manual"     # manual | auto（默认 manual，§4.2）
 update.manifest_url    = "https://tenonide.dev/updates/manifest.json"
 update.public_key_hex  = ""           # 必填后 updater 才可用；空串禁用远端检查（fail closed）
-update.check_interval_s = 21600       # 仅 auto 生效；0 禁用周期检查
+update.check_interval_s = 21600       # 周期检查间隔；0 禁用（v1.154 起更新恒自动，无通道字段）
 
 [session]
 mode              = "interactive"  # v1.89 仅兼容保留；不再影响执行决策

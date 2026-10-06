@@ -2372,6 +2372,66 @@ button:disabled { opacity: 0.45; cursor: default; }
 }
 .update-notes-ok:hover { border-color: var(--accent); }
 
+/* 更新就绪通知卡（v1.154 / §6.2）：下载完成等待用户确认，右下角非阻断 */
+.update-ready-toast {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 40;
+  width: min(360px, calc(100vw - 32px));
+  background: var(--overlay);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-m);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.update-ready-title { font-size: 13px; font-weight: 600; color: var(--fg-strong); }
+.update-ready-body {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  background: var(--surface);
+  padding: 8px 10px;
+  max-height: 180px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.update-ready-failed { font-size: 12px; color: var(--error-text); }
+.update-ready-foot { display: flex; align-items: center; gap: 8px; }
+.update-ready-link {
+  border: none;
+  background: none;
+  padding: 4px 2px;
+  font-size: 12px;
+  color: var(--accent);
+  cursor: pointer;
+  margin-right: auto;
+}
+.update-ready-link:hover { text-decoration: underline; }
+.update-ready-later,
+.update-ready-install {
+  border: 1px solid var(--border);
+  background: var(--raised);
+  color: var(--fg-strong);
+  border-radius: var(--radius-m);
+  padding: 6px 14px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.update-ready-later:disabled,
+.update-ready-install:disabled { opacity: 0.6; cursor: default; }
+.update-ready-install {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.update-ready-install:hover:not(:disabled) { background: var(--accent-strong); }
+.update-ready-later:hover:not(:disabled) { border-color: var(--accent); }
+
 
 /* ─────────────────────────── 分割条 ─────────────────────────── */
 .resize-handle { flex-shrink: 0; z-index: 5; }

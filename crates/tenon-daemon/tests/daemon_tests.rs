@@ -1043,48 +1043,27 @@ async fn l4_incremental_index_and_search() {
 }
 
 #[tokio::test]
-async fn update_executor_reports_fail_closed_check_without_staging() {
-    let (tmp, port, token) = start_daemon(vec![]).await;
+async fn updates_endpoints_removed_since_v154() {
+    let (_tmp, port, token) = start_daemon(vec![]).await;
     let client = client_with_token(&token);
 
-    let status: serde_json::Value = client
+    // v1.154：更新恒自动，/updates 手动检查与应用端点移除。
+    // SPA fallback（ServeDir 只接 GET/HEAD）在场时 POST 得 405，否则 404——都不是端点存活。
+    for path in ["/updates", "/updates/check", "/updates/apply"] {
+        let resp = client
+            .post(format!("{}{}", base(port), path))
+            .send()
+            .await
+            .unwrap();
+        let status = resp.status().as_u16();
+        assert!(status == 404 || status == 405, "{path} -> {status}");
+    }
+    let resp = client
         .get(format!("{}/updates", base(port)))
         .send()
         .await
-        .unwrap()
-        .json()
-        .await
         .unwrap();
-    assert_eq!(status["current_version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(status["channel"], "manual");
-    assert!(status["staged"].is_null());
-
-    let checked = client
-        .post(format!("{}/updates/check", base(port)))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(checked.status(), 200);
-    let body = checked.text().await.unwrap();
-    assert!(body.contains("更新公钥未配置"), "{body}");
-
-    let after: serde_json::Value = client
-        .get(format!("{}/updates", base(port)))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(after["last_error"], "更新公钥未配置");
-    assert!(after["staged"].is_null());
-    assert!(
-        !tmp.path().join("updates/staged").exists()
-            || std::fs::read_dir(tmp.path().join("updates/staged"))
-                .unwrap()
-                .count()
-                == 0
-    );
+    assert_ne!(resp.status().as_u16(), 200, "GET /updates 应已移除");
 }
 
 #[tokio::test]
@@ -1832,24 +1811,24 @@ async fn settings_panel_roundtrip_validation_and_persistence() {
 
     let r = put(serde_json::json!({
         "session": {"first_edit_buffer_ms": 1500},
-        "exec": {"command_timeout_s": 90},
-        "update": {"channel": "auto"}
+        "exec": {"command_timeout_s": 90}
     }))
     .await;
     assert_eq!(r.status(), 200);
     let merged: serde_json::Value = r.json().await.unwrap();
     assert_eq!(merged["session"]["first_edit_buffer_ms"], 1500);
     assert_eq!(merged["exec"]["command_timeout_s"], 90);
-    assert_eq!(merged["update"]["channel"], "auto");
+    // v1.154：GET 合并视图不再回显 update 块
+    assert!(merged.get("update").is_none());
 
     // 持久化文件（0600）
     let file = _tmp.path().join("settings.json");
     let text = std::fs::read_to_string(&file).unwrap();
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(v["session"]["first_edit_buffer_ms"], 1500);
-    assert_eq!(v["update"]["channel"], "auto");
+    assert!(v.get("update").is_none());
 
-    // 已移除键与非法值逐一 400（v1.92：mode / privacy 不再接受）
+    // 已移除键与非法值逐一 400（v1.92：mode / privacy；v1.154：update 恒自动）
     for bad in [
         serde_json::json!({"session": {"mode": "auto"}}),
         serde_json::json!({"privacy": {"telemetry": true}}),
@@ -3189,36 +3168,6 @@ async fn evals_and_market_endpoints() {
     assert_eq!(r.status(), 200);
     let v: serde_json::Value = r.json().await.unwrap();
     assert!(v["sources"].is_array());
-}
-
-#[tokio::test]
-async fn updates_endpoints() {
-    let (_dir, port, token) = start_daemon(vec![]).await;
-    let client = client_with_token(&token);
-
-    // GET updates
-    let r = client
-        .get(format!("{}/updates", base(port)))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status(), 200);
-
-    // POST updates/check（可能因无网络 500——仅验证端点可达）
-    let r = client
-        .post(format!("{}/updates/check", base(port)))
-        .send()
-        .await
-        .unwrap();
-    assert_ne!(r.status(), 401);
-
-    // POST updates/apply（可能因无 staged 更新 500）
-    let r = client
-        .post(format!("{}/updates/apply", base(port)))
-        .send()
-        .await
-        .unwrap();
-    assert_ne!(r.status(), 401);
 }
 
 #[tokio::test]

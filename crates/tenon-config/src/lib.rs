@@ -9,14 +9,6 @@ use std::path::{Path, PathBuf};
 
 pub const CONFIG_VERSION_NOTE: &str = "schema: design.md 附录 E (v1.11)";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum UpdateChannel {
-    #[default]
-    Manual,
-    Auto,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SessionConfig {
@@ -293,19 +285,17 @@ pub struct ModelsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UpdateConfig {
-    pub channel: UpdateChannel,
-    /// 静态签名更新清单（v1.86）；manual 模式只有显式检查才访问。
+    /// 静态签名更新清单（v1.86；v1.154 起更新恒自动，无通道字段）。
     pub manifest_url: String,
     /// ed25519 公钥（hex，32 bytes）；空串 = updater fail closed。
     pub public_key_hex: String,
-    /// auto 周期检查间隔；0 禁用。
+    /// 周期检查间隔；0 禁用。
     pub check_interval_s: u64,
 }
 
 impl Default for UpdateConfig {
     fn default() -> Self {
         Self {
-            channel: UpdateChannel::Manual,
             manifest_url: "https://tenonide.dev/updates/manifest.json".into(),
             public_key_hex: String::new(),
             check_interval_s: 21_600,
@@ -469,7 +459,6 @@ features      = ["intent", "risk"]
     #[test]
     fn empty_input_yields_design_defaults() {
         let cfg = Config::parse_toml("").expect("parse empty");
-        assert_eq!(cfg.update.channel, UpdateChannel::Manual);
         assert_eq!(cfg.session.first_edit_buffer_ms, 2000);
         assert_eq!(cfg.agent.circuit.max_files, 15);
         assert_eq!(cfg.agent.circuit.max_lines, 1500);

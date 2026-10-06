@@ -14,9 +14,7 @@ pub mod updates;
 
 pub use pairing::PairingStore;
 pub use state::{DaemonOptions, DaemonState, SessionEntry};
-pub use updates::{
-    apply_staged_update, find_staged_update, mark_staged_update, take_apply_request, StagedUpdate,
-};
+pub use updates::{apply_staged_update, mark_staged_update, take_apply_request, StagedUpdate};
 
 use axum::Router;
 use std::path::PathBuf;
@@ -83,8 +81,8 @@ pub async fn serve(options: DaemonOptions) -> std::io::Result<DaemonHandle> {
     // Laya 自动下载并启用（§9.8 v1.71）：启动即后台拉取，失败静默回退
     state.spawn_laya_auto_download(laya_registry_url);
 
-    // 自动更新执行器（v1.86）：只在用户显式选择 auto 后出网；manual 仅有 /updates/check。
-    // 桌面壳表面（v1.90）由 Tauri Updater 更新完整包，这里不重复下载 sidecar。
+    // 自动更新执行器（v1.86；v1.154 起恒自动，无通道门槛）：周期检查、验签 staging，
+    // 重启时生效。桌面壳表面（v1.90）由 Tauri Updater 更新完整包，这里不重复下载 sidecar。
     if std::env::var("TENON_UPDATE_SURFACE").as_deref() == Ok("shell") {
         tracing::debug!("桌面壳表面：daemon-only 自动更新已让位给完整包 updater");
     } else {
@@ -97,10 +95,6 @@ pub async fn serve(options: DaemonOptions) -> std::io::Result<DaemonHandle> {
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 ticker.tick().await;
-                // 运行中切换通道也生效；manual / 未知值继续等待，不出网。
-                if state.effective_update_channel() != "auto" {
-                    continue;
-                }
                 match crate::updates::stage_update(
                     &manifest_url,
                     &public_key,
@@ -111,12 +105,11 @@ pub async fn serve(options: DaemonOptions) -> std::io::Result<DaemonHandle> {
                 .await
                 {
                     Ok(staged) => {
-                        state.record_update_check(None);
-                        // auto 通道的确认语义：用户开启后，已验证 staging 自动请求重启应用。
+                        // 恒自动语义：已验证 staging 自动请求下次启动应用。
                         if let Err(e) =
                             crate::updates::mark_staged_update(&staged, &state.updates_staging_dir)
                         {
-                            state.record_update_check(Some(&e.to_string()));
+                            tracing::warn!("更新 staging 标记失败: {e}");
                         } else {
                             tracing::info!("更新已 staging: v{}（重启生效）", staged.version);
                         }
@@ -124,9 +117,8 @@ pub async fn serve(options: DaemonOptions) -> std::io::Result<DaemonHandle> {
                     Err(
                         crate::updates::UpdateError::NotNewer
                         | crate::updates::UpdateError::NoPlatform,
-                    ) => state.record_update_check(None),
+                    ) => {}
                     Err(e) => {
-                        state.record_update_check(Some(&e.to_string()));
                         tracing::warn!("自动更新检查失败: {e}");
                     }
                 }
@@ -655,14 +647,13 @@ mod tests {
     }
 
     #[test]
-    fn settings_overrides_update_channel() {
+    fn settings_overrides_reject_update_block() {
+        // v1.154：更新通道移除，update.* 不再是有效覆盖键
         let mut overrides = SettingsOverrides::default();
-        overrides
-            .merge_json(&serde_json::json!({
-                "update": { "channel": "auto" }
-            }))
-            .unwrap();
-        assert_eq!(overrides.update_channel, Some("auto".into()));
+        let result = overrides.merge_json(&serde_json::json!({
+            "update": { "channel": "auto" }
+        }));
+        assert!(result.is_err());
     }
 
     #[test]
@@ -770,28 +761,6 @@ mod tests {
         let json = overrides.to_json();
         let serialized = serde_json::to_string(&json).unwrap();
         assert!(serialized.contains("500"));
-    }
-
-    #[test]
-    fn settings_overrides_update_channel_auto() {
-        let mut overrides = SettingsOverrides::default();
-        overrides
-            .merge_json(&serde_json::json!({
-                "update": { "channel": "auto" }
-            }))
-            .unwrap();
-        assert_eq!(overrides.update_channel, Some("auto".into()));
-    }
-
-    #[test]
-    fn settings_overrides_update_channel_manual() {
-        let mut overrides = SettingsOverrides::default();
-        overrides
-            .merge_json(&serde_json::json!({
-                "update": { "channel": "manual" }
-            }))
-            .unwrap();
-        assert_eq!(overrides.update_channel, Some("manual".into()));
     }
 
     #[test]

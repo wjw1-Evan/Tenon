@@ -15,7 +15,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tauri::path::BaseDirectory;
 use tauri::{Emitter, Manager, Url};
-use tauri_plugin_updater::UpdaterExt;
+use tauri_plugin_updater::{Update, UpdaterExt};
 
 #[derive(Debug, Clone, Serialize)]
 struct Handshake {
@@ -24,9 +24,9 @@ struct Handshake {
     project: String,
 }
 
-/// v1.152 更新日志随包展示：重启前的待展示日志（新版首启消费）。
+/// v1.152/v1.154 更新载荷：{version, notes}（pending = 已装待展示，ready = 已下载待安装）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct PendingUpdateNotes {
+struct UpdatePayload {
     version: String,
     notes: String,
 }
@@ -35,7 +35,7 @@ struct PendingUpdateNotes {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct ShellPrefs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pending_update: Option<PendingUpdateNotes>,
+    pending_update: Option<UpdatePayload>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_seen_version: Option<String>,
 }
@@ -128,6 +128,8 @@ struct AppState {
     _child: Mutex<Option<Child>>,
     /// 序列化 shell-prefs.json 的读改写（更新监控线程与 IPC 命令并发）。
     prefs_io: Mutex<()>,
+    /// v1.154 已下载待安装的更新与产物路径（进程内存态；下载物不跨重启保留）。
+    ready_download: Mutex<Option<(Update, PathBuf)>>,
 }
 
 /// daemon 托管 UI 的产物目录：打包资源 > env 指定 > 仓库根 ui/dist（开发态）。
@@ -238,65 +240,81 @@ fn spawn_daemon(app: &tauri::AppHandle) -> Result<(Child, Handshake), String> {
     Err("daemon 握手失败（未读到握手行）".into())
 }
 
-/// 用 daemon 的权威设置判断是否允许自动出网。
-async fn auto_update_enabled(client: &reqwest::Client, port: u16, token: &str) -> bool {
-    let response = client
-        .get(format!("http://127.0.0.1:{port}/settings"))
-        .header("X-Tenon-Token", token)
-        .timeout(Duration::from_secs(5))
-        .send()
-        .await;
-    let Ok(response) = response else {
-        return false;
-    };
-    let Ok(settings) = response.json::<serde_json::Value>().await else {
-        return false;
-    };
-    settings["update"]["channel"] == serde_json::json!("auto")
+/// 更新下载物落盘（cache 目录固定文件名，0600；覆盖写免清理）。
+fn persist_download_artifact(app: &tauri::AppHandle, bytes: &[u8]) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| format!("cache 目录解析失败: {e}"))?
+        .join("updates");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("更新目录创建失败: {e}"))?;
+    let path = dir.join("update.pkg");
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)
+            .map_err(|e| format!("更新产物写入失败: {e}"))?;
+        file.write_all(bytes)
+            .map_err(|e| format!("更新产物写入失败: {e}"))?;
+    }
+    #[cfg(not(unix))]
+    std::fs::write(&path, bytes).map_err(|e| format!("更新产物写入失败: {e}"))?;
+    Ok(path)
 }
 
-/// 桌面壳更新循环（v1.90 / §6.2）：本地通道读取 5 分钟一次，
-/// 只有 auto 通道才检查 GitHub；发布者签名由 Tauri Updater 强制校验。
-fn spawn_update_monitor(app: tauri::AppHandle, port: u16, token: String) {
+/// 桌面壳更新循环（v1.90；v1.154 收敛为恒自动）：启动即检查、每 6 小时至多一次。
+/// 发现新版本只后台下载——安装与重启经 UI 通知卡由用户确认（§6.2），
+/// 发布者签名由 Tauri Updater 强制校验。
+fn spawn_update_monitor(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
-        let client = reqwest::Client::new();
-        let mut ticker = tokio::time::interval(Duration::from_secs(5 * 60));
-        let mut last_check = Option::<std::time::Instant>::None;
+        let mut ticker = tokio::time::interval(Duration::from_secs(6 * 3600));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // 启动即检查一次（下载完未装的残留也借此补提示），此后每 6 小时一轮
+        let mut first = true;
         loop {
-            ticker.tick().await;
-            if !auto_update_enabled(&client, port, &token).await {
-                continue;
-            }
-            let now = std::time::Instant::now();
-            if last_check.is_some_and(|at| now.duration_since(at) < Duration::from_secs(6 * 3600)) {
-                continue;
+            if first {
+                first = false;
+            } else {
+                ticker.tick().await;
             }
             match app.updater() {
                 Ok(updater) => match updater.check().await {
                     Ok(Some(update)) => {
                         let version = update.version.clone();
                         let notes = update.body.clone().unwrap_or_default();
-                        eprintln!("[tenon-shell] 下载桌面更新 v{version}");
-                        if let Err(e) = update.download_and_install(|_, _| {}, || {}).await {
-                            eprintln!("[tenon-shell] 桌面更新安装失败: {e}");
-                            continue;
-                        }
-                        // v1.152：重启前把更新日志落盘，新版首启弹窗展示（失败仅告警，
-                        // 不阻断重启——弹窗降级为仅版本号的手动升级形态）
-                        if let Some(path) = prefs_path(&app) {
-                            let state = app.state::<AppState>();
-                            let _guard = state.prefs_io.lock().unwrap();
-                            let mut prefs = load_prefs(&path);
-                            prefs.pending_update = Some(PendingUpdateNotes {
+                        eprintln!("[tenon-shell] 发现桌面更新 v{version}，后台下载");
+                        // 下载物落 cache 目录（固定文件名覆盖写，不跨重启保留），
+                        // 避免整包常驻内存等待用户确认
+                        let bytes = match update.download(|_, _| {}, || {}).await {
+                            Ok(bytes) => bytes,
+                            Err(e) => {
+                                eprintln!("[tenon-shell] 桌面更新下载失败: {e}");
+                                continue;
+                            }
+                        };
+                        let artifact = match persist_download_artifact(&app, &bytes) {
+                            Ok(path) => path,
+                            Err(e) => {
+                                eprintln!("[tenon-shell] 更新产物落盘失败: {e}");
+                                continue;
+                            }
+                        };
+                        *app.state::<AppState>().ready_download.lock().unwrap() =
+                            Some((update, artifact));
+                        let _ = app.emit(
+                            "tenon://update-ready",
+                            UpdatePayload {
                                 version: version.clone(),
                                 notes,
-                            });
-                            if let Err(e) = save_prefs(&path, &prefs) {
-                                eprintln!("[tenon-shell] 更新日志持久化失败: {e}");
-                            }
-                        }
-                        eprintln!("[tenon-shell] 桌面更新 v{version} 安装完成，准备重启");
-                        app.restart();
+                            },
+                        );
+                        eprintln!("[tenon-shell] 桌面更新 v{version} 下载完成，等待用户确认安装");
                     }
                     Ok(None) => {
                         eprintln!("[tenon-shell] 桌面更新：已是最新版本");
@@ -305,7 +323,6 @@ fn spawn_update_monitor(app: tauri::AppHandle, port: u16, token: String) {
                 },
                 Err(e) => eprintln!("[tenon-shell] updater 初始化失败: {e}"),
             }
-            last_check = Some(now);
         }
     });
 }
@@ -332,6 +349,58 @@ fn get_update_notes(app: tauri::AppHandle) -> Result<Option<UpdateNotesPayload>,
     let prefs = load_prefs(&path);
     let current = app.package_info().version.to_string();
     Ok(resolve_update_notes(&prefs, &current))
+}
+
+/// IPC 命令：已下载待安装的更新（v1.154，peek 不消费）。
+/// 只在下载物就绪时返回 Some——UI 挂载即查 + 轮询发现（get_handshake 同风格）。
+#[tauri::command]
+fn get_update_ready(app: tauri::AppHandle) -> Result<Option<UpdateNotesPayload>, String> {
+    let download = app
+        .state::<AppState>()
+        .ready_download
+        .lock()
+        .unwrap()
+        .clone();
+    Ok(download.map(|(update, _)| UpdateNotesPayload {
+        version: update.version.clone(),
+        notes: update.body,
+    }))
+}
+
+/// IPC 命令：用户确认安装（v1.154）——先把更新日志转 pending_update
+/// （新版首启 v1.152 弹窗接管；Windows 的 install 会直接退出进程，必须先落盘），
+/// 再 install + 重启到最新版本。
+#[tauri::command]
+fn install_update(app: tauri::AppHandle) -> Result<(), String> {
+    let download = app
+        .state::<AppState>()
+        .ready_download
+        .lock()
+        .unwrap()
+        .clone();
+    let Some((update, artifact)) = download else {
+        return Err("没有已下载的更新".into());
+    };
+    let version = update.version.clone();
+    if let Some(path) = prefs_path(&app) {
+        let state = app.state::<AppState>();
+        let _guard = state.prefs_io.lock().unwrap();
+        let mut prefs = load_prefs(&path);
+        prefs.pending_update = Some(UpdatePayload {
+            version: version.clone(),
+            notes: update.body.clone().unwrap_or_default(),
+        });
+        if let Err(e) = save_prefs(&path, &prefs) {
+            eprintln!("[tenon-shell] 更新日志持久化失败: {e}");
+        }
+    }
+    let bytes = std::fs::read(&artifact).map_err(|e| format!("更新产物读取失败: {e}"))?;
+    update
+        .install(&bytes)
+        .map_err(|e| format!("更新安装失败: {e}"))?;
+    let _ = std::fs::remove_file(&artifact);
+    eprintln!("[tenon-shell] 桌面更新 v{version} 安装完成，重启");
+    app.restart();
 }
 
 /// IPC 命令：用户确认看过更新日志——清 pending 并记 last_seen_version。
@@ -378,11 +447,14 @@ fn main() {
             handshake: Mutex::new(None),
             _child: Mutex::new(None),
             prefs_io: Mutex::new(()),
+            ready_download: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             get_handshake,
             get_update_notes,
-            dismiss_update_notes
+            dismiss_update_notes,
+            get_update_ready,
+            install_update
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -399,7 +471,7 @@ fn main() {
                         &hs.token[..8.min(hs.token.len())]
                     );
                     let _ = handle.emit("tenon://handshake", &hs);
-                    spawn_update_monitor(handle.clone(), hs.port, hs.token.clone());
+                    spawn_update_monitor(handle.clone());
                     // 将 WebView 导航至 UI：debug 且 Vite dev server 在跑时导航
                     // dev server（HMR 热重载），否则 daemon 同源托管的 UI（浏览器
                     // 同款链路：握手经 URL 参数直传，UI 经 http://127.0.0.1 调 API，
@@ -469,7 +541,7 @@ mod tests {
     #[test]
     fn pending_notes_shown_when_version_matches() {
         let prefs = ShellPrefs {
-            pending_update: Some(PendingUpdateNotes {
+            pending_update: Some(UpdatePayload {
                 version: "0.1.2".into(),
                 notes: "- 修复若干问题".into(),
             }),
@@ -484,7 +556,7 @@ mod tests {
     fn stale_pending_falls_back_to_manual_detection() {
         // pending 是更旧一次更新的残留（如用户连跳两版）：按手动升级识别
         let prefs = ShellPrefs {
-            pending_update: Some(PendingUpdateNotes {
+            pending_update: Some(UpdatePayload {
                 version: "0.1.2".into(),
                 notes: "旧日志".into(),
             }),

@@ -19,11 +19,6 @@ function makeApi(
     putSettings: put,
     putTeamPolicy: vi.fn().mockResolvedValue({}),
     listPlugins: vi.fn().mockResolvedValue({ installed: [] }),
-    getUpdates: vi.fn().mockResolvedValue({
-      current_version: "0.1.0",
-      channel: "manual",
-      staged: null,
-    }),
     models: vi.fn().mockResolvedValue(models),
   } as unknown as TenonApi;
 }
@@ -31,7 +26,7 @@ function makeApi(
 const t = (k: string) => k;
 
 /** v1.121：设置按分类渲染，组件测试先切换到对应导航页。 */
-function openSection(name: "general" | "models" | "permissions" | "plugins" | "updates") {
+function openSection(name: "general" | "models" | "permissions" | "plugins" | "skills") {
   fireEvent.click(screen.getByTestId(`settings-nav-${name}`));
 }
 
@@ -195,22 +190,21 @@ describe("SettingsDialog", () => {
     expect(put.mock.calls[0][0].models.providers).toEqual({});
   });
 
-  it("更新分区：回填偏好并保存受控载荷（v1.92 privacy 移除）", async () => {
-    const withPrivacy = {
+  it("v1.154 更新分区移除：导航无 updates 项，保存载荷不带 update 键", async () => {
+    const withChannel = {
       ...settings,
       update: { channel: "auto" },
     } as SettingsData;
-    const put = vi.fn().mockResolvedValue(withPrivacy);
+    const put = vi.fn().mockResolvedValue(withChannel);
     render(
-      <SettingsDialog api={makeApi(put)} t={t} settings={withPrivacy} saveMode="auto" onSaveModeChange={() => {}} onClose={() => {}} onSaved={() => {}} />
+      <SettingsDialog api={makeApi(put)} t={t} settings={withChannel} saveMode="auto" onSaveModeChange={() => {}} onClose={() => {}} onSaved={() => {}} />
     );
-    openSection("updates");
-    expect((screen.getByTestId("settings-update-channel") as HTMLSelectElement).value).toBe("auto");
-
-    fireEvent.change(screen.getByTestId("settings-update-channel"), { target: { value: "manual" } });
+    // 存量 settings.json 的 update.channel 被忽略：无导航项、无面板、无控件
+    expect(screen.queryByTestId("settings-nav-updates")).toBeNull();
+    expect(screen.queryByTestId("settings-update-channel")).toBeNull();
     fireEvent.click(screen.getByTestId("settings-save"));
     await waitFor(() => expect(put).toHaveBeenCalled());
-    expect(put.mock.calls[0][0].update).toEqual({ channel: "manual" });
+    expect(put.mock.calls[0][0].update).toBeUndefined();
   });
 
   it("权限策略分区：回填收窄配置并原子保存", async () => {
@@ -228,7 +222,6 @@ describe("SettingsDialog", () => {
       putSettings: put,
       putTeamPolicy: putPolicy,
       listPlugins: vi.fn().mockResolvedValue({ installed: [] }),
-      getUpdates: vi.fn().mockResolvedValue({ current_version: "0.1.0", staged: null }),
       models: vi.fn().mockResolvedValue({ models: [], default: "", laya: null }),
     } as unknown as TenonApi;
     render(
@@ -261,7 +254,6 @@ describe("SettingsDialog", () => {
       putSettings: put,
       putTeamPolicy: putPolicy,
       listPlugins: vi.fn().mockResolvedValue({ installed: [] }),
-      getUpdates: vi.fn().mockResolvedValue({ current_version: "0.1.0", staged: null }),
       models: vi.fn().mockResolvedValue({ models: [], default: "", laya: null }),
     } as unknown as TenonApi;
     render(
@@ -273,42 +265,5 @@ describe("SettingsDialog", () => {
     await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
     expect(putPolicy).not.toHaveBeenCalled();
     expect(put).not.toHaveBeenCalled();
-  });
-
-  it("更新执行器：展示 staged 版本并可立即检查", async () => {
-    const staged = {
-      version: "0.2.0",
-      target: "test-target",
-      sha256: "a".repeat(64),
-      path: "/tmp/staged",
-      size_bytes: 4,
-    };
-    const check = vi.fn().mockResolvedValue({
-      current_version: "0.1.0",
-      channel: "manual",
-      last_check_at: "2026-10-05T00:00:00Z",
-      staged,
-    });
-    const api = {
-      putSettings: vi.fn().mockResolvedValue(settings),
-      putTeamPolicy: vi.fn().mockResolvedValue({}),
-      listPlugins: vi.fn().mockResolvedValue({ installed: [] }),
-      getUpdates: vi.fn().mockResolvedValue({
-        current_version: "0.1.0",
-        channel: "manual",
-        staged: null,
-      }),
-      checkUpdates: check,
-      models: vi.fn().mockResolvedValue({ models: [], default: "", laya: null }),
-    } as unknown as TenonApi;
-    render(
-      <SettingsDialog api={api} t={t} settings={settings} saveMode="auto" onSaveModeChange={() => {}} onClose={() => {}} onSaved={() => {}} />
-    );
-    openSection("updates");
-    expect(screen.getByTestId("settings-update-apply").hasAttribute("disabled")).toBe(true);
-    fireEvent.click(screen.getByTestId("settings-update-check"));
-    await waitFor(() => expect(check).toHaveBeenCalled());
-    await waitFor(() => expect(screen.getByTestId("settings-update-apply").hasAttribute("disabled")).toBe(false));
-    expect(screen.getByTestId("settings-updates-status").textContent).toContain("0.2.0");
   });
 });

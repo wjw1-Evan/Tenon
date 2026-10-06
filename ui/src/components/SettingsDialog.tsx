@@ -4,7 +4,7 @@
 // 会话生效，模型保存即重建 provider 表（默认模型对新会话生效，既有会话保持
 // 各自 provider）。密钥不变式（§11）：面板只填环境变量引用名，永不输入 / 回显明文。
 import { useEffect, useState } from "react";
-import type { ProviderSettings, SettingsData, TenonApi, UpdateStatusData } from "../lib/api";
+import type { ProviderSettings, SettingsData, TenonApi } from "../lib/api";
 import type { Translate } from "../lib/i18n";
 import { LOCALE_CHANGE, type Locale } from "../lib/i18n";
 import {
@@ -56,8 +56,9 @@ function rowsFromSettings(settings: SettingsData | null): ProviderRow[] {
   }));
 }
 
-/** v1.121：Codex 式设置信息架构——左栏分类，右栏只渲染当前分类。 */
-type SettingsSection = "general" | "models" | "permissions" | "plugins" | "skills" | "updates";
+/** v1.121：Codex 式设置信息架构——左栏分类，右栏只渲染当前分类。
+ *  Updates 分类随更新恒自动移除（v1.154）。 */
+type SettingsSection = "general" | "models" | "permissions" | "plugins" | "skills";
 
 const SETTINGS_SECTIONS: SettingsSection[] = [
   "general",
@@ -65,7 +66,6 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   "permissions",
   "plugins",
   "skills",
-  "updates",
 ];
 
 interface Props {
@@ -86,9 +86,6 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, p
   const [commandTimeout, setCommandTimeout] = useState(120);
   const [deniedTools, setDeniedTools] = useState("");
   const [maxCost, setMaxCost] = useState("");
-  const [updateChannel, setUpdateChannel] = useState<"manual" | "auto">("manual");
-  const [updateStatus, setUpdateStatus] = useState<UpdateStatusData | null>(null);
-  const [updateBusy, setUpdateBusy] = useState(false);
   const [defaultModel, setDefaultModel] = useState("");
   const [providers, setProviders] = useState<ProviderRow[]>([]);
   const [preset, setPreset] = useState("custom");
@@ -107,7 +104,6 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, p
     const policy = settings.team_policy ?? {};
     setDeniedTools((policy.denied_tools ?? []).join(", "));
     setMaxCost(policy.max_cost_usd == null ? "" : String(policy.max_cost_usd));
-    setUpdateChannel(settings.update?.channel === "auto" ? "auto" : "manual");
     setDefaultModel(String(settings.models?.default ?? ""));
     setProviders(rowsFromSettings(settings));
     setSkillsDisabled(settings.skills?.disabled ?? []);
@@ -119,19 +115,6 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, p
       .models()
       .then((r) => setLaya(r.laya ?? null))
       .catch(() => setLaya(null));
-  }, [api]);
-
-  useEffect(() => {
-    let alive = true;
-    api
-      .getUpdates()
-      .then((status) => {
-        if (alive) setUpdateStatus(status);
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
   }, [api]);
 
   if (!settings) return null;
@@ -154,40 +137,6 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, p
 
   function removeProvider(name: string) {
     setProviders((rows) => rows.filter((p) => p.name !== name));
-  }
-
-  async function checkForUpdate() {
-    setUpdateBusy(true);
-    try {
-      setUpdateStatus(await api.checkUpdates());
-    } catch (e) {
-      setUpdateStatus((status) => ({
-        current_version: status?.current_version ?? "",
-        channel: status?.channel ?? updateChannel,
-        last_error: String(e),
-      }));
-    } finally {
-      setUpdateBusy(false);
-    }
-  }
-
-  async function applyStagedUpdate() {
-    setUpdateBusy(true);
-    try {
-      const current = await api.getUpdates();
-      setUpdateStatus(current);
-      if (!current.staged) throw new Error(t("settings.updates.no_staged"));
-      await api.applyUpdates();
-      setUpdateStatus(await api.getUpdates());
-    } catch (e) {
-      setUpdateStatus((status) => ({
-        current_version: status?.current_version ?? "",
-        channel: status?.channel ?? updateChannel,
-        last_error: String(e),
-      }));
-    } finally {
-      setUpdateBusy(false);
-    }
   }
 
   async function save() {
@@ -220,7 +169,6 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, p
           first_edit_buffer_ms: bufferMs,
         },
         exec: { command_timeout_s: commandTimeout },
-        update: { channel: updateChannel },
         models: { default: defaultModel, providers: providerPayload },
       });
       onSaved(next);
@@ -460,64 +408,6 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, p
                 onDisabledChange={setSkillsDisabled}
                 onSaved={onSaved}
               />
-            )}
-
-            {section === "updates" && (
-              <div className="settings-section" data-testid="settings-updates-section">
-                <div className="settings-section-title">{t("settings.update.channel")}</div>
-                <div className="settings-grid">
-                  <label htmlFor="set-update">{t("settings.update.channel")}</label>
-                  <select
-                    id="set-update"
-                    data-testid="settings-update-channel"
-                    value={updateChannel}
-                    onChange={(e) => setUpdateChannel(e.target.value as "manual" | "auto")}
-                  >
-                    <option value="manual">{t("settings.update.manual")}</option>
-                    <option value="auto">{t("settings.update.auto")}</option>
-                  </select>
-                </div>
-
-                <div className="settings-section" data-testid="settings-updates-status">
-                  <div className="settings-section-title">{t("settings.updates.status")}</div>
-                  <div className="settings-grid">
-                    <span>{t("settings.updates.current")}</span>
-                    <code>{updateStatus?.current_version || "—"}</code>
-
-                    <span>{t("settings.updates.last_check")}</span>
-                    <span className="muted">
-                      {updateStatus?.last_check_at || t("settings.updates.never")}
-                      {updateStatus?.last_error ? ` · ${updateStatus.last_error}` : ""}
-                    </span>
-
-                    <span>{t("settings.updates.staged")}</span>
-                    <span className="muted">
-                      {updateStatus?.staged
-                        ? `v${updateStatus.staged.version} · ${t("settings.updates.restart_required")}`
-                        : t("settings.updates.none")}
-                    </span>
-                  </div>
-                  <div className="provider-add">
-                    <button
-                      type="button"
-                      data-testid="settings-update-check"
-                      disabled={updateBusy}
-                      onClick={() => void checkForUpdate()}
-                    >
-                      {t("settings.updates.check")}
-                    </button>
-                    <button
-                      type="button"
-                      data-testid="settings-update-apply"
-                      disabled={updateBusy || !updateStatus?.staged}
-                      onClick={() => void applyStagedUpdate()}
-                    >
-                      {t("settings.updates.apply")}
-                    </button>
-                  </div>
-                  <p className="muted settings-note">{t("settings.updates.note")}</p>
-                </div>
-              </div>
             )}
           </div>
         </div>

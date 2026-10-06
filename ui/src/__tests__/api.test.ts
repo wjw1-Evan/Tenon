@@ -98,19 +98,6 @@ describe("TenonApi（§15 客户端）", () => {
     });
   });
 
-  it("更新执行器使用专用检查与应用端点", async () => {
-    fetchMock.mockImplementation(async () =>
-      new Response(JSON.stringify({}), { status: 200 })
-    );
-    const api = new TenonApi({ port: 9999, token: "t" });
-    await api.checkUpdates();
-    await api.applyUpdates();
-    expect(fetchMock.mock.calls[0][0]).toBe("http://127.0.0.1:9999/updates/check");
-    expect(fetchMock.mock.calls[0][1].method).toBe("POST");
-    expect(fetchMock.mock.calls[1][0]).toBe("http://127.0.0.1:9999/updates/apply");
-    expect(fetchMock.mock.calls[1][1].method).toBe("POST");
-  });
-
   it("connectEvents 先换票、首帧携带 ticket（ADR-10）", async () => {
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ ticket: "one-time", expires_in_s: 60 }), { status: 200 })

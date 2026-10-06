@@ -34,13 +34,6 @@ describe("TenonApi 端点补测", () => {
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ theme: "light" });
   });
 
-  it("getUpdates 端点", async () => {
-    fetchMock.mockImplementation(async () => ok({ current_version: "1.0" }));
-    const api = new TenonApi({ port: 9999, token: "t" });
-    await api.getUpdates();
-    expect(fetchMock.mock.calls[0][0]).toBe("http://127.0.0.1:9999/updates");
-  });
-
   it("listProjects GET /projects", async () => {
     fetchMock.mockImplementation(async () => ok({ projects: [] }));
     const api = new TenonApi({ port: 9999, token: "t" });

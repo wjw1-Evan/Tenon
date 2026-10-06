@@ -26,7 +26,6 @@ use crate::state::{
     persist_team_policy, validate_team_policy, DaemonState, L4IndexRequest, MessageQueue,
     SessionEntry,
 };
-use crate::updates::{current_target, find_staged_update, mark_staged_update, stage_update};
 
 pub fn build_router(state: Arc<DaemonState>) -> Router {
     let token = state.token.clone();
@@ -116,9 +115,6 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
         .route("/costs", get(costs))
         .route("/settings", get(get_settings).put(put_settings))
         .route("/team-policy", put(put_team_policy))
-        .route("/updates", get(get_updates))
-        .route("/updates/check", post(check_updates))
-        .route("/updates/apply", post(apply_updates))
         // 对话记忆（L5，§10.1 v1.104）：项目层 + global preference 层的
         // 列表 / 手动写入 / 删除
         .route(
@@ -3231,12 +3227,7 @@ async fn get_settings(State(state): State<Arc<DaemonState>>) -> Response {
             obj.insert("command_timeout_s".into(), serde_json::json!(v));
         }
     }
-    let mut update = serde_json::to_value(&state.config.update).unwrap_or_default();
-    if let Some(obj) = update.as_object_mut() {
-        if let Some(v) = &ov.update_channel {
-            obj.insert("channel".into(), serde_json::Value::String(v.clone()));
-        }
-    }
+    // v1.154 更新通道移除：GET /settings 不再回显 update 合并视图
     // models 合并视图（v1.40）：覆盖叠加后回显；api_key 明文永不回显（§11 密钥存储）
     let mut models = {
         let mut m = state.config.models.clone();
@@ -3276,7 +3267,6 @@ async fn get_settings(State(state): State<Arc<DaemonState>>) -> Response {
         "models": models,
         "agent": state.config.agent,
         "checkpoint": state.config.checkpoint,
-        "update": update,
         "skills": skills,
         "market": market,
         "mcp": mcp,
@@ -3335,79 +3325,8 @@ async fn put_team_policy(
     .into_response()
 }
 
-fn updates_status(state: &DaemonState) -> Response {
-    let staged = find_staged_update(
-        &state.updates_staging_dir,
-        &current_target(),
-        env!("CARGO_PKG_VERSION"),
-    )
-    .map_err(|e| e.to_string())
-    .ok()
-    .flatten();
-    Json(serde_json::json!({
-        "current_version": env!("CARGO_PKG_VERSION"),
-        "channel": state.effective_update_channel(),
-        "last_check_at": state.update_last_check.lock().expect("update check lock").clone(),
-        "last_error": state.update_last_error.lock().expect("update error lock").clone(),
-        "staged": staged,
-    }))
-    .into_response()
-}
-
-async fn get_updates(State(state): State<Arc<DaemonState>>) -> Response {
-    updates_status(&state)
-}
-
-async fn check_updates(State(state): State<Arc<DaemonState>>) -> Response {
-    let result = stage_update(
-        &state.config.update.manifest_url,
-        &state.config.update.public_key_hex,
-        env!("CARGO_PKG_VERSION"),
-        &current_target(),
-        &state.updates_staging_dir,
-    )
-    .await;
-    match result {
-        Ok(_) => {
-            state.record_update_check(None);
-            updates_status(&state)
-        }
-        Err(e) => {
-            state.record_update_check(Some(&e.to_string()));
-            let status = if matches!(
-                e,
-                crate::updates::UpdateError::NotNewer
-                    | crate::updates::UpdateError::NoPlatform
-                    | crate::updates::UpdateError::PublicKeyMissing
-            ) {
-                StatusCode::OK
-            } else {
-                StatusCode::BAD_GATEWAY
-            };
-            api_err(status, e.to_string())
-        }
-    }
-}
-
-async fn apply_updates(State(state): State<Arc<DaemonState>>) -> Response {
-    match find_staged_update(
-        &state.updates_staging_dir,
-        &current_target(),
-        env!("CARGO_PKG_VERSION"),
-    ) {
-        Ok(Some(staged)) => match mark_staged_update(&staged, &state.updates_staging_dir) {
-            Ok(()) => Json(serde_json::json!({
-                "accepted": true,
-                "restart_required": true,
-                "staged": staged,
-            }))
-            .into_response(),
-            Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-        },
-        Ok(None) => api_err(StatusCode::CONFLICT, "没有 staged 更新"),
-        Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
-}
+// v1.154：/updates 手动检查与应用端点随更新恒自动移除；daemon-only auto
+// 循环（lib.rs）保留服务无壳 Web / headless，状态不再经 API 暴露。
 
 /// UI 偏好读取（§7.5）：全部键值对。
 async fn get_ui_prefs(State(state): State<Arc<DaemonState>>) -> Response {

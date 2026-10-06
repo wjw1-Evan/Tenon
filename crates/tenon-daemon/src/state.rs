@@ -132,8 +132,6 @@ impl ProviderOverride {
 pub struct SettingsOverrides {
     pub first_edit_buffer_ms: Option<u64>,
     pub command_timeout_s: Option<u64>,
-    /// v1.83 更新分区：manual | auto（auto 仍受更新器实现限制，仅记录偏好）。
-    pub update_channel: Option<String>,
     /// v1.40 模型分区：默认 provider 名与 provider 覆盖表（整体替换语义）。
     pub models_default: Option<String>,
     pub models_providers: std::collections::BTreeMap<String, ProviderOverride>,
@@ -227,12 +225,9 @@ impl SettingsOverrides {
             }
         }
         if let Some(update) = body.get("update") {
-            if let Some(v) = update.get("channel") {
-                let v = v.as_str().ok_or("update.channel 须为字符串")?;
-                if v != "manual" && v != "auto" {
-                    return Err("update.channel 仅支持 manual | auto".into());
-                }
-                self.update_channel = Some(v.to_string());
+            // v1.154 更新通道移除：update.* 不再是有效覆盖键。
+            if !update.as_object().is_some_and(|o| o.is_empty()) {
+                return Err("update.* 已移除（v1.154：更新恒自动，无通道配置）".into());
             }
         }
         if let Some(models) = body.get("models") {
@@ -329,9 +324,6 @@ impl SettingsOverrides {
         if let Some(v) = self.command_timeout_s {
             exec.insert("command_timeout_s".into(), serde_json::json!(v));
         }
-        let update = serde_json::json!({
-            "channel": self.update_channel.clone().unwrap_or_else(|| "manual".into()),
-        });
         let mut models = serde_json::Map::new();
         if let Some(d) = &self.models_default {
             models.insert("default".into(), serde_json::Value::String(d.clone()));
@@ -356,7 +348,6 @@ impl SettingsOverrides {
         serde_json::json!({
             "session": session,
             "exec": exec,
-            "update": update,
             "models": models,
             "skills": skills,
             "market": market,
@@ -881,9 +872,6 @@ pub struct DaemonState {
     pub policy_path: std::path::PathBuf,
     /// 更新 staging 目录（v1.86）；测试显式隔离。
     pub updates_staging_dir: std::path::PathBuf,
-    /// 更新执行器最近检查 / 错误（内存态，重启重置）。
-    pub update_last_check: std::sync::Mutex<Option<String>>,
-    pub update_last_error: std::sync::Mutex<Option<String>>,
     /// L4 增量索引队列（§10.1）；ProjectRuntime 激活 / watcher 变化入队。
     pub l4_index_tx: tokio::sync::mpsc::Sender<L4IndexRequest>,
     pub l4_index_rx: std::sync::Mutex<Option<tokio::sync::mpsc::Receiver<L4IndexRequest>>>,
@@ -904,28 +892,6 @@ struct PendingL4Index {
     root: PathBuf,
     full: bool,
     files: HashSet<(String, bool)>,
-}
-
-impl DaemonState {
-    /// 运行中更新通道：设置覆盖优先于 config（v1.83）。
-    pub fn effective_update_channel(&self) -> String {
-        self.settings_overrides
-            .lock()
-            .unwrap()
-            .update_channel
-            .clone()
-            .unwrap_or_else(|| match self.config.update.channel {
-                tenon_config::UpdateChannel::Auto => "auto".into(),
-                tenon_config::UpdateChannel::Manual => "manual".into(),
-            })
-    }
-
-    /// updater 完成一次检查后记录权威状态。
-    pub fn record_update_check(&self, error: Option<&str>) {
-        *self.update_last_check.lock().expect("update check lock") =
-            Some(chrono::Utc::now().to_rfc3339());
-        *self.update_last_error.lock().expect("update error lock") = error.map(str::to_string);
-    }
 }
 
 /// 团队策略加载（M3）：`~/.tenon/policy.toml`（只收窄字段）。
@@ -1087,8 +1053,6 @@ impl DaemonState {
             policy_path,
             updates_staging_dir,
             settings_overrides: std::sync::Mutex::new(settings_overrides),
-            update_last_check: std::sync::Mutex::new(None),
-            update_last_error: std::sync::Mutex::new(None),
             l4_index_tx,
             l4_index_rx: std::sync::Mutex::new(Some(l4_index_rx)),
             l4_status: std::sync::Mutex::new(HashMap::new()),

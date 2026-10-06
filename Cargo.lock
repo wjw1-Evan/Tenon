@@ -4711,7 +4711,6 @@ name = "tenon-app"
 version = "0.1.1"
 dependencies = [
  "dirs 6.0.0",
- "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tauri",
