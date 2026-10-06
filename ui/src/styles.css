@@ -2322,6 +2322,56 @@ button:disabled { opacity: 0.45; cursor: default; }
 }
 .merge-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 
+/* 更新日志随包展示（v1.152 / §6.2）：更新成功重启后的启动弹窗 */
+.update-notes-pane {
+  width: min(560px, 90vw);
+  display: flex;
+  flex-direction: column;
+}
+.update-notes-close { margin-left: auto; }
+.update-notes-body { min-height: 0; }
+.update-notes-section-title {
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--fg-strong);
+  margin-bottom: 8px;
+}
+.update-notes-list {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  background: var(--surface);
+  padding: 10px 12px;
+  max-height: 46vh;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.update-notes-item { display: flex; gap: 8px; font-size: 12.5px; line-height: 1.5; color: var(--fg); }
+.update-notes-bullet { color: var(--muted); flex: none; }
+.update-notes-line { font-size: 12.5px; line-height: 1.5; color: var(--fg); }
+.update-notes-empty { font-size: 12.5px; color: var(--muted); }
+.update-notes-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 14px; }
+.update-notes-link {
+  border: none;
+  background: none;
+  padding: 4px 2px;
+  font-size: 12px;
+  color: var(--accent);
+  cursor: pointer;
+}
+.update-notes-link:hover { text-decoration: underline; }
+.update-notes-ok {
+  border: 1px solid var(--border);
+  background: var(--raised);
+  color: var(--fg-strong);
+  border-radius: var(--radius-m);
+  padding: 6px 16px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.update-notes-ok:hover { border-color: var(--accent); }
+
 
 /* ─────────────────────────── 分割条 ─────────────────────────── */
 .resize-handle { flex-shrink: 0; z-index: 5; }

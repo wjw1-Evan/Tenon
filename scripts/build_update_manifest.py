@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """聚合 Tauri 更新器所需 latest.json（v1.90 / §6.2）。
 
-用法：build_update_manifest.py <updater目录> <release资产目录> <输出文件> <vX.Y.Z>
+用法：build_update_manifest.py <updater目录> <release资产目录> <输出文件> <vX.Y.Z> [notes文件]
 所有目标都必须同时存在产物和 minisign 签名；缺失或空签名时 fail closed。
+v1.152：可选第 5 参为发布说明文件（generate-notes 预生成），写入 `notes` 供
+更新成功后壳弹窗随包展示；缺省回退占位文案（本地调试用，CI 必传）。
 """
 
 from __future__ import annotations
@@ -32,7 +34,7 @@ def signed_assets(updater: Path, prefix: str, pattern: str) -> Iterator[tuple[Pa
 
 
 def main() -> int:
-    if len(sys.argv) != 5:
+    if len(sys.argv) not in (5, 6):
         print(__doc__.strip(), file=sys.stderr)
         return 2
     updater_dir = Path(sys.argv[1])
@@ -42,6 +44,14 @@ def main() -> int:
     if not tag.startswith("v") or not tag[1:].replace(".", "").isdigit():
         print(f"非法 tag：{tag}", file=sys.stderr)
         return 2
+
+    notes = f"Tenon {tag[1:]} release notes: see GitHub Release."
+    if len(sys.argv) == 6:
+        notes_path = Path(sys.argv[5])
+        notes = notes_path.read_text(encoding="utf-8").strip()
+        if not notes:
+            print(f"{notes_path.name}: 发布说明为空", file=sys.stderr)
+            return 1
 
     platforms: dict[str, dict[str, str]] = {}
     for platform, (prefix, pattern) in PLATFORM_GLOBS.items():
@@ -67,7 +77,7 @@ def main() -> int:
 
     manifest = {
         "version": tag[1:],
-        "notes": f"Tenon {tag[1:]} release notes: see GitHub Release.",
+        "notes": notes,
         "pub_date": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
         "platforms": platforms,
     }

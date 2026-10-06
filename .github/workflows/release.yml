@@ -180,10 +180,19 @@ jobs:
           pattern: release-assets-*
           merge-multiple: true
           path: release-assets
+      - name: 生成发布说明（v1.152：随包更新日志与 Release 同源）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="$tag" --jq .body > release-notes.md
+          [[ -s release-notes.md ]] || { echo "发布说明生成结果为空"; exit 1; }
       - name: 聚合 Tauri latest.json
         run: |
           tag="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}"
-          python3 scripts/build_update_manifest.py updater release-assets updater/latest.json "$tag"
+          python3 scripts/build_update_manifest.py updater release-assets updater/latest.json "$tag" release-notes.md
       - name: 创建并发布 Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -193,6 +202,6 @@ jobs:
           assets="$(find release-assets -type f -print0 | xargs -0 echo)"
           gh release create "$tag" $assets updater/latest.json \
             --title "Tenon ${tag#v}" \
-            --generate-notes \
+            --notes-file release-notes.md \
             --verify-tag \
             --latest

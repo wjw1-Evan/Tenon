@@ -1,1 +1,1 @@
-{"main":{"identifier":"main","description":"主窗口能力（§6.2 桌面壳）：集成式标题栏拖拽区域","local":true,"windows":["main"],"permissions":["core:window:allow-start-dragging","core:window:allow-toggle-maximize","dialog:allow-open"]}}
+{"main":{"identifier":"main","description":"主窗口能力（§6.2 桌面壳）：集成式标题栏拖拽区域","local":true,"windows":["main"],"permissions":["core:window:allow-start-dragging","core:window:allow-toggle-maximize","dialog:allow-open","shell:allow-open"]}}

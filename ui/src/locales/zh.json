@@ -387,5 +387,10 @@
   "merge.base": "自动合并结果",
   "merge.apply": "应用选中版本并保存",
   "merge.keep_mine": "保留我的版本",
-  "merge.use_agent": "应用代理版本"
+  "merge.use_agent": "应用代理版本",
+  "update.notes.title": "Tenon 已更新到 {version}",
+  "update.notes.body_title": "更新日志",
+  "update.notes.empty": "本次更新未提供详细说明。",
+  "update.notes.view_full": "在 GitHub 查看完整发布说明",
+  "update.notes.dismiss": "知道了"
 }

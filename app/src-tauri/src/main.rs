@@ -12,7 +12,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::path::BaseDirectory;
 use tauri::{Emitter, Manager, Url};
 use tauri_plugin_updater::UpdaterExt;
@@ -24,9 +24,110 @@ struct Handshake {
     project: String,
 }
 
+/// v1.152 更新日志随包展示：重启前的待展示日志（新版首启消费）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PendingUpdateNotes {
+    version: String,
+    notes: String,
+}
+
+/// 壳偏好（应用数据目录 shell-prefs.json，0600）：更新日志展示与手动升级识别。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct ShellPrefs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_update: Option<PendingUpdateNotes>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_seen_version: Option<String>,
+}
+
+/// UI 弹窗载荷：notes 为空 = 手动升级（无随包日志，仅版本号 + Release 外链）。
+#[derive(Debug, Clone, Serialize)]
+struct UpdateNotesPayload {
+    version: String,
+    notes: Option<String>,
+}
+
+fn prefs_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    app.path()
+        .app_data_dir()
+        .ok()
+        .map(|dir| dir.join("shell-prefs.json"))
+}
+
+fn load_prefs(path: &PathBuf) -> ShellPrefs {
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+fn save_prefs(path: &PathBuf, prefs: &ShellPrefs) -> Result<(), String> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("偏好目录创建失败: {e}"))?;
+    }
+    let body = serde_json::to_vec_pretty(prefs).map_err(|e| format!("偏好序列化失败: {e}"))?;
+    // 与 daemon settings.json 同一安全姿态：0600
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(|e| format!("偏好写入失败: {e}"))?;
+        file.write_all(&body)
+            .map_err(|e| format!("偏好写入失败: {e}"))?;
+    }
+    #[cfg(not(unix))]
+    std::fs::write(path, body).map_err(|e| format!("偏好写入失败: {e}"))?;
+    Ok(())
+}
+
+/// 数字点分版本号逐段比较（发布 tag 受语义化版本门禁，宽松兜底即可）。
+fn is_newer_version(candidate: &str, base: &str) -> bool {
+    let parse = |v: &str| -> Vec<u64> { v.split('.').map(|s| s.parse().unwrap_or(0)).collect() };
+    let (c, b) = (parse(candidate), parse(base));
+    for i in 0..c.len().max(b.len()) {
+        let (cv, bv) = (
+            c.get(i).copied().unwrap_or(0),
+            b.get(i).copied().unwrap_or(0),
+        );
+        if cv != bv {
+            return cv > bv;
+        }
+    }
+    false
+}
+
+/// 当前是否应展示更新日志：随包 pending 优先（notes 全量），
+/// 其次 last_seen 与当前版本不一致（手动 dmg 升级，仅版本号）。
+/// 全新安装（无 last_seen）不弹——首启不是「更新」。
+fn resolve_update_notes(prefs: &ShellPrefs, current: &str) -> Option<UpdateNotesPayload> {
+    if let Some(pending) = &prefs.pending_update {
+        if pending.version == current {
+            return Some(UpdateNotesPayload {
+                version: current.to_string(),
+                notes: Some(pending.notes.clone()),
+            });
+        }
+    }
+    match &prefs.last_seen_version {
+        Some(last) if is_newer_version(current, last) => Some(UpdateNotesPayload {
+            version: current.to_string(),
+            notes: None,
+        }),
+        _ => None,
+    }
+}
+
 struct AppState {
     handshake: Mutex<Option<Handshake>>,
     _child: Mutex<Option<Child>>,
+    /// 序列化 shell-prefs.json 的读改写（更新监控线程与 IPC 命令并发）。
+    prefs_io: Mutex<()>,
 }
 
 /// daemon 托管 UI 的产物目录：打包资源 > env 指定 > 仓库根 ui/dist（开发态）。
@@ -174,10 +275,25 @@ fn spawn_update_monitor(app: tauri::AppHandle, port: u16, token: String) {
                 Ok(updater) => match updater.check().await {
                     Ok(Some(update)) => {
                         let version = update.version.clone();
+                        let notes = update.body.clone().unwrap_or_default();
                         eprintln!("[tenon-shell] 下载桌面更新 v{version}");
                         if let Err(e) = update.download_and_install(|_, _| {}, || {}).await {
                             eprintln!("[tenon-shell] 桌面更新安装失败: {e}");
                             continue;
+                        }
+                        // v1.152：重启前把更新日志落盘，新版首启弹窗展示（失败仅告警，
+                        // 不阻断重启——弹窗降级为仅版本号的手动升级形态）
+                        if let Some(path) = prefs_path(&app) {
+                            let state = app.state::<AppState>();
+                            let _guard = state.prefs_io.lock().unwrap();
+                            let mut prefs = load_prefs(&path);
+                            prefs.pending_update = Some(PendingUpdateNotes {
+                                version: version.clone(),
+                                notes,
+                            });
+                            if let Err(e) = save_prefs(&path, &prefs) {
+                                eprintln!("[tenon-shell] 更新日志持久化失败: {e}");
+                            }
                         }
                         eprintln!("[tenon-shell] 桌面更新 v{version} 安装完成，准备重启");
                         app.restart();
@@ -203,6 +319,33 @@ fn get_handshake(state: tauri::State<AppState>) -> Result<Handshake, String> {
         .unwrap()
         .clone()
         .ok_or_else(|| "daemon 未就绪".to_string())
+}
+
+/// IPC 命令：待展示的更新日志（peek 不消费，关闭弹窗走 dismiss_update_notes）。
+#[tauri::command]
+fn get_update_notes(app: tauri::AppHandle) -> Result<Option<UpdateNotesPayload>, String> {
+    let Some(path) = prefs_path(&app) else {
+        return Ok(None);
+    };
+    let state = app.state::<AppState>();
+    let _guard = state.prefs_io.lock().unwrap();
+    let prefs = load_prefs(&path);
+    let current = app.package_info().version.to_string();
+    Ok(resolve_update_notes(&prefs, &current))
+}
+
+/// IPC 命令：用户确认看过更新日志——清 pending 并记 last_seen_version。
+#[tauri::command]
+fn dismiss_update_notes(app: tauri::AppHandle) -> Result<(), String> {
+    let Some(path) = prefs_path(&app) else {
+        return Ok(());
+    };
+    let state = app.state::<AppState>();
+    let _guard = state.prefs_io.lock().unwrap();
+    let mut prefs = load_prefs(&path);
+    prefs.pending_update = None;
+    prefs.last_seen_version = Some(app.package_info().version.to_string());
+    save_prefs(&path, &prefs)
 }
 
 /// 开发热重载（v1.65）：debug 构建探测 Vite dev server（127.0.0.1:5173），
@@ -234,8 +377,13 @@ fn main() {
         .manage(AppState {
             handshake: Mutex::new(None),
             _child: Mutex::new(None),
+            prefs_io: Mutex::new(()),
         })
-        .invoke_handler(tauri::generate_handler![get_handshake])
+        .invoke_handler(tauri::generate_handler![
+            get_handshake,
+            get_update_notes,
+            dismiss_update_notes
+        ])
         .setup(|app| {
             let handle = app.handle().clone();
             // daemon 在后台线程启动：读握手行可能阻塞，不能卡住 setup
@@ -301,4 +449,72 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("tenon app error");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_compare_numeric_segments() {
+        assert!(is_newer_version("0.1.2", "0.1.1"));
+        assert!(is_newer_version("0.2.0", "0.1.99"));
+        assert!(is_newer_version("1.0.0", "0.9.9"));
+        assert!(!is_newer_version("0.1.1", "0.1.1"));
+        assert!(!is_newer_version("0.1.0", "0.1.1"));
+        // 降级（手动回滚装旧包）不弹
+        assert!(!is_newer_version("0.1.0", "0.1.1"));
+    }
+
+    #[test]
+    fn pending_notes_shown_when_version_matches() {
+        let prefs = ShellPrefs {
+            pending_update: Some(PendingUpdateNotes {
+                version: "0.1.2".into(),
+                notes: "- 修复若干问题".into(),
+            }),
+            last_seen_version: Some("0.1.1".into()),
+        };
+        let payload = resolve_update_notes(&prefs, "0.1.2").expect("应展示随包日志");
+        assert_eq!(payload.version, "0.1.2");
+        assert_eq!(payload.notes.as_deref(), Some("- 修复若干问题"));
+    }
+
+    #[test]
+    fn stale_pending_falls_back_to_manual_detection() {
+        // pending 是更旧一次更新的残留（如用户连跳两版）：按手动升级识别
+        let prefs = ShellPrefs {
+            pending_update: Some(PendingUpdateNotes {
+                version: "0.1.2".into(),
+                notes: "旧日志".into(),
+            }),
+            last_seen_version: Some("0.1.1".into()),
+        };
+        let payload = resolve_update_notes(&prefs, "0.1.3").expect("应按手动升级展示");
+        assert_eq!(payload.version, "0.1.3");
+        assert!(payload.notes.is_none());
+    }
+
+    #[test]
+    fn manual_upgrade_without_pending_shows_version_only() {
+        let prefs = ShellPrefs {
+            pending_update: None,
+            last_seen_version: Some("0.1.1".into()),
+        };
+        let payload = resolve_update_notes(&prefs, "0.1.2").expect("手动升级应展示");
+        assert!(payload.notes.is_none());
+    }
+
+    #[test]
+    fn fresh_install_and_repeat_launch_stay_silent() {
+        // 全新安装：无 last_seen，首启不是「更新」
+        let fresh = ShellPrefs::default();
+        assert!(resolve_update_notes(&fresh, "0.1.2").is_none());
+        // 已确认过的版本重复启动不弹
+        let seen = ShellPrefs {
+            pending_update: None,
+            last_seen_version: Some("0.1.2".into()),
+        };
+        assert!(resolve_update_notes(&seen, "0.1.2").is_none());
+    }
 }

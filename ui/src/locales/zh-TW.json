@@ -387,5 +387,10 @@
   "merge.base": "自動合併結果",
   "merge.apply": "套用所選版本並儲存",
   "merge.keep_mine": "保留我的版本",
-  "merge.use_agent": "套用代理版本"
+  "merge.use_agent": "套用代理版本",
+  "update.notes.title": "Tenon 已更新到 {version}",
+  "update.notes.body_title": "更新日誌",
+  "update.notes.empty": "本次更新未提供詳細說明。",
+  "update.notes.view_full": "在 GitHub 查看完整發布說明",
+  "update.notes.dismiss": "知道了"
 }

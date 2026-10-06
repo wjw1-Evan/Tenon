@@ -387,5 +387,10 @@
   "merge.base": "自動マージ結果",
   "merge.apply": "選択したバージョンを適用して保存",
   "merge.keep_mine": "自分のバージョンを保持",
-  "merge.use_agent": "エージェント版を適用"
+  "merge.use_agent": "エージェント版を適用",
+  "update.notes.title": "Tenon を {version} に更新しました",
+  "update.notes.body_title": "更新内容",
+  "update.notes.empty": "この更新には詳細なリリースノートがありません。",
+  "update.notes.view_full": "GitHub で完全なリリースノートを見る",
+  "update.notes.dismiss": "OK"
 }

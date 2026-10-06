@@ -54,6 +54,7 @@ import {
   useViewport,
 } from "./lib/viewport";
 import { SettingsDialog, type SettingsData } from "./components/SettingsDialog";
+import { UpdateNotesDialog } from "./components/UpdateNotesDialog";
 import { CommandPalette, type Command } from "./components/CommandPalette";
 
 /** 侧栏视图（布局 §7.2 重设计）：activity rail 单视图切换，localStorage 记忆。 */
@@ -1511,6 +1512,8 @@ export default function App({
           onSaved={setSettings}
         />
       )}
+      {/* v1.152 更新日志启动弹窗：仅桌面壳环境自渲染（浏览器 Web 版不适用） */}
+      <UpdateNotesDialog t={t} />
       <FileFinder
         open={finderOpen}
         onClose={() => setFinderOpen(false)}

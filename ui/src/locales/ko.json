@@ -387,5 +387,10 @@
   "merge.base": "자동 병합 결과",
   "merge.apply": "선택한 버전을 적용하고 저장",
   "merge.keep_mine": "내 버전 유지",
-  "merge.use_agent": "에이전트 버전 적용"
+  "merge.use_agent": "에이전트 버전 적용",
+  "update.notes.title": "Tenon이 {version}(으)로 업데이트되었습니다",
+  "update.notes.body_title": "업데이트 노트",
+  "update.notes.empty": "이 업데이트에 대한 자세한 릴리스 노트가 없습니다.",
+  "update.notes.view_full": "GitHub에서 전체 릴리스 노트 보기",
+  "update.notes.dismiss": "확인"
 }

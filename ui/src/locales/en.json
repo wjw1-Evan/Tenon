@@ -387,5 +387,10 @@
   "merge.base": "Auto-merged result",
   "merge.apply": "Apply selected version and save",
   "merge.keep_mine": "Keep mine",
-  "merge.use_agent": "Use agent version"
+  "merge.use_agent": "Use agent version",
+  "update.notes.title": "Tenon updated to {version}",
+  "update.notes.body_title": "What's new",
+  "update.notes.empty": "No detailed release notes for this update.",
+  "update.notes.view_full": "View full release notes on GitHub",
+  "update.notes.dismiss": "Got it"
 }
