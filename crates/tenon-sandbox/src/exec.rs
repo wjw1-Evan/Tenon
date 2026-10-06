@@ -279,8 +279,11 @@ mod tests {
             std::fs::set_permissions(script.path(), std::fs::Permissions::from_mode(0o755))
                 .unwrap();
         }
+        // 关闭写句柄再 exec：Linux 对有活动写句柄的文件 execve 报 ETXTBSY
+        //（macOS 宽容）；TempPath 保路径、drop 时清理
+        let script = script.into_temp_path();
         let out = match exec_argv(
-            script.path().to_str().unwrap(),
+            script.to_str().unwrap(),
             &["--title".to_string(), "not a command".to_string()],
             Path::new("/tmp"),
             Duration::from_secs(5),
