@@ -139,6 +139,59 @@ pub struct SettingsOverrides {
     pub models_providers: std::collections::BTreeMap<String, ProviderOverride>,
     /// v1.130 技能分区：停用名单（§13.4，整体替换；新会话生效）。
     pub skills_disabled: Option<Vec<String>>,
+    /// v1.145 市场分区：市场源 owner/repo 数组（§13.5，整体替换）。
+    pub market_sources: Option<Vec<String>>,
+    /// v1.145 MCP 分区：服务器表（§13.5，整体替换；新会话生效）。
+    pub mcp_servers: Option<std::collections::BTreeMap<String, tenon_mcp::McpServerConfig>>,
+}
+
+/// mcp.servers 单条校验（§13.5 安装期硬约束；settings PUT 与市场安装共用）。
+pub fn validate_mcp_server(name: &str, cfg: &tenon_mcp::McpServerConfig) -> Result<(), String> {
+    if !tenon_registry::market::is_valid_mcp_name(name) {
+        return Err(format!(
+            "mcp.servers.{name} 名须匹配 ^[a-z][a-z0-9-]{{0,31}}$"
+        ));
+    }
+    if !tenon_registry::market::LAUNCHER_WHITELIST.contains(&cfg.command.as_str()) {
+        return Err(format!(
+            "mcp.servers.{name} 启动器不在白名单 {:?}: {}",
+            tenon_registry::market::LAUNCHER_WHITELIST,
+            cfg.command
+        ));
+    }
+    for arg in &cfg.args {
+        if arg.chars().any(|c| c.is_control()) {
+            return Err(format!("mcp.servers.{name} args 含控制字符"));
+        }
+    }
+    for (k, v) in &cfg.env {
+        let Some(var) = v.strip_prefix("env:") else {
+            return Err(format!(
+                "mcp.servers.{name} env 值仅允许 env:VAR 引用（§11 密钥不落盘）: {k}"
+            ));
+        };
+        if var.is_empty()
+            || !var.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            || !k
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        {
+            return Err(format!("mcp.servers.{name} env 键值非法: {k}={v}"));
+        }
+    }
+    for p in &cfg.permissions {
+        if p != "net:*" {
+            return Err(format!(
+                "mcp.servers.{name} permissions 当前仅支持 net:*: {p}"
+            ));
+        }
+    }
+    if let Some(src) = &cfg.source {
+        if !tenon_registry::market::is_valid_source(src) {
+            return Err(format!("mcp.servers.{name} source 形态非法: {src}"));
+        }
+    }
+    Ok(())
 }
 
 impl SettingsOverrides {
@@ -233,6 +286,37 @@ impl SettingsOverrides {
                 self.skills_disabled = Some(names);
             }
         }
+        if let Some(market) = body.get("market") {
+            if let Some(v) = market.get("sources") {
+                // 整体替换（§13.5 v1.145）：owner/repo 数组
+                let arr = v.as_array().ok_or("market.sources 须为字符串数组")?;
+                let mut sources = Vec::with_capacity(arr.len());
+                for item in arr {
+                    let s = item.as_str().ok_or("market.sources 须为字符串数组")?;
+                    if !tenon_registry::market::is_valid_source(s) {
+                        return Err(format!("market.sources 含非法源（owner/repo 形态）: {s}"));
+                    }
+                    if !sources.contains(&s.to_string()) {
+                        sources.push(s.to_string());
+                    }
+                }
+                self.market_sources = Some(sources);
+            }
+        }
+        if let Some(mcp) = body.get("mcp") {
+            if let Some(v) = mcp.get("servers") {
+                // 整体替换（§13.5 v1.145）：逐条校验后整体落表（新会话生效）
+                let obj = v.as_object().ok_or("mcp.servers 须为对象")?;
+                let mut built = std::collections::BTreeMap::new();
+                for (name, entry) in obj {
+                    let cfg: tenon_mcp::McpServerConfig = serde_json::from_value(entry.clone())
+                        .map_err(|e| format!("mcp.servers.{name}: {e}"))?;
+                    validate_mcp_server(name, &cfg)?;
+                    built.insert(name.clone(), cfg);
+                }
+                self.mcp_servers = Some(built);
+            }
+        }
         Ok(())
     }
 
@@ -263,12 +347,20 @@ impl SettingsOverrides {
         let skills = serde_json::json!({
             "disabled": self.skills_disabled.clone().unwrap_or_default(),
         });
+        let market = serde_json::json!({
+            "sources": self.market_sources.clone().unwrap_or_default(),
+        });
+        let mcp = serde_json::json!({
+            "servers": self.mcp_servers.clone().unwrap_or_default(),
+        });
         serde_json::json!({
             "session": session,
             "exec": exec,
             "update": update,
             "models": models,
             "skills": skills,
+            "market": market,
+            "mcp": mcp,
         })
     }
 
@@ -370,6 +462,8 @@ pub struct DaemonOptions {
     pub laya_models_dir: Option<std::path::PathBuf>,
     /// 技能全局目录覆盖（§13.4 v1.130；None = ~/.tenon/skills；测试注入临时目录）。
     pub skills_dir: Option<std::path::PathBuf>,
+    /// 市场镜像链 base 覆盖（§13.5 v1.145；None = jsDelivr/raw 官方链；测试注入本地 mock）。
+    pub market_base: Option<String>,
     /// 文件监听轮询后端间隔（v1.128 测试确定性通道）；None = 原生后端
     ///（FSEvents/inotify，注册握手 2s 就绪预算 + 后台补注册）。
     pub watch_poll_interval: Option<std::time::Duration>,
@@ -402,6 +496,7 @@ impl DaemonOptions {
             laya_public_key: None,
             laya_models_dir: None,
             skills_dir: None,
+            market_base: None,
             watch_poll_interval: None,
         }
     }
@@ -667,6 +762,13 @@ pub struct DaemonState {
     pub snapshots_root: std::path::PathBuf,
     /// 技能全局目录（§13.4 v1.130：`~/.tenon/skills/`；测试隔离注入）。
     pub skills_root: std::path::PathBuf,
+    /// 市场清单缓存（§13.5 v1.145：source@ref → (时间, 清单)，5 分钟 TTL；
+    /// 短临界区无 await，std 锁）。
+    pub market_cache: std::sync::Mutex<
+        HashMap<String, (std::time::Instant, tenon_registry::market::MarketManifest)>,
+    >,
+    /// 市场镜像链 base 覆盖（§13.5 v1.145；None = 官方链；测试注入本地 mock）。
+    pub market_client_base: Option<String>,
     /// 设置面板运行时覆盖（§15 /settings；新会话生效）。
     pub settings_overrides: std::sync::Mutex<SettingsOverrides>,
     /// 设置覆盖权威文件；测试显式隔离。
@@ -813,6 +915,7 @@ impl DaemonState {
             .skills_dir
             .clone()
             .unwrap_or_else(|| Config::data_dir().join("skills"));
+        let market_cache = std::sync::Mutex::new(HashMap::new());
         let worktrees_root = options
             .worktrees_root
             .clone()
@@ -874,6 +977,8 @@ impl DaemonState {
             l4_status_events,
             snapshots_root,
             skills_root,
+            market_cache,
+            market_client_base: options.market_base.clone(),
             settings_path,
             policy_path,
             updates_staging_dir,
@@ -887,6 +992,30 @@ impl DaemonState {
         // provider 表统一入口：基础 config + 设置覆盖（settings.json）合并构建（v1.40）
         state.rebuild_providers();
         state
+    }
+
+    /// §13.5 v1.145：市场源列表（settings `market.sources` 快照）。
+    pub fn market_sources_list(&self) -> Vec<String> {
+        self.settings_overrides
+            .lock()
+            .unwrap()
+            .market_sources
+            .clone()
+            .unwrap_or_default()
+    }
+
+    /// §13.5 v1.145：从设置快照构建 MCP 宿主（无 enabled 服务器返回 None；
+    /// 新会话生效——既有会话持有各自快照实例）。
+    pub fn mcp_host(&self) -> Option<std::sync::Arc<tenon_mcp::McpHost>> {
+        let ov = self.settings_overrides.lock().unwrap();
+        let servers = ov.mcp_servers.clone().unwrap_or_default();
+        if servers.values().all(|c| !c.enabled) {
+            return None;
+        }
+        Some(std::sync::Arc::new(tenon_mcp::McpHost::new(
+            servers,
+            Config::data_dir(),
+        )))
     }
 
     /// 按「基础 config.models + 设置覆盖」重建 provider 表与默认 provider（v1.40）。

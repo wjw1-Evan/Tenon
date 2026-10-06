@@ -1639,104 +1639,8 @@ async fn lan_pairing_flow_end_to_end() {
     assert_eq!(revoked_denied.status(), 403, "吊销后 LAN 访问应被拒");
 }
 
-#[tokio::test]
-async fn plugin_registry_install_flow_with_permission_diff() {
-    // registry fixture：静态 index + 包体（同一本地 HTTP 服务器）
-    let manifest_yaml = r#"id: community.demo
-version: 1.0.0
-runtime: external
-permissions:
-  - fs.read:project
-  - net:registry:npm
-provides:
-  languages: [demo]
-signature: ""
-"#;
-    let payload = manifest_yaml.as_bytes().to_vec();
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let pkg_port = listener.local_addr().unwrap().port();
-    let index = serde_json::json!({
-        "plugins": [{
-            "id": "community.demo", "version": "1.0.0",
-            "sha256": tenon_registry::sha256_hex(&payload),
-            "signature": "", "url": format!("http://127.0.0.1:{pkg_port}/pkg.yaml"),
-            "description": "demo plugin"
-        }]
-    });
-    let index_body = index.to_string();
-    std::thread::spawn(move || {
-        // 直接使用移动进来的 listener（绑定已在上方完成，避免重绑 AddrInUse）
-        for stream in listener.incoming().flatten() {
-            let mut s = stream;
-            let mut buf = [0u8; 4096];
-            let _ = std::io::Read::read(&mut s, &mut buf);
-            let req = String::from_utf8_lossy(&buf);
-            let body = if req.contains("pkg.yaml") {
-                payload.clone()
-            } else {
-                index_body.clone().into_bytes()
-            };
-            let resp = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-            );
-            let _ = std::io::Write::write_all(&mut s, resp.as_bytes());
-            let _ = std::io::Write::write_all(&mut s, &body);
-            let _ = std::io::Write::flush(&mut s);
-        }
-    });
-
-    let dir = tempfile::tempdir().unwrap();
-    let mut options = DaemonOptions::in_memory();
-    options.providers = vec![Arc::new(MockProvider::new(
-        "mock",
-        "mock-1",
-        vec![ScriptedReply::Text("ok".into())],
-    ))];
-    options.default_provider = "mock".into();
-    options.snapshots_root = Some(dir.path().join("snapshots"));
-    let handle = tenon_daemon::serve(options).await.unwrap();
-    let local = client_with_token(&handle.token);
-
-    // 1. registry 检索
-    let search: serde_json::Value = local
-        .put(format!("{}/plugins", base(handle.port)))
-        .json(&serde_json::json!({"query": "demo", "registry_url": format!("http://127.0.0.1:{pkg_port}/index.json")}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(search["hits"][0]["id"], "community.demo");
-
-    // 2. 校验通过后直执安装；响应保留权限 diff 供审计展示
-    let installed: serde_json::Value = local
-        .post(format!("{}/plugins/install", base(handle.port)))
-        .json(&serde_json::json!({
-            "entry": search["hits"][0],
-            "installed_permissions": ["fs.read:project"],
-            // 测试主机可能装有 ~/.tenon signing key；本地社区 fixture 显式走无钥开发模式。
-            "public_key": "0".repeat(64),
-        }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(installed["installed"], true);
-    assert_eq!(installed["permission_diff"]["added"][0], "net:registry:npm");
-    let list: serde_json::Value = local
-        .get(format!("{}/plugins", base(handle.port)))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(list["installed"][0]["id"], "community.demo");
-}
+// v1.145：plugin_registry_install_flow_with_permission_diff 随官方 registry
+// 检索安装端点退役（§13.5）——社区市场安装链路由 tests/market_api_tests.rs 承接。
 
 #[tokio::test]
 async fn static_ui_serving_and_pairing_self_discovery() {
@@ -3190,7 +3094,7 @@ async fn pairing_lan_and_costs_endpoints() {
 }
 
 #[tokio::test]
-async fn evals_and_plugins_endpoints() {
+async fn evals_and_market_endpoints() {
     let (_dir, port, token) = start_daemon(vec![]).await;
     let client = client_with_token(&token);
 
@@ -3202,23 +3106,15 @@ async fn evals_and_plugins_endpoints() {
         .unwrap();
     assert_eq!(r.status(), 200);
 
-    // GET plugins
+    // GET /market/sources（§13.5 v1.145；旧 /plugins 官方 registry 端点已退役）
     let r = client
-        .get(format!("{}/plugins", base(port)))
+        .get(format!("{}/market/sources", base(port)))
         .send()
         .await
         .unwrap();
     assert_eq!(r.status(), 200);
-
-    // PUT plugins (search registry)
-    let r = client
-        .put(format!("{}/plugins", base(port)))
-        .json(&serde_json::json!({ "query": "lsp" }))
-        .send()
-        .await
-        .unwrap();
-    // 搜索可能 200 或 502（无网络）；不 401 即可
-    assert_ne!(r.status(), 401);
+    let v: serde_json::Value = r.json().await.unwrap();
+    assert!(v["sources"].is_array());
 }
 
 #[tokio::test]
@@ -4713,7 +4609,7 @@ async fn checkpoint_rollback_after_write() {
 }
 
 #[tokio::test]
-async fn evals_listing_and_plugins_registry() {
+async fn evals_listing_and_market_sources() {
     let (_dir, port, token) = start_daemon(vec![]).await;
     let client = client_with_token(&token);
 
@@ -4728,15 +4624,15 @@ async fn evals_listing_and_plugins_registry() {
     // evals 可能有 tasks 数组或空
     assert!(body.is_object());
 
-    // GET plugins
+    // GET market sources（§13.5 v1.145：/plugins 退役后市场源为插件面入口）
     let r = client
-        .get(format!("{}/plugins", base(port)))
+        .get(format!("{}/market/sources", base(port)))
         .send()
         .await
         .unwrap();
     assert_eq!(r.status(), 200);
     let body: serde_json::Value = r.json().await.unwrap();
-    assert!(body.is_object() || body.is_array());
+    assert!(body.is_object());
 }
 
 #[tokio::test]

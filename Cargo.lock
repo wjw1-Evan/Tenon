@@ -4769,6 +4769,7 @@ dependencies = [
  "tenon-fs",
  "tenon-laya",
  "tenon-lsp",
+ "tenon-mcp",
  "tenon-models",
  "tenon-registry",
  "tenon-sandbox",

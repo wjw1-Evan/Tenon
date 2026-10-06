@@ -222,7 +222,7 @@ impl Drop for McpConnection {
 }
 
 /// MCP 服务器启动配置（settings.json `mcp.servers` 条目，§13.5 v1.145）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpServerConfig {
     pub command: String,
     #[serde(default)]

@@ -165,6 +165,7 @@ async fn main() -> anyhow::Result<()> {
         laya_public_key: None,
         laya_models_dir: None,
         skills_dir: None,
+        market_base: None,
         watch_poll_interval: None,
     };
     if let Some(proj) = project {

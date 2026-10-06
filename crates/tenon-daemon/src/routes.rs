@@ -76,8 +76,15 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
         .route("/project/{id}/lsp", post(project_lsp_proxy))
         .route("/project/{id}/inline-complete", post(inline_complete))
         .route("/project/{id}/lsp/apply", post(apply_lsp_workspace_edit))
-        .route("/plugins", get(list_plugins).put(search_registry))
-        .route("/plugins/install", post(install_plugin))
+        // 市场（§13.5 v1.145：GitHub 市场清单通道；旧 /plugins 官方 registry
+        // 检索安装端点随通道退役，plugins 表留旧库审计）
+        .route(
+            "/market/sources",
+            get(get_market_sources).put(put_market_sources),
+        )
+        .route("/market/{owner}/{repo}", get(get_market_manifest))
+        .route("/market/install", post(market_install))
+        .route("/market/uninstall", post(market_uninstall))
         .route("/skills", get(list_skills).post(create_skill))
         .route(
             "/skills/{name}",
@@ -200,6 +207,9 @@ async fn create_agent_session(
     // §13.4 v1.130 接线：技能全局目录 + 停用名单（settings 快照，新会话生效）。
     agent_cfg.skills_global_dir = state.skills_root.clone();
     agent_cfg.skills_disabled = skills_disabled_list(state);
+    // §13.5 v1.145 接线：MCP 宿主（settings mcp.servers 快照，新会话生效；
+    // 无 enabled 服务器为 None，会话工具目录不含 MCP 工具）。
+    agent_cfg.mcp = state.mcp_host();
     // §13.3 v1.92 接线：AGENTS.md「直读，只能收窄」——读取会话工作根的
     // AGENTS.md，解析 `<!-- tenon:rules -->` 限制块并入策略（缺文件即默认）。
     let project_rules = std::fs::read_to_string(snapshot_workspace.join("AGENTS.md"))
@@ -2202,127 +2212,319 @@ async fn skills_workspace(
 
 // ---------- 插件 registry（§13 / M2） ----------
 
-/// 已装插件列表（store plugins 表，§14.2）。
-async fn list_plugins(State(state): State<Arc<DaemonState>>) -> Response {
-    let mut store = state.store.lock().await;
-    let installed: Vec<Value> = store
-        .list_plugins()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|p| {
-            json!({
-                "id": p.id, "version": p.version,
-                "permissions": p.permissions, "signature": p.signature,
-                "installed_at": p.installed_at,
-            })
-        })
-        .collect();
-    Json(json!({ "installed": installed })).into_response()
-}
+// ---------- 技能与插件市场（§13.5 v1.145：GitHub 市场清单通道） ----------
 
 #[derive(Deserialize)]
-struct RegistrySearchBody {
-    query: String,
-    #[serde(default)]
-    registry_url: Option<String>,
+struct MarketSourcesBody {
+    sources: Vec<String>,
 }
 
-/// registry 检索（§13.2 检索）。
-async fn search_registry(
-    State(_state): State<Arc<DaemonState>>,
-    Json(body): Json<RegistrySearchBody>,
-) -> Response {
-    let index = match tenon_registry::fetch_index(body.registry_url.as_deref()).await {
-        Ok(i) => i,
-        Err(e) => return api_err(StatusCode::BAD_GATEWAY, format!("registry 不可达: {e}")),
-    };
-    let hits: Vec<Value> = tenon_registry::search_index(&index, &body.query)
-        .into_iter()
-        .map(|e| json!(e))
-        .collect();
-    Json(json!({ "hits": hits })).into_response()
+async fn get_market_sources(State(state): State<Arc<DaemonState>>) -> Response {
+    Json(json!({ "sources": state.market_sources_list() })).into_response()
 }
 
-#[derive(Deserialize)]
-struct InstallPluginBody {
-    /// registry 条目（客户端从检索结果取得）；或直接给 manifest YAML
-    entry: tenon_registry::RegistryEntry,
-    /// 已装版本权限（客户端从 GET /plugins 取；用于权限 diff 展示）
-    #[serde(default)]
-    installed_permissions: Vec<String>,
-    #[serde(default)]
-    public_key: Option<String>,
-}
-
-async fn install_plugin(
+async fn put_market_sources(
     State(state): State<Arc<DaemonState>>,
-    Json(body): Json<InstallPluginBody>,
+    Json(body): Json<MarketSourcesBody>,
 ) -> Response {
-    use tenon_registry as treg;
-    // 签名校验（官方条目走发布公钥解析链；社区条目须带公钥）
-    let pk = body
-        .public_key
-        .clone()
-        .or_else(treg::load_public_key)
-        .unwrap_or_else(|| "0".repeat(64));
-    if let Err(e) = treg::verify_entry(&body.entry, &pk) {
-        eprintln!(
-            "[plugins-debug] verify_entry failed pk_prefix={} entry_sig_empty={} sha_len={}",
-            &pk[..8.min(pk.len())],
-            body.entry.signature.is_empty(),
-            body.entry.sha256.len()
-        );
-        return api_err(StatusCode::BAD_GATEWAY, format!("签名校验失败: {e}"));
-    }
-    // 下载 + SHA-256 校验
-    let pkg_bytes = match treg::download_entry(&treg::InstallPlan {
-        version: 0,
-        sha256: body.entry.sha256.clone(),
-        signature: body.entry.signature.clone(),
-        url: body.entry.url.clone(),
-        size_bytes: None,
-    })
-    .await
+    // 经 settings merge 校验 + 持久化（与 PUT /settings 同一权威路径，§13.5）
+    let payload = json!({ "market": { "sources": body.sources } });
     {
-        Ok(b) => b,
-        Err(e) => return api_err(StatusCode::BAD_GATEWAY, format!("下载失败: {e}")),
+        let mut ov = state.settings_overrides.lock().unwrap();
+        if let Err(e) = ov.merge_json(&payload) {
+            return api_err(StatusCode::BAD_REQUEST, e);
+        }
+        ov.persist_to(&state.settings_path);
+    }
+    Json(json!({ "sources": state.market_sources_list() })).into_response()
+}
+
+const MARKET_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// 市场客户端构建（测试注入 mock base；生产走 jsDelivr/raw 官方链，§13.5）。
+fn market_client(state: &DaemonState) -> tenon_registry::market::MarketClient {
+    match &state.market_client_base {
+        Some(b) => tenon_registry::market::MarketClient::with_bases(b, b, b, b),
+        None => tenon_registry::market::MarketClient::new(),
+    }
+}
+
+async fn get_market_manifest(
+    State(state): State<Arc<DaemonState>>,
+    Path((owner, repo)): Path<(String, String)>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let source = format!("{owner}/{repo}");
+    if !tenon_registry::market::is_valid_source(&source) {
+        return api_err(StatusCode::BAD_REQUEST, format!("市场源形态非法: {source}"));
+    }
+    let git_ref = q.get("ref").map(String::as_str).unwrap_or("main");
+    let cache_key = format!("{source}@{git_ref}");
+    if let Some((at, manifest)) = state.market_cache.lock().unwrap().get(&cache_key) {
+        if at.elapsed() < MARKET_CACHE_TTL {
+            return Json(manifest.clone()).into_response();
+        }
+    }
+    let client = market_client(&state);
+    match client.fetch_manifest(&source, git_ref).await {
+        Ok(manifest) => {
+            state
+                .market_cache
+                .lock()
+                .unwrap()
+                .insert(cache_key, (std::time::Instant::now(), manifest.clone()));
+            Json(manifest).into_response()
+        }
+        Err(e) => api_err(
+            StatusCode::BAD_GATEWAY,
+            format!("市场清单拉取失败（镜像链全部失败）: {e}"),
+        ),
+    }
+}
+
+#[derive(Deserialize)]
+struct MarketInstallBody {
+    source: String,
+    /// skill | mcp
+    kind: String,
+    name: String,
+}
+
+async fn market_install(
+    State(state): State<Arc<DaemonState>>,
+    Json(body): Json<MarketInstallBody>,
+) -> Response {
+    let source = body.source.clone();
+    if !tenon_registry::market::is_valid_source(&source) {
+        return api_err(StatusCode::BAD_REQUEST, format!("市场源形态非法: {source}"));
+    }
+    // 清单检索（缓存 5 分钟；未缓存则镜像链拉取）
+    let manifest = {
+        let cache_key = format!("{source}@main");
+        let cached = state
+            .market_cache
+            .lock()
+            .unwrap()
+            .get(&cache_key)
+            .map(|(at, m)| (at.elapsed() < MARKET_CACHE_TTL, m.clone()));
+        match cached {
+            Some((true, m)) => m,
+            _ => {
+                let client = market_client(&state);
+                match client.fetch_manifest(&source, "main").await {
+                    Ok(m) => {
+                        state
+                            .market_cache
+                            .lock()
+                            .unwrap()
+                            .insert(cache_key, (std::time::Instant::now(), m.clone()));
+                        m
+                    }
+                    Err(e) => {
+                        return api_err(StatusCode::BAD_GATEWAY, format!("市场清单拉取失败: {e}"))
+                    }
+                }
+            }
+        }
     };
-    let manifest = match treg::parse_manifest(&String::from_utf8_lossy(pkg_bytes.as_slice())) {
-        Ok(m) => m,
-        Err(e) => return api_err(StatusCode::BAD_GATEWAY, format!("manifest 解析失败: {e}")),
+    let want_kind = match body.kind.as_str() {
+        "skill" => tenon_registry::market::MarketKind::Skill,
+        "mcp" => tenon_registry::market::MarketKind::Mcp,
+        other => return api_err(StatusCode::BAD_REQUEST, format!("未知条目类型: {other}")),
     };
-    // 保留字安装期拦截（§12.5）
-    if let Err(e) = treg::pre_install_check(&manifest, body.entry.id.starts_with("official.")) {
+    let entry_name = body.name.clone();
+    let Some(entry) = manifest
+        .entries
+        .iter()
+        .find(|e| e.kind == want_kind && e.name == entry_name)
+    else {
+        return api_err(
+            StatusCode::NOT_FOUND,
+            format!("市场 {source} 无条目 {}/{}", body.kind, entry_name),
+        );
+    };
+    // 安装期硬校验（§13.5：白名单 / env 引用 / 路径规范形）
+    if let Err(e) = entry.validate(&body.source) {
         return api_err(StatusCode::FORBIDDEN, e.to_string());
     }
+    match want_kind {
+        tenon_registry::market::MarketKind::Skill => {
+            install_market_skill(state, &body.source, entry).await
+        }
+        tenon_registry::market::MarketKind::Mcp => install_market_mcp(state, &body.source, entry),
+    }
+}
 
-    // 权限 diff（§13.2：新增权限高亮）
-    let diff = treg::permission_diff(&body.installed_permissions, &manifest.permissions);
+/// 技能安装：拉取目录文件 → staging 原子落盘 + sidecar（§13.5）。
+async fn install_market_skill(
+    state: Arc<DaemonState>,
+    market_source: &str,
+    entry: &tenon_registry::market::MarketEntry,
+) -> Response {
+    let source = entry.resolved_source(market_source);
+    let git_ref = entry.resolved_ref().to_string();
+    let Some(path) = entry.path.clone() else {
+        return api_err(StatusCode::BAD_REQUEST, "skill 条目缺少 path");
+    };
+    // 重名 409；同 source+path 视为更新（§13.5）
+    let target = state.skills_root.join(&entry.name);
+    let mut updated = false;
+    if target.exists() {
+        match tenon_registry::market::read_sidecar(&target) {
+            Some(sidecar) if sidecar.market_source == market_source && sidecar.path == path => {
+                updated = true;
+            }
+            _ => {
+                return api_err(
+                    StatusCode::CONFLICT,
+                    format!("技能 {} 已存在（非同源市场条目，拒绝覆盖）", entry.name),
+                )
+            }
+        }
+    }
+    let client = market_client(&state);
+    let files = match client.fetch_skill_files(&source, &git_ref, &path).await {
+        Ok(f) => f,
+        Err(e) => return api_err(StatusCode::BAD_GATEWAY, format!("技能文件拉取失败: {e}")),
+    };
+    let sidecar = tenon_registry::market::MarketSidecar {
+        market_source: market_source.to_string(),
+        source: source.clone(),
+        path: path.clone(),
+        git_ref: git_ref.clone(),
+        version: entry.version.clone(),
+        installed_at: chrono::Utc::now().to_rfc3339(),
+    };
+    let root = state.skills_root.clone();
+    let name = entry.name.clone();
+    let files_len = files.len();
+    let installed = tokio::task::spawn_blocking(move || {
+        tenon_registry::market::install_skill_dir(&root, &name, &files, &sidecar)
+    })
+    .await;
+    match installed {
+        Ok(Ok(_dir)) => Json(json!({
+            "installed": true,
+            "kind": "skill",
+            "name": entry.name,
+            "source": source,
+            "path": path,
+            "ref": git_ref,
+            "version": entry.version,
+            "files": files_len,
+            "updated": updated,
+        }))
+        .into_response(),
+        Ok(Err(e)) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, format!("join: {e}")),
+    }
+}
 
-    // 版本锁定 + 入库（安装到 ~/.tenon/plugins/，§14.1）
-    let dir = tenon_config::Config::data_dir().join("plugins");
-    std::fs::create_dir_all(&dir).ok();
-    let pkg_path = dir.join(format!(
-        "{}-{}.yaml",
-        manifest.id.replace('/', "_"),
-        manifest.version
-    ));
-    std::fs::write(&pkg_path, pkg_bytes.as_slice()).ok();
-    let mut st = state.store.lock().await;
-    st.insert_plugin(
-        &manifest.id,
-        &manifest.version,
-        &manifest.permissions,
-        &body.entry.signature,
-    )
-    .ok();
+/// MCP 插件安装：校验通过后写 settings `mcp.servers`（新会话生效，§13.5）。
+fn install_market_mcp(
+    state: Arc<DaemonState>,
+    market_source: &str,
+    entry: &tenon_registry::market::MarketEntry,
+) -> Response {
+    let Some(command) = entry.command.clone() else {
+        return api_err(StatusCode::BAD_REQUEST, "mcp 条目缺少 command");
+    };
+    let cfg = tenon_mcp::McpServerConfig {
+        command,
+        args: entry.args.clone(),
+        env: entry.env.clone(),
+        enabled: true,
+        permissions: entry.permissions.clone(),
+        source: Some(market_source.to_string()),
+    };
+    if let Err(e) = crate::state::validate_mcp_server(&entry.name, &cfg) {
+        return api_err(StatusCode::FORBIDDEN, e);
+    }
+    {
+        let mut ov = state.settings_overrides.lock().unwrap();
+        let mut servers = ov.mcp_servers.clone().unwrap_or_default();
+        servers.insert(entry.name.clone(), cfg.clone());
+        ov.mcp_servers = Some(servers);
+        ov.persist_to(&state.settings_path);
+    }
     Json(json!({
         "installed": true,
-        "id": manifest.id,
-        "version": manifest.version,
-        "permission_diff": diff,
+        "kind": "mcp",
+        "name": entry.name,
+        "command": cfg.command,
+        "args": cfg.args,
+        "permissions": cfg.permissions,
+        "source": market_source,
+        "note": "新会话生效",
     }))
     .into_response()
+}
+
+#[derive(Deserialize)]
+struct MarketUninstallBody {
+    /// skill | mcp
+    kind: String,
+    name: String,
+}
+
+async fn market_uninstall(
+    State(state): State<Arc<DaemonState>>,
+    Json(body): Json<MarketUninstallBody>,
+) -> Response {
+    match body.kind.as_str() {
+        "skill" => {
+            // 名即目录名（规范 id 校验防穿越）；仅市场条目可经市场卸载（§13.5）
+            if !tenon_registry::market::is_valid_skill_name(&body.name) {
+                return api_err(
+                    StatusCode::BAD_REQUEST,
+                    format!("非法技能名: {}", body.name),
+                );
+            }
+            let dir = state.skills_root.join(&body.name);
+            if !dir.exists() {
+                return api_err(StatusCode::NOT_FOUND, format!("技能未安装: {}", body.name));
+            }
+            if tenon_registry::market::read_sidecar(&dir).is_none() {
+                return api_err(
+                    StatusCode::CONFLICT,
+                    format!("技能 {} 非市场安装条目（走 Skills 分区删除）", body.name),
+                );
+            }
+            match std::fs::remove_dir_all(&dir) {
+                Ok(()) => Json(json!({ "uninstalled": true, "kind": "skill", "name": body.name }))
+                    .into_response(),
+                Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+            }
+        }
+        "mcp" => {
+            if !tenon_registry::market::is_valid_mcp_name(&body.name) {
+                return api_err(
+                    StatusCode::BAD_REQUEST,
+                    format!("非法 mcp 服务器名: {}", body.name),
+                );
+            }
+            {
+                let mut ov = state.settings_overrides.lock().unwrap();
+                let mut servers = ov.mcp_servers.clone().unwrap_or_default();
+                if servers.remove(&body.name).is_none() {
+                    return api_err(
+                        StatusCode::NOT_FOUND,
+                        format!("MCP 插件未安装: {}", body.name),
+                    );
+                }
+                ov.mcp_servers = Some(servers);
+                ov.persist_to(&state.settings_path);
+            }
+            Json(json!({
+                "uninstalled": true,
+                "kind": "mcp",
+                "name": body.name,
+                "note": "新会话生效",
+            }))
+            .into_response()
+        }
+        other => api_err(StatusCode::BAD_REQUEST, format!("未知条目类型: {other}")),
+    }
 }
 
 // ---------- 脏缓冲（§8.6 人机共编） ----------
@@ -2895,6 +3097,13 @@ async fn get_settings(State(state): State<Arc<DaemonState>>) -> Response {
     let skills = json!({
         "disabled": ov.skills_disabled.clone().unwrap_or_default(),
     });
+    // market / mcp 合并视图（§13.5 v1.145）：市场源与 MCP 服务器表回显
+    let market = json!({
+        "sources": ov.market_sources.clone().unwrap_or_default(),
+    });
+    let mcp = json!({
+        "servers": ov.mcp_servers.clone().unwrap_or_default(),
+    });
     Json(json!({
         "session": session,
         "exec": exec,
@@ -2903,6 +3112,8 @@ async fn get_settings(State(state): State<Arc<DaemonState>>) -> Response {
         "checkpoint": state.config.checkpoint,
         "update": update,
         "skills": skills,
+        "market": market,
+        "mcp": mcp,
         "team_policy": state.team_policy.read().expect("team policy lock").clone(),
     }))
     .into_response()
