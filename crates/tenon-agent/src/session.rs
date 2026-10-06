@@ -75,6 +75,8 @@ pub struct AgentConfig {
     pub skills_global_dir: PathBuf,
     /// 停用技能名单（§13.4 v1.130；settings.json `skills.disabled` 快照）。
     pub skills_disabled: Vec<String>,
+    /// MCP 插件宿主（§13.5 v1.145；settings `mcp.servers` 快照，daemon 构建；None = 未接入）。
+    pub mcp: Option<Arc<tenon_mcp::McpHost>>,
     /// 价格表（§11 v1.93）：daemon 按 provider 配置构建；未定价模型计 0。
     pub price_table: PriceTable,
 }
@@ -102,6 +104,7 @@ impl AgentConfig {
             memories_enabled: true,
             skills_global_dir: tenon_config::Config::data_dir().join("skills"),
             skills_disabled: Vec::new(),
+            mcp: None,
             price_table: PriceTable::new(),
         }
     }
@@ -190,6 +193,8 @@ pub struct AgentSession {
     touched_files: Mutex<BTreeSet<String>>,
     /// 最近一次回滚前的安全快照（unrevert 恢复点，§10.3）。
     pre_rollback_tree: Mutex<Option<String>>,
+    /// MCP 工具 schema 快照（§13.5 v1.145；会话创建时 tools/list，静态贯穿任务）。
+    mcp_specs: Vec<ToolSpec>,
     interrupt: Notify,
     /// 任务进行中标志（v1.93 并发守卫）：挂起等待恢复期间同样为 true。
     running: AtomicBool,
@@ -283,6 +288,37 @@ fn tool_specs_read_only() -> Vec<ToolSpec> {
                 t.name.as_str(),
                 "read_file" | "list_dir" | "grep" | "git_read" | "laya_decide" | "skill_use"
             )
+        })
+        .collect()
+}
+
+/// MCP 工具目录（§13.5 v1.145）：`mcp_{server}_{tool}` 进模型 schema；
+/// inputSchema 非 object 时兜底空 object；描述标注来源 server。
+/// 只读先验轮白名单天然不含 MCP 工具（外部进程能力面非只读）。
+fn build_mcp_specs(tools: &[tenon_mcp::McpHostTool]) -> Vec<ToolSpec> {
+    tools
+        .iter()
+        .map(|entry| {
+            let name = tenon_mcp::mcp_tool_name(&entry.server, &entry.tool.name);
+            let description = if entry.tool.description.is_empty() {
+                format!("MCP 插件 {} 的工具 {}", entry.server, entry.tool.name)
+            } else {
+                format!(
+                    "{}（MCP 插件 {} 提供）",
+                    entry.tool.description, entry.server
+                )
+            };
+            let parameters =
+                if entry.tool.input_schema.get("type") == Some(&serde_json::json!("object")) {
+                    entry.tool.input_schema.clone()
+                } else {
+                    serde_json::json!({"type": "object", "properties": {}})
+                };
+            ToolSpec {
+                name,
+                description,
+                parameters,
+            }
         })
         .collect()
 }
@@ -446,6 +482,19 @@ impl AgentSession {
         // §13.4 v1.130：技能全局目录与停用名单（停用经 settings 快照，新会话生效）。
         tool_ctx.skills_global_dir = Some(config.skills_global_dir.clone());
         tool_ctx.skills_disabled = config.skills_disabled.clone();
+        // §13.5 v1.145：MCP 宿主注入 + 会话创建时 tools/list 快照进工具目录。
+        tool_ctx.mcp = config.mcp.clone();
+        let mcp_specs = match &config.mcp {
+            Some(host) if !host.is_empty() => {
+                let for_list = host.clone();
+                let tools = tokio::task::spawn_blocking(move || for_list.list_tools())
+                    .await
+                    .map_err(|e| AgentError::Store(format!("MCP tools/list join 失败: {e}")))?;
+                tool_ctx.mcp_policy = host.level_policy_with(&tools);
+                build_mcp_specs(&tools)
+            }
+            _ => Vec::new(),
+        };
         let (control_tx, control_rx) = mpsc::unbounded_channel();
         let (events_tx, _) = broadcast::channel(1024);
         let circuit_limits = config.circuit;
@@ -477,6 +526,7 @@ impl AgentSession {
             touched_files: Mutex::new(BTreeSet::new()),
             pre_rollback_tree: Mutex::new(None),
             interrupt: Notify::new(),
+            mcp_specs,
         }))
     }
 
@@ -1098,11 +1148,13 @@ impl AgentSession {
             }
 
             // 只读先验：首轮仅开放 A 级工具（§9.8 预筛语义，只收窄不放宽）；
-            // 模型判断确需改动 → 后续回合恢复全目录
+            // 模型判断确需改动 → 后续回合恢复全目录（含 MCP 工具，§13.5）
             let tools = if read_only_prior && _round == 0 {
                 tool_specs_read_only()
             } else {
-                tool_specs()
+                let mut all = tool_specs();
+                all.extend(self.mcp_specs.iter().cloned());
+                all
             };
             let provider = self.provider.read().await.clone();
             let request = ChatRequest {
@@ -1257,7 +1309,16 @@ impl AgentSession {
                 }
 
                 let tool = Tool::from_name(&call.name);
-                let level = tool.and_then(|t| t.level()).unwrap_or(Level::C);
+                // §13.5 v1.145：MCP 工具分级查策略（默认 D，net:* 服务器工具 → C），
+                // 不落入未知工具的 C 兜底（§13.3：外部插件永不静默升 A/B）。
+                let level = if call.name.starts_with("mcp_") {
+                    match self.tool_ctx.mcp_policy.level_for(&call.name) {
+                        tenon_mcp::McpToolLevel::C => Level::C,
+                        tenon_mcp::McpToolLevel::D => Level::D,
+                    }
+                } else {
+                    tool.and_then(|t| t.level()).unwrap_or(Level::C)
+                };
 
                 let decision = if self.tool_ctx.readonly.load(Ordering::SeqCst) && level != Level::A
                 {
@@ -2184,5 +2245,49 @@ mod compaction_tests {
             with_args > bare + 500,
             "apply_patch 参数（新文件内容）必须计入输入估算"
         );
+    }
+    #[test]
+    fn build_mcp_specs_names_schema_and_fallback() {
+        // §13.5 v1.145：mcp_{server}_{tool} 命名、inputSchema 透传、
+        // 非 object schema 兜底空 object、描述标注来源 server。
+        let tools = vec![
+            tenon_mcp::McpHostTool {
+                server: "github".into(),
+                tool: tenon_mcp::McpTool {
+                    name: "create_issue".into(),
+                    description: "创建 issue".into(),
+                    input_schema: serde_json::json!({
+                        "type": "object",
+                        "properties": {"title": {"type": "string"}}
+                    }),
+                },
+            },
+            tenon_mcp::McpHostTool {
+                server: "fs".into(),
+                tool: tenon_mcp::McpTool {
+                    name: "weird".into(),
+                    description: String::new(),
+                    input_schema: serde_json::json!({"type": "string"}),
+                },
+            },
+        ];
+        let specs = build_mcp_specs(&tools);
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].name, "mcp_github_create_issue");
+        assert!(specs[0].description.contains("创建 issue"));
+        assert!(specs[0].description.contains("github"));
+        assert_eq!(
+            specs[0].parameters["properties"]["title"]["type"],
+            serde_json::json!("string"),
+            "inputSchema 透传"
+        );
+        assert_eq!(specs[1].name, "mcp_fs_weird");
+        assert_eq!(
+            specs[1].parameters,
+            serde_json::json!({"type": "object", "properties": {}}),
+            "非 object schema 兜底"
+        );
+        // 空列表 = 无 MCP 工具进目录。
+        assert!(build_mcp_specs(&[]).is_empty());
     }
 }

@@ -382,6 +382,15 @@ impl McpHost {
     }
 }
 
+impl std::fmt::Debug for McpHost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpHost")
+            .field("servers", &self.configs.keys().collect::<Vec<_>>())
+            .field("active", &self.conns.lock().map(|c| c.len()).unwrap_or(0))
+            .finish()
+    }
+}
+
 /// 解析 `env:VAR` 引用为实际值（§11：daemon 环境变量；缺失 / 非法引用跳过）。
 fn resolved_env(env: &std::collections::BTreeMap<String, String>) -> Vec<(String, String)> {
     env.iter()

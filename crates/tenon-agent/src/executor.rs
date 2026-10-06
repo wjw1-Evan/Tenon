@@ -77,9 +77,9 @@ pub struct ToolContext {
     pub readonly: std::sync::atomic::AtomicBool,
     /// 脏缓冲注册表（§8.6 人机共编；None = daemon 未接入）。
     pub dirty: Option<std::sync::Arc<tenon_fs::DirtyBufferRegistry>>,
-    /// MCP 外部进程插件桥（§13.3；None = 未接入）。
-    pub mcp: Option<std::sync::Arc<tenon_mcp::McpConnection>>,
-    /// MCP 工具分级策略（默认 D；net:* → C）。
+    /// MCP 外部进程插件宿主（§13.5 v1.145 多服务器；None = 未接入）。
+    pub mcp: Option<std::sync::Arc<tenon_mcp::McpHost>>,
+    /// MCP 工具分级策略（默认 D；net:* 服务器工具 → C；list_tools 后按服务器权限构建）。
     pub mcp_policy: tenon_mcp::McpLevelPolicy,
     /// 团队策略工具黑名单（M3：跨会话只收窄；命中即拒绝）。
     pub team_denied_tools: Vec<String>,
@@ -539,21 +539,24 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
             }
         }
 
-        // ---------- MCP 外部进程工具（§13.3：默认 C/D，永不自动执行） ----------
-        name if name.starts_with("mcp:") => {
+        // ---------- MCP 外部进程工具（§13.3 / §13.5 v1.145：默认 D，net:* 服务器 → C；
+        // 只读会话一律拒绝；调用全量入 Trace） ----------
+        name if tenon_mcp::parse_mcp_tool_name(name).is_some() => {
             if ctx.readonly.load(Ordering::Relaxed) {
                 return ToolOutput::err("只读会话禁用 MCP 工具");
             }
-            let Some(conn) = &ctx.mcp else {
+            let Some(host) = &ctx.mcp else {
                 return ToolOutput::err("MCP 桥未接入");
             };
-            let tool = name.trim_start_matches("mcp:");
-            let conn = conn.clone();
-            let tool_owned = tool.to_string();
+            let Some((server, tool)) = tenon_mcp::parse_mcp_tool_name(name) else {
+                return ToolOutput::err(format!("MCP 工具名解析失败: {name}"));
+            };
+            let host = host.clone();
+            let tool_owned = tool;
             let args_owned = args.clone();
             let call = run_async(async move {
                 tokio::task::spawn_blocking(move || {
-                    conn.call_tool(&tool_owned, args_owned)
+                    host.call(&server, &tool_owned, args_owned)
                         .map_err(|e| e.to_string())
                 })
                 .await
@@ -569,11 +572,11 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                 Ok(text) => {
                     let truncated: String = text.chars().take(20_000).collect();
                     ToolOutput::ok(format!(
-                        "MCP {tool}\n{}",
+                        "MCP {name}\n{}",
                         tenon_core::redact::redact(&truncated)
                     ))
                 }
-                Err(e) => ToolOutput::err(format!("MCP {tool} 失败: {e}")),
+                Err(e) => ToolOutput::err(format!("MCP {name} 失败: {e}")),
             }
         }
 
@@ -3320,5 +3323,76 @@ mod tests {
         );
         assert!(read.ok);
         assert!(read.content.contains("cycle"));
+    }
+
+    /// sh 实现的假 MCP 服务器（stdio JSON-RPC 换行分帧；跨 macOS / Linux）。
+    fn write_fake_mcp_script(dir: &std::path::Path) -> std::path::PathBuf {
+        let script = dir.join("fake-mcp.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"initialize"'*) body='{}' ;;
+    *'"tools/list"'*) body='{"tools":[{"name":"echo","description":"回显","inputSchema":{"type":"object"}}]}' ;;
+    *'"tools/call"'*) body='{"content":[{"type":"text","text":"mcp-echo-ok"}]}' ;;
+    *) continue ;;
+  esac
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$id" "$body"
+done
+"#,
+        )
+        .unwrap();
+        script
+    }
+
+    #[test]
+    fn mcp_tool_executes_via_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = write_fake_mcp_script(dir.path());
+        let mut configs = std::collections::BTreeMap::new();
+        configs.insert(
+            "srv".to_string(),
+            tenon_mcp::McpServerConfig {
+                command: "sh".to_string(),
+                args: vec![script.to_string_lossy().to_string()],
+                env: Default::default(),
+                enabled: true,
+                permissions: vec![],
+                source: None,
+            },
+        );
+        let host = std::sync::Arc::new(tenon_mcp::McpHost::new(configs, dir.path().to_path_buf()));
+        let mut c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        c.mcp = Some(host);
+
+        let out = execute_tool(&c, "mcp_srv_echo", &serde_json::json!({"x": 1}));
+        assert!(out.ok, "content = {}", out.content);
+        assert!(
+            out.content.contains("mcp-echo-ok"),
+            "content = {}",
+            out.content
+        );
+
+        // 未配置的服务器 → 失败不 panic。
+        let out = execute_tool(&c, "mcp_ghost_echo", &serde_json::json!({}));
+        assert!(!out.ok);
+    }
+
+    #[test]
+    fn mcp_tool_requires_host_and_refuses_readonly() {
+        let dir = tempfile::tempdir().unwrap();
+        // 未接入。
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(&c, "mcp_srv_echo", &serde_json::json!({}));
+        assert!(!out.ok);
+        assert!(out.content.contains("MCP 桥未接入"));
+        // 只读会话拒绝（§13.5：外部进程能力面非只读）。
+        let ro = ToolContext::new(dir.path(), Duration::from_secs(30));
+        ro.readonly.store(true, Ordering::Relaxed);
+        let out = execute_tool(&ro, "mcp_srv_echo", &serde_json::json!({}));
+        assert!(!out.ok);
+        assert!(out.content.contains("只读会话禁用"));
     }
 }
