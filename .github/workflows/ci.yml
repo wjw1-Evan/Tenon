@@ -25,6 +25,12 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      # Linux 需要 tauri 系（tenon-app 进 workspace，clippy --workspace 全图编译）
+      - name: 安装 Linux WebView 依赖
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       - name: fmt
         run: cargo fmt --all -- --check
       - name: clippy
@@ -47,7 +53,8 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: ui/pnpm-lock.yaml
+          # 工作区单一锁文件在仓库根（无 ui/pnpm-lock.yaml）
+          cache-dependency-path: pnpm-lock.yaml
       - name: install
         run: pnpm --filter tenon-ui install --frozen-lockfile
       - name: test
