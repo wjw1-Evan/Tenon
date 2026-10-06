@@ -2591,3 +2591,29 @@ button:disabled { opacity: 0.45; cursor: default; }
   background: var(--surface);
   color: var(--fg);
 }
+
+/* 行右键菜单（v1.141）：文件 / 文件夹行右键 → 编辑文件名 / 删除 */
+.tree-context {
+  position: fixed;
+  z-index: 60;
+  min-width: 128px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.18);
+  display: flex;
+  flex-direction: column;
+}
+.tree-context button {
+  text-align: left;
+  padding: 6px 10px;
+  font-size: 12px;
+  border: none;
+  background: none;
+  color: var(--fg);
+  border-radius: var(--radius-s, 4px);
+  cursor: pointer;
+}
+.tree-context button:hover:not(:disabled) { background: var(--raised); }
+.tree-context button:disabled { opacity: 0.45; cursor: default; }

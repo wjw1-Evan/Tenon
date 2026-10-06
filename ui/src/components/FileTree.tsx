@@ -137,6 +137,7 @@ function TreeDir({
   onPrompt,
   onDelete,
   onMove,
+  onContextMenu,
 }: {
   api: TenonApi;
   entry: Entry;
@@ -148,6 +149,7 @@ function TreeDir({
   onPrompt: (state: PromptState) => void;
   onDelete: (entry: Entry) => void;
   onMove: (from: string, to: string) => void;
+  onContextMenu: (entry: Entry, pos: { x: number; y: number }) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [dropActive, setDropActive] = useState(false);
@@ -172,6 +174,10 @@ function TreeDir({
     <li className={dropActive ? "tree-dir drop-target" : "tree-dir"}>
       <div
         className="tree-row"
+        onContextMenu={(event) => {
+          event.preventDefault();
+          onContextMenu(entry, { x: event.clientX, y: event.clientY });
+        }}
         onDragOver={(event) => {
           event.preventDefault();
           setDropActive(true);
@@ -224,6 +230,7 @@ function TreeDir({
               onPrompt={onPrompt}
               onDelete={onDelete}
               onMove={onMove}
+              onContextMenu={onContextMenu}
             />
           ))}
           {open && loaded !== null && entries.length === 0 && (
@@ -246,8 +253,9 @@ function TreeEntryRow(props: {
   onPrompt: (state: PromptState) => void;
   onDelete: (entry: Entry) => void;
   onMove: (from: string, to: string) => void;
+  onContextMenu: (entry: Entry, pos: { x: number; y: number }) => void;
 }) {
-  const { api, entry, projectId, refreshToken, busy, t, onOpenFile, onPrompt, onDelete, onMove } = props;
+  const { api, entry, projectId, refreshToken, busy, t, onOpenFile, onPrompt, onDelete, onMove, onContextMenu } = props;
   if (entry.kind === "dir") {
     return (
       <TreeDir
@@ -261,6 +269,7 @@ function TreeEntryRow(props: {
         onPrompt={onPrompt}
         onDelete={onDelete}
         onMove={onMove}
+        onContextMenu={onContextMenu}
       />
     );
   }
@@ -269,6 +278,10 @@ function TreeEntryRow(props: {
       className="tree-file"
       data-status={entry.git_status}
       draggable={!busy}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        onContextMenu(entry, { x: event.clientX, y: event.clientY });
+      }}
       onDragStart={(event) => {
         event.dataTransfer.setData?.("application/x-tenon-path", entry.path);
         event.dataTransfer.effectAllowed = "move";
@@ -310,6 +323,24 @@ export function FileTree({
   const [prompt, setPrompt] = useState<PromptState | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // 行右键菜单（v1.141）：文件 / 文件夹行右键 → 编辑文件名 / 删除（复用 hover 动作同流程）。
+  const [menu, setMenu] = useState<{ x: number; y: number; entry: Entry } | null>(null);
+
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMenu(null);
+    };
+    window.addEventListener("click", close);
+    window.addEventListener("resize", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("resize", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [menu]);
 
   useEffect(() => {
     if (!projectId) return;
@@ -412,9 +443,47 @@ export function FileTree({
             onPrompt={setPrompt}
             onDelete={deleteEntry}
             onMove={moveEntry}
+            onContextMenu={(entry, pos) => setMenu({ ...pos, entry })}
           />
         ))}
       </ul>
+      {menu && (
+        <div
+          className="tree-context"
+          data-testid="tree-context-menu"
+          role="menu"
+          style={{ left: menu.x, top: menu.y }}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            disabled={busy}
+            onClick={() => {
+              const target = menu.entry;
+              setMenu(null);
+              setPrompt({
+                parent: target.kind === "dir" ? target.path : parentOf(target.path),
+                target,
+                value: target.name,
+              });
+            }}
+          >
+            {t("tree.rename")}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            disabled={busy}
+            onClick={() => {
+              const target = menu.entry;
+              setMenu(null);
+              deleteEntry(target);
+            }}
+          >
+            {t("tree.delete")}
+          </button>
+        </div>
+      )}
       {prompt && (
         <div className="tree-prompt-overlay" role="dialog" aria-modal="true">
           <form
