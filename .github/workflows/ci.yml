@@ -31,6 +31,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      # ubuntu 24.04+ 镜像默认 AppArmor 限制非特权 userns，沙箱 apply 会 EPERM
+      - name: 放开非特权用户命名空间（Linux 沙箱测试前置）
+        if: runner.os == 'Linux'
+        run: sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0 || true
       # tauri-build 校验 externalBin 与 resources 路径存在；CI 只做静态检查，
       # 双双占位即可（真实 sidecar 由 release.yml 构建，UI 由 ui job / e2e job 构建）
       - name: 占位 sidecar 与前端产物
