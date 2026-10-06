@@ -31,12 +31,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-      # tauri-build 校验 externalBin 资源存在；CI 只做静态检查，占位即可
-      #（真实 sidecar 由 release.yml 构建并归集）
-      - name: 占位 daemon sidecar
+      # tauri-build 校验 externalBin 与 resources 路径存在；CI 只做静态检查，
+      # 双双占位即可（真实 sidecar 由 release.yml 构建，UI 由 ui job / e2e job 构建）
+      - name: 占位 sidecar 与前端产物
         run: |
-          mkdir -p app/src-tauri/binaries
+          mkdir -p app/src-tauri/binaries ui/dist
           echo placeholder > "app/src-tauri/binaries/tenon-daemon-$(rustc -vV | sed -n 's/host: //p')"
+          echo placeholder > ui/dist/index.html
       - name: fmt
         run: cargo fmt --all -- --check
       - name: clippy
