@@ -877,7 +877,6 @@ button:disabled { opacity: 0.45; cursor: default; }
   display: flex;
   flex-direction: column;
   min-height: 0;
-  border-top: 1px solid var(--border);
   padding: 6px 8px 6px 10px;
 }
 .pe-source-head {
