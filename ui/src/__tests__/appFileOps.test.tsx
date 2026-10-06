@@ -1,6 +1,6 @@
 // App 文件操作深度测试：打开文件 / 编辑保存 / 文件树事件 / 项目切换。
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, act } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, act, within as rtlWithin } from "@testing-library/react";
 import App from "../App";
 
 const responses = new Map<string, unknown>();
