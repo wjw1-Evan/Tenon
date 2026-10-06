@@ -342,7 +342,7 @@ export default function App({
     "timeline"
   );
   // 可调布局（§7.2：两区可折叠可调宽；localStorage 记忆；v1.110 移除右栏；v1.115 默认宽收窄 220→180）
-  const [leftWidth, setLeftWidth] = useState(() => Number(localStorage.getItem("tenon:leftWidth")) || 180);
+  const [leftWidth, setLeftWidth] = useState(() => Number(localStorage.getItem("tenon:leftWidth")) || 260);
   const [bottomHeight, setBottomHeight] = useState(() => Number(localStorage.getItem("tenon:bottomHeight")) || 180);
 
   const tabs = projectId ? tabsByProject[projectId] ?? [] : [];
@@ -414,7 +414,7 @@ export default function App({
       projectIdRef.current = project.id;
       const saved = await api.projectUiState(project.id);
       if (typeof saved.leftWidth === "number") {
-        setLeftWidth(Math.min(480, Math.max(140, saved.leftWidth)));
+        setLeftWidth(Math.min(480, Math.max(260, saved.leftWidth)));
       }
       if (typeof saved.bottomHeight === "number") {
         setBottomHeight(Math.min(480, Math.max(80, saved.bottomHeight)));
@@ -1221,7 +1221,7 @@ export default function App({
               style={
                 narrow
                   ? { width: effectiveFloatWidth(leftWidth, viewport.width) }
-                  : { width: effLeft, minWidth: 140, maxWidth: 480 }
+                  : { width: effLeft, minWidth: 260, maxWidth: 480 }
               }
             >
               {/* projects 视图标题行由 ProjectExplorer 自渲染（含「+」，v1.101），通用标题仅其余视图需要；
@@ -1290,7 +1290,7 @@ export default function App({
                 testId="resize-left"
                 onResize={(d) =>
                   setLeftWidth((w) => {
-                    const v = Math.min(480, Math.max(140, w + d));
+                    const v = Math.min(480, Math.max(260, w + d));
                     localStorage.setItem("tenon:leftWidth", String(v));
                     return v;
                   })
