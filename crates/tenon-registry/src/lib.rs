@@ -7,6 +7,11 @@
 //! - **检索 / 安装 / 权限 diff（§13.2）**：检索 → 展示权限 diff（相对已装
 //!   版本新增权限高亮）→ 用户确认（D 级）→ 签名校验 + 版本锁定 → 安装；
 //! - **保留字防 typosquatting（§12.5）**：`official.*` 前缀仅官方签名条目可用。
+//!
+//! v1.145 起另承载社区通道：GitHub 技能与插件市场客户端（[`market`]，§13.5）；
+//! 本文件签名清单能力保留待官方通道启用。
+
+pub mod market;
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
