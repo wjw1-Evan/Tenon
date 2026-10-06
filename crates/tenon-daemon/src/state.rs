@@ -1,6 +1,6 @@
 //! daemon 状态：store / 会话表 / provider 注册表 / 配置。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -502,6 +502,61 @@ impl DaemonOptions {
     }
 }
 
+/// v1.147 发送消息队列条目（§9.1）：运行态入队的待发消息，内存瞬时态不落 events 表。
+#[derive(Debug, Clone)]
+pub struct QueuedMessage {
+    pub id: String,
+    pub text: String,
+}
+
+/// v1.147 单会话排队上限（§9.1）：超出 409。
+pub const MESSAGE_QUEUE_MAX: usize = 10;
+
+/// v1.147 发送消息队列（§9.1）：会话级 FIFO；id 按会话内单调序号生成。
+/// 出队仅在回合自然完成（Done）后由 send_message 的 drain 循环消费（routes.rs）。
+#[derive(Default)]
+pub struct MessageQueue {
+    items: VecDeque<QueuedMessage>,
+    seq: u64,
+}
+
+impl MessageQueue {
+    /// 入队一条消息；队满返回 Err（routes 映射 409）。返回 (msg_id, 1-based 位次)。
+    pub fn enqueue(&mut self, text: String) -> Result<(String, usize), &'static str> {
+        if self.items.len() >= MESSAGE_QUEUE_MAX {
+            return Err("发送队列已满（上限 10 条）");
+        }
+        self.seq += 1;
+        let id = format!("q{}", self.seq);
+        self.items.push_back(QueuedMessage {
+            id: id.clone(),
+            text,
+        });
+        Ok((id, self.items.len()))
+    }
+
+    /// 回合自然完成后出队首条（FIFO）。
+    pub fn pop(&mut self) -> Option<QueuedMessage> {
+        self.items.pop_front()
+    }
+
+    /// 按 id 移除排队消息（编辑 = 移除后重发）；不存在返回 false。
+    pub fn remove(&mut self, msg_id: &str) -> bool {
+        let before = self.items.len();
+        self.items.retain(|m| m.id != msg_id);
+        self.items.len() != before
+    }
+
+    /// 队列快照（GET /session/:id `queue` 字段，多窗口一致）。
+    pub fn snapshot(&self) -> Vec<QueuedMessage> {
+        self.items.iter().cloned().collect()
+    }
+
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+}
+
 pub struct SessionEntry {
     pub session: Arc<AgentSession>,
     pub project_root: std::path::PathBuf,
@@ -509,7 +564,56 @@ pub struct SessionEntry {
     /// 会话级受管 worktree 根（v1.87；None = 主根会话）。
     pub managed_worktree: Option<std::path::PathBuf>,
     pub last_outcome: Mutex<Option<TaskOutcome>>,
+    /// v1.147 发送消息队列：运行态发送转入的 FIFO（§9.1，内存瞬时随 runtime 存活）。
+    pub queue: Mutex<MessageQueue>,
+    /// v1.147 任务执行中标志（含 drain 续跑期间）：send_message 在 sessions 锁内
+    /// 同步查改，杜绝并发双发竞态；AgentSession::running（暂停挂起期间同真）为兜底。
+    pub busy: std::sync::atomic::AtomicBool,
     pub last_seq: i64,
+}
+
+#[cfg(test)]
+mod message_queue_tests {
+    use super::*;
+
+    #[test]
+    fn enqueue_fifo_and_position() {
+        let mut q = MessageQueue::default();
+        let (id1, pos1) = q.enqueue("一".into()).unwrap();
+        let (id2, pos2) = q.enqueue("二".into()).unwrap();
+        assert_eq!((pos1, pos2), (1, 2));
+        let snap = q.snapshot();
+        assert_eq!(snap.len(), 2);
+        assert_eq!(snap[0].id, id1);
+        assert_eq!(snap[0].text, "一");
+        assert_eq!(snap[1].id, id2);
+        // FIFO：先入先出
+        let first = q.pop().unwrap();
+        assert_eq!(first.text, "一");
+        assert_eq!(q.len(), 1);
+    }
+
+    #[test]
+    fn enqueue_rejects_when_full() {
+        let mut q = MessageQueue::default();
+        for i in 0..MESSAGE_QUEUE_MAX {
+            assert!(q.enqueue(format!("m{i}")).is_ok());
+        }
+        assert!(q.enqueue("溢出".into()).is_err());
+        assert_eq!(q.len(), MESSAGE_QUEUE_MAX);
+    }
+
+    #[test]
+    fn remove_by_id() {
+        let mut q = MessageQueue::default();
+        let (id, _) = q.enqueue("保留".into()).unwrap();
+        let (id2, _) = q.enqueue("移除".into()).unwrap();
+        assert!(q.remove(&id2));
+        assert!(!q.remove(&id2)); // 二次移除不存在
+        assert_eq!(q.len(), 1);
+        assert!(q.remove(&id));
+        assert_eq!(q.len(), 0);
+    }
 }
 
 /// WS / ProjectRuntime 文件变更事件（§7.2 / §8.1；项目作用域）。

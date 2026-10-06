@@ -45,3 +45,4 @@ ed25519-dalek = "2"
 tempfile = { workspace = true }
 tokio-tungstenite = "0.28"
 tower = { version = "0.5", features = ["util"] }
+async-trait = { workspace = true }

@@ -5,7 +5,7 @@
 // §8.6 人机共编：dirty_conflict 事件 → 三栏合并预览；补丁 → 行级 AI 角标。
 // v1.51：模型选择入口内嵌任务输入框底行（参考 ZCode 客户端输入区）。
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ProjectSummary, TenonApi } from "../lib/api";
+import type { ProjectSummary, QueuedMessage, TenonApi } from "../lib/api";
 import type { Translate } from "../lib/i18n";
 import { RUNNING_STATES, STATE_COLORS, type AgentStateName } from "../lib/stateColors";
 import { renderMarkdownLite } from "../lib/markdownLite";
@@ -202,6 +202,8 @@ export function AgentPanel({
   const [busy, setBusy] = useState(false);
   const [stopRequested, setStopRequested] = useState(false);
   const [latestDiff, setLatestDiff] = useState<string | null>(null);
+  // v1.147 发送消息队列（§9.1）：运行态入队的待发消息，随 GET /session/:id 轮询刷新。
+  const [queue, setQueue] = useState<QueuedMessage[]>([]);
   const feedRef = useRef<HTMLDivElement>(null);
   const patchLinesCb = useRef<Props["onPatchLines"]>(undefined);
 
@@ -234,6 +236,7 @@ export function AgentPanel({
     setStatus("idle");
     setLatestDiff(null);
     setStopRequested(false);
+    setQueue([]);
   }, [sessionId]);
 
   // 流式输出保持最新增量可见；用户向上回看时不强制拉底。
@@ -315,6 +318,7 @@ export function AgentPanel({
         if (!alive) return;
         const name = s.status as AgentStateName;
         setStatus(name);
+        setQueue(s.queue ?? []);
         onStateChange?.(name);
       } catch {
         // 断线重试
@@ -377,6 +381,42 @@ export function AgentPanel({
   async function resume() {
     if (!sessionId) return;
     await api.control(sessionId, "resume");
+  }
+
+  // v1.147 发送消息队列（§9.1）：移除 / 点击气泡回填编辑 / 冻结期手动续发。
+  // 乐观更新本地队列 + 轮询兜底（500ms 内以 daemon 快照为权威覆盖）。
+  async function removeQueued(m: QueuedMessage) {
+    if (!sessionId) return;
+    setQueue((prev) => prev.filter((x) => x.id !== m.id));
+    try {
+      await api.deleteQueuedMessage(sessionId, m.id);
+    } catch {
+      // 失败静默：下一轮轮询恢复权威态
+    }
+  }
+
+  async function editQueued(m: QueuedMessage) {
+    if (!sessionId || busy) return;
+    setInputValue(m.text);
+    inputRef.current?.focus();
+    await removeQueued(m);
+  }
+
+  async function sendQueued(m: QueuedMessage) {
+    if (!sessionId || busy || running) return;
+    setBusy(true);
+    try {
+      // 先出队再发送：否则回合完成后 drain 会重复投递同一条
+      await api.deleteQueuedMessage(sessionId, m.id).catch(() => {});
+      setQueue((prev) => prev.filter((x) => x.id !== m.id));
+      const r = await api.sendMessage(sessionId, m.text);
+      if (!r.queued) setInput("");
+    } catch {
+      // 发送失败：文本回填输入框可重试（条目已出队，不重复投递）
+      setInputValue(m.text);
+    } finally {
+      setBusy(false);
+    }
   }
 
   // v1.127 消息级撤销：每个含改动的回合都可撤销——恢复到发送该消息前的工作区状态
@@ -614,6 +654,11 @@ export function AgentPanel({
                   <div className="turn-running" data-testid="turn-running">
                     <span className="turn-spinner" aria-hidden="true" />
                     {runningLabel}
+                    {queue.length > 0 && (
+                      <span className="queue-count" data-testid="queue-count">
+                        {t("queue.count", { n: queue.length })}
+                      </span>
+                    )}
                   </div>
                 )}
                 <TurnUsageBadge turn={turn} t={t} />
@@ -621,6 +666,50 @@ export function AgentPanel({
             </section>
           );
         })}
+        {/* v1.147 发送消息队列（§9.1）：运行态入队的待发消息渲染为排队气泡——
+            用户气泡同款居右样式 + 「已排队」徽标 + 移除钮；点击气泡文本回填输入框
+           （即编辑重发）；冻结期（非运行态）条目显示发送钮可手动续发。 */}
+        {queue.length > 0 && (
+          <div className="queue-block" data-testid="queue-list">
+            {queue.map((m) => (
+              <div className="turn-user queue-item" key={m.id} data-testid={`queue-item-${m.id}`}>
+                <button
+                  type="button"
+                  className="queue-text"
+                  title={t("queue.edit_hint")}
+                  onClick={() => void editQueued(m)}
+                >
+                  {m.text}
+                </button>
+                <div className="turn-actions">
+                  <span className="queue-badge" data-testid="queue-badge">
+                    {t("message.queued")}
+                  </span>
+                  {!running && (
+                    <button
+                      type="button"
+                      className="turn-action"
+                      data-testid={`queue-send-${m.id}`}
+                      onClick={() => void sendQueued(m)}
+                    >
+                      {t("message.send")}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="turn-action"
+                    data-testid={`queue-remove-${m.id}`}
+                    title={t("queue.remove")}
+                    aria-label={t("queue.remove")}
+                    onClick={() => void removeQueued(m)}
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div
@@ -723,14 +812,39 @@ export function AgentPanel({
             t={t}
             onSwitched={onModelSwitched}
           />
-          <button
-            className={running ? "agent-send agent-send-stop" : "agent-send"}
-            onClick={paused ? resume : running ? stop : send}
-            disabled={(!sessionId && !(draft && onDraftSend)) || stopRequested || (!running && !paused && busy)}
-            data-testid={paused ? "resume" : running ? "stop" : "send"}
-          >
-            {paused ? t("message.resume") : running ? t("message.stop_short") : t("message.send")}
-          </button>
+          {/* v1.147（§9.1）：运行态「发送」保留入队语义、与「停止」双钮并列——
+              此前运行态唯一按钮变停止，消息无法发送（v1.59 形态）；暂停仍单钮恢复。 */}
+          {paused ? (
+            <button
+              className="agent-send"
+              onClick={resume}
+              disabled={stopRequested || busy}
+              data-testid="resume"
+            >
+              {t("message.resume")}
+            </button>
+          ) : (
+            <>
+              <button
+                className="agent-send"
+                onClick={send}
+                disabled={(!sessionId && !(draft && onDraftSend)) || busy}
+                data-testid="send"
+              >
+                {t("message.send")}
+              </button>
+              {running && (
+                <button
+                  className="agent-send agent-send-stop"
+                  onClick={stop}
+                  disabled={stopRequested}
+                  data-testid="stop"
+                >
+                  {t("message.stop_short")}
+                </button>
+              )}
+            </>
+          )}
         </div>
       </div>
     </div>

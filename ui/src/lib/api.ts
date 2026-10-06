@@ -28,6 +28,12 @@ export interface SessionSummary {
   updated_at: string;
 }
 
+/** v1.147（§9.1）：发送消息队列条目——运行态入队的待发消息（GET /session/:id `queue`）。 */
+export interface QueuedMessage {
+  id: string;
+  text: string;
+}
+
 export interface ProjectSummary {
   id: string;
   path: string;
@@ -373,11 +379,15 @@ export class TenonApi {
     });
   }
 
+  /** v1.147（§9.1）：运行态发送转排队——queued=true 时消息已入会话级 FIFO，回合自然完成后自动出队。 */
   sendMessage(sessionId: string, text: string) {
-    return this.request<{ accepted: boolean }>(`/session/${sessionId}/message`, {
-      method: "POST",
-      json: { text },
-    });
+    return this.request<{ accepted: boolean; queued?: boolean; position?: number }>(
+      `/session/${sessionId}/message`,
+      {
+        method: "POST",
+        json: { text },
+      },
+    );
   }
 
   getSession(sessionId: string) {
@@ -386,7 +396,16 @@ export class TenonApi {
       status: string;
       latest_seq: number;
       outcome: Record<string, unknown> | null;
+      /** v1.147 发送消息队列快照（运行态入队的待发消息，多窗口一致）。 */
+      queue?: QueuedMessage[];
     }>(`/session/${sessionId}`);
+  }
+
+  /** v1.147（§9.1）：移除一条排队消息（编辑 = 移除后重新发送）。 */
+  deleteQueuedMessage(sessionId: string, msgId: string) {
+    return this.request<{ removed: boolean }>(`/session/${sessionId}/queue/${msgId}`, {
+      method: "DELETE",
+    });
   }
 
   control(sessionId: string, action: string, value?: boolean) {

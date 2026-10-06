@@ -1,5 +1,6 @@
 //! 路由（设计方案 §15 本地 API 表）。
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket};
@@ -13,14 +14,17 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
-use tenon_agent::session::{sanitize_title, AgentConfig, AgentSession, ControlCommand};
+use tenon_agent::session::{
+    sanitize_title, AgentConfig, AgentSession, ControlCommand, TaskOutcome,
+};
 use tenon_core::context::ProjectRules;
 use tenon_snapshot::SnapshotStore;
 use tenon_store::{EventKind, SessionStatus};
 
 use crate::auth::auth_middleware;
 use crate::state::{
-    persist_team_policy, validate_team_policy, DaemonState, L4IndexRequest, SessionEntry,
+    persist_team_policy, validate_team_policy, DaemonState, L4IndexRequest, MessageQueue,
+    SessionEntry,
 };
 use crate::updates::{current_target, find_staged_update, mark_staged_update, stage_update};
 
@@ -35,6 +39,10 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
         .route("/session", post(create_session))
         .route("/session/{id}/message", post(send_message))
         .route("/session/{id}", get(get_session))
+        .route(
+            "/session/{id}/queue/{msg_id}",
+            delete(delete_queued_message),
+        )
         .route("/session/{id}/control", post(session_control))
         .route("/session/{id}/worktree/merge", post(merge_session_worktree))
         .route(
@@ -260,6 +268,8 @@ async fn register_session_entry(
             project_id: project.id.clone(),
             managed_worktree,
             last_outcome: Mutex::new(None),
+            queue: Mutex::new(MessageQueue::default()),
+            busy: AtomicBool::new(false),
             last_seq: 0,
         },
     );
@@ -590,12 +600,27 @@ async fn send_message(
     Path(id): Path<String>,
     Json(body): Json<MessageBody>,
 ) -> Response {
+    // v1.147 发送消息队列（§9.1）：入队判定在 sessions 锁内同步完成——运行态
+    //（busy 标志或 AgentSession::running，后者覆盖暂停真挂起窗口）转 FIFO 队列
+    //（≤10 条，满 409），空闲置 busy 后直发；v1.93 run_task 重入守卫降为兜底。
     let session = {
         let sessions = state.sessions.lock().await;
-        match sessions.get(&id) {
-            Some(e) => e.session.clone(),
+        let entry = match sessions.get(&id) {
+            Some(e) => e,
             None => return api_err(StatusCode::NOT_FOUND, "session not found"),
+        };
+        if entry.busy.load(Ordering::SeqCst) || entry.session.is_running() {
+            return match entry.queue.lock().await.enqueue(body.text) {
+                Ok((_, position)) => (
+                    StatusCode::ACCEPTED,
+                    Json(json!({"accepted": true, "queued": true, "position": position})),
+                )
+                    .into_response(),
+                Err(msg) => api_err(StatusCode::CONFLICT, msg),
+            };
         }
+        entry.busy.store(true, Ordering::SeqCst);
+        entry.session.clone()
     };
     // v1.58 对话标题：判定须先于 run_task 追加 user_input 事件，否则首条
     // 消息会被误判为历史会话而走本地回填。
@@ -620,15 +645,43 @@ async fn send_message(
     let run_session = session.clone();
     tokio::spawn(async move {
         // §6.4 / §9.7：项目写锁在 AgentSession 内；这里提供跨项目全局上限。
+        // v1.147（§9.1）：同一执行许可内 drain 队列——仅回合自然完成（Done）才
+        // 出队续跑，暂停 / 停止 / 出错冻结队列；全局并发配额不因队列放大。
         let _permit = state2
             .execution_permits
             .acquire()
             .await
             .map_err(|e| eprintln!("execution permit: {e}"));
-        let outcome = run_session.run_task(&text).await;
-        let mut sessions = state2.sessions.lock().await;
-        if let Some(entry) = sessions.get_mut(&sid) {
-            *entry.last_outcome.lock().await = Some(outcome);
+        let mut text = text;
+        loop {
+            let outcome = run_session.run_task(&text).await;
+            let completed = matches!(outcome, TaskOutcome::Done(_));
+            {
+                let mut sessions = state2.sessions.lock().await;
+                if let Some(entry) = sessions.get_mut(&sid) {
+                    *entry.last_outcome.lock().await = Some(outcome);
+                }
+            }
+            // 出队判定与 busy 清除在同一临界区：入队（同样持锁）要么发生在出队前
+            // 被本轮回合消费，要么发生在 busy 清除后走直发——不存在入队后无 drain
+            // 的滞留窗口；未完成（stop / 暂停 / 出错）时队列冻结待手动续发。
+            let next = {
+                let mut sessions = state2.sessions.lock().await;
+                let next = match sessions.get(&sid) {
+                    Some(entry) if completed => entry.queue.lock().await.pop(),
+                    _ => None,
+                };
+                if next.is_none() {
+                    if let Some(entry) = sessions.get_mut(&sid) {
+                        entry.busy.store(false, Ordering::SeqCst);
+                    }
+                }
+                next
+            };
+            match next {
+                Some(msg) => text = msg.text,
+                None => break,
+            }
         }
     });
     if title_state.0 {
@@ -672,7 +725,29 @@ async fn send_message(
             }
         });
     }
-    (StatusCode::ACCEPTED, Json(json!({"accepted": true}))).into_response()
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({"accepted": true, "queued": false})),
+    )
+        .into_response()
+}
+
+/// v1.147（§9.1）：移除一条排队消息（UI 编辑 = 移除后重新发送）。
+async fn delete_queued_message(
+    State(state): State<Arc<DaemonState>>,
+    Path((id, msg_id)): Path<(String, String)>,
+) -> Response {
+    let sessions = state.sessions.lock().await;
+    match sessions.get(&id) {
+        Some(entry) => {
+            if entry.queue.lock().await.remove(&msg_id) {
+                Json(json!({"removed": true})).into_response()
+            } else {
+                api_err(StatusCode::NOT_FOUND, "queued message not found")
+            }
+        }
+        None => api_err(StatusCode::NOT_FOUND, "session not found"),
+    }
 }
 
 async fn get_session(State(state): State<Arc<DaemonState>>, Path(id): Path<String>) -> Response {
@@ -685,11 +760,22 @@ async fn get_session(State(state): State<Arc<DaemonState>>, Path(id): Path<Strin
         let seq = store.latest_seq(&id).unwrap_or(0);
         (sess.status, seq)
     };
-    let last_outcome = {
+    // v1.147：发送消息队列随状态响应下发（§9.1，多窗口一致，随既有轮询刷新）。
+    let (last_outcome, queue) = {
         let sessions = state.sessions.lock().await;
         match sessions.get(&id) {
-            Some(e) => Some(e.last_outcome.lock().await.clone()),
-            None => None,
+            Some(e) => {
+                let queue = e
+                    .queue
+                    .lock()
+                    .await
+                    .snapshot()
+                    .into_iter()
+                    .map(|m| json!({"id": m.id, "text": m.text}))
+                    .collect::<Vec<_>>();
+                (Some(e.last_outcome.lock().await.clone()), queue)
+            }
+            None => (None, Vec::new()),
         }
     };
     let state_str = match status {
@@ -709,6 +795,7 @@ async fn get_session(State(state): State<Arc<DaemonState>>, Path(id): Path<Strin
         "status": state_str,
         "latest_seq": seq,
         "outcome": last_outcome.flatten(),
+        "queue": queue,
     }))
     .into_response()
 }
