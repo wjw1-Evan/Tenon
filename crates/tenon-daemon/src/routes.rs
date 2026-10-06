@@ -2046,6 +2046,9 @@ async fn list_skills(
     let skills: Vec<Value> = entries
         .into_iter()
         .map(|e| {
+            // §13.5 v1.145：市场溯源 sidecar（仅全局市场安装条目携带，供 UI
+            // 显示已装/更新态；项目作用域无 sidecar）。
+            let market = read_sidecar_for(&e);
             json!({
                 "name": e.name,
                 "display_name": e.display_name,
@@ -2053,10 +2056,29 @@ async fn list_skills(
                 "scope": e.scope,
                 "dir": e.path.parent().map(|p| p.to_string_lossy()).unwrap_or_default(),
                 "enabled": !disabled.iter().any(|d| d == &e.name),
+                "market": market,
             })
         })
         .collect();
     Json(json!({ "skills": skills })).into_response()
+}
+
+/// 读技能目录的 .tenon-market.json（§13.5）；非市场条目返回 Null。
+fn read_sidecar_for(e: &tenon_core::skills::SkillEntry) -> Value {
+    let dir = match e.path.parent() {
+        Some(d) => d,
+        None => return Value::Null,
+    };
+    match tenon_registry::market::read_sidecar(dir) {
+        Some(s) => json!({
+            "market_source": s.market_source,
+            "source": s.source,
+            "path": s.path,
+            "ref": s.git_ref,
+            "version": s.version,
+        }),
+        None => Value::Null,
+    }
 }
 
 /// 读 SKILL.md 原文（全局 / 项目均可；设置面板编辑器数据源）。
