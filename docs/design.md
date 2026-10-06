@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v1.150** |
-| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.150） |
+| 版本 | **v1.151** |
+| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.151） |
 | 状态 | 定稿（v1.10 决策闭环），M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 | 历史评审 | v0.1 / v0.3 两轮共 41 项、v1.0 复审 21 项问题的结论已全部并入本方案（过程文档已清理） |
@@ -244,6 +244,8 @@ Codex CLI 已开源且核心为 Rust 实现（codex-rs 工作区，另有遗留 
 **生命周期规则**：动态端口 + 握手；单实例锁（多窗口 / 多项目共享，daemon 不是“单项目进程”）；`--project` 仅作为首屏种子，运行中可通过项目 API 追加打开；退出时清理全部子进程；UI 崩溃不丢会话（状态全在 daemon + 磁盘）。
 
 **GitHub 发布与桌面更新（v1.90，参考 Codex 桌面端后台更新体验）**：tag `v*` 推送触发 GitHub Actions 的 macOS arm64 / macOS x86_64 / Linux x86_64 / Windows x86_64 矩阵。每个构建先按目标三件套产出 release daemon + `ui/dist` + Tauri 包，Tauri Updater 私钥只在 Actions Secret 中出现，构建器生成安装包与其 minisign `.sig`；发布任务聚合为静态 `latest.json`（`version` / `notes` / `pub_date` / `platforms.<os-arch>.{url,signature}`），连同安装包和签名上传到当前 GitHub Release。客户端固定消费该仓库 `releases/latest/download/latest.json`：GitHub 的 HTTPS 保证传输完整性，Tauri minisign 公钥内置于桌面壳保证发布者真实性；任一签名失败即中止且不触达安装器。桌面壳每 5 分钟读 daemon `/settings` 生效通道，且每 6 小时最多检查一次；只有 `update.channel=auto` 才出网，manual 默认静默不出网。发现新版本后后台下载、校验、安装并经 Tauri 进程重启收尾。发布 tag 必须与 Cargo workspace / `tauri.conf.json` 语义化版本一致。v1.86 的 daemon-only 执行器继续服务无壳 Web / headless；桌面壳 spawn 时设置 `TENON_UPDATE_SURFACE=shell`，daemon auto 循环在该表面让位给完整包更新，避免同时下载 sidecar 与完整包。
+
+**macOS 分发签名与公证（v1.151，修复下载 dmg 被 Gatekeeper 判「已损坏」）**：macOS 产物在 Tauri 构建期完成 Developer ID 签名 + 公证 + staple——CI 经 Actions Secrets 注入 `APPLE_CERTIFICATE`（base64 p12，Developer ID Application）+ `APPLE_CERTIFICATE_PASSWORD` + `APPLE_SIGNING_IDENTITY`（`Developer ID Application: <名称> (<TeamID>)`）完成签名，注入 `APPLE_API_ISSUER` + `APPLE_API_KEY`（App Store Connect 密钥 ID）+ `APPLE_API_KEY_P8`（.p8 私钥原文，构建期物化至临时路径供 `APPLE_API_KEY_PATH`）完成公证（Apple ID 方：`APPLE_ID` / `APPLE_PASSWORD` 专用密码 / `APPLE_TEAM_ID` 为备选通道）；bundler 对 .app、.app.tar.gz 更新包与 .dmg 全量签名公证，下载 dmg 双击即开。secrets 未配置（证书未就绪 / fork 自建）时构建保持无签名退化，下载安装需 `xattr -cr` 绕过——记录为已知限制；secret 空值一律不注入构建环境（空串与未设置语义不同，防误触发签名/公证路径）。minisign 更新签名职责不变，与 Apple 签名独立：Gatekeeper 管首次分发信任，minisign 管更新链完整性。
 
 **桌面窗体（v1.30）**：macOS `titleBarStyle=Overlay + hiddenTitle` 隐藏原生标题栏，红绿灯悬于 UI 顶栏之上（顶栏左内边距 78px，`is-tauri` 根类驱动，浏览器态自动豁免）；顶栏 / 品牌区 / 弹性区为 `data-tauri-drag-region` 拖拽区（capabilities 授予 `start-dragging` / `toggle-maximize`，双击顶栏 = 系统缩放）；窗口默认 1560×980、最小 1080×680、底色 `#0E1015` 与 §7.5 令牌一致（配置层 + HTML 双保险防首帧白闪）。启动体验：握手轮询期间即渲染品牌启动屏（渐变印记 + 脉冲连接指示），失败态同一卡片呈现错误与重启示；Windows/Linux 回退原生标题栏（macOS 优先决策不变）。
 
