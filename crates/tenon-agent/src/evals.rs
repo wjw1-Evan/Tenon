@@ -626,8 +626,4 @@ mod tests {
         assert_eq!(t2.id, "T1");
         assert_eq!(t2.assertions.len(), 2);
     }
-
-
-
-
 }

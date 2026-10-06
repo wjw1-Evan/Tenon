@@ -27,9 +27,10 @@ config.local.toml
 # Tauri sidecar 副本（由 CI / 本地脚本从 target/ 复制）
 app/src-tauri/binaries/
 
-# Playwright 本地产物
+# Playwright / vitest 本地产物
 ui/test-results/
 ui/playwright-report/
+ui/coverage/
 
 # 开发热重载 dev daemon 的隔离 HOME 与构建标记（scripts/dev-daemon.sh）
 .tenon-dev/

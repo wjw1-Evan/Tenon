@@ -495,7 +495,7 @@ fn hex_encode(bytes: [u8; 32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{SettingsOverrides, load_team_policy, validate_team_policy};
+    use crate::state::{load_team_policy, validate_team_policy, SettingsOverrides};
 
     #[test]
     fn signing_keypair_self_verifies() {
@@ -591,10 +591,12 @@ mod tests {
     #[test]
     fn settings_overrides_merge_json() {
         let mut overrides = SettingsOverrides::default();
-        overrides.merge_json(&serde_json::json!({
-            "session": { "first_edit_buffer_ms": 3000 },
-            "exec": { "command_timeout_s": 60 }
-        })).unwrap();
+        overrides
+            .merge_json(&serde_json::json!({
+                "session": { "first_edit_buffer_ms": 3000 },
+                "exec": { "command_timeout_s": 60 }
+            }))
+            .unwrap();
         assert_eq!(overrides.first_edit_buffer_ms, Some(3000));
         assert_eq!(overrides.command_timeout_s, Some(60));
     }
@@ -602,9 +604,11 @@ mod tests {
     #[test]
     fn settings_overrides_to_json_roundtrip() {
         let mut overrides = SettingsOverrides::default();
-        overrides.merge_json(&serde_json::json!({
-            "session": { "first_edit_buffer_ms": 1500 }
-        })).unwrap();
+        overrides
+            .merge_json(&serde_json::json!({
+                "session": { "first_edit_buffer_ms": 1500 }
+            }))
+            .unwrap();
         let json = overrides.to_json();
         assert!(json.is_object());
     }
@@ -612,9 +616,11 @@ mod tests {
     #[test]
     fn settings_overrides_models_merge() {
         let mut overrides = SettingsOverrides::default();
-        overrides.merge_json(&serde_json::json!({
-            "models": { "default": "openai" }
-        })).unwrap();
+        overrides
+            .merge_json(&serde_json::json!({
+                "models": { "default": "openai" }
+            }))
+            .unwrap();
         let mut config = tenon_config::ModelsConfig::default();
         overrides.apply_models_to(&mut config);
         assert_eq!(config.default, "openai");
@@ -632,9 +638,11 @@ mod tests {
     #[test]
     fn settings_overrides_update_channel() {
         let mut overrides = SettingsOverrides::default();
-        overrides.merge_json(&serde_json::json!({
-            "update": { "channel": "auto" }
-        })).unwrap();
+        overrides
+            .merge_json(&serde_json::json!({
+                "update": { "channel": "auto" }
+            }))
+            .unwrap();
         assert_eq!(overrides.update_channel, Some("auto".into()));
     }
 
@@ -667,9 +675,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
         let mut overrides = SettingsOverrides::default();
-        overrides.merge_json(&serde_json::json!({
-            "session": { "first_edit_buffer_ms": 2500 }
-        })).unwrap();
+        overrides
+            .merge_json(&serde_json::json!({
+                "session": { "first_edit_buffer_ms": 2500 }
+            }))
+            .unwrap();
         overrides.persist_to(&path);
         assert!(path.exists());
         let loaded = SettingsOverrides::load_from_path(&path);
@@ -696,9 +706,11 @@ mod tests {
     #[test]
     fn settings_overrides_merge_models_default() {
         let mut overrides = SettingsOverrides::default();
-        overrides.merge_json(&serde_json::json!({
-            "models": { "default": "anthropic" }
-        })).unwrap();
+        overrides
+            .merge_json(&serde_json::json!({
+                "models": { "default": "anthropic" }
+            }))
+            .unwrap();
         let mut config = tenon_config::ModelsConfig::default();
         overrides.apply_models_to(&mut config);
         assert_eq!(config.default, "anthropic");
@@ -707,18 +719,22 @@ mod tests {
     #[test]
     fn settings_overrides_merge_command_timeout() {
         let mut overrides = SettingsOverrides::default();
-        overrides.merge_json(&serde_json::json!({
-            "exec": { "command_timeout_s": 30 }
-        })).unwrap();
+        overrides
+            .merge_json(&serde_json::json!({
+                "exec": { "command_timeout_s": 30 }
+            }))
+            .unwrap();
         assert_eq!(overrides.command_timeout_s, Some(30));
     }
 
     #[test]
     fn settings_overrides_to_json_contains_fields() {
         let mut overrides = SettingsOverrides::default();
-        overrides.merge_json(&serde_json::json!({
-            "session": { "first_edit_buffer_ms": 1000 }
-        })).unwrap();
+        overrides
+            .merge_json(&serde_json::json!({
+                "session": { "first_edit_buffer_ms": 1000 }
+            }))
+            .unwrap();
         let json = overrides.to_json();
         // JSON should be serializable
         let _ = serde_json::to_string(&json).unwrap();
@@ -727,9 +743,11 @@ mod tests {
     #[test]
     fn settings_overrides_merge_and_to_json_theme() {
         let mut overrides = SettingsOverrides::default();
-        overrides.merge_json(&serde_json::json!({
-            "session": { "first_edit_buffer_ms": 500 }
-        })).unwrap();
+        overrides
+            .merge_json(&serde_json::json!({
+                "session": { "first_edit_buffer_ms": 500 }
+            }))
+            .unwrap();
         let json = overrides.to_json();
         let serialized = serde_json::to_string(&json).unwrap();
         assert!(serialized.contains("500"));
@@ -738,19 +756,22 @@ mod tests {
     #[test]
     fn settings_overrides_update_channel_auto() {
         let mut overrides = SettingsOverrides::default();
-        overrides.merge_json(&serde_json::json!({
-            "update": { "channel": "auto" }
-        })).unwrap();
+        overrides
+            .merge_json(&serde_json::json!({
+                "update": { "channel": "auto" }
+            }))
+            .unwrap();
         assert_eq!(overrides.update_channel, Some("auto".into()));
     }
-
 
     #[test]
     fn settings_overrides_update_channel_manual() {
         let mut overrides = SettingsOverrides::default();
-        overrides.merge_json(&serde_json::json!({
-            "update": { "channel": "manual" }
-        })).unwrap();
+        overrides
+            .merge_json(&serde_json::json!({
+                "update": { "channel": "manual" }
+            }))
+            .unwrap();
         assert_eq!(overrides.update_channel, Some("manual".into()));
     }
 
@@ -764,9 +785,11 @@ mod tests {
     #[test]
     fn settings_overrides_merge_partial_exec() {
         let mut overrides = SettingsOverrides::default();
-        overrides.merge_json(&serde_json::json!({
-            "exec": { "command_timeout_s": 300 }
-        })).unwrap();
+        overrides
+            .merge_json(&serde_json::json!({
+                "exec": { "command_timeout_s": 300 }
+            }))
+            .unwrap();
         assert_eq!(overrides.command_timeout_s, Some(300));
     }
 }

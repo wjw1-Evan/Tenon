@@ -236,13 +236,18 @@ mod tests {
 
     #[test]
     fn mcp_error_display() {
-        let e = McpError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "not found"));
+        let e = McpError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "not found",
+        ));
         assert!(e.to_string().contains("not found"));
     }
 
     #[test]
     fn mcp_tool_level_all_variants() {
-        let policy = McpLevelPolicy { net_tools: Default::default() };
+        let policy = McpLevelPolicy {
+            net_tools: Default::default(),
+        };
         assert_eq!(policy.level_for("mcp:any"), McpToolLevel::D);
     }
 

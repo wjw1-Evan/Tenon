@@ -483,5 +483,4 @@ mod tests {
         let closed = manager.close_project(&root).await;
         assert_eq!(closed, 0);
     }
-
 }

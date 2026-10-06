@@ -647,10 +647,18 @@ async fn eval_tool_tool_call_sequence() {
         id: "T-SEQ".into(),
         instruction: "read then improve".into(),
         assertions: vec![
-            Assertion::FileContains { path: "src/lib.rs".into(), text: "improved".into() },
-            Assertion::AnswerContains { text: "完成".into() },
+            Assertion::FileContains {
+                path: "src/lib.rs".into(),
+                text: "improved".into(),
+            },
+            Assertion::AnswerContains {
+                text: "完成".into(),
+            },
         ],
-        budget: EvalBudget { max_steps: 24, max_tokens: 400_000 },
+        budget: EvalBudget {
+            max_steps: 24,
+            max_tokens: 400_000,
+        },
         expected_l4_path: None,
     };
     let result = runner
@@ -676,10 +684,14 @@ async fn eval_fixture_with_subdirectories() {
     let task = EvalTask {
         id: "T-SUB".into(),
         instruction: "create nested".into(),
-        assertions: vec![
-            Assertion::FileContains { path: "src/deep/nested/mod.rs".into(), text: "Nested".into() },
-        ],
-        budget: EvalBudget { max_steps: 24, max_tokens: 400_000 },
+        assertions: vec![Assertion::FileContains {
+            path: "src/deep/nested/mod.rs".into(),
+            text: "Nested".into(),
+        }],
+        budget: EvalBudget {
+            max_steps: 24,
+            max_tokens: 400_000,
+        },
         expected_l4_path: None,
     };
     let result = runner
@@ -699,10 +711,14 @@ async fn eval_file_not_contains_via_missing_file() {
     let task = EvalTask {
         id: "T-NOFILE".into(),
         instruction: "don't change anything".into(),
-        assertions: vec![
-            Assertion::FileContains { path: "no-such-file.txt".into(), text: "content".into() },
-        ],
-        budget: EvalBudget { max_steps: 12, max_tokens: 200_000 },
+        assertions: vec![Assertion::FileContains {
+            path: "no-such-file.txt".into(),
+            text: "content".into(),
+        }],
+        budget: EvalBudget {
+            max_steps: 12,
+            max_tokens: 200_000,
+        },
         expected_l4_path: None,
     };
     let result = runner.run_task(&task, provider, &[("f.rs", "")]).await;
@@ -725,19 +741,33 @@ async fn eval_mixed_pass_and_fail_summary() {
     let task_pass = EvalTask {
         id: "T-PASS".into(),
         instruction: "answer".into(),
-        assertions: vec![Assertion::AnswerContains { text: "correct".into() }],
-        budget: EvalBudget { max_steps: 12, max_tokens: 200_000 },
+        assertions: vec![Assertion::AnswerContains {
+            text: "correct".into(),
+        }],
+        budget: EvalBudget {
+            max_steps: 12,
+            max_tokens: 200_000,
+        },
         expected_l4_path: None,
     };
     let task_fail = EvalTask {
         id: "T-FAIL".into(),
         instruction: "answer".into(),
-        assertions: vec![Assertion::AnswerContains { text: "expected".into() }],
-        budget: EvalBudget { max_steps: 12, max_tokens: 200_000 },
+        assertions: vec![Assertion::AnswerContains {
+            text: "expected".into(),
+        }],
+        budget: EvalBudget {
+            max_steps: 12,
+            max_tokens: 200_000,
+        },
         expected_l4_path: None,
     };
-    let r1 = runner.run_task(&task_pass, provider_pass, &[("f.rs", "")]).await;
-    let r2 = runner.run_task(&task_fail, provider_fail, &[("f.rs", "")]).await;
+    let r1 = runner
+        .run_task(&task_pass, provider_pass, &[("f.rs", "")])
+        .await;
+    let r2 = runner
+        .run_task(&task_fail, provider_fail, &[("f.rs", "")])
+        .await;
     assert_eq!(r1.verdict(), "pass");
     assert_eq!(r2.verdict(), "fail");
 }
@@ -759,10 +789,14 @@ async fn eval_file_contains_unicode_content() {
     let task = EvalTask {
         id: "T-I18N".into(),
         instruction: "create i18n file".into(),
-        assertions: vec![
-            Assertion::FileContains { path: "i18n.ts".into(), text: "你好".into() },
-        ],
-        budget: EvalBudget { max_steps: 24, max_tokens: 400_000 },
+        assertions: vec![Assertion::FileContains {
+            path: "i18n.ts".into(),
+            text: "你好".into(),
+        }],
+        budget: EvalBudget {
+            max_steps: 24,
+            max_tokens: 400_000,
+        },
         expected_l4_path: None,
     };
     let result = runner.run_task(&task, provider, &[("i18n.ts", "")]).await;
@@ -786,11 +820,18 @@ async fn eval_tool_read_file_step() {
     let task = EvalTask {
         id: "T-READ".into(),
         instruction: "read config".into(),
-        assertions: vec![Assertion::AnswerContains { text: "完成".into() }],
-        budget: EvalBudget { max_steps: 12, max_tokens: 200_000 },
+        assertions: vec![Assertion::AnswerContains {
+            text: "完成".into(),
+        }],
+        budget: EvalBudget {
+            max_steps: 12,
+            max_tokens: 200_000,
+        },
         expected_l4_path: None,
     };
-    let result = runner.run_task(&task, provider, &[("config.toml", "key = \"value\"")]).await;
+    let result = runner
+        .run_task(&task, provider, &[("config.toml", "key = \"value\"")])
+        .await;
     assert_eq!(result.verdict(), "pass", "{result:?}");
 }
 
@@ -811,10 +852,17 @@ async fn eval_git_read_step() {
     let task = EvalTask {
         id: "T-GITR".into(),
         instruction: "check git status".into(),
-        assertions: vec![Assertion::AnswerContains { text: "完成".into() }],
-        budget: EvalBudget { max_steps: 12, max_tokens: 200_000 },
+        assertions: vec![Assertion::AnswerContains {
+            text: "完成".into(),
+        }],
+        budget: EvalBudget {
+            max_steps: 12,
+            max_tokens: 200_000,
+        },
         expected_l4_path: None,
     };
-    let result = runner.run_task_with_git(&task, provider, &[("f.rs", "fn main() {}")], true).await;
+    let result = runner
+        .run_task_with_git(&task, provider, &[("f.rs", "fn main() {}")], true)
+        .await;
     assert_eq!(result.verdict(), "pass", "{result:?}");
 }
