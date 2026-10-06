@@ -1,6 +1,5 @@
-// 主工作区（设计方案 §7.2 v1.137）：项目侧栏 | 主区双模式——任务模式 = 代理线程（满宽），
-// 源码模式 = 源码工作台（文件树 + 内嵌编辑器，整体跳转；线程隐藏挂载）；任务模式下编辑器
-// 为应用内浮层（单击文件弹出，✕ 返回线程）；底部 时间轴/轨迹/评估。
+// 主工作区（设计方案 §7.2 v1.138）：项目侧栏 | 代理线程主区（恒为任务对话，满宽）；
+// 源码管理 = 全屏弹出层（文件树 + 内嵌编辑器，✕ 收回对话）；底部 时间轴/轨迹/评估。
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from "react";
 import { ResizeHandle } from "./components/ResizeHandle";
 import { TenonApi } from "./lib/api";
@@ -27,7 +26,7 @@ import { playDoneChime, shouldChimeOnTransition } from "./lib/notifySound";
 import { useShortcuts } from "./hooks";
 import type { FileTreeChange } from "./components/FileTree";
 import { FileTree } from "./components/FileTree";
-import { ProjectExplorer, type PeView } from "./components/ProjectExplorer";
+import { ProjectExplorer } from "./components/ProjectExplorer";
 import { SearchPanel } from "./components/SearchPanel";
 import { FileFinder } from "./components/FileFinder";
 import { EditorPane, type EditorSelection, type EditorTab } from "./components/EditorPane";
@@ -59,20 +58,6 @@ import { CommandPalette, type Command } from "./components/CommandPalette";
 /** 侧栏视图（布局 §7.2 重设计）：activity rail 单视图切换，localStorage 记忆。 */
 type SideView = "projects" | "search" | "packs";
 const SIDE_VIEW_KEY = "tenon:sideView";
-
-/** 主区模式（§7.2 v1.137）：per-project「任务 | 源码」（PeView 见 ProjectExplorer）——
- *  源码 = 工作区整体跳转到源码工作台；localStorage 键沿用 v1.110 的 tenon:peView，
- *  旧记录（行内视图时代）语义兼容直读，App 持有并持久化。 */
-const PE_VIEW_KEY = "tenon:peView";
-
-function loadPeView(): Record<string, PeView> {
-  try {
-    const raw = localStorage.getItem(PE_VIEW_KEY);
-    return raw ? (JSON.parse(raw) as Record<string, PeView>) : {};
-  } catch {
-    return {};
-  }
-}
 
 function loadSideView(): SideView {
   try {
@@ -305,32 +290,15 @@ export default function App({
   const [sidebarOpen, setSidebarOpen] = useState(true);
   // 编辑器应用内浮层（v1.110）：单击文件 / 模糊打开 / 搜索 / 诊断 / 跟随模式
   // 打开文件即弹出；✕ 关闭返回线程；会话内状态不持久化（重启后不自动弹出）。
-  const [editorOpen, setEditorOpen] = useState(false);
   const [sideView, setSideView] = useState<SideView>(loadSideView);
-  // 主区模式（§7.2 v1.137）：per-project「任务 | 源码」——源码 = 主区整体跳转到源码工作台，
-  // 线程隐藏挂载；点击会话行 / 新任务等线程动线自动切回任务模式。
-  const [peViewByProject, setPeViewByProject] = useState<Record<string, PeView>>(loadPeView);
-  const setPeView = useCallback((pid: string, view: PeView) => {
-    // 进源码模式收掉任务模式的编辑器浮层（文件打开由内嵌工作台接管）。
-    if (view === "files") setEditorOpen(false);
-    setPeViewByProject((prev) => {
-      if (prev[pid] === view) return prev;
-      const next = { ...prev, [pid]: view };
-      try {
-        localStorage.setItem(PE_VIEW_KEY, JSON.stringify(next));
-      } catch {
-        // 存储不可用时仅当次会话内生效
-      }
-      return next;
-    });
-  }, []);
-  /** active 项目是否处于源码模式（§7.2 v1.137）。ref 供 openFile 等稳定回调读取。 */
-  const sourceMode = projectId ? (peViewByProject[projectId] ?? "tasks") === "files" : false;
-  const sourceModeRef = useRef(sourceMode);
+  // 源码工作台弹出层（§7.2 v1.138）：会话级开合，不持久化（v1.110 弹出先例）；
+  // 线程主区恒为任务对话，不被弹出层替换。
+  const [sourceOpen, setSourceOpen] = useState(false);
+  const sourceOpenRef = useRef(sourceOpen);
   useEffect(() => {
-    sourceModeRef.current = sourceMode;
-  }, [sourceMode]);
-  // 文件引用追加（§7.2 v1.137）：源码模式拖文件到工作台 → 切回任务模式并追加 @路径（不发送）。
+    sourceOpenRef.current = sourceOpen;
+  }, [sourceOpen]);
+  // 文件引用追加（§7.2 v1.138）：弹出层内拖文件 → 收层回对话并追加 @路径（不发送）。
   const [appendInputToken, setAppendInputToken] = useState<{ token: number; text: string } | null>(
     null
   );
@@ -408,19 +376,19 @@ export default function App({
   // narrow 侧栏浮层可见性（v1.78）。
   const sideVisible = narrow ? sideFloat : sidebarOpen;
   // v1.110：浮层内最后一个 tab 关闭（关闭按钮 / WS removed / 文件树删除）时随之收起；
-  // 打开瞬间的空 tab 窗口（readFile 未返回）不算关闭，防止浮层刚弹即被收。
+  // 打开瞬间的空 tab 窗口（readFile 未返回）不算关闭，防止弹出层刚弹即被收。
   const editorHadTabRef = useRef(false);
   useEffect(() => {
-    if (!editorOpen) {
+    if (!sourceOpen) {
       editorHadTabRef.current = false;
       return;
     }
     if (tabs.length > 0) {
       editorHadTabRef.current = true;
     } else if (editorHadTabRef.current) {
-      setEditorOpen(false);
+      setSourceOpen(false);
     }
-  }, [editorOpen, tabs.length]);
+  }, [sourceOpen, tabs.length]);
 
   useEffect(() => {
     tabsByProjectRef.current = tabsByProject;
@@ -549,19 +517,16 @@ export default function App({
 
   /** 「对话」组点击：切换项目内激活会话（§7.5）；选择既有会话即弃草稿（v1.116）。
    *  v1.137：源码模式下线程不可见，选会话即切回任务模式。 */
-  const selectSession = useCallback(
-    (pid: string, sid: string) => {
-      setDraftByProject((prev) => {
-        if (!(pid in prev)) return prev;
-        const next = { ...prev };
-        delete next[pid];
-        return next;
-      });
-      setSessionsByProject((prev) => ({ ...prev, [pid]: sid }));
-      setPeView(pid, "tasks");
-    },
-    [setPeView]
-  );
+  /** 「对话」组点击：切换项目内激活会话（§7.5）；选择既有会话即弃草稿（v1.116）。 */
+  const selectSession = useCallback((pid: string, sid: string) => {
+    setDraftByProject((prev) => {
+      if (!(pid in prev)) return prev;
+      const next = { ...prev };
+      delete next[pid];
+      return next;
+    });
+    setSessionsByProject((prev) => ({ ...prev, [pid]: sid }));
+  }, []);
 
   /** 新建会话入口（v1.87 §7.3；v1.116 草稿态）：不再立即建会话——记录待启动意图
    *  （主根 / 受管 worktree），线程切空任务输入；首条消息发出时才落库建会话。
@@ -569,8 +534,6 @@ export default function App({
   const createProjectSession = useCallback(
     async (project: ProjectSummary, worktree: boolean) => {
       if (project.id !== projectIdRef.current) await activateProject(project);
-      // 新任务动线落在任务模式（v1.137）：草稿输入在任务输入框。
-      setPeView(project.id, "tasks");
       setSessionsByProject((prev) => {
         if (!(project.id in prev)) return prev;
         const next = { ...prev };
@@ -579,7 +542,7 @@ export default function App({
       });
       setDraftByProject((prev) => ({ ...prev, [project.id]: worktree }));
     },
-    [activateProject, setPeView]
+    [activateProject]
   );
 
   /** 草稿任务首发（v1.116）：此刻才建会话（按意图附 worktree）并发送首条消息；
@@ -690,9 +653,9 @@ export default function App({
 
   const openFile = useCallback(
     async (path: string, line?: number, opts?: { fromFollow?: boolean }) => {
-      // 任务模式：打开文件即弹出编辑器浮层（v1.110，与视口无关）；源码模式（v1.137）
-      // 主区已有内嵌工作台，不弹浮层；跟随模式不抢屏（v1.113）：只就绪数据。
-      if (!sourceModeRef.current && !opts?.fromFollow) setEditorOpen(true);
+      // 打开文件即弹出源码工作台（§7.2 v1.138：树 + 编辑器同屏弹出层，与视口无关）；
+      // 跟随模式不抢屏（v1.113）：只就绪数据，弹出层由用户主动打开。
+      if (!sourceOpenRef.current && !opts?.fromFollow) setSourceOpen(true);
       if (tabs.some((tab) => tab.path === path)) {
         setActivePath(path);
         if (line) setGotoLine({ path, line, token: Date.now() });
@@ -707,8 +670,18 @@ export default function App({
     [api, projectId, tabs]
   );
 
-  /** 源码工作台拖入文件（§7.2 v1.137）：非文件树行的 x-tenon-path 落下 = 切回任务模式并
-   *  把 @路径 追加进输入框（v1.110 拖入对话框动线的模式化迁移；树内行间移动由 FileTree 自理）。 */
+  /** 打开源码工作台（§7.2 v1.138）：侧栏项目行「源码」钮——隐式激活该项目后弹出
+   *  工作台（线程主区不动，对话随时可用，✕ 收回）。 */
+  const openSourceWorkbench = useCallback(
+    async (project: ProjectSummary) => {
+      if (project.id !== projectIdRef.current) await activateProject(project);
+      setSourceOpen(true);
+    },
+    [activateProject]
+  );
+
+  /** 源码工作台弹层拖入文件（§7.2 v1.138）：非文件树行的 x-tenon-path 落下 = 收层回对话
+   *  并把 @路径 追加进输入框（v1.110 拖入对话框动线的弹层化迁移；树内行间移动由 FileTree 自理）。 */
   const handleWorkbenchDrop = useCallback(
     (event: ReactDragEvent) => {
       const path = event.dataTransfer.getData("application/x-tenon-path");
@@ -717,10 +690,10 @@ export default function App({
         return;
       }
       event.preventDefault();
-      setPeView(projectId, "tasks");
+      setSourceOpen(false);
       setAppendInputToken({ token: Date.now(), text: `@${path} ` });
     },
-    [projectId, setPeView]
+    [projectId]
   );
 
   /** 统一保存（§8.2 v1.75）：待写盘条目走 AutoSaver flush，否则未保存缓冲直接写盘。 */
@@ -914,14 +887,11 @@ export default function App({
         run: () => editorApiRef.current?.redo(),
       },
       { id: "toggle.sidebar", label: t("palette.toggle_sidebar"), run: () => setSidebarOpen((v) => !v) },
-      // v1.137：toggle.source = 当前项目任务 / 源码模式切换（源码 = 主区整体跳转工作台）。
+      // v1.138：toggle.source = 源码工作台弹出层开合（线程主区不动）。
       {
         id: "toggle.source",
         label: t("palette.toggle_source"),
-        run: () => {
-          const pid = projectIdRef.current;
-          if (pid) setPeView(pid, sourceModeRef.current ? "tasks" : "files");
-        },
+        run: () => setSourceOpen((v) => !v),
       },
       // v1.122：任务完成提示音开合（ui_prefs sound.done）；标签显动作语义（与 inline_completion 同法）。
       {
@@ -970,7 +940,7 @@ export default function App({
         run: () => sessionId && api.control(sessionId, "unrollback"),
       },
     ],
-    [t, api, sessionId, agentState, inlineCompletionEnabled, toggleInlineCompletion, soundDone, changeSoundDone, setPeView]
+    [t, api, sessionId, agentState, inlineCompletionEnabled, toggleInlineCompletion, soundDone, changeSoundDone, setSourceOpen]
   );
 
   // 底部面板开合（v1.61）：展开态 tabs 行右端收起、收起态细条展开；标签与 tab 按钮共用一份
@@ -1298,8 +1268,8 @@ export default function App({
                     projectId={projectId}
                     sessionsByProject={sessionsByProject}
                     openError={openError}
-                    peViewByProject={peViewByProject}
-                    onSetPeView={setPeView}
+                    sourceOpen={sourceOpen}
+                    onOpenSource={(project) => void openSourceWorkbench(project)}
                     onSwitchProject={(project) => void switchProject(project)}
                     onOpenProject={(path, displayName) =>
                       openProject(path, displayName).catch((error) => setOpenError(String(error)))}
@@ -1357,12 +1327,8 @@ export default function App({
             onClick={() => setSideFloat(false)}
           />
         )}
-        {/* v1.78 复刻 Codex 形态（§7.2）：任务模式下线程恒为弹性主区；源码模式（v1.137）
-            隐藏挂载——轮询 / WS / 草稿 / 滚动位置全保留，切回瞬时复原。 */}
-        <section
-          className="zone zone-thread"
-          style={sourceMode ? { display: "none" } : { flex: 1, minWidth: 260 }}
-        >
+        {/* v1.78 复刻 Codex 形态（§7.2）：线程（任务对话）恒为弹性主区，不被源码弹出层替换。 */}
+        <section className="zone zone-thread" style={{ flex: 1, minWidth: 260 }}>
           <AgentPanel
             api={api}
             t={t}
@@ -1401,71 +1367,66 @@ export default function App({
             }}
           />
         </section>
-        {/* 源码工作台（§7.2 v1.137）：文件树 + 内嵌编辑器整体占主区（线程隐藏挂载）；
-            工作台内非文件树行的 x-tenon-path 拖入 = 切回任务模式并追加 @路径。 */}
-        {sourceMode && projectId && (
-          <section
-            className="zone zone-source"
-            data-testid="source-workbench"
-            onDragOver={(event) => {
-              if (event.dataTransfer.types.includes("application/x-tenon-path")) {
-                event.preventDefault();
-              }
-            }}
-            onDrop={handleWorkbenchDrop}
-          >
-            <div
-              className="source-tree-pane"
-              data-testid="source-tree-pane"
-              style={{ width: effectiveLeft(sourceTreeWidth, viewport.width) }}
-            >
-              <FileTree
-                api={api}
-                t={t}
-                projectId={projectId}
-                refreshToken={fileTreeVersion}
-                onOpenFile={(path) => void openFile(path)}
-                onOperation={handleFileTreeChange}
-              />
+        {/* 源码工作台弹出层（§7.2 v1.138）：文件树 + 内嵌编辑器同屏弹出（v1.110 弹出模式宿主），
+            线程主区不动；✕ 收回对话；弹层内非文件树行的 x-tenon-path 拖入 = 收层回对话并追加 @路径。 */}
+        {sourceOpen && projectId && (
+          <div className="source-overlay" data-testid="source-workbench">
+            <div className="source-overlay-head">
+              <span className="side-title">{t("projects.tab_source")}</span>
+              <button
+                type="button"
+                className="pe-collapse"
+                data-testid="source-workbench-close"
+                title={t("editor.close")}
+                aria-label={t("editor.close")}
+                onClick={() => setSourceOpen(false)}
+              >
+                <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M18 6 6 18" />
+                  <path d="m6 6 12 12" />
+                </svg>
+              </button>
             </div>
-            {!narrow && (
-              <ResizeHandle
-                dir="horizontal"
-                testId="resize-source-tree"
-                onResize={(d) =>
-                  setSourceTreeWidth((w) => {
-                    const v = Math.min(480, Math.max(160, w + d));
-                    localStorage.setItem("tenon:sourceTreeWidth", String(v));
-                    return v;
-                  })
+            <div
+              className="source-overlay-body"
+              data-testid="source-workbench-body"
+              onDragOver={(event) => {
+                if (event.dataTransfer.types.includes("application/x-tenon-path")) {
+                  event.preventDefault();
                 }
-              />
-            )}
-            <div className="source-editor-pane">{editorElement}</div>
-          </section>
-        )}
-        {/* 任务模式编辑器浮层（v1.110；v1.137 起仅任务模式——源码模式文件一律落入工作台内嵌编辑器）：
-            模糊打开 / 搜索 / 诊断 / 跟随模式打开文件即弹出，✕ 关闭返回线程。 */}
-        {editorOpen && !sourceMode && (
-        <div className="editor-overlay" data-testid="editor-overlay">
-          <div className="editor-overlay-head">
-            <span className="side-title">{t("panel.editor")}</span>
-            <button
-              type="button"
-              className="pe-collapse"
-              data-testid="editor-overlay-close"
-              title={t("editor.close")}
-              aria-label={t("editor.close")}
-              onClick={() => setEditorOpen(false)}
+              }}
+              onDrop={handleWorkbenchDrop}
             >
-              <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M18 6 6 18" />
-                <path d="m6 6 12 12" />
-              </svg>
-            </button>
+              <div
+                className="source-tree-pane"
+                data-testid="source-tree-pane"
+                style={{ width: effectiveLeft(sourceTreeWidth, viewport.width) }}
+              >
+                <FileTree
+                  api={api}
+                  t={t}
+                  projectId={projectId}
+                  refreshToken={fileTreeVersion}
+                  onOpenFile={(path) => void openFile(path)}
+                  onOperation={handleFileTreeChange}
+                />
+              </div>
+              {!narrow && (
+                <ResizeHandle
+                  dir="horizontal"
+                  testId="resize-source-tree"
+                  onResize={(d) =>
+                    setSourceTreeWidth((w) => {
+                      const v = Math.min(480, Math.max(160, w + d));
+                      localStorage.setItem("tenon:sourceTreeWidth", String(v));
+                      return v;
+                    })
+                  }
+                />
+              )}
+              <div className="source-editor-pane">{editorElement}</div>
+            </div>
           </div>
-          <div className="editor-overlay-body">{editorElement}</div>
-        </div>
         )}
       </div>
       {dirtyConflict && (

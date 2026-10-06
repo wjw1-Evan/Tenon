@@ -1,4 +1,4 @@
-// 源码工作台动线闭环（§7.2 v1.137）：整体跳转后，会话点击 / 文件拖入两条路径切回任务模式。
+// 源码工作台动线闭环（§7.2 v1.138）：弹出层宿主——✕ 收回对话；拖入路由收层 + @路径追加。
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import App from "../App";
@@ -70,26 +70,28 @@ beforeEach(() => {
 
 afterEach(() => vi.unstubAllGlobals());
 
-describe("源码工作台动线（§7.2 v1.137）", () => {
-  it("源码模式下点击会话行切回任务模式（线程复原）", async () => {
+describe("源码工作台动线（§7.2 v1.138）", () => {
+  it("弹出工作台时线程保持可见，✕ 收回对话", async () => {
     render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/repo" />);
     await waitFor(() => expect(screen.getByTestId("task-input-box")).toBeTruthy());
     fireEvent.click(screen.getByTestId("pe-source-p1"));
     await waitFor(() => expect(screen.getByTestId("source-workbench")).toBeTruthy());
-    // 源码模式下线程不可见，侧栏选会话即切回任务模式。
-    fireEvent.click(screen.getByTestId("chat-row-s1"));
-    await waitFor(() => expect(screen.queryByTestId("source-workbench")).toBeNull());
+    // 线程主区不被替换：任务输入框仍在（对话随时可用）。
+    expect(screen.getByTestId("task-input-box")).toBeTruthy();
     expect(document.querySelector<HTMLElement>(".zone-thread")?.style.display).toBe("");
+    fireEvent.click(screen.getByTestId("source-workbench-close"));
+    await waitFor(() => expect(screen.queryByTestId("source-workbench")).toBeNull());
     expect(screen.getByTestId("task-input-box")).toBeTruthy();
   });
 
-  it("工作台拖入文件切回任务模式并把 @路径 追加进输入框（不发送）", async () => {
+  it("弹出层内拖入文件收层回对话并把 @路径 追加进输入框（不发送）", async () => {
     render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/repo" />);
     await waitFor(() => expect(screen.getByTestId("task-input-box")).toBeTruthy());
     fireEvent.click(screen.getByTestId("pe-source-p1"));
     await waitFor(() => expect(screen.getByTestId("source-workbench")).toBeTruthy());
-    // jsdom 不完整实现 DataTransfer（同 fileTreeDrag 桩法）：工作台空白处落下 x-tenon-path。
-    fireEvent.drop(screen.getByTestId("source-workbench"), {
+    // jsdom 不完整实现 DataTransfer（同 fileTreeDrag 桩法）：弹层非文件树行落下 x-tenon-path
+    //（落在编辑器窗格，冒泡到 source-overlay-body 的 onDrop）。
+    fireEvent.drop(screen.getByTestId("source-workbench-body"), {
       dataTransfer: {
         getData: (type: string) => (type === "application/x-tenon-path" ? "a.txt" : ""),
       },

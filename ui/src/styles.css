@@ -871,13 +871,26 @@ button:disabled { opacity: 0.45; cursor: default; }
   background: var(--surface);
 }
 
-/* 源码工作台（§7.2 v1.137）：主区整体模式——文件树（可调宽）| 内嵌编辑器；线程隐藏挂载 */
-.zone-source {
-  flex: 1;
-  min-width: 260px;
+/* 源码工作台弹出层（§7.2 v1.138）：文件树（可调宽）| 内嵌编辑器同屏弹出；线程主区不动 */
+.source-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  background: var(--bg);
   display: flex;
+  flex-direction: column;
+}
+.source-overlay-head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
   background: var(--surface);
 }
+.source-overlay-body { flex: 1; min-height: 0; display: flex; }
 .source-tree-pane {
   flex: none;
   display: flex;
@@ -2115,32 +2128,7 @@ button:disabled { opacity: 0.45; cursor: default; }
 }
 :root[data-theme="light"] .merge-overlay { background: rgba(15, 23, 42, 0.34); }
 
-/* 浮层：编辑器（v1.110）——单击文件弹出，✕ 关闭返回线程；EditorPane 整体迁入 */
-.editor-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 45;
-  background: var(--bg);
-  display: flex;
-  flex-direction: column;
-}
-.editor-overlay-head {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
-}
-.editor-overlay-body {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-.editor-overlay-body .editor-pane { flex: 1; min-width: 0; }
+/* v1.110 编辑器浮层（.editor-overlay*）已随 v1.138 由 .source-overlay 统一承载，样式退役 */
 
 .merge-pane {
   width: min(1000px, 93vw);

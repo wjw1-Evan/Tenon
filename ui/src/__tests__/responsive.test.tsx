@@ -93,8 +93,8 @@ describe("三档布局（§7.2 v1.110）", () => {
     expect(screen.queryByTestId("editor-overlay")).toBeNull();
   });
 
-  it("源码模式整体跳转：主区切工作台（文件树+内嵌编辑器），线程隐藏挂载（v1.137）", async () => {
-    // 项目打开成功 + 文件树含 a.txt：点「源码」→ 工作台整体替代线程。
+  it("源码工作台弹出：线程主区不动，✕ 收回对话（v1.138）", async () => {
+    // 项目打开成功 + 文件树含 a.txt：点「源码」弹工作台，对话保持可用。
     vi.stubGlobal(
       "fetch",
       vi.fn().mockImplementation((input: RequestInfo | URL) => {
@@ -137,29 +137,26 @@ describe("三档布局（§7.2 v1.110）", () => {
     );
     render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/repo" />);
     await waitFor(() => expect(screen.getByTestId("task-input-box")).toBeTruthy());
-    // 默认任务模式：线程主区可见，无工作台、无浮层。
     await waitFor(() => expect(screen.getByTestId("chat-list-p1")).toBeTruthy());
     expect(screen.queryByTestId("source-workbench")).toBeNull();
-    expect(screen.queryByTestId("editor-overlay")).toBeNull();
 
-    // 点「源码」：主区整体跳转——工作台（文件树 + 内嵌编辑器）替代线程；
-    // 线程隐藏挂载（display:none，非卸载），模式记忆落 tenon:peView。
+    // 点「源码」：工作台弹出（文件树 + 内嵌编辑器），线程主区不动（不被替换 / 不隐藏）。
     fireEvent.click(screen.getByTestId("pe-source-p1"));
     await waitFor(() => expect(screen.getByTestId("source-workbench")).toBeTruthy());
     expect(screen.getByTestId("file-tree")).toBeTruthy();
-    expect(document.querySelector<HTMLElement>(".zone-thread")?.style.display).toBe("none");
-    expect(JSON.parse(localStorage.getItem("tenon:peView") ?? "{}")).toEqual({ p1: "files" });
-    expect(screen.queryByTestId("editor-overlay")).toBeNull();
+    expect(screen.getByTestId("task-input-box")).toBeTruthy();
+    expect(document.querySelector<HTMLElement>(".zone-thread")?.style.display).toBe("");
+    // 会话级状态不落盘（v1.137 的 tenon:peView 持久化已撤）。
+    expect(localStorage.getItem("tenon:peView")).toBeNull();
 
-    // 单击文件：落工作台内嵌编辑器，不弹浮层。
+    // 单击文件：tab 落在工作台内嵌编辑器（无独立浮层）。
     fireEvent.click(within(screen.getByTestId("file-tree")).getByText("a.txt"));
     await waitFor(() => expect(screen.getByTestId("editor-pane")).toBeTruthy());
     expect(screen.queryByTestId("editor-overlay")).toBeNull();
 
-    // 切回「任务」：工作台退场，线程复原（任务输入框可见）。
-    fireEvent.click(screen.getByTestId("pe-source-p1"));
+    // ✕ 收回：弹出层退场，对话原样可见。
+    fireEvent.click(screen.getByTestId("source-workbench-close"));
     await waitFor(() => expect(screen.queryByTestId("source-workbench")).toBeNull());
-    expect(document.querySelector<HTMLElement>(".zone-thread")?.style.display).toBe("");
     expect(screen.getByTestId("task-input-box")).toBeTruthy();
   });
 
@@ -215,8 +212,8 @@ describe("三档布局（§7.2 v1.110）", () => {
     expect(localStorage.getItem("tenon:leftWidth")).toBe("400");
   });
 
-  it("窄屏：源码模式同样整体跳转工作台，侧栏浮层不受影响（v1.137）", async () => {
-    // 项目打开成功 + 文件树含 a.txt：窄屏下工作台仍在主区（与视口无关的整体跳转）。
+  it("窄屏：源码工作台同样弹出，线程与侧栏浮层不受影响（v1.138）", async () => {
+    // 项目打开成功 + 文件树含 a.txt：窄屏下工作台仍为弹出层（与视口无关）。
     vi.stubGlobal(
       "fetch",
       vi.fn().mockImplementation((input: RequestInfo | URL) => {
@@ -264,22 +261,21 @@ describe("三档布局（§7.2 v1.110）", () => {
       expect(screen.getByTestId("workspace").getAttribute("data-band")).toBe("narrow")
     );
 
-    // 侧栏浮层唤出 → 点「源码」：主区整体切工作台，线程隐藏挂载；浮层与遮罩不受影响。
+    // 侧栏浮层唤出 → 点「源码」：工作台弹出，线程留在文档流（输入框仍在）。
     fireEvent.click(screen.getByTestId("rail-projects"));
     await waitFor(() => expect(screen.getByTestId("float-backdrop")).toBeTruthy());
     fireEvent.click(screen.getByTestId("pe-source-p1"));
     await waitFor(() => expect(screen.getByTestId("source-workbench")).toBeTruthy());
     expect(screen.getByTestId("file-tree")).toBeTruthy();
-    expect(document.querySelector<HTMLElement>(".zone-thread")?.style.display).toBe("none");
-    expect(screen.getByTestId("float-backdrop")).toBeTruthy();
+    expect(screen.getByTestId("task-input-box")).toBeTruthy();
 
-    // 单击文件落内嵌编辑器（不弹浮层）；「任务」切回线程复原。
+    // 单击文件落内嵌编辑器（无独立浮层）；✕ 收回后侧栏浮层与遮罩不受影响。
     fireEvent.click(within(screen.getByTestId("file-tree")).getByText("a.txt"));
     await waitFor(() => expect(screen.getByTestId("editor-pane")).toBeTruthy());
     expect(screen.queryByTestId("editor-overlay")).toBeNull();
-    fireEvent.click(screen.getByTestId("pe-source-p1"));
+    fireEvent.click(screen.getByTestId("source-workbench-close"));
     await waitFor(() => expect(screen.queryByTestId("source-workbench")).toBeNull());
-    expect(document.querySelector<HTMLElement>(".zone-thread")?.style.display).toBe("");
     expect(screen.getByTestId("task-input-box")).toBeTruthy();
+    expect(screen.getByTestId("float-backdrop")).toBeTruthy();
   });
 });

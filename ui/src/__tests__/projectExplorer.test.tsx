@@ -1,7 +1,7 @@
 // 多项目控制面 UI（v1.63 项目文件夹树 + v1.60 登记即用）：切换 / 移除 / 添加均在显式 project_id 上执行。
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ProjectExplorer, type PeView } from "../components/ProjectExplorer";
+import { ProjectExplorer } from "../components/ProjectExplorer";
 import type { ProjectSummary, TenonApi } from "../lib/api";
 
 const treeMock = vi.fn();
@@ -29,7 +29,7 @@ function renderExplorer(
   callbacks: {
     onRefreshProjects?: () => void;
     onSessionRemoved?: (projectId: string, sessionId: string) => void;
-    peViewByProject?: Record<string, PeView>;
+    sourceOpen?: boolean;
   } = {}
 ) {
   const onSwitchProject = vi.fn();
@@ -37,7 +37,7 @@ function renderExplorer(
   const onRemoveProject = vi.fn().mockResolvedValue(undefined);
   const onSelectSession = vi.fn();
   const onCreateSession = vi.fn();
-  const onSetPeView = vi.fn();
+  const onOpenSource = vi.fn();
   const apiMock = api(apiOverrides);
   render(
     <ProjectExplorer
@@ -47,8 +47,8 @@ function renderExplorer(
       projectId={projects[0]?.id ?? null}
       sessionsByProject={projects[0] ? { [projects[0].id]: "session-1" } : {}}
       openError={null}
-      peViewByProject={callbacks.peViewByProject ?? {}}
-      onSetPeView={onSetPeView}
+      sourceOpen={callbacks.sourceOpen ?? false}
+      onOpenSource={onOpenSource}
       onSwitchProject={onSwitchProject}
       onOpenProject={onOpenProject}
       onRemoveProject={onRemoveProject}
@@ -58,7 +58,7 @@ function renderExplorer(
       onSessionRemoved={callbacks.onSessionRemoved}
     />
   );
-  return { onSwitchProject, onOpenProject, onRemoveProject, onSelectSession, onCreateSession, onSetPeView, api: apiMock };
+  return { onSwitchProject, onOpenProject, onRemoveProject, onSelectSession, onCreateSession, onOpenSource, api: apiMock };
 }
 
 describe("ProjectExplorer multi-project control surface", () => {
@@ -184,23 +184,22 @@ describe("ProjectExplorer multi-project control surface", () => {
 
   // v1.107：「源码」内嵌文件树已迁右区源码树，项目行仅存「移除」操作。
 
-  // v1.137：模式开关受控在 App——点击「源码」即回调（源码 = 主区整体跳转源码工作台）；
-  // 展开区恒为会话列表，侧栏不再渲染行内文件树（v1.110 分支移除）。
-  it("delegates task/source mode switching to App via onSetPeView", async () => {
-    const { onSetPeView } = renderExplorer([project("open-a")]);
+  // v1.138：钮 = 源码工作台弹出层开合入口——点击回调 onOpenSource（隐式激活该项目并弹出，线程主区不动）。
+  it("opens the source workbench via onOpenSource", async () => {
+    const { onOpenSource } = renderExplorer([project("open-a")]);
     await waitFor(() => expect(screen.getByTestId("chat-list-open-a")).toBeInTheDocument());
     expect(screen.queryByTestId("file-tree")).not.toBeInTheDocument();
     const tasksLabel = screen.getByTestId("pe-source-open-a").textContent ?? "";
     fireEvent.click(screen.getByTestId("pe-source-open-a"));
-    expect(onSetPeView).toHaveBeenCalledWith("open-a", "files");
-    // 受控回显前钮面不变（翻转由 App 持有状态后下发）。
+    expect(onOpenSource).toHaveBeenCalledWith(expect.objectContaining({ id: "open-a" }));
+    // 受控回显前钮面不变（翻转由 App 弹出状态下发）。
     expect(screen.getByTestId("pe-source-open-a").textContent).toBe(tasksLabel);
   });
 
-  it("renders sessions in the expanded area while the project is in source mode", async () => {
-    renderExplorer([project("open-a")], {}, { peViewByProject: { "open-a": "files" } });
+  it("shows the back-to-tasks face while the workbench is open for the active project", async () => {
+    renderExplorer([project("open-a")], {}, { sourceOpen: true });
     await waitFor(() => expect(screen.getByTestId("chat-list-open-a")).toBeInTheDocument());
-    // 受控回显：源码模式下钮面显示目标视图「任务」；文件树归主区工作台，侧栏无行内树。
+    // 弹出中：active 项目钮面显示目标视图「任务」；侧栏仍无行内文件树（v1.137 起收敛到弹出层）。
     expect(screen.getByTestId("pe-source-open-a").textContent).toBe("projects.tab_tasks");
     expect(screen.queryByTestId("file-tree")).not.toBeInTheDocument();
   });
