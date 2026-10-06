@@ -33,37 +33,66 @@ export function MarketBrowser({ api, t, kind, installed, onChanged }: Props) {
   const [sources, setSources] = useState<string[]>([]);
   const [newSource, setNewSource] = useState("");
   const [manifests, setManifests] = useState<Record<string, ManifestView>>({});
+  /** 拉取失败的源（§13.5 v1.149：失败可见可重试，不静默「…」）。 */
+  const [failed, setFailed] = useState<Record<string, string>>({});
+  const [retrying, setRetrying] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+
+  async function fetchOne(source: string): Promise<ManifestView> {
+    const [owner, repo] = source.split("/");
+    const manifest = await api.getMarketManifest(owner, repo);
+    return { name: manifest.name, entries: manifest.entries ?? [] };
+  }
 
   async function refresh() {
     setLoading(true);
     try {
       const { sources: list } = await api.listMarketSources();
       setSources(list ?? []);
-      const results = await Promise.allSettled(
+      const nextFailed: Record<string, string> = {};
+      const settled = await Promise.all(
         (list ?? []).map(async (source) => {
-          const [owner, repo] = source.split("/");
-          return [source, await api.getMarketManifest(owner, repo)] as const;
+          try {
+            return [source, await fetchOne(source)] as const;
+          } catch (e) {
+            nextFailed[source] = String(e);
+            return null;
+          }
         })
       );
       const next: Record<string, ManifestView> = {};
-      for (const r of results) {
-        if (r.status === "fulfilled") {
-          next[r.value[0]] = {
-            name: r.value[1].name,
-            entries: r.value[1].entries ?? [],
-          };
-        }
+      for (const entry of settled) {
+        if (entry) next[entry[0]] = entry[1];
       }
       setManifests(next);
+      setFailed(nextFailed);
       setError(null);
     } catch (e) {
       setError(String(e));
     } finally {
       setLoading(false);
+    }
+  }
+
+  /** 单源重试（v1.149）：成功即恢复条目计数并清失败态，失败刷新错误文案。 */
+  async function retrySource(source: string) {
+    if (retrying[source]) return;
+    setRetrying((s) => ({ ...s, [source]: true }));
+    try {
+      const view = await fetchOne(source);
+      setManifests((m) => ({ ...m, [source]: view }));
+      setFailed((f) => {
+        const next = { ...f };
+        delete next[source];
+        return next;
+      });
+    } catch (e) {
+      setFailed((f) => ({ ...f, [source]: String(e) }));
+    } finally {
+      setRetrying((s) => ({ ...s, [source]: false }));
     }
   }
 
@@ -178,24 +207,49 @@ export function MarketBrowser({ api, t, kind, installed, onChanged }: Props) {
       {sources.length === 0 && !loading && (
         <p className="muted">{t("settings.market.no_sources")}</p>
       )}
-      {sources.map((source) => (
-        <div className="provider-row" key={source} data-testid={`market-source-${source}`}>
-          <code className="provider-name">{source}</code>
-          <span className="muted">
-            {manifests[source]?.entries.filter((e) => e.kind === kind).length ?? "…"} {kindLabel}
-          </span>
-          <button
-            type="button"
-            className="provider-remove"
-            aria-label={`${t("settings.market.remove_source")} · ${source}`}
-            data-testid={`market-source-remove-${source}`}
-            disabled={busy}
-            onClick={() => void saveSources(sources.filter((s) => s !== source))}
-          >
-            ✕
-          </button>
-        </div>
-      ))}
+      {sources.map((source) => {
+        const failedMsg = failed[source];
+        const view = manifests[source];
+        const count = view?.entries.filter((e) => e.kind === kind).length;
+        return (
+          <div className="provider-row" key={source} data-testid={`market-source-${source}`}>
+            <code className="provider-name">{source}</code>
+            {failedMsg ? (
+              <>
+                <span
+                  className="market-error"
+                  title={failedMsg}
+                  data-testid={`market-failed-${source}`}
+                >
+                  {t("settings.market.load_failed")}
+                </span>
+                <button
+                  type="button"
+                  data-testid={`market-retry-${source}`}
+                  disabled={retrying[source]}
+                  onClick={() => void retrySource(source)}
+                >
+                  {retrying[source] ? t("settings.market.loading") : t("settings.market.retry")}
+                </button>
+              </>
+            ) : (
+              <span className="muted">
+                {count ?? "…"} {kindLabel}
+              </span>
+            )}
+            <button
+              type="button"
+              className="provider-remove"
+              aria-label={`${t("settings.market.remove_source")} · ${source}`}
+              data-testid={`market-source-remove-${source}`}
+              disabled={busy}
+              onClick={() => void saveSources(sources.filter((s) => s !== source))}
+            >
+              ✕
+            </button>
+          </div>
+        );
+      })}
       <div className="provider-add">
         <input
           data-testid="market-source-input"

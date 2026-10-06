@@ -317,6 +317,8 @@
   "settings.market.invalid_source": "市场源须为 owner/repo 形态",
   "settings.market.duplicate_source": "市场源已存在",
   "settings.market.loading": "市场加载中…",
+  "settings.market.load_failed": "加载失败",
+  "settings.market.retry": "重试",
   "settings.market.kind_skill": "技能",
   "settings.market.kind_mcp": "MCP 插件",
   "settings.market.install": "安装",

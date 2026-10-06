@@ -317,6 +317,8 @@
   "settings.market.invalid_source": "소스는 owner/repo 형태여야 합니다",
   "settings.market.duplicate_source": "이미 추가된 소스입니다",
   "settings.market.loading": "마켓 불러오는 중…",
+  "settings.market.load_failed": "불러오기 실패",
+  "settings.market.retry": "다시 시도",
   "settings.market.kind_skill": "스킬",
   "settings.market.kind_mcp": "MCP 플러그인",
   "settings.market.install": "설치",

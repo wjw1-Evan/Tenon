@@ -317,6 +317,8 @@
   "settings.market.invalid_source": "Source must look like owner/repo",
   "settings.market.duplicate_source": "Source already added",
   "settings.market.loading": "Loading marketplace…",
+  "settings.market.load_failed": "Load failed",
+  "settings.market.retry": "Retry",
   "settings.market.kind_skill": "skills",
   "settings.market.kind_mcp": "MCP plugins",
   "settings.market.install": "Install",

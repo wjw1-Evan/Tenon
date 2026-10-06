@@ -2611,6 +2611,12 @@ button:disabled { opacity: 0.45; cursor: default; }
   font-size: 12px;
 }
 .market-browser { margin-bottom: 10px; }
+/* v1.149：市场源拉取失败可见态（失败徽标 + 重试钮） */
+.market-error {
+  color: var(--error);
+  font-size: 12px;
+  white-space: nowrap;
+}
 .skills-editor { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
 .skills-editor textarea {
   width: 100%;

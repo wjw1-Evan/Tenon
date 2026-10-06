@@ -813,7 +813,7 @@ signature: "<sig>"
 
 **API（§15）**：`GET /market/sources`、`PUT /market/sources`（整体替换 `{sources: ["owner/repo", ...]}`，每项校验 owner/repo 形态）、`GET /market/{owner}/{repo}`（镜像链拉取清单原文，10s 超时，进程内 5 分钟缓存）、`POST /market/install`（`{source, kind, name}`）、`POST /market/uninstall`（`{kind, name}`）。**旧官方 registry 检索 / 安装端点退役**——`GET /plugins` / `PUT /plugins` / `POST /plugins/install` 删除（`plugins` 表保留旧库审计不新增记录，同 `approvals` 先例；`tenon-registry` crate 转为承载市场清单客户端，签名清单能力保留待官方通道启用）。
 
-**UI（§7.5 设置面板）**：Skills 与 Plugins 分类共用「市场」子视图——市场源管理（添加 / 移除 `owner/repo`）、条目列表（kind 徽标 / 描述 / 版本 / 已装·更新·安装态）、MCP 条目安装前展示命令行面；Plugins 分类重构为 MCP 插件管理——已装列表（读 settings `mcp.servers`：启停 / 删除 / 来源徽标）+ 手动添加表单（command 校验同市场条目）；v1.84 的 registry 搜索框移除。全部文案五语言。
+**UI（§7.5 设置面板）**：Skills 与 Plugins 分类共用「市场」子视图——市场源管理（添加 / 移除 `owner/repo`）、条目列表（kind 徽标 / 描述 / 版本 / 已装·更新·安装态）、MCP 条目安装前展示命令行面；Plugins 分类重构为 MCP 插件管理——已装列表（读 settings `mcp.servers`：启停 / 删除 / 来源徽标）+ 手动添加表单（command 校验同市场条目）；v1.84 的 registry 搜索框移除。源清单拉取失败时源行显示「加载失败」徽标与「重试」钮（单源重取，失败不阻塞其余源，v1.149）。全部文案五语言。
 
 ---
 
