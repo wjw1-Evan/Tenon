@@ -239,17 +239,20 @@ describe("TenonApi 端点补测", () => {
     expect(fetchMock.mock.calls[1][0]).toContain("session=s1");
   });
 
-  it("listPlugins / searchPlugins / installPlugin", async () => {
+  it("market sources / manifest / install / uninstall（§13.5 v1.145）", async () => {
     fetchMock.mockImplementation(async () => ok({}));
     const api = new TenonApi({ port: 9999, token: "t" });
-    await api.listPlugins();
-    expect(fetchMock.mock.calls[0][1]?.method ?? "GET").toBeTruthy();
-    await api.searchPlugins("lsp");
-    await api.installPlugin(
-      { id: "lsp-1", version: "1.0", sha256: "0".repeat(64), signature: "sig", url: "https://x/m.tgz" },
-      []
-    );
-    expect(fetchMock.mock.calls[2][1].method).toBe("POST");
+    await api.listMarketSources();
+    expect(fetchMock.mock.calls[0][0]).toContain("/market/sources");
+    await api.putMarketSources(["owner/repo"]);
+    expect(fetchMock.mock.calls[1][1]?.method).toBe("PUT");
+    await api.getMarketManifest("owner", "repo");
+    expect(fetchMock.mock.calls[2][0]).toContain("/market/owner/repo");
+    await api.marketInstall("owner/repo", "skill", "pdf");
+    expect(fetchMock.mock.calls[3][1]?.method).toBe("POST");
+    expect(fetchMock.mock.calls[3][0]).toContain("/market/install");
+    await api.marketUninstall("mcp", "github");
+    expect(fetchMock.mock.calls[4][0]).toContain("/market/uninstall");
   });
 
   it("wsTicket GET /ws-ticket", async () => {

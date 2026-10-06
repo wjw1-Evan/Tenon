@@ -442,7 +442,14 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, p
               </div>
             )}
 
-            {section === "plugins" && <PluginSettings api={api} t={t} />}
+            {section === "plugins" && (
+              <PluginSettings
+                api={api}
+                t={t}
+                servers={settings.mcp?.servers ?? {}}
+                onSaved={onSaved}
+              />
+            )}
 
             {section === "skills" && (
               <SkillsSettings

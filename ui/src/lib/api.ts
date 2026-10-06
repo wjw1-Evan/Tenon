@@ -166,8 +166,71 @@ export interface SettingsData {
     disabled?: string[];
     [k: string]: unknown;
   };
+  /** 技能与插件市场（§13.5 v1.145）：市场源。 */
+  market?: {
+    sources?: string[];
+    [k: string]: unknown;
+  };
+  /** MCP 插件（§13.5 v1.145）：服务器表（新会话生效）。 */
+  mcp?: {
+    servers?: Record<string, McpServerData>;
+    [k: string]: unknown;
+  };
   team_policy?: TeamPolicySettings;
   [k: string]: unknown;
+}
+
+/** MCP 服务器条目（settings mcp.servers；command 经启动器白名单校验）。 */
+export interface McpServerData {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+  enabled?: boolean;
+  permissions?: string[];
+  /** 市场溯源 owner/repo；手动添加为空。 */
+  source?: string | null;
+  /** 市场条目版本（更新比对；手动添加为空）。 */
+  version?: string | null;
+  [k: string]: unknown;
+}
+
+/** 市场清单条目（marketplace.json；§13.5）。 */
+export interface MarketEntryData {
+  kind: "skill" | "mcp" | string;
+  name: string;
+  description?: string;
+  source?: string;
+  path?: string;
+  ref?: string;
+  version?: string;
+  command?: string;
+  args?: string[];
+  permissions?: string[];
+  [k: string]: unknown;
+}
+
+/** 市场清单（marketplace.json 解析视图）。 */
+export interface MarketManifestData {
+  name?: string;
+  entries?: MarketEntryData[];
+  [k: string]: unknown;
+}
+
+/** 技能行（GET /skills；market 为市场溯源 sidecar，§13.5 v1.145）。 */
+export interface SkillRowData {
+  name: string;
+  display_name: string;
+  description: string;
+  scope: "global" | "project" | string;
+  dir: string;
+  enabled: boolean;
+  market?: {
+    market_source?: string;
+    source?: string;
+    path?: string;
+    ref?: string;
+    version?: string | null;
+  } | null;
 }
 
 export class TenonApi {
@@ -717,60 +780,48 @@ export class TenonApi {
     return this.request<Record<string, unknown>>(`/costs${q}`);
   }
 
-  /** 已安装插件（§13 / §14.2）。 */
-  listPlugins() {
-    return this.request<{
-      installed: Array<{
-        id: string;
-        version: string;
-        permissions: string[];
-        installed_at: string;
-      }>;
-    }>("/plugins");
+  // ---------- 技能与插件市场（§13.5 v1.145：GitHub 市场清单通道） ----------
+
+  /** 市场源清单（settings market.sources）。 */
+  listMarketSources() {
+    return this.request<{ sources: string[] }>("/market/sources");
   }
 
-  /** 静态 registry 检索（§13.2）。 */
-  searchPlugins(query: string) {
-    return this.request<{
-      hits: Array<{
-        id: string;
-        version: string;
-        sha256: string;
-        signature: string;
-        url: string;
-        description?: string;
-      }>;
-    }>("/plugins", { method: "PUT", json: { query } });
-  }
-
-  /** 插件安装：签名 / 哈希 / 保留字校验后直执，返回权限 diff。 */
-  installPlugin(
-    entry: {
-      id: string;
-      version: string;
-      sha256: string;
-      signature: string;
-      url: string;
-      description?: string;
-    },
-    installedPermissions: string[]
-  ) {
-    return this.request<{
-      permission_diff?: {
-        added: string[];
-        removed: string[];
-        unchanged: string[];
-      };
-      installed?: boolean;
-      id?: string;
-      version?: string;
-    }>("/plugins/install", {
-      method: "POST",
-      json: {
-        entry,
-        installed_permissions: installedPermissions,
-      },
+  /** 整体替换市场源（daemon 校验 owner/repo 形态）。 */
+  putMarketSources(sources: string[]) {
+    return this.request<{ sources: string[] }>("/market/sources", {
+      method: "PUT",
+      json: { sources },
     });
+  }
+
+  /** 市场清单（镜像链拉取，daemon 5 分钟缓存）。 */
+  getMarketManifest(owner: string, repo: string) {
+    return this.request<MarketManifestData>(
+      `/market/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`
+    );
+  }
+
+  /** 安装市场条目（skill 落全局技能目录；mcp 写 settings mcp.servers）。 */
+  marketInstall(source: string, kind: "skill" | "mcp", name: string) {
+    return this.request<{
+      installed?: boolean;
+      updated?: boolean;
+      kind?: string;
+      name?: string;
+      files?: number;
+      note?: string;
+      error?: string;
+    }>("/market/install", { method: "POST", json: { source, kind, name } });
+  }
+
+  /** 卸载市场条目（skill 仅市场 sidecar 条目可卸）。 */
+  marketUninstall(kind: "skill" | "mcp", name: string) {
+    return this.request<{
+      uninstalled?: boolean;
+      note?: string;
+      error?: string;
+    }>("/market/uninstall", { method: "POST", json: { kind, name } });
   }
 
   /** 换取一次性 WS 票据（§12.6）。 */

@@ -1,9 +1,11 @@
-// 技能管理分区（设计方案 §13.4 / v1.130）：合并清单（作用域徽标 + 启停）+
-// SKILL.md 源码编辑。全局技能 CRUD 走 /skills；项目技能读写走项目文件 API
-//（写守卫 + 脏缓冲协调），删除走文件操作；启停即时 PUT /settings（新会话生效）。
+// 技能管理分区（设计方案 §13.4 / §13.5 / v1.130+v1.145）：市场获取（GitHub
+// 市场清单）+ 合并清单（作用域徽标 + 启停）+ SKILL.md 源码编辑。全局技能 CRUD
+// 走 /skills；项目技能读写走项目文件 API（写守卫 + 脏缓冲协调），删除走文件
+// 操作；启停即时 PUT /settings（新会话生效）。
 import { useEffect, useState } from "react";
 import type { SettingsData, TenonApi } from "../lib/api";
 import type { Translate } from "../lib/i18n";
+import { MarketBrowser, type InstalledMarketEntry } from "./MarketBrowser";
 
 export interface SkillsProjectOption {
   id: string;
@@ -17,6 +19,14 @@ interface SkillRow {
   scope: "global" | "project";
   dir: string;
   enabled: boolean;
+  /** 市场溯源（§13.5 v1.145；非市场条目为 null）。 */
+  market?: {
+    market_source?: string;
+    source?: string;
+    path?: string;
+    ref?: string;
+    version?: string | null;
+  } | null;
 }
 
 /** 新建技能的 frontmatter 模板（§13.4：目录名即 id，正文由模型按需加载）。 */
@@ -56,7 +66,7 @@ export function SkillsSettings({ api, t, projects, disabled, onDisabledChange, o
     setLoading(true);
     try {
       const result = await api.listSkills(target || undefined);
-      setSkills(result.skills ?? []);
+      setSkills((result.skills ?? []) as SkillRow[]);
       setError(null);
     } catch (e) {
       setError(String(e));
@@ -187,6 +197,26 @@ export function SkillsSettings({ api, t, projects, disabled, onDisabledChange, o
   return (
     <div className="settings-section" data-testid="settings-skills-section">
       <div className="settings-section-title">{t("settings.skills.title")}</div>
+
+      {/* 市场获取（§13.5 v1.145）：GitHub 市场清单，装完即被 agent skill_use 加载 */}
+      <MarketBrowser
+        api={api}
+        t={t}
+        kind="skill"
+        installed={Object.fromEntries(
+          skills
+            .filter((row) => row.scope === "global" && row.market)
+            .map((row) => [
+              row.name,
+              {
+                source: row.market?.source ?? null,
+                path: row.market?.path ?? null,
+                version: row.market?.version ?? null,
+              } satisfies InstalledMarketEntry,
+            ])
+        )}
+        onChanged={() => void refresh()}
+      />
 
       <div className="settings-grid">
         <label htmlFor="skills-scope">{t("settings.skills.scope")}</label>

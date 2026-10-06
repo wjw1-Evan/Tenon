@@ -39,6 +39,12 @@ function makeApi() {
     putSettings: vi.fn().mockResolvedValue({ skills: { disabled: ["commit-helper"] } }),
     writeFile: vi.fn().mockResolvedValue({ ok: true, created: false }),
     fileOps: vi.fn().mockResolvedValue({ results: [] }),
+    // 市场子视图（§13.5 v1.145）：默认空源，不干扰本文件既有用例
+    listMarketSources: vi.fn().mockResolvedValue({ sources: [] }),
+    putMarketSources: vi.fn().mockResolvedValue({ sources: [] }),
+    getMarketManifest: vi.fn().mockResolvedValue({ entries: [] }),
+    marketInstall: vi.fn().mockResolvedValue({ installed: true }),
+    marketUninstall: vi.fn().mockResolvedValue({ uninstalled: true }),
   } as unknown as TenonApi;
 }
 
