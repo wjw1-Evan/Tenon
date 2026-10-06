@@ -4681,7 +4681,7 @@ dependencies = [
 
 [[package]]
 name = "tenon-agent"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "async-trait",
  "futures",
@@ -4708,7 +4708,7 @@ dependencies = [
 
 [[package]]
 name = "tenon-app"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "dirs 6.0.0",
  "serde",
@@ -4723,7 +4723,7 @@ dependencies = [
 
 [[package]]
 name = "tenon-config"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "dirs 6.0.0",
  "serde",
@@ -4734,7 +4734,7 @@ dependencies = [
 
 [[package]]
 name = "tenon-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "regex",
  "serde",
@@ -4747,7 +4747,7 @@ dependencies = [
 
 [[package]]
 name = "tenon-daemon"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4788,7 +4788,7 @@ dependencies = [
 
 [[package]]
 name = "tenon-evals"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4804,7 +4804,7 @@ dependencies = [
 
 [[package]]
 name = "tenon-fs"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "grep-regex",
  "grep-searcher",
@@ -4824,7 +4824,7 @@ dependencies = [
 
 [[package]]
 name = "tenon-laya"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -4840,7 +4840,7 @@ dependencies = [
 
 [[package]]
 name = "tenon-lsp"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -4853,7 +4853,7 @@ dependencies = [
 
 [[package]]
 name = "tenon-mcp"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -4864,7 +4864,7 @@ dependencies = [
 
 [[package]]
 name = "tenon-models"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -4883,7 +4883,7 @@ dependencies = [
 
 [[package]]
 name = "tenon-registry"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -4899,7 +4899,7 @@ dependencies = [
 
 [[package]]
 name = "tenon-sandbox"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "libc",
  "serde",
@@ -4910,7 +4910,7 @@ dependencies = [
 
 [[package]]
 name = "tenon-snapshot"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "hex",
  "sha1",
@@ -4920,7 +4920,7 @@ dependencies = [
 
 [[package]]
 name = "tenon-store"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "chrono",
  "flate2",
