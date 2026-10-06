@@ -238,6 +238,9 @@ pub struct McpServerConfig {
     /// 市场溯源 `owner/repo`（§13.5；手动添加为空）。
     #[serde(default)]
     pub source: Option<String>,
+    /// 市场条目版本（§13.5 更新比对；手动添加为空）。
+    #[serde(default)]
+    pub version: Option<String>,
 }
 
 fn default_true() -> bool {

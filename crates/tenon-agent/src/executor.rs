@@ -3361,6 +3361,7 @@ done
                 enabled: true,
                 permissions: vec![],
                 source: None,
+                version: None,
             },
         );
         let host = std::sync::Arc::new(tenon_mcp::McpHost::new(configs, dir.path().to_path_buf()));

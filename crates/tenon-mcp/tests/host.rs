@@ -20,6 +20,7 @@ fn server_config(command: &str, net: bool) -> McpServerConfig {
         enabled: true,
         permissions: if net { vec!["net:*".into()] } else { vec![] },
         source: Some("owner/repo".into()),
+        version: Some("1.0.0".into()),
     }
 }
 

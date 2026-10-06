@@ -2458,6 +2458,7 @@ fn install_market_mcp(
         enabled: true,
         permissions: entry.permissions.clone(),
         source: Some(market_source.to_string()),
+        version: entry.version.clone(),
     };
     if let Err(e) = crate::state::validate_mcp_server(&entry.name, &cfg) {
         return api_err(StatusCode::FORBIDDEN, e);
