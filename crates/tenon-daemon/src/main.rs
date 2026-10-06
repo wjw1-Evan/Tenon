@@ -117,9 +117,33 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    // 配置发现链（v1.140 附录 E）：显式 --config > ~/.tenon/config.toml >
+    // ~/.tenon/config.local.toml（开发期回退）> 内置默认。解析失败告警后回退
+    // 默认不静默吞——坏配置比空 provider（模型选择器呈「无」）更需要暴露。
     let config = match config_path {
-        Some(p) => Config::parse_toml_file(&p).unwrap_or_default(),
-        None => Config::load_global().unwrap_or_default(),
+        Some(p) => match Config::parse_toml_file(&p) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("--config {} 解析失败，回退内置默认：{e}", p.display());
+                Config::default()
+            }
+        },
+        None => match Config::discover_global() {
+            Ok((c, Some(path))) => {
+                tracing::info!("配置：{}", path.display());
+                c
+            }
+            Ok((c, None)) => {
+                tracing::warn!(
+                    "未发现 ~/.tenon/config.toml 或 config.local.toml，使用内置默认（模型 provider 为空）"
+                );
+                c
+            }
+            Err(e) => {
+                tracing::warn!("全局配置解析失败，回退内置默认：{e}");
+                Config::default()
+            }
+        },
     };
     let options = DaemonOptions {
         // 默认持久库 ~/.tenon/db.sqlite（§14.1）；--db 显式覆盖；None 仅测试用

@@ -1,7 +1,8 @@
 //! Tenon 全局配置（设计方案附录 E schema）。
 //!
-//! `~/.tenon/config.toml` 不含密钥；模型密钥存系统钥匙串（§11），
-//! 开发期本地联调文件 `config.local.toml` 由调用方显式加载、不入库。
+//! `~/.tenon/config.toml` 不含密钥；模型密钥存系统钥匙串（§11）。
+//! 开发期联调文件 `config.local.toml` 可含明文密钥、禁止入库；
+//! 正式文件缺席时进入全局配置发现链尾部回退（v1.140，见 `discover_global`）。
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -340,15 +341,31 @@ impl Config {
         Self::parse_toml(&text).map_err(|e| ConfigError::Parse(path.to_path_buf(), e.to_string()))
     }
 
-    /// 从 `~/.tenon/config.toml` 加载；文件不存在时返回默认值。
+    /// 从 `~/.tenon/config.toml` 加载；文件不存在时回退 `~/.tenon/config.local.toml`
+    ///（v1.140 发现链），两者皆缺返回默认值。解析失败向上报错、不静默换候选。
     pub fn load_global() -> Result<Self, ConfigError> {
-        let path = Self::global_path();
-        if !path.exists() {
-            return Ok(Self::default());
+        Ok(Self::discover_global()?.0)
+    }
+
+    /// 全局配置发现链（v1.140，附录 E）：`~/.tenon/config.toml`（正式）→
+    /// `~/.tenon/config.local.toml`（开发期联调回退，与桌面壳家目录回退对齐）→
+    /// 内置默认。返回实际加载的文件路径（`None` = 未发现配置文件）。
+    pub fn discover_global() -> Result<(Self, Option<PathBuf>), ConfigError> {
+        Self::discover_in_dir(&Self::data_dir())
+    }
+
+    /// 目录内发现链实现（`data_dir` 以外可测）。候选存在但解析失败即报错——
+    /// 坏文件比空 provider 更需要暴露，静默回退会复现「模型选择为空」类事故。
+    fn discover_in_dir(dir: &Path) -> Result<(Self, Option<PathBuf>), ConfigError> {
+        let formal = dir.join("config.toml");
+        if formal.exists() {
+            return Ok((Self::parse_toml_file(&formal)?, Some(formal)));
         }
-        let text = std::fs::read_to_string(&path)
-            .map_err(|e| ConfigError::Io(path.clone(), e.to_string()))?;
-        Self::parse_toml(&text).map_err(|e| ConfigError::Parse(path.clone(), e.to_string()))
+        let local = dir.join("config.local.toml");
+        if local.exists() {
+            return Ok((Self::parse_toml_file(&local)?, Some(local)));
+        }
+        Ok((Self::default(), None))
     }
 
     pub fn global_path() -> PathBuf {
@@ -553,5 +570,66 @@ model = "gpt-4"
         // 其余默认
         assert_eq!(cfg.session.first_edit_buffer_ms, 2000);
         assert_eq!(cfg.checkpoint.keep_days, 7);
+    }
+
+    // v1.140 发现链：config.toml（正式）→ config.local.toml（开发期回退）→ 内置默认。
+    #[test]
+    fn discover_falls_back_to_local_when_formal_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.local.toml"),
+            "[models]\ndefault = \"glm\"\n",
+        )
+        .unwrap();
+        let (cfg, source) = Config::discover_in_dir(dir.path()).unwrap();
+        assert_eq!(cfg.models.default, "glm");
+        assert_eq!(
+            source.as_deref(),
+            Some(dir.path().join("config.local.toml").as_path())
+        );
+    }
+
+    #[test]
+    fn discover_prefers_formal_over_local() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[models]\ndefault = \"openai\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("config.local.toml"),
+            "[models]\ndefault = \"glm\"\n",
+        )
+        .unwrap();
+        let (cfg, source) = Config::discover_in_dir(dir.path()).unwrap();
+        assert_eq!(cfg.models.default, "openai");
+        assert_eq!(
+            source.as_deref(),
+            Some(dir.path().join("config.toml").as_path())
+        );
+    }
+
+    #[test]
+    fn discover_returns_default_when_no_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cfg, source) = Config::discover_in_dir(dir.path()).unwrap();
+        assert!(cfg.models.providers.is_empty());
+        assert!(source.is_none());
+    }
+
+    #[test]
+    fn discover_surfaces_parse_error_instead_of_silent_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), "not valid toml [[[[\n").unwrap();
+        assert!(Config::discover_in_dir(dir.path()).is_err());
+        // 无正式文件时，坏的开发期文件同样报错而非静默默认
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.local.toml"),
+            "not valid toml [[[[\n",
+        )
+        .unwrap();
+        assert!(Config::discover_in_dir(dir.path()).is_err());
     }
 }
