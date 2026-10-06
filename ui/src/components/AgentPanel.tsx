@@ -89,6 +89,7 @@ const KNOWN_TOOLS = new Set([
   "git_read",
   "lsp_query",
   "laya_decide",
+  "subtasks",
   "apply_patch",
   "run_tests",
   "run_build",
@@ -588,9 +589,20 @@ export function AgentPanel({
               )}
               <div className="turn-body">
                 <ReadOnlySummary items={turn.items} t={t} />
-                {turn.items.map((ev) => (
-                  <EventNode key={ev.id} ev={ev} t={t} />
-                ))}
+                {(() => {
+                  // §9.2（v1.146）：回合内最新一次 subtasks 事件才渲染清单卡
+                  const latestSubtasksId = [...turn.items]
+                    .reverse()
+                    .find((e) => e.type === "subtasks")?.id;
+                  return turn.items.map((ev) => (
+                    <EventNode
+                      key={ev.id}
+                      ev={ev}
+                      t={t}
+                      subtasksLatest={ev.id === latestSubtasksId}
+                    />
+                  ));
+                })()}
                 {active && streamText && (
                   <div
                     className="turn-answer"
@@ -727,7 +739,7 @@ export function AgentPanel({
 
 /** §9.2 A 级只读工具：不落步骤卡，按回合聚合为单行摘要（v1.112 降噪；明细见「轨迹」tab）。
  * laya_decide（v1.124）仅折叠步骤卡，计数与判定详情由 turn-laya 徽标承载。 */
-const READ_ONLY_TOOLS = new Set(["read_file", "list_dir", "grep", "git_read", "lsp_query", "laya_decide"]);
+const READ_ONLY_TOOLS = new Set(["read_file", "list_dir", "grep", "git_read", "lsp_query", "laya_decide", "subtasks"]);
 
 function isReadOnlyStep(ev: EventItem): boolean {
   if (ev.type !== "patch_applied" && ev.type !== "command_run") return false;
@@ -743,6 +755,8 @@ function ReadOnlySummary({ items, t }: { items: EventItem[]; t: Translate }) {
     const tool = String(ev.payload.tool ?? "");
     // laya_decide 不进计数：判定结果由 EventNode 的 turn-laya 徽标展示
     if (tool === "laya_decide") continue;
+    // subtasks 不进计数：清单状态由 EventNode 的 turn-subtasks 卡片展示（v1.146）
+    if (tool === "subtasks") continue;
     counts.set(tool, (counts.get(tool) ?? 0) + 1);
   }
   if (counts.size === 0) return null;
@@ -802,8 +816,52 @@ function LayaBadge({ ev, t }: { ev: EventItem; t: Translate }) {
   );
 }
 
+/** §9.2（v1.146）：子任务清单卡——回合内最新一次 subtasks 事件的全量快照；
+ * 标题行「子任务 · n/m」+ 状态行 ○ 待执行 / ▶ 进行中 / ✓ 完成；全部完成灰显收敛。 */
+function SubtasksCard({ ev, t }: { ev: EventItem; t: Translate }) {
+  const items = Array.isArray(ev.payload.items)
+    ? (ev.payload.items as Array<{ title?: unknown; status?: unknown }>)
+    : [];
+  if (items.length === 0) return null;
+  const done = items.filter((i) => i.status === "done").length;
+  const allDone = done === items.length;
+  return (
+    <div
+      className={`turn-subtasks${allDone ? " turn-subtasks-done" : ""}`}
+      data-testid="turn-subtasks"
+      data-done={String(allDone)}
+    >
+      <div className="turn-subtasks-head">
+        {t("thread.subtasks")} · {done}/{items.length}
+      </div>
+      <ul className="turn-subtasks-list">
+        {items.map((item, i) => {
+          const status = String(item.status ?? "pending");
+          const icon = status === "done" ? "✓" : status === "in_progress" ? "▶" : "○";
+          return (
+            <li key={i} className="turn-subtasks-item" data-status={status}>
+              <span className="turn-subtasks-icon" aria-hidden="true">
+                {icon}
+              </span>
+              <span className="turn-subtasks-title">{String(item.title ?? "")}</span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 /** 事件 → 会话流节点；只渲染面向用户的子集，完整事件表由底部「轨迹」tab 承载。 */
-function EventNode({ ev, t }: { ev: EventItem; t: Translate }) {
+function EventNode({
+  ev,
+  t,
+  subtasksLatest,
+}: {
+  ev: EventItem;
+  t: Translate;
+  subtasksLatest: boolean;
+}) {
   switch (ev.type) {
     case "decision":
       // first_edit 由活跃回合底部 spinner 行承接；普通决策为回合 markdown 正文段。
@@ -862,6 +920,11 @@ function EventNode({ ev, t }: { ev: EventItem; t: Translate }) {
       // §9.8 #4（v1.124）：agent 经 laya_decide 主动调用 → 轻量徽标；
       // daemon 自动集成点与未知来源不渲染（仅「轨迹」可见）
       return <LayaBadge ev={ev} t={t} />;
+    case "subtasks":
+      // §9.2（v1.146）：子任务清单卡——每回合仅最新一次快照渲染，
+      // 同回合更早的状态演进入「轨迹」面板
+      if (!subtasksLatest) return null;
+      return <SubtasksCard ev={ev} t={t} />;
     default:
       // sensing / checkpoint / session_title / 降级 / 压缩 / 记忆 / 未知：不渲染
       return null;

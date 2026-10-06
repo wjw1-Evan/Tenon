@@ -127,6 +127,8 @@ pub enum EventKind {
     Compaction,
     /// L5 跨会话记忆提取入库完成（§10.1 v1.104，payload {count, ids}，不含原文）。
     MemorySaved,
+    /// 子任务清单状态（§9.2 v1.146，payload {items:[{title,status}]} 全量快照）。
+    Subtasks,
 }
 
 impl EventKind {
@@ -149,6 +151,7 @@ impl EventKind {
             EventKind::SessionTitle => "session_title",
             EventKind::Compaction => "compaction",
             EventKind::MemorySaved => "memory_saved",
+            EventKind::Subtasks => "subtasks",
         }
     }
 
@@ -171,6 +174,7 @@ impl EventKind {
             "session_title" => EventKind::SessionTitle,
             "compaction" => EventKind::Compaction,
             "memory_saved" => EventKind::MemorySaved,
+            "subtasks" => EventKind::Subtasks,
             _ => return None,
         })
     }

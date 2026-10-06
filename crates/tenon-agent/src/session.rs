@@ -216,6 +216,23 @@ fn tool_specs() -> Vec<ToolSpec> {
         ("skill_use", "读取代理技能 SKILL.md 全文（§13.4：目录见系统提示「可用技能」节——需要某技能的方法指引时按名称调用加载正文）", serde_json::json!({
             "type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]
         })),
+        ("subtasks", "子任务清单（多步任务主动分解，规则见系统提示「子任务清单」节）：items 为整张清单的全量状态 [{title, status}]，status ∈ pending|in_progress|done；开始或完成一项即重发整张清单更新状态，任务收尾前所有项必须 done；单步任务与纯问答不用", serde_json::json!({
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "status": {"type": "string", "enum": ["pending", "in_progress", "done"]}
+                        },
+                        "required": ["title", "status"]
+                    }
+                }
+            },
+            "required": ["items"]
+        })),
         ("list_dir", "列出目录", serde_json::json!({
             "type": "object", "properties": {"path": {"type": "string"}}
         })),
@@ -331,6 +348,48 @@ fn parse_laya_decide_args(args: &serde_json::Value) -> Option<(tenon_laya::Decid
         return None;
     }
     Some((kind, text))
+}
+
+/// 子任务状态（§9.2 v1.146）；事件 payload 以 snake_case 序列化。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubtaskStatus {
+    Pending,
+    InProgress,
+    Done,
+}
+
+/// 子任务清单条目（§9.2 v1.146）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubtaskItem {
+    pub title: String,
+    pub status: SubtaskStatus,
+}
+
+/// subtasks 参数解析与校验（§9.2 v1.146）：1–12 项的全量清单，title 非空 ≤200 字符。
+fn parse_subtasks_args(args: &serde_json::Value) -> Option<Vec<SubtaskItem>> {
+    let items = args.get("items")?.as_array()?;
+    if items.is_empty() || items.len() > 12 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let title = item.get("title")?.as_str()?.trim();
+        if title.is_empty() || title.chars().count() > 200 {
+            return None;
+        }
+        let status = match item.get("status")?.as_str()? {
+            "pending" => SubtaskStatus::Pending,
+            "in_progress" => SubtaskStatus::InProgress,
+            "done" => SubtaskStatus::Done,
+            _ => return None,
+        };
+        out.push(SubtaskItem {
+            title: title.to_string(),
+            status,
+        });
+    }
+    Some(out)
 }
 
 /// decider_call Trace 的 result 字段（不含输入原文；数值与既有 risk 事件同口径保留两位）。
@@ -959,6 +1018,13 @@ impl AgentSession {
         outcome
     }
 
+    /// v1.147（§9.1）：任务执行中（含暂停真挂起等待恢复）——发送消息队列的入队判定
+    /// 信号；与 v1.93 重入守卫同源（running 原子标志），daemon 侧另有 SessionEntry::busy
+    /// 在 sessions 锁内同步判定，此处为底层兜底视图。
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
+
     async fn run_task_inner(&self, user_text: &str) -> TaskOutcome {
         // §9.7 v1.87 并行写锁：按 (project_id, worktree_scope) 计——主根会话互斥，
         // 不同受管 worktree 会话可与主根及彼此并行；全局配额由 daemon 控制。
@@ -1529,8 +1595,12 @@ impl AgentSession {
                 // §9.8 #4（v1.124）：laya_decide 走会话循环内联分发（LayaRuntime
                 // 异步推理），不经 execute_tool 同步面；团队策略黑名单在
                 // exec_laya_decide 内同轨检查。
+                // §9.2（v1.146）：subtasks 子任务清单同走内联分发（会话内计划
+                // 状态，零工作区副作用），边界与 Trace 在 exec_subtasks 内同轨。
                 let mut output = if call.name == "laya_decide" {
                     self.exec_laya_decide(&call.arguments).await
+                } else if call.name == "subtasks" {
+                    self.exec_subtasks(&call.arguments).await
                 } else {
                     execute_tool(&self.tool_ctx, &call.name, &call.arguments)
                 };
@@ -1771,6 +1841,38 @@ impl AgentSession {
                 ToolOutput::err("laya_decide 推理超时（已回退），可自行判断")
             }
         }
+    }
+
+    /// §9.2（v1.146）：子任务清单 subtasks——A 级零工作区副作用（只写会话内
+    /// 计划状态），`{items:[{title,status}]}` 全量状态替换（幂等）；校验失败
+    /// 返回错误提示、不改现有状态。每次调用先落 `subtasks` 事件（payload
+    /// `{items}` 全量快照），再由常规路径落 command_run 与 tool_calls Trace；
+    /// 团队策略黑名单与全工具目录同轨检查。
+    async fn exec_subtasks(&self, args: &serde_json::Value) -> ToolOutput {
+        if self
+            .tool_ctx
+            .team_denied_tools
+            .iter()
+            .any(|t| t == "subtasks")
+        {
+            return ToolOutput::err("团队策略禁用工具: subtasks（只收窄，§19/§12.2）");
+        }
+        let Some(items) = parse_subtasks_args(args) else {
+            return ToolOutput::err(
+                "参数无效：items 需为 1–12 项的整张清单 [{title(非空≤200字), status: pending|in_progress|done}]",
+            );
+        };
+        self.emit(EventKind::Subtasks, &serde_json::json!({ "items": items }))
+            .await;
+        let done = items
+            .iter()
+            .filter(|i| i.status == SubtaskStatus::Done)
+            .count();
+        ToolOutput::ok(format!(
+            "子任务清单已更新：{}/{} 完成。开始或完成一项时重发整张清单；任务收尾前所有项须为 done",
+            done,
+            items.len()
+        ))
     }
 
     async fn drain_control(&self) -> Option<ControlCommand> {
@@ -2116,6 +2218,55 @@ mod agent_config_tests {
         );
         assert!(tool_specs().iter().any(|t| t.name == "skill_use"));
         assert!(tool_specs_read_only().iter().any(|t| t.name == "skill_use"));
+    }
+
+    #[test]
+    fn subtasks_graded_a_in_directory_not_readonly_narrowed() {
+        // §9.2 v1.146：A 级（零工作区副作用），进全目录；不进只读先验轮白名单
+        assert_eq!(
+            tenon_core::Tool::from_name("subtasks").and_then(|t| t.level()),
+            Some(tenon_core::policy::Level::A)
+        );
+        assert!(tool_specs().iter().any(|t| t.name == "subtasks"));
+        assert!(!tool_specs_read_only().iter().any(|t| t.name == "subtasks"));
+    }
+
+    #[test]
+    fn subtasks_args_parse_validates_items() {
+        let ok = parse_subtasks_args(&serde_json::json!({ "items": [
+            {"title": "改词法", "status": "done"},
+            {"title": "补单测", "status": "in_progress"}
+        ]}))
+        .unwrap();
+        assert_eq!(ok.len(), 2);
+        assert_eq!(ok[0].status, SubtaskStatus::Done);
+        assert_eq!(ok[1].status, SubtaskStatus::InProgress);
+        // 空 items / 超 12 项 / 空 title / 未知 status / 缺字段均拒绝
+        assert!(parse_subtasks_args(&serde_json::json!({"items": []})).is_none());
+        let many: Vec<_> = (0..13)
+            .map(|i| serde_json::json!({"title": format!("t{i}"), "status": "pending"}))
+            .collect();
+        assert!(parse_subtasks_args(&serde_json::json!({ "items": many })).is_none());
+        assert!(parse_subtasks_args(
+            &serde_json::json!({"items": [{"title": "  ", "status": "pending"}]})
+        )
+        .is_none());
+        assert!(parse_subtasks_args(
+            &serde_json::json!({"items": [{"title": "t", "status": "doing"}]})
+        )
+        .is_none());
+        assert!(parse_subtasks_args(&serde_json::json!({"items": [{"title": "t"}]})).is_none());
+        // 标题去首尾空白；超 200 字符拒绝
+        let trimmed = parse_subtasks_args(
+            &serde_json::json!({"items": [{"title": "  x  ", "status": "pending"}]}),
+        )
+        .unwrap();
+        assert_eq!(trimmed[0].title, "x");
+        let long = "长".repeat(201);
+        assert!(parse_subtasks_args(
+            &serde_json::json!({"items": [{"title": long, "status": "pending"}]})
+        )
+        .is_none());
     }
 
     #[test]

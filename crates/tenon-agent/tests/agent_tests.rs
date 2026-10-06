@@ -168,6 +168,84 @@ async fn patch_task_auto_mode_writes_verifies_and_checkpoints() {
 }
 
 #[tokio::test]
+async fn subtasks_tool_updates_checklist_and_traces() {
+    // §9.2 v1.146：多步任务模型经 subtasks 建清单并全程更新状态——
+    // 每次调用落 subtasks 事件（全量快照）+ command_run / tool_calls Trace。
+    let (_d, session, store, _p) = setup(vec![
+        ScriptedReply::Tool {
+            name: "subtasks".into(),
+            args: serde_json::json!({"items": [
+                {"title": "改造导出管道", "status": "done"},
+                {"title": "补充单测", "status": "in_progress"},
+                {"title": "全量验证", "status": "pending"}
+            ]}),
+        },
+        ScriptedReply::Tool {
+            name: "subtasks".into(),
+            args: serde_json::json!({"items": [
+                {"title": "改造导出管道", "status": "done"},
+                {"title": "补充单测", "status": "done"},
+                {"title": "全量验证", "status": "done"}
+            ]}),
+        },
+        ScriptedReply::Text("全部子任务完成".into()),
+    ])
+    .await;
+    let outcome = session.run_task("重构导出功能").await;
+    assert!(matches!(outcome, TaskOutcome::Done(_)));
+
+    let mut st = store.lock().await;
+    let events = st.events(&session.session_id).unwrap();
+    let mut subtasks_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.kind == EventKind::Subtasks)
+        .collect();
+    assert_eq!(subtasks_events.len(), 2, "两次调用各落一个 subtasks 事件");
+    let last = subtasks_events.pop().unwrap();
+    let items = last.payload["items"].as_array().unwrap();
+    assert_eq!(items.len(), 3);
+    assert_eq!(items[2]["status"], "done");
+    assert_eq!(items[2]["title"], "全量验证");
+    // 常规 Trace：command_run 事件 + tool_calls 明细行（A 级）
+    assert!(events
+        .iter()
+        .any(|e| e.kind == EventKind::CommandRun && e.payload["tool"] == "subtasks"));
+    let calls = st.tool_calls(&session.session_id).unwrap();
+    assert_eq!(
+        calls.iter().filter(|c| c.tool == "subtasks").count(),
+        2,
+        "每次调用落一行 tool_calls"
+    );
+}
+
+#[tokio::test]
+async fn subtasks_invalid_args_rejected_without_state_change() {
+    // 校验失败返回错误给模型、不落 subtasks 事件；任务继续完成。
+    let (_d, session, store, _p) = setup(vec![
+        ScriptedReply::Tool {
+            name: "subtasks".into(),
+            args: serde_json::json!({"items": [{"title": "  ", "status": "pending"}]}),
+        },
+        ScriptedReply::Text("好的，我不建清单了".into()),
+    ])
+    .await;
+    let outcome = session.run_task("随便看看").await;
+    assert!(matches!(outcome, TaskOutcome::Done(_)));
+    let mut st = store.lock().await;
+    let events = st.events(&session.session_id).unwrap();
+    assert!(
+        !events.iter().any(|e| e.kind == EventKind::Subtasks),
+        "校验失败不落 subtasks 事件"
+    );
+    // 错误反馈进入工具输出（command_run ok=false），模型可自纠
+    let cmd = events
+        .iter()
+        .find(|e| e.kind == EventKind::CommandRun && e.payload["tool"] == "subtasks")
+        .expect("失败调用仍有 command_run 审计");
+    assert_eq!(cmd.payload["output"]["ok"], serde_json::json!(false));
+}
+
+#[tokio::test]
 async fn truncated_reply_continues_instead_of_done() {
     // v1.53：finish_reason=length 的纯文本回复不是回答——注入续写指令继续循环，
     // 后续回合完成改动；不修此路径时长规划被截断即静默 Done（changed_files 空）。

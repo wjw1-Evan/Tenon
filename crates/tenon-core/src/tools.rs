@@ -2,7 +2,7 @@
 //!
 //! | 级 | 工具 |
 //! |---|---|
-//! | A | read_file / list_dir / grep / git_read / lsp_query / laya_decide（v1.124）/ skill_use（v1.130 §13.4） |
+//! | A | read_file / list_dir / grep / git_read / lsp_query / laya_decide（v1.124）/ skill_use（v1.130 §13.4）/ subtasks（v1.146） |
 //! | B | apply_patch / run_tests / run_build / install_deps |
 //! | C | http_fetch |
 //! | D | git_commit / git_push / create_pr |
@@ -22,6 +22,8 @@ pub enum Tool {
     LayaDecide,
     /// 代理技能读取（§13.4，v1.130）：读 SKILL.md 全文进上下文，只读零副作用。
     SkillUse,
+    /// 子任务清单（§9.2，v1.146）：会话内计划状态全量替换，零工作区副作用。
+    Subtasks,
     ApplyPatch,
     RunTests,
     RunBuild,
@@ -44,6 +46,7 @@ impl Tool {
             Tool::LspQuery => "lsp_query",
             Tool::LayaDecide => "laya_decide",
             Tool::SkillUse => "skill_use",
+            Tool::Subtasks => "subtasks",
             Tool::ApplyPatch => "apply_patch",
             Tool::RunTests => "run_tests",
             Tool::RunBuild => "run_build",
@@ -66,7 +69,8 @@ impl Tool {
             | Tool::GitRead
             | Tool::LspQuery
             | Tool::LayaDecide
-            | Tool::SkillUse => Level::A,
+            | Tool::SkillUse
+            | Tool::Subtasks => Level::A,
             Tool::ApplyPatch | Tool::RunTests | Tool::RunBuild | Tool::InstallDeps => Level::B,
             Tool::HttpFetch => Level::C,
             Tool::GitCommit | Tool::GitPush => Level::D,
@@ -84,6 +88,7 @@ impl Tool {
             "lsp_query" => Tool::LspQuery,
             "laya_decide" => Tool::LayaDecide,
             "skill_use" => Tool::SkillUse,
+            "subtasks" => Tool::Subtasks,
             "apply_patch" => Tool::ApplyPatch,
             "run_tests" => Tool::RunTests,
             "run_build" => Tool::RunBuild,
@@ -148,6 +153,11 @@ mod tests {
         assert_eq!(Tool::GitRead.level(), Some(Level::A));
         assert_eq!(Tool::LspQuery.level(), Some(Level::A));
         assert_eq!(Tool::SkillUse.level(), Some(Level::A), "v1.130 §13.4");
+        assert_eq!(
+            Tool::Subtasks.level(),
+            Some(Level::A),
+            "v1.146 §9.2 零工作区副作用"
+        );
         assert_eq!(Tool::ApplyPatch.level(), Some(Level::B));
         assert_eq!(Tool::RunTests.level(), Some(Level::B));
         assert_eq!(Tool::RunBuild.level(), Some(Level::B));
@@ -168,6 +178,7 @@ mod tests {
             Tool::GitRead,
             Tool::LspQuery,
             Tool::SkillUse,
+            Tool::Subtasks,
             Tool::ApplyPatch,
             Tool::RunTests,
             Tool::RunBuild,

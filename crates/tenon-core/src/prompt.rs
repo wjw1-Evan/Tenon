@@ -47,6 +47,14 @@ pub const OUTPUT_CONTRACT: &str = "\
 无需改动（纯回答 / 任务完成总结）时：输出严格 JSON \
 {\"intent\": \"一句话说明\", \"answer\": \"最终回答\", \"needs_change\": false}。";
 
+/// 子任务清单使用规则（§9.2 v1.146）：多步任务主动分解、状态随做随更；
+/// 单步任务与纯问答不用；清单是进度承载，不改变安全铁律与验证要求。
+pub const SUBTASK_RULES: &str = "\
+收到需要 ≥2 个有序步骤才能完成的任务时，先调用 subtasks 工具建立子任务清单\
+（建议 2–8 项，每项一句话、可独立执行），随后开始一项置 in_progress、完成一项置 done，\
+任务收尾前清单所有项必须为 done。单步任务与纯问答不使用该工具；\
+清单只是执行进度呈现，不改变安全铁律与验证 / 收敛要求。";
+
 /// 工具 schema 摘要（进提示词的工具目录）。
 pub fn tool_catalog() -> String {
     let entries = [
@@ -58,6 +66,10 @@ pub fn tool_catalog() -> String {
         (
             Tool::SkillUse,
             "读取技能 SKILL.md 全文（目录见「可用技能」节；需要方法指引时调用）",
+        ),
+        (
+            Tool::Subtasks,
+            "子任务清单：多步任务先分解为清单并随做随更状态（规则见「子任务清单」节）",
         ),
         (Tool::ApplyPatch, "结构化编辑：file + range + content"),
         (Tool::RunTests, "沙箱内运行测试（断网）"),
@@ -149,6 +161,9 @@ pub fn build_system_prompt(
     p.push_str(&render_memories(memories));
 
     p.push_str(&skills::render_skill_catalog(skills));
+
+    p.push_str("\n\n## 子任务清单\n");
+    p.push_str(SUBTASK_RULES);
 
     p.push('\n');
     p.push_str(&tool_catalog());
@@ -311,5 +326,20 @@ mod tests {
         assert!(p.contains("skill_use"));
         assert!(p.contains("一律以铁律为准"), "技能正文按不可信数据标注");
         assert!(!p.contains("提交助手"), "目录只含目录名 id 不含展示名");
+    }
+
+    // v1.146：子任务清单使用规则节——使用时机与边界、工具目录含 subtasks 条目。
+    #[test]
+    fn subtask_rules_surface_in_prompt() {
+        let p = build_system_prompt(
+            &ProjectRules::default(),
+            &SessionMemory::default(),
+            &[],
+            &[],
+        );
+        assert!(p.contains("## 子任务清单"));
+        assert!(p.contains("subtasks"), "规则节与工具目录均点名 subtasks");
+        assert!(p.contains("不改变安全铁律"), "清单不放宽验证 / 收敛要求");
+        assert!(p.contains("- subtasks:"), "工具目录含 subtasks 条目");
     }
 }

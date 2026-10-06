@@ -89,6 +89,75 @@ describe("AgentPanel event rendering", () => {
     });
   });
 
+  it("renders subtasks card with only the latest snapshot per turn (v1.146)", async () => {
+    const events = [
+      { id: 1, seq: 1, type: "user_input", payload: { text: "重构导出功能" } },
+      {
+        id: 2,
+        seq: 2,
+        type: "subtasks",
+        payload: {
+          items: [
+            { title: "改造导出管道", status: "done" },
+            { title: "补充单测", status: "in_progress" },
+          ],
+        },
+      },
+      {
+        id: 3,
+        seq: 3,
+        type: "subtasks",
+        payload: {
+          items: [
+            { title: "改造导出管道", status: "done" },
+            { title: "补充单测", status: "done" },
+          ],
+        },
+      },
+    ];
+    render(<AgentPanel api={mockApi(events)} t={t} sessionId="s1" />);
+    // 同回合更早的状态演进不渲染，只出最新一次快照
+    const cards = await screen.findAllByTestId("turn-subtasks");
+    expect(cards.length).toBe(1);
+    expect(cards[0].textContent).toContain("2/2");
+    expect(cards[0].textContent).toContain("补充单测");
+    expect(cards[0].getAttribute("data-done")).toBe("true");
+  });
+
+  it("renders in-progress subtasks card and suppresses its step card (v1.146)", async () => {
+    const events = [
+      { id: 1, seq: 1, type: "user_input", payload: { text: "多步任务" } },
+      {
+        id: 2,
+        seq: 2,
+        type: "subtasks",
+        payload: {
+          items: [
+            { title: "第一步", status: "done" },
+            { title: "第二步", status: "in_progress" },
+            { title: "第三步", status: "pending" },
+          ],
+        },
+      },
+      // command_run 审计记录照只读聚合排除，不落步骤卡
+      {
+        id: 3,
+        seq: 3,
+        type: "command_run",
+        payload: { tool: "subtasks", output: { ok: true, content: "ok" } },
+      },
+    ];
+    render(<AgentPanel api={mockApi(events)} t={t} sessionId="s1" />);
+    const card = await screen.findByTestId("turn-subtasks");
+    expect(card.getAttribute("data-done")).toBe("false");
+    expect(card.textContent).toContain("1/3");
+    expect(card.textContent).toContain("第三步");
+    await waitFor(() => {
+      expect(screen.queryByTestId("turn-step")).toBeNull();
+      expect(screen.queryByTestId("turn-readonly")).toBeNull();
+    });
+  });
+
   it("renders patch_applied card", async () => {
     const events = [{ id: 1, seq: 1, type: "patch_applied", payload: { tool: "apply_patch" } }];
     render(<AgentPanel api={mockApi(events)} t={t} sessionId="s1" />);
