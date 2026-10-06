@@ -15,9 +15,9 @@ from typing import Iterator
 from urllib.parse import quote
 
 # latest.json 平台键（Tauri 约定）-> (release.yml 归集命名前缀 = Rust target triple, 产物 glob)
+# v0.1.0 发布裁定（用户令）：macOS 只发 arm64 主流版
 PLATFORM_GLOBS = {
     "darwin-aarch64": ("aarch64-apple-darwin", "*-*.app.tar.gz"),
-    "darwin-x86_64": ("x86_64-apple-darwin", "*-*.app.tar.gz"),
     "linux-x86_64": ("x86_64-unknown-linux-gnu", "*-*.AppImage"),
     "windows-x86_64": ("x86_64-pc-windows-msvc", "*-*-setup.exe"),
 }
