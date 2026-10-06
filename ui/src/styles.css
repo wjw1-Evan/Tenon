@@ -509,6 +509,20 @@ button:disabled { opacity: 0.45; cursor: default; }
 }
 .pe-new-task:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-text); }
 .pe-new-task:disabled { opacity: 0.45; cursor: not-allowed; }
+/* 添加项目（v1.143）：标题行新任务左侧的次级钮——透明底描边，弱于新任务主钮 */
+.pe-head-add {
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11.5px;
+  padding: 3px 9px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.pe-head-add:hover:not(:disabled) { color: var(--fg); background: var(--raised); }
+.pe-head-add:disabled { opacity: 0.45; cursor: not-allowed; }
 
 /* 项目分组树（v1.114 Codex 任务流）：项目 = 小字分组标题，任务行平铺组下 */
 .pe-tree {
@@ -634,22 +648,7 @@ button:disabled { opacity: 0.45; cursor: default; }
 /* 图标禁止参与 flex 收缩：Chromium 对属性定尺寸 SVG 的 flex 基准按 0 处理，会被收缩到不可见 */
 .pe-gact svg { flex: none; }
 /* 列表底部常驻添加项目行（v1.114 回归 v1.43 语义） */
-.pe-add-row {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  width: 100%;
-  padding: 6px 4px;
-  margin-top: 2px;
-  border: none;
-  border-top: 1px solid var(--border);
-  background: transparent;
-  color: var(--muted);
-  font-size: 11.5px;
-  text-align: left;
-  cursor: pointer;
-}
+/* 底部添加行（.pe-add-row）随 v1.143 迁入标题行而移除 */
 .pe-add-row:hover:not(:disabled) { color: var(--fg); background: var(--raised); }
 .pe-add-row:disabled { opacity: 0.45; cursor: not-allowed; }
 /* 展开列表超过 Codex 默认最近 10 条时的显式开关 */

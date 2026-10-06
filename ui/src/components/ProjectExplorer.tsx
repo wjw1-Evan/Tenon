@@ -196,25 +196,6 @@ function ChevronIcon() {
   );
 }
 
-/** 线性加号：文本「+」字形墨迹受字体度量影响偏移行中心（Windows 字体更甚），SVG 保证与边框行对齐。 */
-function PlusIcon() {
-  return (
-    <svg
-      width={10}
-      height={10}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2.4}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M12 5v14M5 12h14" />
-    </svg>
-  );
-}
-
 /** 线性分支图标（v1.125）：U+23A1「⎡」是数学多行括号的上半块，12px 下呈残缺角括号状被误读为渲染
     缺陷——换为与字体回退解耦的 stroke SVG，语义（受管 worktree 新任务）与 testid / aria 不变。 */
 function WorktreeIcon() {
@@ -646,6 +627,19 @@ export function ProjectExplorer({
       <div className="pe-head">
         <span className="side-title">{t("panel.projects")}</span>
         <span className="pe-head-actions">
+          {/* v1.143：添加项目迁入标题行（新任务左侧），底部常驻添加行随之移除。 */}
+          <button
+            type="button"
+            className="pe-head-add"
+            data-testid="project-add"
+            aria-expanded={adding}
+            disabled={busyId === "__add__"}
+            title={t("projects.add_title")}
+            aria-label={t("projects.add_title")}
+            onClick={() => setAdding(true)}
+          >
+            + {t("projects.add_title")}
+          </button>
           <button
             type="button"
             className="pe-new-task"
@@ -749,18 +743,7 @@ export function ProjectExplorer({
           })}
           {projects.length === 0 && <li className="pe-empty">{t("projects.empty")}</li>}
         </ul>
-        {/* 列表底部常驻添加入口（v1.114 回归 v1.43 语义；v1.101 标题行「+」让位新任务按钮）。 */}
-        <button
-          type="button"
-          className="pe-add-row"
-          data-testid="project-add"
-          disabled={busyId === "__add__"}
-          aria-expanded={adding}
-          onClick={() => setAdding(true)}
-        >
-          <PlusIcon />
-          {t("projects.add_title")}
-        </button>
+        {/* v1.143：底部添加行移除——添加项目钮迁标题行（新任务左侧）。 */}
       </section>
 
       {/* 侧栏源码区（§7.2 v1.139）：下区 = active 项目文件树——与任务输入框同屏，
