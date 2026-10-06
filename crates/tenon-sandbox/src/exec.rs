@@ -46,6 +46,8 @@ pub enum SandboxSpec {
 }
 
 impl SandboxSpec {
+    /// 仅 macOS Seatbelt 路径消费（Linux 走 seccomp 过滤器、Windows 兜底不沙箱）。
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     fn network(&self) -> NetworkState {
         match self {
             SandboxSpec::None | SandboxSpec::Offline { .. } => NetworkState::offline(),
@@ -227,6 +229,8 @@ fn build_sandboxed_command(
     None
 }
 
+/// 仅 macOS Seatbelt 路径消费（profile 落盘供 sandbox-exec -f）。
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn write_profile_file(profile: &str) -> std::io::Result<PathBuf> {
     let dir = std::env::temp_dir().join("tenon-sbx");
     std::fs::create_dir_all(&dir)?;
