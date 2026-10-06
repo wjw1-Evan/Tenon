@@ -901,10 +901,12 @@ async fn set_readonly_takes_effect_at_runtime() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn run_task_rejects_reentry_while_running() {
+    // 首任务用 sleep 0.4 的 run_tests 拉长验证段：50ms 探测时刻在快慢机型上
+    // 都必然处于任务中（此前靠固定 50ms 睡眠与任务完成竞速，CI 上抖动）。
     let (_dir, session, _store, _p) = setup(vec![
         ScriptedReply::Tool {
-            name: "apply_patch".into(),
-            args: serde_json::json!({"file": "a.txt", "range": null, "content": "x\n"}),
+            name: "run_tests".into(),
+            args: serde_json::json!({"command": "sleep 0.4"}),
         },
         ScriptedReply::Text("done".into()),
     ])
