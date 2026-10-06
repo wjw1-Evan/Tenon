@@ -66,66 +66,6 @@ function loadEntries(
     });
 }
 
-function ActionButton({
-  label,
-  onClick,
-  disabled,
-}: {
-  label: string;
-  onClick: () => void;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      className="tree-action"
-      aria-label={label}
-      title={label}
-      disabled={disabled}
-      onClick={(event) => {
-        event.stopPropagation();
-        onClick();
-      }}
-    >
-      {label === "delete" ? "✕" : "✎"}
-    </button>
-  );
-}
-
-function TreeActions({
-  entry,
-  t,
-  busy,
-  onPrompt,
-  onDelete,
-}: {
-  entry?: Entry;
-  t: Translate;
-  busy: boolean;
-  onPrompt: (state: PromptState) => void;
-  onDelete: (entry: Entry) => void;
-}) {
-  const parent = entry ? (entry.kind === "dir" ? entry.path : parentOf(entry.path)) : "";
-  return (
-    <span className="tree-actions">
-      {entry && (
-        <ActionButton
-          label={t("tree.rename")}
-          disabled={busy}
-          onClick={() => onPrompt({ parent, target: entry, value: entry.name })}
-        />
-      )}
-      {entry && (
-        <ActionButton
-          label={t("tree.delete")}
-          disabled={busy}
-          onClick={() => onDelete(entry)}
-        />
-      )}
-    </span>
-  );
-}
-
 function TreeDir({
   api,
   entry,
@@ -134,8 +74,6 @@ function TreeDir({
   busy,
   t,
   onOpenFile,
-  onPrompt,
-  onDelete,
   onMove,
   onContextMenu,
 }: {
@@ -146,8 +84,6 @@ function TreeDir({
   busy: boolean;
   t: Translate;
   onOpenFile: (path: string) => void;
-  onPrompt: (state: PromptState) => void;
-  onDelete: (entry: Entry) => void;
   onMove: (from: string, to: string) => void;
   onContextMenu: (entry: Entry, pos: { x: number; y: number }) => void;
 }) {
@@ -207,13 +143,6 @@ function TreeDir({
         >
           {open ? "▾" : "▸"} {entry.name}
         </button>
-        <TreeActions
-          entry={entry}
-          t={t}
-          busy={busy}
-          onPrompt={onPrompt}
-          onDelete={onDelete}
-        />
       </div>
       {open && (
         <ul>
@@ -227,8 +156,6 @@ function TreeDir({
               busy={busy}
               t={t}
               onOpenFile={onOpenFile}
-              onPrompt={onPrompt}
-              onDelete={onDelete}
               onMove={onMove}
               onContextMenu={onContextMenu}
             />
@@ -250,12 +177,10 @@ function TreeEntryRow(props: {
   busy: boolean;
   t: Translate;
   onOpenFile: (path: string) => void;
-  onPrompt: (state: PromptState) => void;
-  onDelete: (entry: Entry) => void;
   onMove: (from: string, to: string) => void;
   onContextMenu: (entry: Entry, pos: { x: number; y: number }) => void;
 }) {
-  const { api, entry, projectId, refreshToken, busy, t, onOpenFile, onPrompt, onDelete, onMove, onContextMenu } = props;
+  const { api, entry, projectId, refreshToken, busy, t, onOpenFile, onMove, onContextMenu } = props;
   if (entry.kind === "dir") {
     return (
       <TreeDir
@@ -266,8 +191,6 @@ function TreeEntryRow(props: {
         busy={busy}
         t={t}
         onOpenFile={onOpenFile}
-        onPrompt={onPrompt}
-        onDelete={onDelete}
         onMove={onMove}
         onContextMenu={onContextMenu}
       />
@@ -298,13 +221,6 @@ function TreeEntryRow(props: {
             aria-label={entry.git_status}
           />
         )}
-        <TreeActions
-          entry={entry}
-          t={t}
-          busy={busy}
-          onPrompt={onPrompt}
-          onDelete={onDelete}
-        />
       </div>
     </li>
   );
@@ -440,8 +356,6 @@ export function FileTree({
             busy={busy}
             t={t}
             onOpenFile={onOpenFile}
-            onPrompt={setPrompt}
-            onDelete={deleteEntry}
             onMove={moveEntry}
             onContextMenu={(entry, pos) => setMenu({ ...pos, entry })}
           />

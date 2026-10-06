@@ -85,7 +85,12 @@ describe("FileTree", () => {
         onOperation={onOperation}
       />
     );
-    fireEvent.click(await screen.findByTitle("tree.rename"));
+    // v1.142：行尾按钮移除——改名入口为行右键菜单。
+    fireEvent.contextMenu(await screen.findByRole("button", { name: "old.ts" }), {
+      clientX: 30,
+      clientY: 40,
+    });
+    fireEvent.click(within(screen.getByTestId("tree-context-menu")).getByText("tree.rename"));
     const input = document.getElementById("tree-prompt-input") as HTMLInputElement;
     expect(input.value).toBe("old.ts");
     fireEvent.change(input, { target: { value: "new.ts" } });
@@ -180,7 +185,12 @@ describe("FileTree", () => {
         onOperation={onOperation}
       />
     );
-    fireEvent.click(await screen.findByTitle("tree.delete"));
+    // v1.142：删除入口为行右键菜单。
+    fireEvent.contextMenu(await screen.findByRole("button", { name: "old.ts" }), {
+      clientX: 30,
+      clientY: 40,
+    });
+    fireEvent.click(within(screen.getByTestId("tree-context-menu")).getByText("tree.delete"));
     await waitFor(() =>
       expect(fileOpsMock).toHaveBeenCalledWith("project-1", [{ op: "delete", path: "old.ts" }])
     );
