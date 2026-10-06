@@ -74,15 +74,26 @@ pub struct McpConnection {
 impl McpConnection {
     /// 启动 MCP 服务器子进程。
     pub fn spawn(program: &str, args: &[&str], cwd: &Path) -> io::Result<McpConnection> {
-        Self::from_child(
-            Command::new(program)
-                .args(args)
-                .current_dir(cwd)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn()?,
-        )
+        Self::spawn_with_env(program, args, cwd, &[])
+    }
+
+    /// 带 env 注入的启动（§13.5 v1.145：值由调用方解析自 `env:VAR` 引用）。
+    pub fn spawn_with_env(
+        program: &str,
+        args: &[&str],
+        cwd: &Path,
+        envs: &[(&str, &str)],
+    ) -> io::Result<McpConnection> {
+        let mut cmd = Command::new(program);
+        cmd.args(args)
+            .current_dir(cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
+        Self::from_child(cmd.spawn()?)
     }
 
     pub fn from_child(mut child: Child) -> io::Result<Self> {
@@ -207,6 +218,187 @@ impl McpConnection {
 impl Drop for McpConnection {
     fn drop(&mut self) {
         self.shutdown();
+    }
+}
+
+/// MCP 服务器启动配置（settings.json `mcp.servers` 条目，§13.5 v1.145）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerConfig {
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// 环境变量注入；值仅允许 `env:VAR` 引用（spawn 时解析，settings 不存明文密钥，§11）。
+    #[serde(default)]
+    pub env: std::collections::BTreeMap<String, String>,
+    #[serde(default = "crate::default_true")]
+    pub enabled: bool,
+    /// 当前仅 `net:*` 一键：工具映射 C 级（§13.3；进程网络不设限，同语言服务器路线）。
+    #[serde(default)]
+    pub permissions: Vec<String>,
+    /// 市场溯源 `owner/repo`（§13.5；手动添加为空）。
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// 会话工具命名：`mcp_{server}_{tool}`（§13.5 v1.145）。
+/// server 名 `^[a-z][a-z0-9-]{0,31}$` 不含下划线——按首个下划线切分即无歧义。
+pub fn mcp_tool_name(server: &str, tool: &str) -> String {
+    format!("mcp_{server}_{tool}")
+}
+
+/// 解析 `mcp_{server}_{tool}` 为 (server, tool)；非 mcp_ 前缀返回 None。
+pub fn parse_mcp_tool_name(name: &str) -> Option<(String, String)> {
+    let rest = name.strip_prefix("mcp_")?;
+    let split = rest.find('_')?;
+    let (server, tool) = rest.split_at(split);
+    if server.is_empty() || tool.len() <= 1 {
+        return None;
+    }
+    Some((server.to_string(), tool[1..].to_string()))
+}
+
+/// 多服务器 MCP 宿主（§13.5 v1.145）：按 settings 快照持有命名配置，
+/// 首次使用懒 spawn + initialize，调用失败丢弃连接（下次调用重启），
+/// 随 ToolContext 释放回收（Drop 逐连接 kill）。阻塞实现；调用方经 spawn_blocking。
+pub struct McpHost {
+    configs: std::collections::BTreeMap<String, McpServerConfig>,
+    conns: Mutex<std::collections::BTreeMap<String, std::sync::Arc<McpConnection>>>,
+    cwd: std::path::PathBuf,
+}
+
+/// list_tools 的展平条目（含来源 server 名）。
+#[derive(Debug, Clone)]
+pub struct McpHostTool {
+    pub server: String,
+    pub tool: McpTool,
+}
+
+impl McpHost {
+    pub fn new(
+        configs: std::collections::BTreeMap<String, McpServerConfig>,
+        cwd: std::path::PathBuf,
+    ) -> Self {
+        Self {
+            configs,
+            conns: Mutex::new(std::collections::BTreeMap::new()),
+            cwd,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.configs.values().all(|c| !c.enabled)
+    }
+
+    /// 分级策略（§13.3）：声明 `net:*` 的服务器的全部工具 → C，其余 → D。
+    /// 键为完整会话工具名 `mcp_{server}_{tool}`——需 tools/list 结果；
+    /// 未见过的 `mcp_` 工具一律 D（[`McpLevelPolicy::level_for`] 默认）。
+    pub fn level_policy_with(&self, tools: &[McpHostTool]) -> McpLevelPolicy {
+        let mut net_tools = std::collections::HashSet::new();
+        for entry in tools {
+            let Some(cfg) = self.configs.get(&entry.server) else {
+                continue;
+            };
+            if cfg.permissions.iter().any(|p| p == "net:*") {
+                net_tools.insert(mcp_tool_name(&entry.server, &entry.tool.name));
+            }
+        }
+        McpLevelPolicy { net_tools }
+    }
+
+    /// 单台服务器：取缓存连接或懒 spawn + initialize。
+    fn connection_for(&self, server: &str) -> Result<std::sync::Arc<McpConnection>> {
+        if let Some(conn) = self.conns.lock().expect("mcp conns lock").get(server) {
+            return Ok(conn.clone());
+        }
+        let cfg = self
+            .configs
+            .get(server)
+            .ok_or_else(|| McpError::Denied(format!("未配置的 MCP 服务器: {server}")))?;
+        let conn = std::sync::Arc::new(self.spawn_connection(cfg)?);
+        self.conns
+            .lock()
+            .expect("mcp conns lock")
+            .insert(server.to_string(), conn.clone());
+        Ok(conn)
+    }
+
+    fn spawn_connection(&self, cfg: &McpServerConfig) -> Result<McpConnection> {
+        let args = cfg.args.iter().map(String::as_str).collect::<Vec<_>>();
+        let envs = resolved_env(&cfg.env);
+        let env_refs = envs
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect::<Vec<_>>();
+        let conn = McpConnection::spawn_with_env(&cfg.command, &args, &self.cwd, &env_refs)?;
+        conn.initialize("tenon")?;
+        Ok(conn)
+    }
+
+    /// 列出全部 enabled 服务器的工具（展平，含来源 server）。
+    /// 单台服务器失败跳过（不阻塞其余服务器，§13.5）。
+    pub fn list_tools(&self) -> Vec<McpHostTool> {
+        let mut out = Vec::new();
+        for server in self.configs.keys() {
+            let cfg = match self.configs.get(server) {
+                Some(c) if c.enabled => c,
+                _ => continue,
+            };
+            let _ = cfg;
+            let Ok(conn) = self.connection_for(server) else {
+                continue;
+            };
+            match conn.list_tools() {
+                Ok(tools) => {
+                    for tool in tools {
+                        out.push(McpHostTool {
+                            server: server.clone(),
+                            tool,
+                        });
+                    }
+                }
+                Err(_) => {
+                    // 连接不可用：丢弃，下次调用重启（§13.5）。
+                    self.conns.lock().expect("mcp conns lock").remove(server);
+                }
+            }
+        }
+        out
+    }
+
+    /// 调用指定服务器的工具；失败丢弃连接（下次调用重启，§13.5）。
+    pub fn call(&self, server: &str, tool: &str, args: Value) -> Result<String> {
+        let conn = self.connection_for(server)?;
+        match conn.call_tool(tool, args) {
+            Ok(text) => Ok(text),
+            Err(e) => {
+                self.conns.lock().expect("mcp conns lock").remove(server);
+                Err(e)
+            }
+        }
+    }
+}
+
+/// 解析 `env:VAR` 引用为实际值（§11：daemon 环境变量；缺失 / 非法引用跳过）。
+fn resolved_env(env: &std::collections::BTreeMap<String, String>) -> Vec<(String, String)> {
+    env.iter()
+        .filter_map(|(k, v)| {
+            let var = v.strip_prefix("env:")?;
+            if var.is_empty() || !var.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                return None;
+            }
+            std::env::var(var).ok().map(|val| (k.clone(), val))
+        })
+        .collect()
+}
+
+impl Drop for McpHost {
+    fn drop(&mut self) {
+        // Arc 释放触发 McpConnection::drop → kill。
+        self.conns.lock().expect("mcp conns lock").clear();
     }
 }
 
