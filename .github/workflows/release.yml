@@ -170,6 +170,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+          # v1.155：发布说明按 tag 区间 git log 自产，需全量历史与 tags
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           pattern: updater-*
@@ -180,15 +182,25 @@ jobs:
           pattern: release-assets-*
           merge-multiple: true
           path: release-assets
-      - name: 生成发布说明（v1.152：随包更新日志与 Release 同源）
-        env:
-          GH_TOKEN: ${{ github.token }}
+      # v1.155：generate-notes API 在无 PR 直推模式下只出对比链接一行，
+      # 改按 tag 区间 git log 自产中文说明（与 latest.json notes 同源同文）。
+      - name: 生成发布说明
         run: |
           set -euo pipefail
           tag="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}"
-          gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
-            -f tag_name="$tag" --jq .body > release-notes.md
+          prev="$(git describe --tags --abbrev=0 "${tag}^" 2>/dev/null || true)"
+          if [[ -n "$prev" ]]; then
+            range="${prev}..${tag}"
+            compare="**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${prev}...${tag}"
+          else
+            range="${tag}"
+            compare=""
+          fi
+          git log --format='- %s (%h)' "$range" > release-notes.md
           [[ -s release-notes.md ]] || { echo "发布说明生成结果为空"; exit 1; }
+          if [[ -n "$compare" ]]; then
+            printf '\n%s\n' "$compare" >> release-notes.md
+          fi
       - name: 聚合 Tauri latest.json
         run: |
           tag="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}"

@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v1.154** |
-| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.154） |
+| 版本 | **v1.155** |
+| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.155） |
 | 状态 | 定稿（v1.10 决策闭环），M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 | 历史评审 | v0.1 / v0.3 两轮共 41 项、v1.0 复审 21 项问题的结论已全部并入本方案（过程文档已清理） |
@@ -247,7 +247,9 @@ Codex CLI 已开源且核心为 Rust 实现（codex-rs 工作区，另有遗留 
 
 **更新固定自动 + 下载完成用户确认重启（v1.154）**：更新通道概念移除——`update.channel` 配置（manual \| auto）与设置面板 Updates 分类整体删除，更新恒为自动，无手动检查 / 手动应用入口；daemon 侧 `/updates`（状态）/ `/updates/check`（手动检查）/ `/updates/apply`（手动应用）三端点、`update_channel` 设置覆盖与检查状态记录一并移除，daemon-only auto 循环保留服务无壳 Web / headless（staged 更新仍在重启时生效，表面让位机制不变）。桌面壳改双段式交互：发现新版本仅后台 `download`（不 install 不重启），下载完成把 `{version, notes}` 持久化 `shell-prefs.json`（0600 `ready_update`）并向 UI emit `tenon://update-ready`（UI 启动时另有 `get_update_ready` IPC peek，防事件早于监听的竞态）；UI 右下角非阻断通知卡「已下载更新 vX.Y.Z」渲染更新内容（latest.json `notes`）——「立即更新」走 `install_update` IPC，壳先把 `ready_update` 转为 `pending_update`（新版首启 v1.152 日志弹窗接管）再 install + restart 到最新版本（备选外链打开 GitHub Release 页手动下载 dmg 同样升到最新），「下次再说」仅收起本次提示；重启后壳发现 `ready_update` 版本仍新于当前（上次下载完未装）即重新检查下载再提示。通知卡选非阻断形态：下载完成时机不可控（用户可能正在编辑 / 跑任务），更新又是可延迟动作，模态弹窗会强制打断（v1.152 双参考结论不适用——那是「日志必达」场景）；更新成功后的启动日志弹窗保持不变。
 
-**更新日志随包展示（v1.152；持久化时机随 v1.154 调整为 install 成功后）**：更新成功重启后桌面壳弹「已更新到 vX.Y.Z」更新日志启动弹窗（双参考方案选定模态弹窗——日志必达不错过；顶栏非阻断横幅备选未采用）——发布流水线聚合 latest.json 时经 GitHub generate-notes API 按 tag 预生成发布说明（本仓库中文 commit ⇒ 中文日志），写入 `notes` 字段（替代原「see GitHub Release」占位文案），GitHub Release 创建改 `--notes-file` 与 latest.json 同源同文；壳在 install 成功后、重启前把 `{version, notes}` 持久化到应用数据目录 `shell-prefs.json`（0600），重启后 UI 经 `get_update_notes` IPC 命令（peek 不消费）渲染弹窗，「知道了」触发 `dismiss_update_notes`（清 pending + 记 `last_seen_version`）——重启后零出网、离线可见。手动 dmg 装新版同样弹出（`last_seen_version` 与当前版本比对识别），但仅版本号 + GitHub Release 外链，不自动出网拉日志。浏览器 Web 版无壳不适用。
+**更新日志随包展示（v1.152；持久化时机随 v1.154 调整为 install 成功后）**：更新成功重启后桌面壳弹「已更新到 vX.Y.Z」更新日志启动弹窗（双参考方案选定模态弹窗——日志必达不错过；顶栏非阻断横幅备选未采用）——发布流水线聚合 latest.json 时预生成发布说明写入 `notes` 字段，GitHub Release 创建走 `--notes-file` 与 latest.json 同源同文（说明源随 v1.155 由 generate-notes API 改为流水线 git log 自产——无 PR 直推模式下 generate-notes 只出「Full Changelog」对比链接一行，中文 commit 日志进不了 notes；见下）；壳在 install 成功后、重启前把 `{version, notes}` 持久化到应用数据目录 `shell-prefs.json`（0600），重启后 UI 经 `get_update_notes` IPC 命令（peek 不消费）渲染弹窗，「知道了」触发 `dismiss_update_notes`（清 pending + 记 `last_seen_version`）——重启后零出网、离线可见。手动 dmg 装新版同样弹出（`last_seen_version` 与当前版本比对识别），但仅版本号 + GitHub Release 外链，不自动出网拉日志。浏览器 Web 版无壳不适用。
+
+**更新日志 git log 自产（v1.155，v0.1.2/v0.1.3 双连发实测暴露）**：generate-notes API 依赖 PR 语义——本仓库全部直推 commit、无 PR，API 只返回「Full Changelog」对比链接一行，`notes`/Release 页/更新弹窗/通知卡的「更新内容」同为空洞一行。发布说明改流水线自产：publish job checkout 改全量（`fetch-depth: 0`），按 tag 区间 `git log --format='- %s (%h)' <prev>..<tag>` 逐条列出中文 commit 主题（首版无前 tag 回退到全量），尾附对比链接行；`release-notes.md` 同文件继续喂 `build_update_manifest.py`（latest.json `notes`）与 `gh release create --notes-file`（Release 页）——同源同文不变式与消费端（弹窗 noteLines / 通知卡）零改动。
 
 **macOS 分发签名与公证（v1.151，修复下载 dmg 被 Gatekeeper 判「已损坏」）**：macOS 产物在 Tauri 构建期完成 Developer ID 签名 + 公证 + staple——CI 经 Actions Secrets 注入 `APPLE_CERTIFICATE`（base64 p12，Developer ID Application）+ `APPLE_CERTIFICATE_PASSWORD` + `APPLE_SIGNING_IDENTITY`（`Developer ID Application: <名称> (<TeamID>)`）完成签名，注入 `APPLE_API_ISSUER` + `APPLE_API_KEY`（App Store Connect 密钥 ID）+ `APPLE_API_KEY_P8`（.p8 私钥原文，构建期物化至临时路径供 `APPLE_API_KEY_PATH`）完成公证（Apple ID 方：`APPLE_ID` / `APPLE_PASSWORD` 专用密码 / `APPLE_TEAM_ID` 为备选通道）；bundler 对 .app、.app.tar.gz 更新包与 .dmg 全量签名公证，下载 dmg 双击即开。secrets 未配置（证书未就绪 / fork 自建）时构建保持无签名退化，下载安装需 `xattr -cr` 绕过——记录为已知限制；secret 空值一律不注入构建环境（空串与未设置语义不同，防误触发签名/公证路径）。minisign 更新签名职责不变，与 Apple 签名独立：Gatekeeper 管首次分发信任，minisign 管更新链完整性。
 
