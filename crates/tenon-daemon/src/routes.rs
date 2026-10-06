@@ -2760,6 +2760,13 @@ async fn list_projects(State(state): State<Arc<DaemonState>>) -> Response {
             let projects = store.list_projects().ok()?;
             let mut with_sessions = Vec::new();
             for project in &projects {
+                // v1.148 §15：会话行 subtasks 进度计数（侧栏任务行徽标数据源）
+                let subtasks = store
+                    .latest_subtasks_by_session(&project.id)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(id, done, total)| (id, (done, total)))
+                    .collect::<std::collections::HashMap<String, (u32, u32)>>();
                 with_sessions.push((
                     project.clone(),
                     store.list_sessions(&project.id).unwrap_or_default(),
@@ -2767,6 +2774,7 @@ async fn list_projects(State(state): State<Arc<DaemonState>>) -> Response {
                         .list_archived_sessions(&project.id)
                         .unwrap_or_default(),
                     store.project_usage_totals(&project.id).unwrap_or_default(),
+                    subtasks,
                 ));
             }
             Some(with_sessions)
@@ -2781,7 +2789,7 @@ async fn list_projects(State(state): State<Arc<DaemonState>>) -> Response {
     let session_runtimes: Vec<String> = state.sessions.lock().await.keys().cloned().collect();
     let summaries: Vec<Value> = projects
         .into_iter()
-        .map(|(project, sessions, archived, usage)| {
+        .map(|(project, sessions, archived, usage, subtasks)| {
             let active = sessions
                 .iter()
                 .filter(|s| {
@@ -2791,6 +2799,12 @@ async fn list_projects(State(state): State<Arc<DaemonState>>) -> Response {
                     )
                 })
                 .count();
+            // v1.148 §15：最新 subtasks 快照计数（无清单 = null）
+            let subtasks_field = |id: &str| {
+                subtasks
+                    .get(id)
+                    .map(|(done, total)| json!({"done": done, "total": total}))
+            };
             json!({
                 "id": project.id,
                 "path": project.path,
@@ -2821,6 +2835,7 @@ async fn list_projects(State(state): State<Arc<DaemonState>>) -> Response {
                     "title": s.title,
                     "worktree_path": s.worktree_path,
                     "updated_at": s.updated_at,
+                    "subtasks": subtasks_field(&s.id),
                 })).collect::<Vec<_>>(),
                 "archived_sessions": archived.iter().map(|s| json!({
                     "id": s.id,
@@ -2829,6 +2844,7 @@ async fn list_projects(State(state): State<Arc<DaemonState>>) -> Response {
                     "title": s.title,
                     "worktree_path": s.worktree_path,
                     "updated_at": s.updated_at,
+                    "subtasks": subtasks_field(&s.id),
                 })).collect::<Vec<_>>(),
                 "session_runtimes": session_runtimes,
                 "active_sessions": active,

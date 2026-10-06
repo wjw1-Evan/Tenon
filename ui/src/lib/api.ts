@@ -26,6 +26,8 @@ export interface SessionSummary {
   /** 会话级受管 worktree 路径（v1.87）；空 = 项目主根会话。 */
   worktree_path?: string;
   updated_at: string;
+  /** v1.148 §15：最新一次 subtasks 快照完成计数；无清单 / 旧 daemon 缺省。 */
+  subtasks?: { done: number; total: number } | null;
 }
 
 /** v1.147（§9.1）：发送消息队列条目——运行态入队的待发消息（GET /session/:id `queue`）。 */

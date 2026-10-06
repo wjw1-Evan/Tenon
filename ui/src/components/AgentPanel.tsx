@@ -554,6 +554,17 @@ export function AgentPanel({
     }
     return t("thread.running");
   }, [events, t]);
+  // §7.5（v1.148）：常驻进度卡数据——全事件流最新一次 subtasks 快照（跨回合）。
+  const liveSubtasks = useMemo(() => {
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      if (events[i].type !== "subtasks") continue;
+      return Array.isArray(events[i].payload.items)
+        ? (events[i].payload.items as Array<{ title?: unknown; status?: unknown }>)
+        : [];
+    }
+    return [];
+  }, [events]);
+
 
   const empty = events.length === 0 && !streamText;
 
@@ -711,6 +722,9 @@ export function AgentPanel({
           </div>
         )}
       </div>
+      <SubtasksLive items={liveSubtasks} t={t} />
+
+      <div
 
       <div
         className={inputDrop ? "agent-input drop-target" : "agent-input"}
@@ -931,7 +945,7 @@ function LayaBadge({ ev, t }: { ev: EventItem; t: Translate }) {
 }
 
 /** §9.2（v1.146）：子任务清单卡——回合内最新一次 subtasks 事件的全量快照；
- * 标题行「子任务 · n/m」+ 状态行 ○ 待执行 / ▶ 进行中 / ✓ 完成；全部完成灰显收敛。 */
+ * 标题行「子任务 · n/m」+ 状态行（SubtaskItems 共用）；全部完成灰显收敛。 */
 function SubtasksCard({ ev, t }: { ev: EventItem; t: Translate }) {
   const items = Array.isArray(ev.payload.items)
     ? (ev.payload.items as Array<{ title?: unknown; status?: unknown }>)
@@ -948,20 +962,66 @@ function SubtasksCard({ ev, t }: { ev: EventItem; t: Translate }) {
       <div className="turn-subtasks-head">
         {t("thread.subtasks")} · {done}/{items.length}
       </div>
-      <ul className="turn-subtasks-list">
-        {items.map((item, i) => {
-          const status = String(item.status ?? "pending");
-          const icon = status === "done" ? "✓" : status === "in_progress" ? "▶" : "○";
-          return (
-            <li key={i} className="turn-subtasks-item" data-status={status}>
-              <span className="turn-subtasks-icon" aria-hidden="true">
-                {icon}
-              </span>
-              <span className="turn-subtasks-title">{String(item.title ?? "")}</span>
-            </li>
-          );
-        })}
-      </ul>
+      <SubtaskItems items={items} />
+    </div>
+  );
+}
+
+/** 子任务状态行（v1.146 清单卡 / v1.148 常驻卡共用）：○ 待执行 / ▶ 进行中 / ✓ 完成。 */
+function SubtaskItems({ items }: { items: Array<{ title?: unknown; status?: unknown }> }) {
+  return (
+    <ul className="turn-subtasks-list">
+      {items.map((item, i) => {
+        const status = String(item.status ?? "pending");
+        const icon = status === "done" ? "✓" : status === "in_progress" ? "▶" : "○";
+        return (
+          <li key={i} className="turn-subtasks-item" data-status={status}>
+            <span className="turn-subtasks-icon" aria-hidden="true">
+              {icon}
+            </span>
+            <span className="turn-subtasks-title">{String(item.title ?? "")}</span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/** §7.5（v1.148）：常驻进度卡——会话最新一次 subtasks 快照钉在输入区上方，
+ * 不随线程滚动，数据同源 500ms 事件轮询。未完成时常驻可见（头部可折叠，
+ * 细进度条 + n/m）；全部完成自动收起（线程内 v1.146 历史卡保留）。 */
+function SubtasksLive({
+  items,
+  t,
+}: {
+  items: Array<{ title?: unknown; status?: unknown }>;
+  t: Translate;
+}) {
+  const [open, setOpen] = useState(true);
+  const done = items.filter((i) => i.status === "done").length;
+  if (items.length === 0 || done === items.length) return null;
+  const pct = Math.round((done / items.length) * 100);
+  return (
+    <div className="subtasks-live" data-testid="subtasks-live" data-open={String(open)}>
+      <button
+        type="button"
+        className="subtasks-live-head"
+        data-testid="subtasks-live-head"
+        aria-expanded={open}
+        title={t("thread.subtasks")}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className="subtasks-live-bar" aria-hidden="true">
+          <span style={{ width: `${pct}%` }} />
+        </span>
+        <span className="subtasks-live-label">
+          {t("thread.subtasks")} · {done}/{items.length}
+        </span>
+        <span className="subtasks-live-caret" aria-hidden="true">
+          {open ? "▾" : "▸"}
+        </span>
+      </button>
+      {open && <SubtaskItems items={items} />}
     </div>
   );
 }

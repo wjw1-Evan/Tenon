@@ -757,6 +757,31 @@ button:disabled { opacity: 0.45; cursor: default; }
   white-space: nowrap;
 }
 .pe-chat-row.active .pe-chat-time { color: var(--accent-text); }
+/* 子任务进度徽标（v1.148 §7.2）：任务行标题与时间之间，仅未完成清单渲染 */
+.pe-chat-subtasks {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--accent-text);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.pe-chat-subtasks-bar {
+  display: inline-block;
+  width: 32px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+}
+.pe-chat-subtasks-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
 .pe-row-actions {
   display: flex;
   justify-content: flex-end;
@@ -1421,6 +1446,53 @@ button:disabled { opacity: 0.45; cursor: default; }
 /* 全部完成：整卡灰显收敛 */
 .turn-subtasks-done {
   opacity: 0.65;
+}
+/* 常驻进度卡（v1.148 §7.5）：未完成清单钉在输入区上方，不随线程滚动 */
+.subtasks-live {
+  margin: 0 12px 6px;
+  padding: 5px 10px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  background: var(--raised);
+  font-size: 12.5px;
+}
+.subtasks-live-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--fg, inherit);
+  font-size: 11.5px;
+  cursor: pointer;
+  text-align: left;
+}
+.subtasks-live-bar {
+  flex: 1;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+  min-width: 40px;
+}
+.subtasks-live-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+.subtasks-live-label {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.subtasks-live-caret {
+  color: var(--muted);
+  font-size: 10px;
+  flex-shrink: 0;
 }
 /* 模型用量徽标（v1.129 §11）：回合页脚单行弱化展示，与只读 / Laya 聚合同级 */
 .turn-usage {
