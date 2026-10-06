@@ -1,8 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "main",
-  "description": "主窗口能力（§6.2 桌面壳）：集成式标题栏拖拽区域 + 壳 IPC 命令（本地上下文 = devUrl 开发态）",
+  "identifier": "main-daemon-remote",
+  "description": "主窗口 daemon 托管 UI（§6.2 生产拓扑）的 remote 上下文：与本地能力集一致——拖拽/缩放、系统目录对话框、shell 外链与五壳 IPC 命令（仅回环地址，v1.156）",
   "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:*", "http://localhost:*"]
+  },
   "permissions": [
     "core:window:allow-start-dragging",
     "core:window:allow-toggle-maximize",
