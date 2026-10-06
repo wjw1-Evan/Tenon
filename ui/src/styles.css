@@ -536,7 +536,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 0 6px 6px;
+  padding: 6px 0 6px 2px;
   border: none;
   background: transparent;
   font-weight: 600;
@@ -573,7 +573,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   flex-shrink: 0;
   margin-left: auto;
   min-width: 52px;
-  padding-right: 6px;
+  padding-right: 2px;
   color: var(--muted);
   font-size: 10.5px;
   font-weight: 400;
@@ -640,7 +640,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   align-items: center;
   gap: 4px;
   width: 100%;
-  padding: 6px 8px;
+  padding: 6px 4px;
   margin-top: 2px;
   border: none;
   border-top: 1px solid var(--border);
@@ -679,7 +679,7 @@ button:disabled { opacity: 0.45; cursor: default; }
 .pe-chat-list {
   list-style: none;
   margin: 0;
-  padding: 0 0 3px 12px;
+  padding: 0 0 3px 6px;
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -690,7 +690,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   align-items: center;
   justify-content: flex-start;
   width: 100%;
-  padding: 6px 6px;
+  padding: 6px 4px;
   border: none;
   background: transparent;
   border-radius: 6px;
