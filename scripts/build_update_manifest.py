@@ -14,15 +14,16 @@ from pathlib import Path
 from typing import Iterator
 from urllib.parse import quote
 
+# latest.json 平台键（Tauri 约定）-> (release.yml 归集命名前缀 = Rust target triple, 产物 glob)
 PLATFORM_GLOBS = {
-    "darwin-aarch64": "*-*.app.tar.gz",
-    "darwin-x86_64": "*-*.app.tar.gz",
-    "linux-x86_64": "*-*.AppImage",
-    "windows-x86_64": "*-*-setup.exe",
+    "darwin-aarch64": ("aarch64-apple-darwin", "*-*.app.tar.gz"),
+    "darwin-x86_64": ("x86_64-apple-darwin", "*-*.app.tar.gz"),
+    "linux-x86_64": ("x86_64-unknown-linux-gnu", "*-*.AppImage"),
+    "windows-x86_64": ("x86_64-pc-windows-msvc", "*-*-setup.exe"),
 }
 
 
-def signed_assets(updater: Path, platform: str, pattern: str) -> Iterator[tuple[Path, Path]]:
+def signed_assets(updater: Path, prefix: str, pattern: str) -> Iterator[tuple[Path, Path]]:
     for artifact in sorted(updater.glob(pattern)):
         if artifact.name.endswith(".sig"):
             continue
@@ -43,9 +44,9 @@ def main() -> int:
         return 2
 
     platforms: dict[str, dict[str, str]] = {}
-    for platform, pattern in PLATFORM_GLOBS.items():
-        matches = list(signed_assets(updater_dir, platform, pattern))
-        matches = [(a, s) for a, s in matches if a.name.startswith(f"{platform}-")]
+    for platform, (prefix, pattern) in PLATFORM_GLOBS.items():
+        matches = list(signed_assets(updater_dir, prefix, pattern))
+        matches = [(a, s) for a, s in matches if a.name.startswith(f"{prefix}-")]
         if len(matches) != 1:
             print(
                 f"{platform}: 期望一个更新产物，实际 {len(matches)} 个 "
