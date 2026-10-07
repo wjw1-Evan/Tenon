@@ -100,6 +100,11 @@
 html, body, #root { height: 100%; }
 #root { display: flex; }
 
+/* 视口滚弹抑制必须挂根元素（v1.158）：macOS 壳 WKWebView 只把 html 的
+   overscroll-behavior 应用到原生视口，body 级声明无效（真实 WebView 实测
+   body 级双指整页弹动 ±8px、html 级归零）；Chrome 的 body→视口传播不可依赖。 */
+html { overscroll-behavior: none; }
+
 body {
   margin: 0;
   font-family: var(--font-ui);
@@ -110,7 +115,6 @@ body {
   color: var(--fg);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
-  overscroll-behavior: none;
 }
 
 code, pre, .tree-oid, .finder-path, .diff-body, .trace-detail, .search-hit code {

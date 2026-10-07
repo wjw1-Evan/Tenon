@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v1.156** |
-| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.156） |
+| 版本 | **v1.158** |
+| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.156）· 2026-10-07（v1.157/v1.158） |
 | 状态 | 定稿（v1.10 决策闭环），M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 | 历史评审 | v0.1 / v0.3 两轮共 41 项、v1.0 复审 21 项问题的结论已全部并入本方案（过程文档已清理） |
@@ -256,6 +256,8 @@ Codex CLI 已开源且核心为 Rust 实现（codex-rs 工作区，另有遗留 
 **macOS 分发签名与公证（v1.151，修复下载 dmg 被 Gatekeeper 判「已损坏」）**：macOS 产物在 Tauri 构建期完成 Developer ID 签名 + 公证 + staple——CI 经 Actions Secrets 注入 `APPLE_CERTIFICATE`（base64 p12，Developer ID Application）+ `APPLE_CERTIFICATE_PASSWORD` + `APPLE_SIGNING_IDENTITY`（`Developer ID Application: <名称> (<TeamID>)`）完成签名，注入 `APPLE_API_ISSUER` + `APPLE_API_KEY`（App Store Connect 密钥 ID）+ `APPLE_API_KEY_P8`（.p8 私钥原文，构建期物化至临时路径供 `APPLE_API_KEY_PATH`）完成公证（Apple ID 方：`APPLE_ID` / `APPLE_PASSWORD` 专用密码 / `APPLE_TEAM_ID` 为备选通道）；bundler 对 .app、.app.tar.gz 更新包与 .dmg 全量签名公证，下载 dmg 双击即开。secrets 未配置（证书未就绪 / fork 自建）时构建保持无签名退化，下载安装需 `xattr -cr` 绕过——记录为已知限制；secret 空值一律不注入构建环境（空串与未设置语义不同，防误触发签名/公证路径）。minisign 更新签名职责不变，与 Apple 签名独立：Gatekeeper 管首次分发信任，minisign 管更新链完整性。
 
 **桌面窗体（v1.30）**：macOS `titleBarStyle=Overlay + hiddenTitle` 隐藏原生标题栏，红绿灯悬于 UI 顶栏之上（顶栏左内边距 78px，`is-tauri` 根类驱动，浏览器态自动豁免）；顶栏 / 品牌区 / 弹性区为 `data-tauri-drag-region` 拖拽区（capabilities 授予 `start-dragging` / `toggle-maximize`，双击顶栏 = 系统缩放）；窗口默认 1560×980、最小 1080×680、底色 `#0E1015` 与 §7.5 令牌一致（配置层 + HTML 双保险防首帧白闪）。启动体验：握手轮询期间即渲染品牌启动屏（渐变印记 + 脉冲连接指示），失败态同一卡片呈现错误与重启示；Windows/Linux 回退原生标题栏（macOS 优先决策不变）。
+
+**视口滚弹抑制（v1.158，用户报「桌面版 双指 可以上下拖动整体内容」）**：工作区为固定 IDE 布局——文档视口自身永不产生滚动（`html/body/#root` 均为视口高），滚动只发生在内部滚动容器（线程 / 文件树 / diff / 弹层列表等）；防双指越界弹动的 `overscroll-behavior: none` 必须声明在根元素 `html` 上——macOS 壳 WKWebView 只把根元素的该属性应用到原生视口，body 级声明无效（真实 WKWebView 试验台实测：body 级双指整页弹动 ±8px、html 级归零），Chrome 的 body→视口传播不可依赖。
 
 **开发热重载（v1.68，承接 §18.1 Web 优先）**：`pnpm dev` 一键拉起 dev daemon 与 Vite dev server。dev daemon 经 `--port 9876 --token dev` 固定握手（对齐 UI `import.meta.env.DEV` 回落约定，浏览器裸开 `http://localhost:5173` 免参直连；跨源请求走 §12.6 CORS 白名单 + 预检），HOME 隔离至 `.tenon-dev/`，`crates/**.rs` 变更自动重建重启——握手不变，UI 免刷新重连。桌面壳 debug 构建启动时探测 dev server：在线则 WebView 导航 dev server（HMR 直达桌面窗口，握手仍经 URL 参数直传），离线回落 daemon 同源托管 UI。`--port` / `--token` 仅为开发便利：默认随机端口 + 随机 token 的安全姿态不变。
 
