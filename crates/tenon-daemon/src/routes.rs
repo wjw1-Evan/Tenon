@@ -3433,6 +3433,10 @@ async fn put_secret(
     if value.is_empty() {
         return api_err(StatusCode::BAD_REQUEST, "密钥值不能为空");
     }
+    // macOS 钥匙串写入走「密码 + 复述」双行 stdin 协议（§11），换行会错位
+    if value.contains('\n') || value.contains('\r') {
+        return api_err(StatusCode::BAD_REQUEST, "密钥值不能含换行");
+    }
     // 阻塞式 security CLI 进程调用，放专用线程池避免卡 runtime
     let result = {
         let name = name.clone();

@@ -131,18 +131,24 @@ async fn put_secret_writes_and_reads_back_via_keychain() {
     let name = "TENON_V163_TEST_SECRET";
     let value = "test-key-value-xyz";
 
+    // 环境门：先直连 KeychainStore 往返确认凭据库真的可用——
+    // 不能拿 HTTP 500 当「环境不可用」跳过（v1.164：那会掩盖真实回归）
+    let gate = tenon_models::KeychainStore::new();
+    gate.set("TENON_V163_TEST_GATE", "gate-value");
+    let keychain_ok = gate.get("TENON_V163_TEST_GATE").as_deref() == Some("gate-value");
+    gate.delete("TENON_V163_TEST_GATE");
+    if !keychain_ok {
+        eprintln!("跳过：系统凭据库不可用");
+        return;
+    }
+
     let resp = client
         .put(format!("{}/secrets/{name}", base(port)))
         .json(&json!({"value": value}))
         .send()
         .await
         .unwrap();
-    if resp.status() == 500 {
-        // 无可用凭据库的环境（CI 容器等）跳过，不视为失败
-        eprintln!("跳过：系统凭据库不可用");
-        return;
-    }
-    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.status(), 200, "凭据库可用时 /secrets 必须成功");
     // 回读确认（HTTP 层无 GET，防旁路读取——直接用 KeychainStore 验证）
     let keys = tenon_models::KeychainStore::new();
     assert_eq!(keys.get(name).as_deref(), Some(value));

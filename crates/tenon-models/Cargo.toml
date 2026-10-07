@@ -21,3 +21,8 @@ tracing = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 toml = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# KeychainStore：security CLI 子进程 HOME 固定为 getpwuid 真实主目录
+# （dev 脚本把 HOME 隔离到 .tenon-dev/，默认钥匙串会定位失败，v1.164）
+libc = "0.2"

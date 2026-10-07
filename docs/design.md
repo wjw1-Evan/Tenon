@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v1.163** |
-| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.156）· 2026-10-07（v1.157-v1.162）· 2026-10-08（v1.163） |
+| 版本 | **v1.164** |
+| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.156）· 2026-10-07（v1.157-v1.162）· 2026-10-08（v1.163-v1.164） |
 | 状态 | 定稿（v1.10 决策闭环），M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 | 历史评审 | v0.1 / v0.3 两轮共 41 项、v1.0 复审 21 项问题的结论已全部并入本方案（过程文档已清理） |
@@ -948,7 +948,7 @@ signature: "<sig>"
 | POST | `/market/uninstall` | 卸载市场条目 `{kind, name}`——技能删目录（仅市场 sidecar 条目）、MCP 删 `mcp.servers` 条目 |
 | GET / PUT | `/settings` | 全局设置。GET 返回合并后的生效值；PUT 接受已知键子集（`session.first_edit_buffer_ms` / `exec.command_timeout_s`；v1.40 增 `models.default` / `models.providers.<name>.{kind,base_url,wire_api,model,api_key_env}`），校验后写入 `~/.tenon/settings.json`（0600）并即时生效——**新会话**按新值构建（既有会话保持各自配置）；`session.mode` 与 `privacy.*` 键已随 v1.92 移除（无行为消费方，不设无效开关）；v1.130 增 `skills.disabled`（技能名称数组，整体替换——停用条目不进技能目录、`skill_use` 拒绝，新会话生效，§13.4）。v1.145 增 `market.sources`（市场源 owner/repo 数组，整体替换，默认空，§13.5）与 `mcp.servers`（MCP 服务器表 `{name: {command, args, env?, enabled, permissions?, source?}}`：command 启动器白名单、args 无控制字符、env 值仅 `env:VAR` 引用、整体替换、新会话生效，§13.5）。models 校验（v1.40）：provider 名 `^[a-z][a-z0-9_-]{0,63}$`、kind ∈ openai / anthropic / openai_responses、base_url 须 http(s)、`models.default` 须指向已配置 provider；`models.providers` 整体替换覆盖表（UI 每次保存发全量，支持删除；同名单条目按字段合并，未覆盖字段保留配置文件值）；GET 合并视图 provider 条目带 `overridden` 标记（纯配置文件条目不可经设置删除，只能编辑生成覆盖），`models.default=""` 清除覆盖回退配置值；**含 `api_key` 明文的请求 400 拒绝**（v1.163 起唯一豁免：`POST /models/verify` 试连端点）——密钥仅以 `api_key_env` 引用（§11：daemon 环境变量优先，缺失读取 OS 凭据库），PUT 成功即重建 provider 表 |
 | GET | `/models` | 模型清单与 Laya 状态（版本 / 已下载 / 加载 / 设备，§9.8）；设置面板模型分区（v1.40）消费它渲染默认模型下拉与 Laya 状态卡 |
-| PUT | `/secrets/{name}` | 密钥写入系统钥匙串（v1.163，§11 免费模型引导配套）：`{value}` 明文仅内存中转，持久只进 OS 凭据库（service `tenon.keys`），不落盘 / 不入事件溯源 / 不打日志；name 校验 `^[A-Z][A-Z0-9_]{0,63}$`（与 `api_key_env` 引用名同域，如 `ZHIPU_API_KEY`）；写入后回读校验，失败 500；无 GET（防旁路读取，写入方自持明文） |
+| PUT | `/secrets/{name}` | 密钥写入系统钥匙串（v1.163，§11 免费模型引导配套）：`{value}` 明文仅内存中转，持久只进 OS 凭据库（service `tenon.keys`），不落盘 / 不入事件溯源 / 不打日志；凭据库为真实用户级设施，定位恒取 getpwuid 真实主目录、不受 daemon dev HOME 隔离影响（v1.164：隔离下 security 默认钥匙串解析失败会退回 System.keychain 并弹授权对话框）；macOS 写入语义（v1.164 实测钉死）：`security add-generic-password -w` 必须末参（紧随其后的任何 token 会被当作密码值），密码经 stdin 双行（值 + 复述）传递，值不得含换行（校验 400 拒绝）；name 校验 `^[A-Z][A-Z0-9_]{0,63}$`（与 `api_key_env` 引用名同域，如 `ZHIPU_API_KEY`）；写入后回读校验，失败 500；无 GET（防旁路读取，写入方自持明文） |
 | POST | `/models/verify` | 引导向导试连验证（v1.163）：`{kind?, base_url, model, api_key}`——**明文 `api_key` 唯一豁免端点**（其余端点维持 400 拒绝不变），daemon 以 15s 超时构建临时 provider 发一次极小测试请求（max_tokens=16、GLM 目标 thinking disabled），返回 `{ok:true, model, latency_ms}` 或 4xx `{ok:false, error}`；base_url 须 http(s)；请求体不打日志 |
 | GET | `/costs` | 成本归因（会话级；`?session=` 必带，v1.92 收敛——月度聚合无消费方）；返回体含 `cached_tokens` / `duration_ms`（v1.129，命中率与均速由消费方派生） |
 | POST | `/ws-ticket` | 一次性 WS 票据 |

@@ -82,11 +82,34 @@ impl Default for KeychainStore {
     }
 }
 
+/// security CLI 以进程 `$HOME` 定位默认钥匙串；daemon dev 模式把 HOME 隔离到
+/// 项目 `.tenon-dev/`（dev 脚本），隔离后登录钥匙串解析不到，security 退回
+/// System.keychain 并弹授权对话框（「找不到钥匙串」→「授权被取消」）。
+/// 凭据库是真实用户级设施（§11 密钥存储），不随 `.tenon` 数据目录隔离——
+/// 子进程 HOME 恒取 getpwuid 真实主目录（正常环境与 `$HOME` 相同，行为不变；
+/// 真实主目录可含空格，`Command::env` 原样传递无 shell 切分）。
+#[cfg(target_os = "macos")]
+fn security_command() -> std::process::Command {
+    let mut cmd = std::process::Command::new("security");
+    // SAFETY: getpwuid 返回线程局部静态缓冲，仅在取值期间使用
+    unsafe {
+        let pw = libc::getpwuid(libc::getuid());
+        if !pw.is_null() && !(*pw).pw_dir.is_null() {
+            if let Ok(dir) = std::ffi::CStr::from_ptr((*pw).pw_dir).to_str() {
+                if !dir.is_empty() {
+                    cmd.env("HOME", dir);
+                }
+            }
+        }
+    }
+    cmd
+}
+
 impl KeyStore for KeychainStore {
     fn get(&self, name: &str) -> Option<String> {
         #[cfg(target_os = "macos")]
         {
-            let out = std::process::Command::new("security")
+            let out = security_command()
                 .args([
                     "find-generic-password",
                     "-s",
@@ -113,20 +136,24 @@ impl KeyStore for KeychainStore {
         {
             use std::io::Write;
             // 先删后写（幂等）
-            let _ = std::process::Command::new("security")
+            let _ = security_command()
                 .args(["delete-generic-password", "-s", &self.service, "-a", name])
                 .output();
-            // `-w` 不带值时 security 从 stdin 读密码——密钥经 argv 传递会被
-            // 同用户任意进程在 ps 窗口期读到（Linux 路径早已用 stdin）
-            let mut child = match std::process::Command::new("security")
+            // `-w` 必须是最后一个参数——security 把紧随其后的任何 token 当作
+            // 密码值（`-w -U` 旧顺序实测把字面 `-U` 存成了密码）；`-w` 无值时
+            // 走「密码 + 复述」双行 stdin 读取，两行不一致会静默存入空密码
+            // （rc 仍为 0）。密钥值两行各喂一次，经 stdin 传递避免被同用户
+            // 任意进程在 ps 窗口期经 argv 读到（Linux 路径早已用 stdin）。
+            // 值含换行会破坏双行协议，由调用方校验拒绝。
+            let mut child = match security_command()
                 .args([
                     "add-generic-password",
+                    "-U",
                     "-s",
                     &self.service,
                     "-a",
                     name,
                     "-w",
-                    "-U",
                 ])
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
@@ -137,7 +164,7 @@ impl KeyStore for KeychainStore {
                 Err(_) => return,
             };
             if let Some(stdin) = child.stdin.as_mut() {
-                let _ = stdin.write_all(value.as_bytes());
+                let _ = stdin.write_all(format!("{value}\n{value}\n").as_bytes());
             }
             drop(child.stdin.take()); // 关闭 stdin 通知 EOF
             let _ = child.wait();
@@ -150,7 +177,7 @@ impl KeyStore for KeychainStore {
     fn delete(&self, name: &str) {
         #[cfg(target_os = "macos")]
         {
-            let _ = std::process::Command::new("security")
+            let _ = security_command()
                 .args(["delete-generic-password", "-s", &self.service, "-a", name])
                 .output();
         }
@@ -423,5 +450,29 @@ mod tests {
         let ks = EnvKeyStore;
         ks.set("TENON_NOOP", "v");
         ks.delete("TENON_NOOP");
+    }
+
+    /// v1.164 回归：security 子进程 HOME 恒钉 getpwuid 真实主目录，不读进程
+    /// `$HOME`（daemon dev 模式把它隔离到 .tenon-dev/，默认钥匙串会定位失败）。
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn security_command_pins_home_to_getpwuid_dir_not_process_env() {
+        let pw = unsafe { libc::getpwuid(libc::getuid()) };
+        assert!(!pw.is_null(), "getpwuid 必须可解析");
+        let real = unsafe { std::ffi::CStr::from_ptr((*pw).pw_dir) }
+            .to_str()
+            .expect("真实主目录须为 UTF-8")
+            .to_string();
+        assert!(!real.is_empty());
+        let cmd = security_command();
+        let home = cmd
+            .get_envs()
+            .find(|(k, _)| *k == std::ffi::OsStr::new("HOME"))
+            .map(|(_, v)| v);
+        assert_eq!(
+            home,
+            Some(Some(std::ffi::OsStr::new(real.as_str()))),
+            "子进程 HOME 应为 getpwuid 主目录而非进程环境值"
+        );
     }
 }
