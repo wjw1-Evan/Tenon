@@ -17,6 +17,9 @@ src-tauri/gen/
 .idea/
 .vscode/
 
+# ZCode 会话数据（plans 等）
+.zcode/
+
 # 环境变量
 .env
 .env.*

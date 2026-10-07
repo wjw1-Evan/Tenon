@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-update-notes"
+description = "Enables the get_update_notes command without any pre-configured scope."
+commands.allow = ["get_update_notes"]
+
+[[permission]]
+identifier = "deny-get-update-notes"
+description = "Denies the get_update_notes command without any pre-configured scope."
+commands.deny = ["get_update_notes"]

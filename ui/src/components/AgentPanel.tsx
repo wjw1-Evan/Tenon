@@ -557,6 +557,7 @@ export function AgentPanel({
     }
     return t("thread.running");
   }, [events, t]);
+
   // §7.5（v1.148）：常驻进度卡数据——全事件流最新一次 subtasks 快照（跨回合）。
   const liveSubtasks = useMemo(() => {
     for (let i = events.length - 1; i >= 0; i -= 1) {
@@ -567,7 +568,6 @@ export function AgentPanel({
     }
     return [];
   }, [events]);
-
 
   const empty = events.length === 0 && !streamText;
 
@@ -682,7 +682,7 @@ export function AgentPanel({
         })}
         {/* v1.147 发送消息队列（§9.1）：运行态入队的待发消息渲染为排队气泡——
             用户气泡同款居右样式 + 「已排队」徽标 + 移除钮；点击气泡文本回填输入框
-           （即编辑重发）；冻结期（非运行态）条目显示发送钮可手动续发。 */}
+            （即编辑重发）；冻结期（非运行态）条目显示发送钮可手动续发。 */}
         {queue.length > 0 && (
           <div className="queue-block" data-testid="queue-list">
             {queue.map((m) => (
