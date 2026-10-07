@@ -18,6 +18,7 @@ use tenon_agent::session::{
     sanitize_title, AgentConfig, AgentSession, ControlCommand, TaskOutcome,
 };
 use tenon_core::context::ProjectRules;
+use tenon_models::{KeyStore, ModelProvider};
 use tenon_snapshot::SnapshotStore;
 use tenon_store::{EventKind, SessionStatus};
 
@@ -105,6 +106,9 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
             get(get_project_ui_state).put(put_project_ui_state),
         )
         .route("/models", get(list_models))
+        // 密钥写入与试连验证（§15 v1.163 免费模型引导配套）
+        .route("/secrets/{name}", put(put_secret))
+        .route("/models/verify", post(verify_model))
         .route("/pairing", get(pairing_info))
         .route("/evals", get(list_evals))
         .route("/lan/enable", post(lan_enable))
@@ -3398,6 +3402,119 @@ async fn put_ui_prefs(State(state): State<Arc<DaemonState>>, Json(body): Json<Va
         }
     }
     Json(json!({"ok": true})).into_response()
+}
+
+// ---------- 密钥写入与试连验证（§15 v1.163 免费模型引导） ----------
+
+/// 密钥名与 `api_key_env` 引用名同域：`^[A-Z][A-Z0-9_]{0,63}$`。
+fn valid_secret_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_uppercase() => {}
+        _ => return false,
+    }
+    name.len() <= 64 && chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// 密钥写入系统钥匙串（§11 密钥存储 / §15）：明文仅内存中转，持久只进
+/// OS 凭据库（service `tenon.keys`），不落盘 / 不入事件溯源 / 不打日志。
+/// 无 GET——防旁路读取，写入方自持明文；写入后回读校验，失败 500。
+async fn put_secret(
+    State(_state): State<Arc<DaemonState>>,
+    Path(name): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    if !valid_secret_name(&name) {
+        return api_err(StatusCode::BAD_REQUEST, "密钥名须为 ^[A-Z][A-Z0-9_]{0,63}$");
+    }
+    let Some(value) = body.get("value").and_then(|v| v.as_str()) else {
+        return api_err(StatusCode::BAD_REQUEST, "须为 {\"value\": \"…\"}");
+    };
+    if value.is_empty() {
+        return api_err(StatusCode::BAD_REQUEST, "密钥值不能为空");
+    }
+    // 阻塞式 security CLI 进程调用，放专用线程池避免卡 runtime
+    let result = {
+        let name = name.clone();
+        let value = value.to_string();
+        tokio::task::spawn_blocking(move || {
+            let keys = tenon_models::KeychainStore::new();
+            keys.set(&name, &value);
+            keys.get(&name).is_some_and(|v| v == value)
+        })
+        .await
+    };
+    match result {
+        Ok(true) => Json(json!({"ok": true})).into_response(),
+        Ok(false) => api_err(StatusCode::INTERNAL_SERVER_ERROR, "系统凭据库写入失败"),
+        Err(e) => api_err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("凭据写入任务: {e}"),
+        ),
+    }
+}
+
+/// 试连验证（§15 v1.163）：引导向导贴 Key 后发一次极小测试请求，
+/// **明文 api_key 唯一豁免端点**（其余端点维持 400 拒绝不变）；请求体不打日志。
+async fn verify_model(State(_state): State<Arc<DaemonState>>, Json(body): Json<Value>) -> Response {
+    let base_url = body
+        .get("base_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let model = body
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let api_key = body
+        .get("api_key")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
+        return api_err(StatusCode::BAD_REQUEST, "base_url 须为 http(s)");
+    }
+    if model.is_empty() || api_key.is_empty() {
+        return api_err(StatusCode::BAD_REQUEST, "model 与 api_key 不能为空");
+    }
+    // GLM 免费档为推理模型：低档推理翻译为 thinking disabled（§11 v1.163），
+    // 防止思考耗尽 max_tokens=16 后正文为空造成假失败
+    let mut req = tenon_models::ChatRequest::new(
+        model.clone(),
+        vec![tenon_models::ChatMessage::user("ping")],
+    );
+    req.max_tokens = 16;
+    req.temperature = 0.0;
+    req.reasoning_effort = Some("low".into());
+    let provider = tenon_models::OpenAiCompatProvider::new("verify", &base_url, &api_key, None)
+        .with_timeout(std::time::Duration::from_secs(15));
+    let started = std::time::Instant::now();
+    let result = provider.chat(&req).await;
+    let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    match result {
+        Ok(resp) => Json(json!({
+            "ok": true,
+            "model": if resp.model.is_empty() { model } else { resp.model },
+            "latency_ms": latency_ms,
+        }))
+        .into_response(),
+        Err(e) => {
+            // 上游错误正文可能很长（HTML 错误页），截断防响应膨胀
+            let error = match e {
+                tenon_models::ProviderError::Http { status, body } => {
+                    let short: String = body.chars().take(300).collect();
+                    format!("HTTP {status}: {short}")
+                }
+                other => other.to_string(),
+            };
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": error})),
+            )
+                .into_response()
+        }
+    }
 }
 
 // ---------- WS（ADR-10） ----------

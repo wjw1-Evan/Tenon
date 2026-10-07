@@ -2827,6 +2827,86 @@ button:disabled { opacity: 0.45; cursor: default; }
   .settings-panel { padding-right: 0; }
 }
 
+/* 接入免费模型向导（§7.1 v1.163）：Codex 式三步模态 */
+.onboarding-pane {
+  width: min(460px, calc(100vw - 48px));
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
+}
+.onboarding-head { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.onboarding-steps {
+  display: flex;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11px;
+  color: var(--muted);
+}
+.onboarding-step { padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; }
+.onboarding-step.active { color: var(--accent-text); border-color: var(--accent); }
+.onboarding-step.done { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 55%, transparent); }
+.onboarding-body { padding: 4px 16px 16px; display: flex; flex-direction: column; gap: 10px; font-size: 13px; }
+.onboarding-body p { margin: 0; }
+.onboarding-model-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  background: color-mix(in srgb, var(--raised) 58%, transparent);
+  font-size: 13px;
+}
+.onboarding-free-badge {
+  font-size: 11px;
+  color: var(--ok);
+  border: 1px solid color-mix(in srgb, var(--ok) 45%, transparent);
+  border-radius: 999px;
+  padding: 1px 8px;
+  white-space: nowrap;
+}
+.onboarding-key-row { display: flex; gap: 8px; align-items: center; }
+.onboarding-key-row input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+.onboarding-actions { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.onboarding-actions-gap { flex: 1; }
+.onboarding-primary {
+  background: var(--accent);
+  color: #fff;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 5px 14px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.onboarding-primary:disabled { opacity: .55; cursor: default; }
+.onboarding-primary:not(:disabled):hover { background: var(--accent-strong); }
+/* 外链 / 引导入口（模型空态 CTA 与设置 Models 复用）：accent 文字色惯例 */
+.onboarding-portal-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent-text);
+  font-size: 12px;
+  text-decoration: none;
+  cursor: pointer;
+}
+.onboarding-portal-link:hover { text-decoration: underline; }
+.onboarding-error {
+  border-left: 2px solid var(--error);
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
 .tree-row.drop-target, .tree.drop-target { outline: 1px dashed var(--accent); outline-offset: 2px; background: rgba(47,111,237,.10); }
 
 .bottom-grid { grid-template-columns: 1fr 1.1fr 1.1fr .75fr; }

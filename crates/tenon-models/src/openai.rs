@@ -43,12 +43,47 @@ impl OpenAiCompatProvider {
         }
     }
 
+    /// 覆盖非流式请求总超时（默认 120s）——试连验证等短请求用（§15 /models/verify）。
+    pub fn with_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.client = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .expect("reqwest client");
+        self
+    }
+
     fn map_role(role: Role) -> &'static str {
         match role {
             Role::System => "system",
             Role::User => "user",
             Role::Assistant => "assistant",
             Role::Tool => "tool",
+        }
+    }
+
+    /// GLM 目标判定（§11 v1.163）：智谱官方端点或 glm 前缀模型名。
+    fn is_glm_target(&self, req: &ChatRequest) -> bool {
+        self.base_url.contains("bigmodel.cn")
+            || self.base_url.contains("z.ai")
+            || req.model.starts_with("glm")
+            || self
+                .default_model
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("glm")
+    }
+
+    /// GLM 推理模型思考默认开启且计入 max_tokens，小预算请求（标题生成等）
+    /// 会被思考耗尽返回空 content——低档推理诉求翻译为 thinking disabled
+    /// （与 Anthropic 路径做法同规），其余档位照旧透传 reasoning_effort。
+    fn apply_reasoning(&self, body: &mut serde_json::Value, req: &ChatRequest) {
+        let Some(effort) = &req.reasoning_effort else {
+            return;
+        };
+        if self.is_glm_target(req) && matches!(effort.as_str(), "low" | "minimal" | "none") {
+            body["thinking"] = serde_json::json!({ "type": "disabled" });
+        } else {
+            body["reasoning_effort"] = serde_json::json!(effort);
         }
     }
 }
@@ -233,9 +268,7 @@ impl ModelProvider for OpenAiCompatProvider {
             "max_tokens": req.max_tokens,
             "temperature": req.temperature,
         });
-        if let Some(effort) = &req.reasoning_effort {
-            body["reasoning_effort"] = serde_json::json!(effort);
-        }
+        self.apply_reasoning(&mut body, req);
         if !req.tools.is_empty() {
             body["tools"] = serde_json::json!(req
                 .tools
@@ -366,9 +399,7 @@ impl ModelProvider for OpenAiCompatProvider {
             "stream": true,
             "stream_options": { "include_usage": true },
         });
-        if let Some(effort) = &req.reasoning_effort {
-            body["reasoning_effort"] = serde_json::json!(effort);
-        }
+        self.apply_reasoning(&mut body, req);
         if !req.tools.is_empty() {
             body["tools"] = serde_json::json!(req
                 .tools
@@ -471,3 +502,54 @@ impl ModelProvider for OpenAiCompatProvider {
 
 /// 兼容旧引用（chat 消息类型导出）。
 pub type Msg = ChatMessage;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn req(model: &str, effort: Option<&str>) -> ChatRequest {
+        let mut r = ChatRequest::new(model, vec![ChatMessage::user("ping")]);
+        r.max_tokens = 16;
+        r.reasoning_effort = effort.map(String::from);
+        r
+    }
+
+    #[test]
+    fn glm_low_effort_becomes_thinking_disabled() {
+        let p = OpenAiCompatProvider::new("glm", "https://open.bigmodel.cn/api/paas/v4", "k", None);
+        let mut body = serde_json::json!({});
+        p.apply_reasoning(&mut body, &req("glm-4.7-flash", Some("low")));
+        assert_eq!(body["thinking"]["type"], "disabled");
+        assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn glm_target_by_model_prefix_without_official_base_url() {
+        // 第三方中转端点，凭 glm 前缀模型名同样判定
+        let p = OpenAiCompatProvider::new("relay", "https://relay.example.com/v1", "k", None);
+        assert!(p.is_glm_target(&req("glm-4.7-flash", None)));
+        let mut body = serde_json::json!({});
+        p.apply_reasoning(&mut body, &req("glm-4.7-flash", Some("minimal")));
+        assert_eq!(body["thinking"]["type"], "disabled");
+    }
+
+    #[test]
+    fn non_glm_keeps_reasoning_effort_passthrough() {
+        let p = OpenAiCompatProvider::new("openai", "https://api.openai.com/v1", "k", None);
+        let mut body = serde_json::json!({});
+        p.apply_reasoning(&mut body, &req("gpt-5", Some("low")));
+        assert_eq!(body["reasoning_effort"], "low");
+        assert!(body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn glm_high_effort_still_passthrough_and_none_effort_noop() {
+        let p = OpenAiCompatProvider::new("glm", "https://open.bigmodel.cn/api/paas/v4", "k", None);
+        let mut body = serde_json::json!({});
+        p.apply_reasoning(&mut body, &req("glm-4.7-flash", Some("high")));
+        assert_eq!(body["reasoning_effort"], "high");
+        let mut body = serde_json::json!({});
+        p.apply_reasoning(&mut body, &req("glm-4.7-flash", None));
+        assert!(body.get("thinking").is_none() && body.get("reasoning_effort").is_none());
+    }
+}

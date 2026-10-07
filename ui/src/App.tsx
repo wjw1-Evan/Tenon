@@ -54,6 +54,10 @@ import {
   useViewport,
 } from "./lib/viewport";
 import { SettingsDialog, type SettingsData } from "./components/SettingsDialog";
+import {
+  OnboardingWizard,
+  ONBOARDING_DISMISSED_KEY,
+} from "./components/OnboardingWizard";
 import { UpdateNotesDialog } from "./components/UpdateNotesDialog";
 import { UpdateReadyToast } from "./components/UpdateReadyToast";
 import { CommandPalette, type Command } from "./components/CommandPalette";
@@ -241,12 +245,27 @@ export default function App({
   // 保存模式（§8.2 v1.75）：auto（默认，去抖自动写盘）| manual（仅显式保存写盘）。
   // 偏好存 daemon ui_prefs（§7.5 权威，键 editor.saveMode），设置面板即时切换。
   const [saveMode, setSaveMode] = useState<"auto" | "manual">("auto");
+  // 免费模型引导（§7.1 v1.163）：首启无 provider 且未跳过自动弹出
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const [onboardingDismissed, setOnboardingDismissed] = useState<boolean | null>(null);
   useEffect(() => {
     void api.getUiPrefs().then((prefs) => {
       if (prefs["editor.saveMode"] === "manual") setSaveMode("manual");
+      setOnboardingDismissed(prefs[ONBOARDING_DISMISSED_KEY] === "1");
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  useEffect(() => {
+    // 合并视图无任何 provider（含 config 文件条目）且用户未跳过 → 自动弹
+    if (
+      onboardingDismissed === false &&
+      settings &&
+      Object.keys(settings.models?.providers ?? {}).length === 0
+    ) {
+      setOnboardingOpen(true);
+    }
+  }, [onboardingDismissed, settings]);
+  const openOnboarding = useCallback(() => setOnboardingOpen(true), []);
   const changeSaveMode = useCallback(
     (mode: "auto" | "manual") => {
       setSaveMode(mode);
@@ -1383,6 +1402,7 @@ export default function App({
             followMode={followMode}
             onToggleFollow={toggleFollow}
             injectedTask={injectedTask ?? undefined}
+            onOpenOnboarding={openOnboarding}
             onModelSwitched={(m) => {
               // 切换提示（§11：上下文随迁，model_fallback 事件入 Trace）
               setRouteNote(t("model.switched", { model: m }));
@@ -1553,6 +1573,22 @@ export default function App({
           }))}
           onClose={() => setSettingsOpen(false)}
           onSaved={setSettings}
+          onOpenOnboarding={openOnboarding}
+        />
+      )}
+      {onboardingOpen && (
+        <OnboardingWizard
+          api={api}
+          t={t}
+          settings={settings}
+          onDone={(next) => {
+            setSettings(next);
+            setOnboardingOpen(false);
+          }}
+          onSkip={() => {
+            setOnboardingDismissed(true);
+            setOnboardingOpen(false);
+          }}
         />
       )}
       {/* v1.152 更新日志启动弹窗：仅桌面壳环境自渲染（浏览器 Web 版不适用） */}

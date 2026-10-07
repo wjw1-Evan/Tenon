@@ -80,9 +80,11 @@ interface Props {
   projects?: SkillsProjectOption[];
   onClose: () => void;
   onSaved: (s: SettingsData) => void;
+  /** 免费模型引导重开入口（§7.1 v1.163）：Models 分区 CTA；缺省不渲染。 */
+  onOpenOnboarding?: () => void;
 }
 
-export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, projects = [], onClose, onSaved }: Props) {
+export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, projects = [], onClose, onSaved, onOpenOnboarding }: Props) {
   const [bufferMs, setBufferMs] = useState(2000);
   const [commandTimeout, setCommandTimeout] = useState(120);
   const [deniedTools, setDeniedTools] = useState("");
@@ -447,6 +449,17 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, p
                     {t("settings.models.add")}
                   </button>
                 </div>
+
+                {onOpenOnboarding && (
+                  <button
+                    type="button"
+                    className="onboarding-portal-link"
+                    data-testid="settings-models-onboarding"
+                    onClick={onOpenOnboarding}
+                  >
+                    {t("onboarding.reopen")}
+                  </button>
+                )}
 
                 <div className="laya-status" data-testid="laya-status">
                   <span className="settings-section-sub">{t("settings.models.laya")}</span>

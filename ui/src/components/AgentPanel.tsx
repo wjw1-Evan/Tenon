@@ -84,6 +84,8 @@ interface Props {
   injectedTask?: { token: number; text: string };
   /** 会话级模型热切换回调（§11：上下文随迁提示由 App 呈现）。 */
   onModelSwitched?: (model: string) => void;
+  /** 免费模型引导重开入口（§7.1 v1.163）：模型空态 CTA。 */
+  onOpenOnboarding?: () => void;
 }
 
 interface EventItem {
@@ -220,6 +222,7 @@ export function AgentPanel({
   injectedTask,
   onModelSwitched,
   onShowDiff,
+  onOpenOnboarding,
 }: Props) {
   const [events, setEvents] = useState<EventItem[]>([]);
   const [streamText, setStreamText] = useState("");
@@ -1087,6 +1090,7 @@ export function AgentPanel({
             sessionId={sessionId}
             t={t}
             onSwitched={onModelSwitched}
+            onOpenOnboarding={onOpenOnboarding}
           />
           {/* v1.147（§9.1）：运行态「发送」保留入队语义、与「停止」双钮并列——
               此前运行态唯一按钮变停止，消息无法发送（v1.59 形态）；暂停仍单钮恢复。 */}

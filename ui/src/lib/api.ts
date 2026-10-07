@@ -179,6 +179,22 @@ export interface TeamPolicySettings {
   [k: string]: unknown;
 }
 
+/** 模型试连验证载荷（§15 /models/verify v1.163）：明文 api_key 唯一允许的端点。 */
+export interface VerifyModelPayload {
+  kind?: string;
+  base_url: string;
+  model: string;
+  api_key: string;
+}
+
+/** 试连验证结果（§15 /models/verify v1.163）。 */
+export interface VerifyModelResult {
+  ok: boolean;
+  model?: string;
+  latency_ms?: number;
+  error?: string;
+}
+
 /** 全局设置（§15 /settings 合并视图）。 */
 export interface SettingsData {
   session: {
@@ -322,6 +338,19 @@ export class TenonApi {
   /** 写权限高级策略（v1.85）：全量原子替换，仅对新会话生效。 */
   putTeamPolicy(body: TeamPolicySettings): Promise<TeamPolicySettings> {
     return this.request<TeamPolicySettings>("/team-policy", { method: "PUT", json: body });
+  }
+
+  /** 写密钥入系统钥匙串（§15 v1.163）：明文仅内存中转，持久只进 OS 凭据库；无读取端点。 */
+  putSecret(name: string, value: string): Promise<{ ok: boolean }> {
+    return this.request<{ ok: boolean }>(`/secrets/${encodeURIComponent(name)}`, {
+      method: "PUT",
+      json: { value },
+    });
+  }
+
+  /** 试连验证（§15 v1.163）：引导向导贴 Key 后的一次极小测试请求；失败抛 API 4xx。 */
+  verifyModel(payload: VerifyModelPayload): Promise<VerifyModelResult> {
+    return this.request<VerifyModelResult>("/models/verify", { method: "POST", json: payload });
   }
 
   listProjects() {

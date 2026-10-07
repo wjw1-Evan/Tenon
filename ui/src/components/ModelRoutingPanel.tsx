@@ -26,9 +26,11 @@ interface Props {
   sessionId: string | null;
   t: Translate;
   onSwitched?: (model: string) => void;
+  /** 免费模型引导重开入口（§7.1 v1.163）：模型空态 CTA。 */
+  onOpenOnboarding?: () => void;
 }
 
-export function ModelRoutingPanel({ api, sessionId, t, onSwitched }: Props) {
+export function ModelRoutingPanel({ api, sessionId, t, onSwitched, onOpenOnboarding }: Props) {
   const [models, setModels] = useState<ModelEntry[]>([]);
   const [current, setCurrent] = useState<string>("");
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -163,7 +165,19 @@ export function ModelRoutingPanel({ api, sessionId, t, onSwitched }: Props) {
                 );
               })}
               {models.length === 0 && (
-                <p className="muted model-option-empty">{t("model.empty")}</p>
+                <div className="model-option-empty">
+                  <p className="muted">{t("model.empty")}</p>
+                  {onOpenOnboarding && (
+                    <button
+                      type="button"
+                      className="onboarding-portal-link"
+                      data-testid="model-empty-onboarding"
+                      onClick={onOpenOnboarding}
+                    >
+                      {t("onboarding.reopen")}
+                    </button>
+                  )}
+                </div>
               )}
             </div>
             {error && <div role="alert">{error}</div>}
