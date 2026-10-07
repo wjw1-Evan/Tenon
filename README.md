@@ -30,8 +30,17 @@ pnpm web
 pnpm dev             # 浏览器裸开 http://localhost:5173，免参直连
 pnpm ui              # 仅 UI 侧迭代（配合 pnpm dev:daemon）
 
-# 桌面壳（仅壳链路验证：sidecar 握手 / 原生目录对话框 / WebView 导航）
-cargo build -p tenon-app && TENON_PROJECT=<项目路径> ./target/debug/tenon-app
+# 桌面版：debug 壳启动时探测 5173 dev server——在线则 WebView 导航 Vite（HMR 直达桌面窗口），
+# 离线回落 daemon 同源托管 ui/dist（生产同款链路）。tauri-build 的 externalBin 要求 sidecar
+# 先就位（binaries/ 已 gitignore，复制方法与 release 流水线一致；daemon 重建后无需重拷——
+# 运行时优先取 target/debug 同级新产物）
+pnpm ui:build        # 首次运行需先产出 ui/dist（5173 dev server 在线时不需要）
+cargo build -p tenon-daemon
+mkdir -p app/src-tauri/binaries
+cp target/debug/tenon-daemon "app/src-tauri/binaries/tenon-daemon-$(rustc -vV | sed -n 's/^host: //p')"
+cargo build -p tenon-app && ./target/debug/tenon-app
+# 可选：TENON_PROJECT=<路径> 指定首启项目（缺省当前目录）；桌面启动即开局域网访问（v1.157），
+# macOS 首次会弹「接受传入网络连接」防火墙提示，属预期
 
 # 测试与基准
 cargo test --workspace                 # Rust 全量（含 GLM 真实端点联调：无 config.local.toml 自动跳过）
