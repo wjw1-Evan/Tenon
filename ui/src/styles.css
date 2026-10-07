@@ -1308,13 +1308,14 @@ button:disabled { opacity: 0.45; cursor: default; }
   padding: 2px 10px;
 }
 
+/* v1.162 会话流纯文本化：回合分隔改纯留白（feed 间距承载分组） */
 .agent-feed {
   flex: 1;
   overflow: auto;
   padding: 10px 12px;
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 14px;
 }
 .agent-empty {
   flex: 1;
@@ -1327,22 +1328,15 @@ button:disabled { opacity: 0.45; cursor: default; }
   padding: 24px;
 }
 
-/* 会话过程流（v1.109 Codex 形态）：回合分组 + 折叠步骤卡 + markdown 正文 */
+/* 会话过程流（v1.109 Codex 形态；v1.162 纯文本化）：回合分组 + 单行折叠步骤 + markdown
+   正文；回合间仅以 feed 留白分组，分隔线 / 竖线 / 卡片装饰全部移除 */
 .turn {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding-bottom: 6px;
-  margin-bottom: 6px;
-  border-bottom: 1px solid var(--border);
-}
-.turn:last-child {
-  border-bottom: none;
-  margin-bottom: 0;
-  padding-bottom: 0;
 }
 .turn-user {
-  /* v1.109 用户消息居右（v1.111 撤销钮挂气泡下方） */
+  /* v1.109 用户消息居右；v1.162 去气泡：居右纯文本按侧别与 AI 内容区分 */
   align-self: flex-end;
   max-width: 85%;
   display: flex;
@@ -1351,18 +1345,14 @@ button:disabled { opacity: 0.45; cursor: default; }
   gap: 3px;
 }
 .turn-task {
-  /* v1.109 用户消息气泡：居右（max-width 限宽），与居左 AI 回复按侧区分 */
-  background: var(--accent-soft-strong);
-  color: var(--fg-strong);
-  border-radius: var(--radius-m);
-  padding: 7px 11px;
   font-size: 12.5px;
   line-height: 1.55;
+  color: var(--fg-strong);
   white-space: pre-wrap;
   word-break: break-word;
 }
-/* 发送消息队列（v1.147 §9.1）：运行态入队的排队气泡——用户气泡同款居右、
-   虚线描边表达「未投递」态，点击回填输入框编辑 */
+/* 发送消息队列（v1.147 §9.1）：运行态入队的排队气泡——居右纯文本 + 虚线描边表达
+   「未投递」态（v1.162 去底色），点击回填输入框编辑 */
 .queue-block {
   display: flex;
   flex-direction: column;
@@ -1370,11 +1360,10 @@ button:disabled { opacity: 0.45; cursor: default; }
   gap: 6px;
 }
 .queue-item .queue-text {
-  background: var(--accent-soft-strong);
   color: var(--fg-strong);
-  border: 1px dashed var(--border);
+  border: 1px dashed var(--border-strong);
   border-radius: var(--radius-m);
-  padding: 7px 11px;
+  padding: 5px 10px;
   font-size: 12.5px;
   line-height: 1.55;
   white-space: pre-wrap;
@@ -1409,13 +1398,9 @@ button:disabled { opacity: 0.45; cursor: default; }
   color: var(--muted);
   padding: 1px 0;
 }
-/* 子任务清单卡（v1.146 §9.2）：回合内最新一次 subtasks 快照的状态卡 */
+/* 子任务清单（v1.146 §9.2；v1.162 去卡片装饰）：回合内最新一次 subtasks 快照的纯列表 */
 .turn-subtasks {
-  margin: 4px 0;
-  padding: 6px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-m);
-  background: var(--raised);
+  margin: 2px 0;
   font-size: 12.5px;
 }
 .turn-subtasks-head {
@@ -1498,32 +1483,51 @@ button:disabled { opacity: 0.45; cursor: default; }
   font-size: 10px;
   flex-shrink: 0;
 }
-/* 模型用量徽标（v1.129 §11）：回合页脚单行弱化展示，与只读 / Laya 聚合同级 */
+/* 回合页脚（v1.162）：用量（v1.129）+ 改动摘要（v1.160）合并单行 muted，均空不占位 */
+.turn-foot {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.turn-foot:empty {
+  display: none;
+}
 .turn-usage {
   font-size: 11px;
   color: var(--muted);
-  padding: 1px 0;
   font-variant-numeric: tabular-nums;
 }
-/* 回合改动摘要徽标（v1.160）：「N 文件 · +A −B」紧凑按钮，hover accent；增删行用状态绿/红 */
+/* 改动摘要（v1.160）：纯文本按钮「N 文件 · +A −B」，hover accent；增删行用状态绿/红 */
 .turn-diffchip {
-  align-self: flex-start;
-  margin-top: 2px;
-  padding: 2px 8px;
+  padding: 0;
   font-size: 11px;
   font-family: inherit;
   color: var(--muted);
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 999px;
+  background: none;
+  border: none;
   cursor: pointer;
   font-variant-numeric: tabular-nums;
 }
-.turn-diffchip:hover { border-color: var(--accent); color: var(--accent-text); }
+.turn-diffchip:hover { color: var(--accent-text); }
 .turn-diffchip .chip-add { color: var(--ok); }
 .turn-diffchip .chip-del { color: var(--error); }
-/* 用户气泡下功能按钮组（v1.123）：复制 / 撤销 / 重做——撤销 hover 用错误色提示破坏性 */
-.turn-actions { display: flex; align-items: center; gap: 4px; margin-top: 2px; }
+/* 用户消息下功能按钮组（v1.123）：复制 / 撤销——v1.162 默认隐藏，hover / 键盘聚焦显现 */
+.turn-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.turn-user:hover .turn-actions,
+.turn-user:focus-within .turn-actions {
+  opacity: 1;
+}
+/* 排队气泡行（v1.147）的徽标 / 发送 / 移除恒显（「已排队」态需常驻可见） */
+.queue-item .turn-actions {
+  opacity: 1;
+}
 /* 回合模型标注（v1.131）：热切换 / fallback 后各回合如实展示所用模型；
  * v1.134：模型名完整显示不截断（用户令「模型名称要显示完整」） */
 .turn-model {
@@ -1555,10 +1559,8 @@ button:disabled { opacity: 0.45; cursor: default; }
   opacity: 0.5;
   cursor: default;
 }
+/* 回合体（v1.162 左缘竖线移除）：与用户消息同级左对齐，仅留内部行距 */
 .turn-body {
-  margin-left: 4px;
-  padding-left: 10px;
-  border-left: 2px solid var(--border);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -1618,13 +1620,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   color: var(--accent-text);
 }
 
-/* 工具步骤卡：折叠标题行 + 展开明细 */
-.turn-step {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-m);
-  background: var(--raised);
-  overflow: hidden;
-}
+/* 工具步骤行（v1.162 去卡片装饰）：折叠单行 muted，点击展开明细；失败红显 */
 .turn-step-head {
   display: flex;
   align-items: center;
@@ -1632,15 +1628,15 @@ button:disabled { opacity: 0.45; cursor: default; }
   width: 100%;
   border: none;
   background: none;
-  color: var(--fg);
+  color: var(--muted);
   font: inherit;
   font-size: 12px;
   text-align: left;
-  padding: 6px 9px;
+  padding: 1px 0;
   cursor: pointer;
 }
 .turn-step-head:hover {
-  background: var(--accent-soft);
+  color: var(--fg);
 }
 .turn-step-icon {
   flex: none;
@@ -1658,10 +1654,6 @@ button:disabled { opacity: 0.45; cursor: default; }
   flex: none;
   font-size: 10.5px;
   color: var(--error-text);
-  border: 1px solid var(--error);
-  border-radius: 999px;
-  padding: 0 6px;
-  line-height: 15px;
 }
 .lvl-badge {
   flex: none;
@@ -1673,21 +1665,17 @@ button:disabled { opacity: 0.45; cursor: default; }
   padding: 0 4px;
   line-height: 14px;
 }
-.turn-step-fail {
-  border-color: var(--error);
+.turn-step-fail .turn-step-head {
+  color: var(--error-text);
 }
 .turn-step-fail .turn-step-icon {
   color: var(--error);
-}
-.turn-step-risk {
-  border-left: 3px solid var(--patch-border);
 }
 .turn-step-risk .turn-step-icon {
   color: var(--patch-border);
 }
 .turn-step-body {
-  border-top: 1px solid var(--border);
-  padding: 6px 9px 8px;
+  padding: 2px 0 4px 18px;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -1716,12 +1704,10 @@ button:disabled { opacity: 0.45; cursor: default; }
   color: var(--muted);
 }
 
-/* 验证证据 / 错误 / 信息行 / 执行中 */
+/* 验证证据 / 错误 / 信息行 / 执行中（v1.162 去底色块，左缘竖线提示） */
 .turn-verify {
-  border: 1px solid var(--verify-border);
-  background: var(--verify-soft);
-  border-radius: var(--radius-m);
-  padding: 7px 10px;
+  border-left: 2px solid var(--verify-border);
+  padding: 1px 0 1px 9px;
   font-size: 12.5px;
   line-height: 1.55;
 }
@@ -1742,11 +1728,9 @@ button:disabled { opacity: 0.45; cursor: default; }
   word-break: break-word;
 }
 .turn-error {
-  border: 1px solid var(--error);
-  background: var(--error-soft);
+  border-left: 2px solid var(--error);
   color: var(--error-text);
-  border-radius: var(--radius-m);
-  padding: 7px 10px;
+  padding: 1px 0 1px 9px;
   font-size: 12.5px;
   line-height: 1.55;
   white-space: pre-wrap;

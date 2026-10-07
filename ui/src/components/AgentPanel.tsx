@@ -4,6 +4,9 @@
 // 受限 markdown 渲染器；运行态活跃回合底部 spinner 行承接「正在做什么」与流式草稿。
 // §8.6 人机共编：dirty_conflict 事件 → 三栏合并预览；补丁 → 行级 AI 角标。
 // v1.51：模型选择入口内嵌任务输入框底行（参考 ZCode 客户端输入区）。
+// v1.162 会话流纯文本化（用户令「简化 对话显示的样式，越简洁越好」）：视觉全面去装饰、
+// 信息与交互不删——用户消息去气泡改居右纯文本（按钮组 hover 显现）、写类步骤卡改单行
+// muted 折叠行、回合竖线与分隔线移除（留白分组）、用量 + 改动摘要徽标合并 .turn-foot 单行。
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ProjectSummary, QueuedMessage, TenonApi } from "../lib/api";
 import type { Translate } from "../lib/i18n";
@@ -822,9 +825,12 @@ export function AgentPanel({
                     )}
                   </div>
                 )}
-                <TurnUsageBadge turn={turn} t={t} />
-                {/* v1.160 回合改动摘要徽标：含改动回合原地展示「N 文件 · +A −B」，点击开底部 Diff */}
-                <TurnDiffChip items={turn.items} t={t} onShow={(d) => onShowDiff?.(d)} />
+                {/* v1.162 回合页脚单行化：用量徽标（v1.129）与改动摘要徽标（v1.160）合并单行
+                    muted——两者均渲染 null 时 :empty 整行不占位；diff 段仍可点击开底部 Diff */}
+                <div className="turn-foot">
+                  <TurnUsageBadge turn={turn} t={t} />
+                  <TurnDiffChip items={turn.items} t={t} onShow={(d) => onShowDiff?.(d)} />
+                </div>
               </div>
             </section>
           );
