@@ -234,6 +234,10 @@ export function AgentPanel({
   const [mention, setMention] = useState<{ start: number; query: string } | null>(null);
   const [mentionHits, setMentionHits] = useState<MentionHit[]>([]);
   const [mentionIndex, setMentionIndex] = useState(0);
+  // v1.161 输入内 / 斜杠命令（§7.5，Codex 形态）：query = 首个 `/` 后至光标的过滤词；
+  // 与 @ 补全互斥（首字符 / vs @），键盘链路共用。
+  const [slashQuery, setSlashQuery] = useState<string | null>(null);
+  const [slashIndex, setSlashIndex] = useState(0);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const [busy, setBusy] = useState(false);
   const [stopRequested, setStopRequested] = useState(false);
@@ -263,6 +267,47 @@ export function AgentPanel({
   };
   const activeProject = projects?.find((p) => p.id === projectId);
   const showContext = Boolean(projectId && projects && projects.length > 0 && (isDraft || sessionId));
+
+  // v1.161：textarea 值 + 光标 → 斜杠命令触发词同步（与 @ 补全互斥——首字符 / vs @）。
+  const syncSlash = () => {
+    const el = inputRef.current;
+    if (!el) return;
+    setSlashQuery(extractSlashCommand(el.value, el.selectionStart ?? el.value.length));
+    setSlashIndex(0);
+  };
+
+  // v1.161 斜杠命令表：可用性随会话 / 草稿链路；compact 需既有会话（control 语义），
+  // review 任务注入会话态与草稿首发态均可（运行态经 v1.147 队列入队）。
+  const slashCommands = useMemo(
+    () => [
+      { name: "compact", available: Boolean(sessionId) },
+      { name: "review", available: Boolean(sessionId) || (isDraft && Boolean(onDraftSend)) },
+    ],
+    [sessionId, isDraft, onDraftSend],
+  );
+  const slashHits = useMemo(
+    () =>
+      slashQuery === null
+        ? []
+        : slashCommands.filter((c) => c.available && c.name.startsWith(slashQuery)),
+    [slashCommands, slashQuery],
+  );
+
+  // v1.161：选中斜杠命令——compact 发 control（运行态下模型回合强制压缩），
+  // review 注入审查任务文本走常规发送链（含队列 / 草稿首发）；输入随执行清空。
+  function chooseSlash(cmd: { name: string } | undefined) {
+    if (!cmd) return;
+    setInputValue("");
+    setSlashQuery(null);
+    if (cmd.name === "compact") {
+      if (!sessionId) return;
+      void api.control(sessionId, "compact").catch(() => {});
+      return;
+    }
+    if (cmd.name === "review") {
+      void sendText(t("slash.review_task").trim());
+    }
+  }
 
   // v1.159：textarea 值 + 光标 → 触发词同步（onSelect 覆盖键入 / 点击移动光标两种路径；
   // 无 active project 不触发——fuzzy 是 project-scoped）。
@@ -309,6 +354,7 @@ export function AgentPanel({
     setQueue([]);
     setMention(null);
     setMentionHits([]);
+    setSlashQuery(null);
   }, [sessionId]);
 
   // 流式输出保持最新增量可见；用户向上回看时不强制拉底。
@@ -404,10 +450,11 @@ export function AgentPanel({
     };
   }, [api, sessionId, onStateChange, onLatestDiff, onDirtyConflict, traceEpoch]);
 
-  async function send() {
-    const text = inputValue.trim();
+  /** v1.161：发送拆出 sendText（斜杠命令注入任务复用），send 读输入缓冲后转调。 */
+  async function sendText(text: string) {
     if (!text) return;
     setMention(null);
+    setSlashQuery(null);
     // 键盘 Cmd+Enter 路径没有按钮的 disabled 守卫：连按会重复发送 /
     // 草稿态建出双会话（两个代理并行写同一项目）
     if (busy) return;
@@ -439,6 +486,10 @@ export function AgentPanel({
     } finally {
       setBusy(false);
     }
+  }
+
+  async function send() {
+    await sendText(inputValue.trim());
   }
 
   // v1.59：运行态下发送按钮变「停止」——协作暂停在下一工具调用检查点生效。
@@ -910,39 +961,53 @@ export function AgentPanel({
           placeholder={t("message.placeholder")}
           onChange={(e) => {
             setInputValue(e.target.value);
-            // v1.159：键入即重算触发词（含删除 @ 关闭浮层）；DOM 值此刻已含新字符。
+            // v1.159/v1.161：键入即重算 @ 触发词与 / 命令触发词（含删除关闭浮层）。
             syncMention();
+            syncSlash();
           }}
-          onSelect={syncMention}
-          onBlur={() => setMention(null)}
+          onSelect={() => {
+            syncMention();
+            syncSlash();
+          }}
+          onBlur={() => {
+            setMention(null);
+            setSlashQuery(null);
+          }}
           onKeyDown={(e) => {
             if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
               e.preventDefault();
               send();
               return;
             }
-            // v1.159 补全浮层键盘链路：↑↓ 移动 / Enter·Tab 选中 / Esc 仅收浮层
-            // （优先于输入框既有 Esc blur 语义——弹层开时 Esc 归弹层）。
-            if (mention && mentionHits.length > 0) {
+            // v1.159/v1.161 补全浮层键盘链路（@ 与 / 两菜单互斥）：↑↓ 移动 /
+            // Enter·Tab 选中 / Esc 仅收浮层（优先于输入框既有 Esc blur 语义）。
+            const mentionOpen = Boolean(mention) && mentionHits.length > 0;
+            const slashOpen = slashQuery !== null && slashHits.length > 0;
+            if (mentionOpen || slashOpen) {
               if (e.key === "ArrowDown") {
                 e.preventDefault();
-                setMentionIndex((i) => (i + 1) % mentionHits.length);
+                if (mentionOpen) setMentionIndex((i) => (i + 1) % mentionHits.length);
+                else setSlashIndex((i) => (i + 1) % slashHits.length);
                 return;
               }
               if (e.key === "ArrowUp") {
                 e.preventDefault();
-                setMentionIndex((i) => (i - 1 + mentionHits.length) % mentionHits.length);
+                if (mentionOpen)
+                  setMentionIndex((i) => (i - 1 + mentionHits.length) % mentionHits.length);
+                else setSlashIndex((i) => (i - 1 + slashHits.length) % slashHits.length);
                 return;
               }
               if (e.key === "Enter" || e.key === "Tab") {
                 e.preventDefault();
-                chooseMention(mentionHits[mentionIndex]);
+                if (mentionOpen) chooseMention(mentionHits[mentionIndex]);
+                else chooseSlash(slashHits[slashIndex]);
                 return;
               }
               if (e.key === "Escape") {
                 e.preventDefault();
                 e.stopPropagation();
                 setMention(null);
+                setSlashQuery(null);
                 return;
               }
             }
@@ -954,6 +1019,33 @@ export function AgentPanel({
           }}
           data-testid="task-input"
         />
+        {/* v1.161 斜杠命令浮层（§7.5，Codex 形态）：与 @ 补全同位互斥，命令行 = 名称 + 描述。 */}
+        {slashQuery !== null && slashHits.length > 0 && (
+          <ul
+            className="mention-menu"
+            data-testid="slash-menu"
+            role="listbox"
+            aria-label={t("slash.title")}
+          >
+            {slashHits.map((c, i) => (
+              <li
+                key={c.name}
+                role="option"
+                aria-selected={i === slashIndex}
+                className={i === slashIndex ? "mention-item mention-active" : "mention-item"}
+                data-testid={`slash-item-${c.name}`}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  chooseSlash(c);
+                }}
+                onMouseEnter={() => setSlashIndex(i)}
+              >
+                <span className="mention-cmd">/{c.name}</span>
+                <span className="mention-desc">{t(`slash.${c.name}`)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
         {/* v1.159 @ 文件引用补全浮层（§7.5，Codex 形态）：弹在输入区上方；命中项
             onMouseDown preventDefault 保持输入框焦点（不触发 blur 收层竞态）。 */}
         {mention && mentionHits.length > 0 && (
@@ -1060,6 +1152,15 @@ export function turnDiffStats(
   }
   if (parts.length === 0) return null;
   return { diff: parts.join("\n"), files: files.size, additions, deletions };
+}
+
+/** v1.161 斜杠命令触发词提取：输入须以 `/` 开头且光标前无空白（`/cmd` 形态），
+ * 返回 `/` 后过滤词（小写）；非命令位返回 null。 */
+export function extractSlashCommand(text: string, caret: number): string | null {
+  if (!text.startsWith("/")) return null;
+  const head = text.slice(0, caret);
+  if (!/^\/[^\s]*$/.test(head)) return null;
+  return head.slice(1).toLowerCase();
 }
 
 /** §9.2 A 级只读工具：不落步骤卡，按回合聚合为单行摘要（v1.112 降噪；明细见「轨迹」tab）。

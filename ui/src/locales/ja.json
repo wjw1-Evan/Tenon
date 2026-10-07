@@ -405,5 +405,9 @@
   "update.ready.later": "後で",
   "mention.title": "ファイル参照",
   "thread.diffchip_files": "{n} ファイル",
-  "thread.diffchip_hint": "このターンの変更を見る"
+  "thread.diffchip_hint": "このターンの変更を見る",
+  "slash.title": "コマンド",
+  "slash.compact": "履歴圧縮：古いツール出力を即座に省略（実行中に有効）",
+  "slash.review": "変更レビュー：コードレビュータスクを注入",
+  "slash.review_task": "現在のワークスペースの未コミット変更をレビューしてください：問題を (ファイル:行) 付きで列挙し、リスク度で分類して修正案を提示すること。読み取り専用の確認を基本とし、ファイルを直接変更しないこと。"
 }

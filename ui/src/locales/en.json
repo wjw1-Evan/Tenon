@@ -405,5 +405,9 @@
   "update.ready.later": "Later",
   "mention.title": "File references",
   "thread.diffchip_files": "{n} files",
-  "thread.diffchip_hint": "View changes from this turn"
+  "thread.diffchip_hint": "View changes from this turn",
+  "slash.title": "Commands",
+  "slash.compact": "Compact history: immediately elide stale tool outputs (while running)",
+  "slash.review": "Review changes: inject a code review task",
+  "slash.review_task": "Review the uncommitted changes in the current workspace: list issues one by one (file:line), grade them by risk, and suggest fixes; prefer read-only checks and do not modify files directly."
 }

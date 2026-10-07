@@ -405,5 +405,9 @@
   "update.ready.later": "下次再說",
   "mention.title": "檔案參照",
   "thread.diffchip_files": "{n} 個檔案",
-  "thread.diffchip_hint": "檢視此回合變更"
+  "thread.diffchip_hint": "檢視此回合變更",
+  "slash.title": "指令",
+  "slash.compact": "壓縮歷史：立即省略過時工具輸出（執行中生效）",
+  "slash.review": "審查變更：注入程式碼審查任務",
+  "slash.review_task": "審查目前工作區未提交的變更：逐一列出問題（檔案:行號）、依風險分級，並提供修復建議；以唯讀檢查為主，不要直接修改檔案。"
 }

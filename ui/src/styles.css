@@ -1840,6 +1840,20 @@ button:disabled { opacity: 0.45; cursor: default; }
   font-size: 10px;
   width: 10px;
 }
+/* 斜杠命令行（v1.161）：/名称 等宽 accent + 描述 muted 尾随 */
+.mention-item .mention-cmd {
+  flex-shrink: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--accent-text);
+}
+.mention-item .mention-desc {
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .agent-input:focus-within {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);

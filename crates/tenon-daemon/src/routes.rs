@@ -861,6 +861,8 @@ async fn session_control(
         "resume" => session.control(ControlCommand::Resume),
         "stop" => session.control(ControlCommand::Stop),
         "set_readonly" => session.control(ControlCommand::SetReadonly(body.value.unwrap_or(true))),
+        // v1.161 手动压缩（§10.2）：运行态下一模型回合跳过 24k 阈值强制省略陈旧工具输出
+        "compact" => session.control(ControlCommand::Compact),
         "rollback" => {
             return match session.rollback_last().await {
                 Ok(files) => Json(json!({"rolled_back": files})).into_response(),

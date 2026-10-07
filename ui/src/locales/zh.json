@@ -405,5 +405,9 @@
   "update.ready.later": "下次再说",
   "mention.title": "文件引用",
   "thread.diffchip_files": "{n} 文件",
-  "thread.diffchip_hint": "查看本回合改动"
+  "thread.diffchip_hint": "查看本回合改动",
+  "slash.title": "命令",
+  "slash.compact": "压缩历史：立即省略陈旧工具输出（运行中生效）",
+  "slash.review": "审查改动：注入代码审查任务",
+  "slash.review_task": "审查当前工作区未提交的改动：逐一列出问题（文件:行号）、按风险分级，并给出修复建议；以只读检查为主，不要直接修改文件。"
 }

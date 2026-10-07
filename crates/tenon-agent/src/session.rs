@@ -136,6 +136,8 @@ pub enum ControlCommand {
     Resume,
     Stop,
     SetReadonly(bool),
+    /// v1.161 手动压缩（§10.2）：运行态下跳过 24k 阈值，下一模型回合立即省略陈旧工具输出。
+    Compact,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -190,6 +192,8 @@ pub struct AgentSession {
     control_rx: Mutex<mpsc::UnboundedReceiver<ControlCommand>>,
     events_tx: broadcast::Sender<Event>,
     first_edit_done: AtomicBool,
+    /// v1.161 手动压缩标志：ControlCommand::Compact 置位，下一模型回合消费（§10.2）。
+    force_compact: AtomicBool,
     touched_files: Mutex<BTreeSet<String>>,
     /// 最近一次回滚前的安全快照（unrevert 恢复点，§10.3）。
     pre_rollback_tree: Mutex<Option<String>>,
@@ -582,6 +586,7 @@ impl AgentSession {
             running: AtomicBool::new(false),
             events_tx,
             first_edit_done: AtomicBool::new(false),
+            force_compact: AtomicBool::new(false),
             touched_files: Mutex::new(BTreeSet::new()),
             pre_rollback_tree: Mutex::new(None),
             interrupt: Notify::new(),
@@ -1190,9 +1195,14 @@ impl AgentSession {
             self.set_status(SessionStatus::Deciding).await;
 
             // ---- 历史压缩（§10.2 v1.105）：输入预算超限即省略陈旧工具输出。
+            // v1.161 手动压缩：ControlCommand::Compact 置位后跳过阈值强制执行一次（标志即消费）。
             // 压缩后自检配对完整性，失败则本回合放弃压缩（保持原历史）----
             let est_tokens = estimate_messages_tokens(&messages);
-            if est_tokens > COMPACTION_INPUT_TOKENS || last_input_tokens > COMPACTION_INPUT_TOKENS {
+            let manual_compact = self.force_compact.swap(false, Ordering::SeqCst);
+            if manual_compact
+                || est_tokens > COMPACTION_INPUT_TOKENS
+                || last_input_tokens > COMPACTION_INPUT_TOKENS
+            {
                 if let Some((compacted, elided)) = elide_stale_tool_outputs(&messages) {
                     if tool_call_pairs_intact(&compacted) {
                         let after_tokens = estimate_messages_tokens(&compacted);
@@ -1204,12 +1214,26 @@ impl AgentSession {
                                 "before_est_tokens": est_tokens,
                                 "after_est_tokens": after_tokens,
                                 "elided_tool_results": elided,
+                                "manual": manual_compact,
                             }),
                         )
                         .await;
                     } else {
                         tracing::error!("历史压缩自检失败：tool_call_id 配对破损，本回合跳过压缩");
                     }
+                } else if manual_compact {
+                    // 手动压缩无可省略对象（无陈旧工具输出）——照发事件给 UI 反馈，不静默。
+                    self.emit(
+                        EventKind::Compaction,
+                        &serde_json::json!({
+                            "round": _round,
+                            "before_est_tokens": est_tokens,
+                            "after_est_tokens": est_tokens,
+                            "elided_tool_results": 0,
+                            "manual": true,
+                        }),
+                    )
+                    .await;
                 }
             }
 
@@ -1343,6 +1367,9 @@ impl AgentSession {
                                     Some(ControlCommand::SetReadonly(v)) => {
                                         self.tool_ctx.readonly.store(v, Ordering::SeqCst);
                                     }
+                                    Some(ControlCommand::Compact) => {
+                                        self.force_compact.store(true, Ordering::SeqCst);
+                                    }
                                     _ => tokio::time::sleep(Duration::from_millis(150)).await,
                                 }
                             }
@@ -1358,6 +1385,10 @@ impl AgentSession {
                         // v1.93 实装：工具步间即时切换只读（此前为空操作）
                         ControlCommand::SetReadonly(v) => {
                             self.tool_ctx.readonly.store(v, Ordering::SeqCst);
+                        }
+                        // v1.161 手动压缩：置位标志，下一模型回合跳过阈值强制省略陈旧工具输出
+                        ControlCommand::Compact => {
+                            self.force_compact.store(true, Ordering::SeqCst);
                         }
                     }
                 }
