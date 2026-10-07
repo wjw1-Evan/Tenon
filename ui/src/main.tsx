@@ -1,7 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
-import { TenonApi } from "./lib/api";
+import { TenonApi, readPairedToken, savePairedToken } from "./lib/api";
 import {
   createTranslator,
   isLocale,
@@ -104,10 +104,14 @@ async function fromTauri(maxMs = 10_000): Promise<Handshake | null> {
   return null;
 }
 
-/** 同源自发现：仅当页面本身由 daemon 托管（浏览器访问）时可达。 */
+/** 同源自发现：仅当页面本身由 daemon 托管（浏览器访问）时可达。
+ *  局域网已配对设备携带设备令牌（v1.157 §12.6：Host 非回环时中间件要求）。 */
 async function fromSameOrigin(): Promise<Handshake | null> {
   try {
-    const resp = await fetch("/pairing", { cache: "no-store" });
+    const paired = readPairedToken();
+    const headers: Record<string, string> = {};
+    if (paired) headers["X-Tenon-Paired"] = paired;
+    const resp = await fetch("/pairing", { cache: "no-store", headers });
     if (resp.ok) {
       const d = await resp.json();
       if (d.port && d.token)
@@ -117,6 +121,71 @@ async function fromSameOrigin(): Promise<Handshake | null> {
     // 不可达（Tauri asset 协议下必然失败）
   }
   return null;
+}
+
+/** 非回环主机 = 经 IP 直访的局域网设备（v1.157）：握手被拒时进入配对屏。 */
+function isLanHost(): boolean {
+  const h = location.hostname;
+  return h !== "127.0.0.1" && h !== "localhost" && h !== "::1" && h !== "[::1]";
+}
+
+/** 局域网配对屏（v1.157 §12.6）：设备名 + 6 位一次性码换设备令牌（唯一免令牌
+ *  端点 /lan/pair）；成功落 localStorage 后重跑同源握手。取消/关闭即停留。 */
+function lanPairFlow(): Promise<Handshake | null> {
+  return new Promise((resolve) => {
+    const el = document.getElementById("root");
+    if (!el) return resolve(null);
+    el.innerHTML = `
+      <div id="boot-splash" class="boot-pair">
+        <div class="boot-mark">T</div>
+        <div class="boot-name">${escapeHtml(t("lan.pair_title"))}</div>
+        <p class="boot-note">${escapeHtml(t("lan.pair_hint"))}</p>
+        <form id="lan-pair-form">
+          <input id="lan-pair-device" maxlength="60" data-testid="lan-pair-device"
+            placeholder="${escapeHtml(t("lan.device"))}"
+            value="${escapeHtml(t("lan.device_default"))}" />
+          <input id="lan-pair-code" inputmode="numeric" maxlength="6" data-testid="lan-pair-code"
+            placeholder="${escapeHtml(t("lan.code"))}" autocomplete="one-time-code" />
+          <button type="submit" id="lan-pair-submit" data-testid="lan-pair-submit">
+            ${escapeHtml(t("lan.pair"))}
+          </button>
+        </form>
+        <p class="boot-note boot-error" id="lan-pair-error" hidden></p>
+      </div>`;
+    const form = document.getElementById("lan-pair-form") as HTMLFormElement | null;
+    const deviceInput = document.getElementById("lan-pair-device") as HTMLInputElement | null;
+    const codeInput = document.getElementById("lan-pair-code") as HTMLInputElement | null;
+    const submitBtn = document.getElementById("lan-pair-submit") as HTMLButtonElement | null;
+    const errorEl = document.getElementById("lan-pair-error");
+    if (!form || !deviceInput || !codeInput || !submitBtn || !errorEl) return resolve(null);
+    const fail = (message: string) => {
+      errorEl.textContent = message;
+      errorEl.hidden = false;
+      submitBtn.disabled = false;
+    };
+    form.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      const code = codeInput.value.trim();
+      const device = deviceInput.value.trim() || t("lan.device_default");
+      if (!/^\d{6}$/.test(code)) return fail(t("lan.pair_invalid"));
+      submitBtn.disabled = true;
+      errorEl.hidden = true;
+      fetch("/lan/pair", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ device, code }),
+      })
+        .then(async (resp) => {
+          if (!resp.ok) return fail(t("lan.pair_failed"));
+          const d = (await resp.json()) as { paired_token?: string };
+          if (!d.paired_token) return fail(t("lan.pair_failed"));
+          savePairedToken(d.paired_token);
+          // 配对成功 → 重跑同源握手（携带设备令牌）；再次 403 视为失败
+          resolve(await fromSameOrigin());
+        })
+        .catch(() => fail(t("lan.pair_failed")));
+    });
+  });
 }
 
 async function discoverHandshake(): Promise<Handshake> {
@@ -171,7 +240,16 @@ async function boot() {
     await loadLocaleResource(resolveLocale(readLocalePreference()));
     t = bootTranslator();
     renderSplash();
-    const handshake = await discoverHandshake();
+    let handshake: Handshake;
+    try {
+      handshake = await discoverHandshake();
+    } catch (e) {
+      // 局域网未配对设备（v1.157 §12.6）：握手被中间件 403 拦截 → 配对屏，
+      // 配对成功返回握手继续引导；失败 / 无根节点回落原错误屏
+      const paired = isLanHost() ? await lanPairFlow() : null;
+      if (!paired) throw e;
+      handshake = paired;
+    }
     const prefs = await new TenonApi(handshake).getUiPrefs();
     if (isThemePreference(prefs.theme) && prefs.theme !== loadThemePreference()) {
       saveThemePreference(prefs.theme);

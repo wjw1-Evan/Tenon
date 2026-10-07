@@ -2509,6 +2509,53 @@ button:disabled { opacity: 0.45; cursor: default; }
 }
 #boot-splash.boot-failed .boot-dots { display: none; }
 
+/* 局域网配对屏（v1.157 §12.6）：启动卡片内嵌表单 */
+#boot-splash.boot-pair .boot-note { max-width: 380px; text-align: center; line-height: 1.6; }
+#lan-pair-form { display: flex; gap: 8px; margin-top: 4px; }
+#lan-pair-form input {
+  width: 150px;
+  padding: 6px 10px;
+  border: 1px solid #2c3242;
+  border-radius: 8px;
+  background: #171a23;
+  color: #dfe4ee;
+  font-family: var(--font-ui);
+  font-size: 13px;
+}
+#lan-pair-form input#lan-pair-code {
+  width: 90px;
+  letter-spacing: 0.35em;
+  text-align: center;
+  font-size: 15px;
+}
+#lan-pair-form button {
+  padding: 6px 16px;
+  border: none;
+  border-radius: 8px;
+  background: #3f6ae8;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+#lan-pair-form button:disabled { opacity: 0.55; cursor: default; }
+#lan-pair-form button:not(:disabled):hover { background: #5480f2; }
+
+/* 设置面板「局域网」分类（v1.157）：配对码行与设备列表 */
+.lan-code-row { display: flex; align-items: center; gap: 10px; }
+.lan-code-row code { font-size: 18px; letter-spacing: 0.3em; font-weight: 700; }
+.lan-devices { margin-top: 14px; display: grid; gap: 6px; }
+.lan-device-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 8px;
+  border: 1px solid #2c3242;
+  border-radius: 8px;
+  font-size: 12px;
+}
+.lan-device-row .muted { flex: 1; }
+
 /* ─────────────────────────── 动效 ─────────────────────────── */
 @keyframes pop-in {
   from { opacity: 0; transform: translateY(5px) scale(0.985); }

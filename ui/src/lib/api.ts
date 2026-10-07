@@ -17,6 +17,48 @@ export interface Handshake {
   token: string;
 }
 
+/** 局域网已配对设备令牌（v1.157 §12.6）：按 origin 存 localStorage，/pairing 握手与全部请求携带。 */
+export const PAIRED_TOKEN_KEY = "tenon:paired-token";
+
+export function readPairedToken(): string {
+  try {
+    return localStorage.getItem(PAIRED_TOKEN_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function savePairedToken(token: string): void {
+  try {
+    localStorage.setItem(PAIRED_TOKEN_KEY, token);
+  } catch {
+    // 隐私模式等 localStorage 不可用：配对仅本会话生效
+  }
+}
+
+/** 已配对设备（/lan/status devices；令牌本体不出 daemon）。 */
+export interface LanDevice {
+  device: string;
+  paired_at: string;
+}
+
+/** 局域网访问状态（v1.157 §15 /lan/status 与 /lan/enable 响应）。 */
+export interface LanStatus {
+  enabled: boolean;
+  code?: string | null;
+  ttl_s?: number | null;
+  lan_url?: string | null;
+  devices?: LanDevice[];
+}
+
+/** daemon 同源托管页面（本机 / 局域网 IP 直访）用页面 origin 作 base；
+ *  dev server 与 Tauri asset 协议端口不匹配，回退 127.0.0.1。 */
+function sameOriginBase(port: number): string | null {
+  if (location.protocol !== "http:" && location.protocol !== "https:") return null;
+  const locPort = Number(location.port) || (location.protocol === "https:" ? 443 : 80);
+  return locPort === port ? location.origin : null;
+}
+
 export interface SessionSummary {
   id: string;
   status: string;
@@ -227,17 +269,19 @@ export class TenonApi {
   private token: string;
 
   constructor(handshake: Handshake) {
-    this.base = `http://127.0.0.1:${handshake.port}`;
-    this.token = handshake.token;
+    this.base = sameOriginBase(handshake.port) ?? `http://127.0.0.1:${handshake.port}`;
+    this.token = handshake.token ?? "";
   }
 
   private async request<T>(
     path: string,
     init?: RequestInit & { json?: unknown }
   ): Promise<T> {
-    const headers: Record<string, string> = {
-      "X-Tenon-Token": this.token,
-    };
+    const headers: Record<string, string> = {};
+    // 局域网已配对设备（v1.157）：主 token 缺失时凭设备令牌过中间件
+    const paired = readPairedToken();
+    if (paired) headers["X-Tenon-Paired"] = paired;
+    if (this.token) headers["X-Tenon-Token"] = this.token;
     let body = init?.body;
     if (init?.json !== undefined) {
       headers["Content-Type"] = "application/json";
@@ -828,6 +872,24 @@ export class TenonApi {
     return r.ticket;
   }
 
+  /** 局域网访问状态（v1.157 §15 /lan/status）：设置面板「局域网」分类数据源。 */
+  lanStatus(): Promise<LanStatus> {
+    return this.request<LanStatus>("/lan/status");
+  }
+
+  /** 重新生成一次性配对码（v1.157：daemon --lan 启动即启用，此为「刷新」语义）。 */
+  lanEnable(): Promise<LanStatus> {
+    return this.request<LanStatus>("/lan/enable", { method: "POST" });
+  }
+
+  /** 吊销已配对设备令牌（v1.157 §12.6 可吊销）。 */
+  lanRevoke(device: string): Promise<{ revoked: boolean }> {
+    return this.request<{ revoked: boolean }>("/lan/revoke", {
+      method: "POST",
+      json: { device },
+    });
+  }
+
   /** 代理技能合并清单（§13.4 / §15 v1.130）：项目同名覆盖全局后的生效集。 */
   listSkills(projectId?: string) {
     const q = projectId ? `?project=${encodeURIComponent(projectId)}` : "";
@@ -878,16 +940,15 @@ export class TenonApi {
     );
   }
 
-  /** 连接事件流：先换票；等待 auth ok 后才交给调用方（ADR-10）。 */
+  /** 连接事件流：先换票；等待 auth ok 后才交给调用方（ADR-10）。
+   *  WS host 随 base 同源（v1.157：局域网设备经 IP 直访，不能写死 127.0.0.1）。 */
   async connectEvents(
     onEvent: (ev: unknown) => void,
     projectId?: string
   ): Promise<WebSocket> {
     const ticket = await this.wsTicket();
     const filter = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
-    const ws = new WebSocket(
-      `ws://127.0.0.1:${new URL(this.base).port}/ws${filter}`
-    );
+    const ws = new WebSocket(`ws://${new URL(this.base).host}/ws${filter}`);
     await new Promise<void>((resolve, reject) => {
       ws.onopen = () => ws.send(ticket);
       ws.onerror = () => reject(new Error("ws connect failed"));

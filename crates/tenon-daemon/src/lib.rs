@@ -76,7 +76,7 @@ pub async fn serve(options: DaemonOptions) -> std::io::Result<DaemonHandle> {
         Ok(_) => {}
         Err(e) => tracing::error!("崩溃恢复扫描失败: {e}"),
     }
-    let mut app: Router = routes::build_router(state.clone());
+    let app: Router = build_app(state.clone(), resolve_ui_dist());
 
     // Laya 自动下载并启用（§9.8 v1.71）：启动即后台拉取，失败静默回退
     state.spawn_laya_auto_download(laya_registry_url);
@@ -144,16 +144,6 @@ pub async fn serve(options: DaemonOptions) -> std::io::Result<DaemonHandle> {
                 }
             }
         });
-    }
-
-    // 本机浏览器访问（§12.6 / M2 / v1.76 Web 一键启动）：UI 产物解析链命中时同源托管——
-    // 浏览器打开 http://127.0.0.1:{port}/ 即加载 UI 并经 /pairing 自发现握手
-    if let Some(ui_dist) = resolve_ui_dist() {
-        // SPA 回退：非 API 路径返回 index.html（UI 自经 /pairing 自发现握手）
-        let spa = ServeDir::new(&ui_dist)
-            .not_found_service(ServeDir::new(&ui_dist).append_index_html_on_directories(false));
-        app = app.fallback_service(spa);
-        tracing::info!("本机浏览器访问：托管 UI 静态资源（{ui_dist:?}）");
     }
 
     // 绑定地址：默认仅本机回环（§12.6）；`--lan` 显式开启后绑全部接口
@@ -307,6 +297,22 @@ pub async fn serve(options: DaemonOptions) -> std::io::Result<DaemonHandle> {
         token: state.token.clone(),
         shutdown: shutdown_handle,
     })
+}
+
+/// 组装完整 Router（§12.6 / v1.76 / v1.157）：API 路由 + 鉴权中间件之上
+/// 追加 UI 静态托管 fallback——fallback 在鉴权层**之外**（axum `layer` 只包
+/// 已注册路由），未配对局域网设备因此可加载 UI、全部 API 仍被中间件拦截；
+/// `ui_dist` 为 None 时无静态托管（sidecar 无 UI 需求）。测试注入目录复用。
+pub fn build_app(state: Arc<DaemonState>, ui_dist: Option<PathBuf>) -> Router {
+    let mut app = routes::build_router(state);
+    if let Some(ui_dist) = ui_dist {
+        // SPA 回退：非 API 路径返回 index.html（UI 自经 /pairing 自发现握手）
+        let spa = ServeDir::new(&ui_dist)
+            .not_found_service(ServeDir::new(&ui_dist).append_index_html_on_directories(false));
+        app = app.fallback_service(spa);
+        tracing::info!("本机浏览器访问：托管 UI 静态资源（{ui_dist:?}）");
+    }
+    app
 }
 
 /// 生成本地 token（随机 32 字节 hex）。

@@ -205,6 +205,9 @@ fn spawn_daemon(app: &tauri::AppHandle) -> Result<(Child, Handshake), String> {
     cmd.arg("--project")
         .arg(&project)
         .arg("--no-lock")
+        // v1.157（§12.6 用户裁定）：桌面启动即绑 0.0.0.0，局域网设备凭一次性
+        // 配对码配对后可访问 Web 版（门禁与吊销见 daemon §12.6）
+        .arg("--lan")
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     if let Some(cfg) = discover_config(&project) {

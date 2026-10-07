@@ -57,6 +57,17 @@ impl PairingStore {
         self.new_code()
     }
 
+    /// 当前未过期的一次性配对码与剩余秒数（无有效码返回 None）。
+    pub fn current_code(&self) -> Option<(String, u64)> {
+        let slot = self.code.lock().expect("code lock");
+        match slot.as_ref() {
+            Some((c, at)) if at.elapsed() < CODE_TTL => {
+                Some((c.clone(), (CODE_TTL - at.elapsed()).as_secs()))
+            }
+            _ => None,
+        }
+    }
+
     /// 配对：校验一次性码 → 签发设备令牌（吊销前长期有效）。
     pub fn pair(&self, device: &str, code: &str) -> Option<String> {
         if !self.is_enabled() {
@@ -120,6 +131,21 @@ fn chrono_now() -> String {
         .unwrap_or_default()
 }
 
+/// 探测本机局域网地址（v1.157）：UDP connect 让内核选主出口路由——不发出任何
+/// 包（connect 仅设默认目的地）；离线 / 无内网时回退 None。仅接受 RFC1918
+/// 私有地址，防把回环或公网出口误当局域网地址展示。
+pub fn lan_ip() -> Option<String> {
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    sock.connect("8.8.8.8:80").ok()?;
+    let addr = sock.local_addr().ok()?;
+    let ip = addr.ip();
+    let private = match ip {
+        std::net::IpAddr::V4(v4) => v4.is_private(),
+        std::net::IpAddr::V6(_) => false,
+    };
+    private.then(|| ip.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,5 +189,31 @@ mod tests {
         let token = p.pair("phone", &code).unwrap();
         p.disable();
         assert!(!p.verify_token(&token), "关闭即全部吊销");
+    }
+
+    #[test]
+    fn current_code_visible_until_consumed() {
+        let p = PairingStore::new();
+        assert!(p.current_code().is_none(), "未启用无码");
+        let code = p.enable();
+        let (c, ttl) = p.current_code().expect("启用后有码");
+        assert_eq!(c, code);
+        assert!(ttl > 0 && ttl <= 300, "剩余秒数在 TTL 内");
+        // 配对消费一次性码后即无码
+        p.pair("phone", &code).unwrap();
+        assert!(p.current_code().is_none());
+    }
+
+    #[test]
+    fn lan_ip_private_or_none() {
+        // 探测不出网配置下可能为 None（离线 / 无内网路由），不崩即可；
+        // 有值必须是 RFC1918 私有段
+        if let Some(ip) = lan_ip() {
+            let parsed: std::net::IpAddr = ip.parse().expect("合法 IP");
+            match parsed {
+                std::net::IpAddr::V4(v4) => assert!(v4.is_private(), "仅回传私有段：{ip}"),
+                std::net::IpAddr::V6(_) => panic!("IPv6 不回传"),
+            }
+        }
     }
 }

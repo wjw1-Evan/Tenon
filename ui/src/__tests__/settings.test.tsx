@@ -26,7 +26,7 @@ function makeApi(
 const t = (k: string) => k;
 
 /** v1.121：设置按分类渲染，组件测试先切换到对应导航页。 */
-function openSection(name: "general" | "models" | "permissions" | "plugins" | "skills") {
+function openSection(name: "general" | "lan" | "models" | "permissions" | "plugins" | "skills") {
   fireEvent.click(screen.getByTestId(`settings-nav-${name}`));
 }
 
@@ -265,5 +265,56 @@ describe("SettingsDialog", () => {
     await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
     expect(putPolicy).not.toHaveBeenCalled();
     expect(put).not.toHaveBeenCalled();
+  });
+
+  it("v1.157 局域网分区：状态 / 配对码 / 刷新 / 吊销", async () => {
+    const lanStatus = vi
+      .fn()
+      .mockResolvedValueOnce({
+        enabled: true,
+        code: "123456",
+        ttl_s: 300,
+        lan_url: "http://192.168.1.5:41234/",
+        devices: [{ device: "phone", paired_at: "1700000000" }],
+      })
+      .mockResolvedValue({
+        enabled: true,
+        code: "654321",
+        ttl_s: 300,
+        lan_url: "http://192.168.1.5:41234/",
+        devices: [],
+      });
+    const lanEnable = vi.fn().mockResolvedValue({
+      enabled: true,
+      code: "654321",
+      ttl_s: 300,
+      lan_url: "http://192.168.1.5:41234/",
+      devices: [],
+    });
+    const lanRevoke = vi.fn().mockResolvedValue({ revoked: true });
+    const api = {
+      putSettings: vi.fn().mockResolvedValue(settings),
+      putTeamPolicy: vi.fn().mockResolvedValue({}),
+      listPlugins: vi.fn().mockResolvedValue({ installed: [] }),
+      models: vi.fn().mockResolvedValue({ models: [], default: "", laya: null }),
+      lanStatus,
+      lanEnable,
+      lanRevoke,
+    } as unknown as TenonApi;
+    render(
+      <SettingsDialog api={api} t={t} settings={settings} saveMode="auto" onSaveModeChange={() => {}} onClose={() => {}} onSaved={() => {}} />
+    );
+    openSection("lan");
+    await waitFor(() =>
+      expect(screen.getByTestId("settings-lan-code").textContent).toBe("123456")
+    );
+    expect(screen.getByTestId("settings-lan-url").textContent).toContain("192.168.1.5");
+    expect(screen.getByTestId("lan-device-phone")).toBeTruthy();
+    // 刷新配对码 → lanEnable 重新生成
+    fireEvent.click(screen.getByTestId("settings-lan-refresh"));
+    await waitFor(() =>
+      expect(screen.getByTestId("settings-lan-code").textContent).toBe("654321")
+    );
+    expect(lanEnable).toHaveBeenCalled();
   });
 });

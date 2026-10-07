@@ -253,6 +253,8 @@ Codex CLI 已开源且核心为 Rust 实现（codex-rs 工作区，另有遗留 
 
 **壳 IPC remote 门禁修复（v1.156，v0.1.2 自动更新实测暴露）**：Tauri 2 对非 local 源（daemon 托管 UI 的 `http://127.0.0.1:<port>`）的 IPC 走显式 ACL——capabilities 未声明 remote 上下文时自定义命令一律拒绝（同源 `/pairing` 握手兜底掩盖了症状，拖拽区 / 系统目录对话框 / shell 外链同样被拦）。修复：build.rs 以 `AppManifest::commands` 为五个壳 IPC 命令（get_handshake / get_update_notes / dismiss_update_notes / get_update_ready / install_update）生成 `allow-*` 权限；capabilities 拆本地（devUrl）与 `remote.urls = ["http://127.0.0.1:*", "http://localhost:*"]` 双上下文，权限集一致（拖拽 / 缩放 / 对话框 / shell 外链 + 五命令）——仅回环地址、仅本壳 WebView 加载的页面，攻击面不变。
 
+**局域网 Web 访问随桌面启动开启（v1.157，用户令「桌面版本启动后 允许局域网访问 web版本」——M3 局域网配对提前落地）**：桌面壳 spawn sidecar 即追加 `--lan`（0.0.0.0 绑定，§12.6 门禁不变）——桌面启动 = 局域网访问显式开启（用户产品裁定；CLI `--web` / 无头模式不自动开启，仍须显式 `--lan`）；`lan_bind` 时 daemon 启动即自动启用配对（PairingStore，一次性 6 位码 5 分钟有效），并经 `/pairing` 与 `GET /lan/status` 回传局域网地址（UDP connect 探测本机主出口 IP，无包发出、失败回退空）。未配对设备体验：可加载 daemon 托管的静态 UI（公开前端代码，fallback_service 挂载于鉴权层之外），全部 API 被中间件 403 拦截，UI 据此渲染配对屏（设备名 + 6 位码 → `POST /lan/pair` → 设备令牌入 localStorage → 重握手）；桌面壳内设置面板「局域网」分类展示地址 / 配对码（可刷新 = `POST /lan/enable`）/ 已配对设备吊销（`POST /lan/revoke`）。macOS 首次开启时系统防火墙会弹「接受传入网络连接」提示，属预期行为。
+
 **macOS 分发签名与公证（v1.151，修复下载 dmg 被 Gatekeeper 判「已损坏」）**：macOS 产物在 Tauri 构建期完成 Developer ID 签名 + 公证 + staple——CI 经 Actions Secrets 注入 `APPLE_CERTIFICATE`（base64 p12，Developer ID Application）+ `APPLE_CERTIFICATE_PASSWORD` + `APPLE_SIGNING_IDENTITY`（`Developer ID Application: <名称> (<TeamID>)`）完成签名，注入 `APPLE_API_ISSUER` + `APPLE_API_KEY`（App Store Connect 密钥 ID）+ `APPLE_API_KEY_P8`（.p8 私钥原文，构建期物化至临时路径供 `APPLE_API_KEY_PATH`）完成公证（Apple ID 方：`APPLE_ID` / `APPLE_PASSWORD` 专用密码 / `APPLE_TEAM_ID` 为备选通道）；bundler 对 .app、.app.tar.gz 更新包与 .dmg 全量签名公证，下载 dmg 双击即开。secrets 未配置（证书未就绪 / fork 自建）时构建保持无签名退化，下载安装需 `xattr -cr` 绕过——记录为已知限制；secret 空值一律不注入构建环境（空串与未设置语义不同，防误触发签名/公证路径）。minisign 更新签名职责不变，与 Apple 签名独立：Gatekeeper 管首次分发信任，minisign 管更新链完整性。
 
 **桌面窗体（v1.30）**：macOS `titleBarStyle=Overlay + hiddenTitle` 隐藏原生标题栏，红绿灯悬于 UI 顶栏之上（顶栏左内边距 78px，`is-tauri` 根类驱动，浏览器态自动豁免）；顶栏 / 品牌区 / 弹性区为 `data-tauri-drag-region` 拖拽区（capabilities 授予 `start-dragging` / `toggle-maximize`，双击顶栏 = 系统缩放）；窗口默认 1560×980、最小 1080×680、底色 `#0E1015` 与 §7.5 令牌一致（配置层 + HTML 双保险防首帧白闪）。启动体验：握手轮询期间即渲染品牌启动屏（渐变印记 + 脉冲连接指示），失败态同一卡片呈现错误与重启示；Windows/Linux 回退原生标题栏（macOS 优先决策不变）。
@@ -717,7 +719,7 @@ A/B/C/D 仅是风险与执行边界标记，不再是审批门槛；去 Plan 安
 
 ### 12.6 本地服务与浏览器访问
 
-默认仅绑 127.0.0.1 + 随机端口；HTTP 用 `X-Tenon-Token` 头；**WS 用一次性 ticket**（浏览器 WebSocket 无法自定义请求头：`POST /ws-ticket` 换 60 秒一次性票据，连接首帧携带，重放即拒）；校验 Origin/Host；**CORS 仅白名单放行应用自身 origin（Tauri WebView 源）与已配对设备，其余拒绝**；白名单源跨源 dev server 的 `OPTIONS` 预检由本地服务直接 2xx，并显式 `Allow-Headers` / `Allow-Methods` / `Max-Age`；局域网显式开启 + 一次性配对 + 可吊销；登记新项目 / 传本地路径：UI 添加项目模态提交本地绝对路径（v1.43，本机浏览器与桌面壳同权），v1.133 增 `GET /fs/dirs` 目录浏览端点（列任意绝对路径的直接子目录，驱动浏览器模式目录选择器）——其目录名枚举面与 `/projects/open` 同一信任级别：token 鉴权 + Host/Origin 校验之下，能传路径登记项目者本就可读该项目全部文件，列子目录名是严格更小的披露面，未配对局域网请求被中间件 403 挡住；UI 打开项目即静默信任（v1.67），信任仅作为项目作用域元数据保留；公网访问非目标。
+默认仅绑 127.0.0.1 + 随机端口（`--lan` 显式开启后绑 0.0.0.0；桌面壳 v1.157 起 spawn 即 `--lan`）；HTTP 用 `X-Tenon-Token` 头；**WS 用一次性 ticket**（浏览器 WebSocket 无法自定义请求头：`POST /ws-ticket` 换 60 秒一次性票据，连接首帧携带，重放即拒）；校验 Origin/Host；**CORS 仅白名单放行应用自身 origin（Tauri WebView 源）与同源请求，其余拒绝**——同源判定为「Origin host == Host host 且 Host 为 IP 字面量」（局域网设备经 IP 直访的必然形态；Host 为域名的请求不在放行之列，DNS rebinding 防线保持：域名 Host 一律按未配对局域网请求 403）；白名单源跨源 dev server 的 `OPTIONS` 预检由本地服务直接 2xx，并显式 `Allow-Headers` / `Allow-Methods` / `Max-Age`；**局域网访问：显式开启（`--lan`）+ 一次性配对 + 可吊销（v1.157 全链落地）**——`lan_bind` 启动即自动启用配对，Host 非回环的请求须持已配对设备令牌 `X-Tenon-Paired`（PairingStore 校验，吊销即失效），免令牌的仅 `POST /lan/pair`（一次性 6 位配对码自证，5 分钟有效）与 `GET /ws`（浏览器 WebSocket 无法自定义请求头，真实鉴权在首帧一次性票据——票据仅经带鉴权的 `POST /ws-ticket` 签发，未配对设备拿不到）；静态 UI 资产挂载于鉴权层之外（前端代码本身公开，未配对设备可加载 UI、全部 API 仍被拦，据此渲染配对屏）；局域网管理端点：`POST /lan/enable`（重新生成配对码，主 token）、`GET /lan/status`（enabled / 当前码 / 局域网地址 / 已配对设备，主 token，v1.157）、`POST /lan/pair`（`{device, code}` → 设备令牌，免令牌）、`POST /lan/revoke`（`{device}` 吊销，主 token）；登记新项目 / 传本地路径：UI 添加项目模态提交本地绝对路径（v1.43，本机浏览器与桌面壳同权），v1.133 增 `GET /fs/dirs` 目录浏览端点（列任意绝对路径的直接子目录，驱动浏览器模式目录选择器）——其目录名枚举面与 `/projects/open` 同一信任级别：token 鉴权 + Host/Origin 校验之下，能传路径登记项目者本就可读该项目全部文件，列子目录名是严格更小的披露面，未配对局域网请求被中间件 403 挡住；UI 打开项目即静默信任（v1.67），信任仅作为项目作用域元数据保留；公网访问非目标。
 
 ### 12.7 仓库信任（TOFU）
 
@@ -875,7 +877,7 @@ signature: "<sig>"
 
 ## 15. 本地 API（UI ↔ daemon）
 
-认证：HTTP 用 `X-Tenon-Token` 请求头（随机，随端口握手下发）；**WS 先经 `POST /ws-ticket` 换 60 秒一次性 ticket**（浏览器 WebSocket 无法自定义请求头），连接首帧携带、重放即拒；来源校验与 CORS 白名单见 §12.6。
+认证：HTTP 用 `X-Tenon-Token` 请求头（随机，随端口握手下发）；**WS 先经 `POST /ws-ticket` 换 60 秒一次性 ticket**（浏览器 WebSocket 无法自定义请求头），连接首帧携带、重放即拒；局域网已配对设备亦可以 `X-Tenon-Paired` 设备令牌通过鉴权（§12.6 v1.157）；来源校验与 CORS 白名单见 §12.6。
 
 **项目运行时（多项目控制面）**：
 
@@ -943,6 +945,10 @@ signature: "<sig>"
 | GET | `/models` | 模型清单与 Laya 状态（版本 / 已下载 / 加载 / 设备，§9.8）；设置面板模型分区（v1.40）消费它渲染默认模型下拉与 Laya 状态卡 |
 | GET | `/costs` | 成本归因（会话级；`?session=` 必带，v1.92 收敛——月度聚合无消费方）；返回体含 `cached_tokens` / `duration_ms`（v1.129，命中率与均速由消费方派生） |
 | POST | `/ws-ticket` | 一次性 WS 票据 |
+| POST | `/lan/enable` | 启用局域网配对 / 重新生成一次性配对码（主 token）；`--lan` 启动即自动启用（§12.6 v1.157） |
+| GET | `/lan/status` | 局域网访问状态 `{enabled, code, ttl_s, lan_url, devices}`（主 token；设置面板「局域网」分类数据源，v1.157） |
+| POST | `/lan/pair` | 设备配对 `{device, code}` → `{paired_token}`（免令牌——一次性 6 位配对码自证，5 分钟有效；令牌经 `X-Tenon-Paired` 携带，吊销即失效） |
+| POST | `/lan/revoke` | 吊销已配对设备令牌 `{device}`（主 token） |
 | WS | `/ws` | 事件流（状态机、诊断、diff 流；ticket 鉴权） |
 
 WS 事件与会话 events 表一一对应，均含 `project_id`；断线重连按 seq 续传。UI 可订阅全部项目或过滤一个项目。

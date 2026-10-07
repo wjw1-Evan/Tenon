@@ -40,7 +40,7 @@ impl TicketStore {
 }
 
 /// CORS 白名单（§12.6）：应用自身源（Tauri WebView）+ 本机 dev server +
-/// 本机浏览器访问。局域网源仅在显式开启并配对后放行（M3）。
+/// 本机浏览器访问。局域网同源请求走 `same_host_origin`（v1.157）。
 pub const CORS_WHITELIST: [&str; 3] = ["tauri://localhost", "http://localhost", "http://127.0.0.1"];
 
 pub fn origin_allowed(origin: &str) -> bool {
@@ -49,6 +49,36 @@ pub fn origin_allowed(origin: &str) -> bool {
             || origin.starts_with("http://127.0.0.1:")
             || origin.starts_with("http://localhost:")
     })
+}
+
+/// authority（host[:port]）取 host 段：IPv6 保留方括号内整段，其余按末个
+/// `:` 后全数字为端口截断；无端口原样返回。
+fn authority_host(authority: &str) -> &str {
+    if authority.starts_with('[') {
+        if let Some(close) = authority.find(']') {
+            return &authority[..=close];
+        }
+    }
+    match authority.rfind(':') {
+        Some(idx) if authority[idx + 1..].chars().all(|c| c.is_ascii_digit()) => &authority[..idx],
+        _ => authority,
+    }
+}
+
+/// 同源放行判定（v1.157 §12.6）：Origin host 与 Host 一致**且 Host 为 IP
+/// 字面量**。局域网浏览器经 IP 直访是唯一合法形态；Host 为域名的请求一律
+/// 不放行——DNS rebinding 攻击的 Host 必为域名（否则无法解析），防线保持。
+fn same_host_origin(origin: &str, host_header: Option<&str>) -> bool {
+    let Some(host) = host_header else {
+        return false;
+    };
+    let origin_authority = origin
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(origin);
+    let origin_host = authority_host(origin_authority);
+    let req_host = authority_host(host);
+    origin_host == req_host && req_host.parse::<std::net::IpAddr>().is_ok()
 }
 
 /// HTTP 鉴权 + Origin/Host 校验 + CORS 响应头中间件。
@@ -62,16 +92,18 @@ pub async fn auth_middleware(
     let token = &state.0;
     let pairing = &state.1;
     // Host 校验（§12.6）：回环 = 本机访问；局域网地址 = 显式开启 + 已配对令牌
-    //（/lan/pair 以一次性配对码自证，免令牌）
+    //（/lan/pair 以一次性配对码自证免令牌；/ws 靠首帧一次性票据——浏览器
+    // WebSocket 无法自定义请求头，配对令牌带不上）
     let path = request.uri().path();
+    let host_header = headers.get(header::HOST).and_then(|h| h.to_str().ok());
     let mut lan_request = false;
-    if let Some(host) = headers.get(header::HOST).and_then(|h| h.to_str().ok()) {
-        let host_part = host.split(':').next().unwrap_or("");
-        if host_part != "127.0.0.1" && host_part != "localhost" {
+    if let Some(host) = host_header {
+        let host_part = authority_host(host);
+        if host_part != "127.0.0.1" && host_part != "localhost" && host_part != "[::1]" {
             lan_request = true;
         }
     }
-    if lan_request && path != "/lan/pair" {
+    if lan_request && path != "/lan/pair" && path != "/ws" {
         // 局域网访问（--lan 绑定后）：须持已配对设备令牌（X-Tenon-Paired，
         // 经 PairingStore 校验；吊销即失效，§12.6 可吊销）
         let paired = headers
@@ -87,10 +119,11 @@ pub async fn auth_middleware(
                 .into_response();
         }
     }
-    // CORS 白名单细化：放行源附加响应头；其余源拒绝（§12.6）
+    // CORS 白名单细化：放行源附加响应头；其余源拒绝（§12.6；局域网同源
+    // IP 直访经 same_host_origin 放行，域名 Host 不在放行之列）
     let mut cors_origin: Option<String> = None;
     if let Some(origin) = headers.get(header::ORIGIN).and_then(|o| o.to_str().ok()) {
-        if !origin_allowed(origin) {
+        if !origin_allowed(origin) && !same_host_origin(origin, host_header) {
             return (StatusCode::FORBIDDEN, "origin rejected").into_response();
         }
         cors_origin = Some(origin.to_string());
@@ -229,5 +262,120 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn authority_host_strips_port_and_keeps_ipv6() {
+        assert_eq!(authority_host("192.168.1.5:41234"), "192.168.1.5");
+        assert_eq!(authority_host("192.168.1.5"), "192.168.1.5");
+        assert_eq!(authority_host("127.0.0.1:80"), "127.0.0.1");
+        assert_eq!(authority_host("[::1]:8080"), "[::1]");
+        assert_eq!(authority_host("evil.example.com:80"), "evil.example.com");
+    }
+
+    #[test]
+    fn same_host_origin_requires_ip_literal_host() {
+        // 局域网 IP 直访同源 → 放行
+        assert!(same_host_origin(
+            "http://192.168.1.5:41234",
+            Some("192.168.1.5:41234")
+        ));
+        // 无端口 Host 与带端口 Origin host 一致 → 放行
+        assert!(same_host_origin("http://10.0.0.2:8080", Some("10.0.0.2")));
+        // 域名 Host（DNS rebinding 形态）→ 不放行
+        assert!(!same_host_origin(
+            "http://evil.example.com:8080",
+            Some("evil.example.com:8080")
+        ));
+        // 源与 Host 不同（跨源伪造）→ 不放行
+        assert!(!same_host_origin(
+            "http://192.168.1.66:9999",
+            Some("192.168.1.5:41234")
+        ));
+        // 缺 Host / null origin → 不放行
+        assert!(!same_host_origin("http://192.168.1.5", None));
+        assert!(!same_host_origin("null", Some("192.168.1.5:1")));
+    }
+
+    /// v1.157：局域网同源 IP 直访——已配对设备带同源 Origin 的 POST 放行；
+    /// 域名 Host（rebinding）即使「同源」也 403；/ws 升级免配对头（首帧票据
+    /// 鉴权兜底）；未配对且无令牌的 API 请求仍 403。
+    #[tokio::test]
+    async fn lan_same_origin_and_ws_exempt() {
+        let pairing = std::sync::Arc::new(PairingStore::new());
+        let code = pairing.enable();
+        let device_token = pairing.pair("phone", &code).expect("配对成功");
+        let state = (String::from("tok"), pairing);
+        let app = axum::Router::new()
+            .route("/projects/open", axum::routing::post(|| async { "ok" }))
+            .route("/ws", axum::routing::get(|| async { "ws" }))
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                auth_middleware,
+            ));
+
+        // 已配对 + 局域网同源 Origin → 200
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("http://192.168.1.5/projects/open")
+                    .header(header::HOST, "192.168.1.5:41234")
+                    .header(header::ORIGIN, "http://192.168.1.5:41234")
+                    .header("X-Tenon-Paired", &device_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "已配对设备同源放行");
+
+        // rebinding：域名 Host + 同域名 Origin → 403
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("http://evil.example.com/projects/open")
+                    .header(header::HOST, "evil.example.com:41234")
+                    .header(header::ORIGIN, "http://evil.example.com:41234")
+                    .header("X-Tenon-Paired", &device_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN, "域名 Host 不放行");
+
+        // /ws 升级请求：浏览器 WS 带不了 X-Tenon-Paired → 免配对头放行（首帧票据兜底）
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("http://192.168.1.5/ws")
+                    .header(header::HOST, "192.168.1.5:41234")
+                    .header(header::ORIGIN, "http://192.168.1.5:41234")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "/ws 免配对头");
+
+        // 未配对：局域网同源 Origin 但无令牌 → 403
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("http://192.168.1.5/projects/open")
+                    .header(header::HOST, "192.168.1.5:41234")
+                    .header(header::ORIGIN, "http://192.168.1.5:41234")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN, "未配对仍拦截");
     }
 }

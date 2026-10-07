@@ -824,6 +824,8 @@ pub struct DaemonState {
     pub dirty_buffers: Mutex<HashMap<String, Arc<tenon_fs::DirtyBufferRegistry>>>,
     /// 局域网配对（M3 §12.6：显式开启 + 一次性码 + 可吊销令牌；默认关闭）。
     pub lan_pairing: Arc<PairingStore>,
+    /// `--lan` 绑定 0.0.0.0（v1.157 §12.6：桌面壳 spawn 即传入）；启动即自动启用配对。
+    pub lan_bind: bool,
     /// daemon 监听端口（/pairing 自发现回传给 UI）。
     pub port: std::sync::atomic::AtomicU16,
     /// 权限高级策略（v1.85：只收窄；运行时热更新，仅新会话生效）。
@@ -1014,10 +1016,19 @@ impl DaemonState {
             .clone()
             .unwrap_or_else(|| Config::data_dir().join("updates/staged"));
         let team_policy = load_team_policy(&policy_path);
+        // `--lan`（v1.157 §12.6）：绑定 0.0.0.0 的同时自动启用配对——桌面壳 spawn
+        // 即传 `--lan`，局域网设备凭一次性码换设备令牌；配对码经 /lan/status 取，
+        // 不入日志（随机 token 不入日志的同款口径）
+        let lan_pairing = Arc::new(PairingStore::new());
+        if options.lan_bind {
+            lan_pairing.enable();
+            tracing::info!("局域网访问已开启（--lan，0.0.0.0）：配对码见设置面板「局域网」分类");
+        }
         let state = Self {
             store: Arc::new(Mutex::new(store)),
             lsp: Arc::new(LspManager::new()),
-            lan_pairing: Arc::new(PairingStore::new()),
+            lan_pairing,
+            lan_bind: options.lan_bind,
             port: std::sync::atomic::AtomicU16::new(0),
             team_policy: std::sync::RwLock::new(team_policy),
             dirty_buffers: Mutex::new(HashMap::new()),

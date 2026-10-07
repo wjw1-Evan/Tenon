@@ -4,7 +4,7 @@
 // 会话生效，模型保存即重建 provider 表（默认模型对新会话生效，既有会话保持
 // 各自 provider）。密钥不变式（§11）：面板只填环境变量引用名，永不输入 / 回显明文。
 import { useEffect, useState } from "react";
-import type { ProviderSettings, SettingsData, TenonApi } from "../lib/api";
+import type { LanStatus, ProviderSettings, SettingsData, TenonApi } from "../lib/api";
 import type { Translate } from "../lib/i18n";
 import { LOCALE_CHANGE, type Locale } from "../lib/i18n";
 import {
@@ -58,10 +58,11 @@ function rowsFromSettings(settings: SettingsData | null): ProviderRow[] {
 
 /** v1.121：Codex 式设置信息架构——左栏分类，右栏只渲染当前分类。
  *  Updates 分类随更新恒自动移除（v1.154）。 */
-type SettingsSection = "general" | "models" | "permissions" | "plugins" | "skills";
+type SettingsSection = "general" | "lan" | "models" | "permissions" | "plugins" | "skills";
 
 const SETTINGS_SECTIONS: SettingsSection[] = [
   "general",
+  "lan",
   "models",
   "permissions",
   "plugins",
@@ -95,6 +96,9 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, p
   const [section, setSection] = useState<SettingsSection>("general");
   /** 技能停用名单（§13.4 v1.130）：Skills 分区即时 PUT，App 侧经 onSaved 回写。 */
   const [skillsDisabled, setSkillsDisabled] = useState<string[]>([]);
+  /** 局域网访问状态（v1.157 §15 /lan/status）：地址 / 配对码 / 已配对设备。 */
+  const [lan, setLan] = useState<LanStatus | null>(null);
+  const [lanBusy, setLanBusy] = useState(false);
 
   // 从已拉取的全局设置回填（外观 / 语言为本地即时项，不入 daemon）
   useEffect(() => {
@@ -117,7 +121,41 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, p
       .catch(() => setLaya(null));
   }, [api]);
 
+  // 局域网状态（v1.157 /lan/status）：进入分类即拉取；403/失败 → null（显示未开启）
+  useEffect(() => {
+    if (section !== "lan") return;
+    api
+      .lanStatus()
+      .then(setLan)
+      .catch(() => setLan(null));
+  }, [api, section]);
+
   if (!settings) return null;
+
+  /** 刷新配对码（= POST /lan/enable 重新生成，旧码作废）。 */
+  async function refreshLanCode() {
+    setLanBusy(true);
+    try {
+      setLan(await api.lanEnable());
+    } catch {
+      // 保持旧状态
+    } finally {
+      setLanBusy(false);
+    }
+  }
+
+  /** 吊销设备令牌（立即生效），成功后重拉状态。 */
+  async function revokeLan(device: string) {
+    setLanBusy(true);
+    try {
+      await api.lanRevoke(device);
+      setLan(await api.lanStatus());
+    } catch {
+      // 保持旧状态
+    } finally {
+      setLanBusy(false);
+    }
+  }
 
   function addProvider() {
     const base = PRESETS[preset] ?? PRESETS.custom;
@@ -250,6 +288,75 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, p
                   />
                 </div>
                 <p className="muted settings-note">{t("settings.note_new_sessions")}</p>
+              </div>
+            )}
+
+            {section === "lan" && (
+              <div className="settings-section" data-testid="settings-lan-section">
+                <div className="settings-section-title">{t("settings.lan.title")}</div>
+                {lan?.enabled && lan.lan_url ? (
+                  <>
+                    <div className="settings-grid">
+                      <label>{t("settings.lan.url")}</label>
+                      <a
+                        href={lan.lan_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        data-testid="settings-lan-url"
+                      >
+                        {lan.lan_url}
+                      </a>
+
+                      <label htmlFor="lan-code">{t("settings.lan.code")}</label>
+                      <div className="lan-code-row">
+                        <code id="lan-code" data-testid="settings-lan-code">
+                          {lan.code ?? t("settings.lan.code_none")}
+                        </code>
+                        {lan.ttl_s != null && (
+                          <span className="muted">{t("settings.lan.ttl", { s: lan.ttl_s })}</span>
+                        )}
+                        <button
+                          type="button"
+                          disabled={lanBusy}
+                          data-testid="settings-lan-refresh"
+                          onClick={() => void refreshLanCode()}
+                        >
+                          {t("settings.lan.code_refresh")}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="lan-devices" data-testid="settings-lan-devices">
+                      <div className="settings-section-sub">{t("settings.lan.devices")}</div>
+                      {(lan.devices?.length ?? 0) === 0 ? (
+                        <p className="muted">{t("settings.lan.no_devices")}</p>
+                      ) : (
+                        lan.devices!.map((d) => (
+                          <div
+                            className="lan-device-row"
+                            key={d.device}
+                            data-testid={`lan-device-${d.device}`}
+                          >
+                            <span>{d.device}</span>
+                            <span className="muted">
+                              {new Date(Number(d.paired_at) * 1000).toLocaleString()}
+                            </span>
+                            <button
+                              type="button"
+                              disabled={lanBusy}
+                              onClick={() => void revokeLan(d.device)}
+                            >
+                              {t("settings.lan.revoke")}
+                            </button>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <p className="muted">{t("settings.lan.off")}</p>
+                )}
+                <p className="muted settings-note">{t("settings.lan.note")}</p>
               </div>
             )}
 

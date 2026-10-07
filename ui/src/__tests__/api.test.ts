@@ -111,4 +111,49 @@ describe("TenonApi（§15 客户端）", () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(events).toEqual([{ type: "user_input" }]);
   });
+
+  it("v1.157 局域网：页面与 daemon 同端口时 base 用页面 origin", async () => {
+    vi.stubGlobal("location", {
+      protocol: "http:",
+      port: "9999",
+      origin: "http://192.168.1.5:9999",
+    });
+    try {
+      fetchMock.mockImplementation(async () => new Response("{}", { status: 200 }));
+      const api = new TenonApi({ port: 9999, token: "t" });
+      await api.models();
+      expect(fetchMock.mock.calls[0][0]).toBe("http://192.168.1.5:9999/models");
+      // 端口不匹配（dev server 5173 等）→ 回退 127.0.0.1
+      const api2 = new TenonApi({ port: 9998, token: "t" });
+      await api2.models();
+      expect(fetchMock.mock.calls[1][0]).toBe("http://127.0.0.1:9998/models");
+    } finally {
+      // location 由 jsdom 持有不可单独还原：unstub 后必须补回模块级 fetch/WS 桩
+      vi.unstubAllGlobals();
+      vi.stubGlobal("fetch", fetchMock);
+      vi.stubGlobal("WebSocket", FakeWebSocket);
+    }
+  });
+
+  it("v1.157 局域网：localStorage 配对令牌随请求携带", async () => {
+    const backing = new Map<string, string>([["tenon:paired-token", "dev-tok"]]);
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => (backing.has(k) ? backing.get(k)! : null),
+      setItem: (k: string, v: string) => void backing.set(k, v),
+      removeItem: (k: string) => void backing.delete(k),
+      clear: () => backing.clear(),
+    });
+    try {
+      fetchMock.mockImplementation(async () => new Response("{}", { status: 200 }));
+      const api = new TenonApi({ port: 9999, token: "" });
+      await api.models();
+      const [, init] = fetchMock.mock.calls[0];
+      expect(init.headers["X-Tenon-Paired"]).toBe("dev-tok");
+      expect(init.headers["X-Tenon-Token"]).toBeUndefined();
+    } finally {
+      vi.unstubAllGlobals();
+      vi.stubGlobal("fetch", fetchMock);
+      vi.stubGlobal("WebSocket", FakeWebSocket);
+    }
+  });
 });

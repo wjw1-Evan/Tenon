@@ -108,6 +108,7 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
         .route("/pairing", get(pairing_info))
         .route("/evals", get(list_evals))
         .route("/lan/enable", post(lan_enable))
+        .route("/lan/status", get(lan_status))
         .route("/lan/pair", post(lan_pair))
         .route("/lan/revoke", post(lan_revoke))
         .route("/project/{id}/l4/stats", get(l4_stats))
@@ -2962,10 +2963,47 @@ async fn pairing_info(State(state): State<Arc<DaemonState>>) -> Response {
         "token": state.token,
         "ws_ticket": ws_ticket,
         "lan_enabled": state.lan_pairing.is_enabled(),
+        // v1.157：--lan 时的局域网访问地址（探测失败 / 未开启为 null）
+        "lan_url": lan_url(&state),
         // 启动时注册的项目根：浏览器自发现 UI 据此打开同一项目（而非 cwd）
         "project": state.default_project,
     }))
     .into_response()
+}
+
+/// 局域网访问地址（v1.157 §12.6）：`--lan` 且探测到私有网段出口 IP 时给出；
+/// 未开启 / 离线回退 null（UI 显示「未开启」）。
+fn lan_url(state: &DaemonState) -> Option<String> {
+    if !state.lan_bind {
+        return None;
+    }
+    let ip = crate::pairing::lan_ip()?;
+    let port = state.port.load(std::sync::atomic::Ordering::Relaxed);
+    Some(format!("http://{ip}:{port}/"))
+}
+
+/// 局域网访问状态（v1.157 §15）：设置面板「局域网」分类数据源；
+/// 设备列表只回 name / paired_at（令牌不出 daemon）。
+async fn lan_status(State(state): State<Arc<DaemonState>>) -> Response {
+    Json(lan_status_json(&state)).into_response()
+}
+
+fn lan_status_json(state: &DaemonState) -> serde_json::Value {
+    let (code, ttl_s) = state
+        .lan_pairing
+        .current_code()
+        .map(|(c, t)| (json!(c), json!(t)))
+        .unwrap_or((json!(null), json!(null)));
+    json!({
+        "enabled": state.lan_pairing.is_enabled(),
+        "code": code,
+        "ttl_s": ttl_s,
+        "lan_url": lan_url(state),
+        "devices": state.lan_pairing.devices()
+            .into_iter()
+            .map(|d| json!({"device": d.device, "paired_at": d.paired_at}))
+            .collect::<Vec<_>>(),
+    })
 }
 
 /// AI Evals 报告列表（§18.3 / M3 可视化数据源）。
@@ -3026,8 +3064,8 @@ struct LanPairBody {
 /// 显式开启局域网访问：生成一次性配对码（返回给已登录的本机 UI）。
 async fn lan_enable(State(state): State<Arc<DaemonState>>) -> Response {
     let _ = &state;
-    let code = state.lan_pairing.enable();
-    Json(json!({ "enabled": true, "code": code, "ttl_s": 300 })).into_response()
+    state.lan_pairing.enable();
+    Json(lan_status_json(&state)).into_response()
 }
 
 /// 局域网设备凭一次性码配对：成功返回设备令牌（= daemon token，可吊销）。
