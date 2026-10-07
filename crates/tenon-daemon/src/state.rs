@@ -38,7 +38,9 @@ fn parse_provider_kind(s: &str) -> Option<tenon_config::ProviderKind> {
     }
 }
 
-/// provider 覆盖条目（v1.40 §15）：密钥仅存环境变量引用名，永不落盘明文。
+/// provider 覆盖条目（v1.40 §15）。v1.165 密钥双轨（§11）：`api_key` 明文
+/// 直存 settings.json（0600）——GET /settings 永不回显，覆盖表整体替换时
+/// 载荷缺席即保留既有值；`api_key_env` 引用轨（env → OS 凭据库）优先解析。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ProviderOverride {
     /// openai | anthropic | openai_responses
@@ -47,15 +49,18 @@ pub struct ProviderOverride {
     pub wire_api: Option<String>,
     pub model: Option<String>,
     pub api_key_env: Option<String>,
+    /// v1.165 直存密钥（settings.json 0600；不入 GET 回显）。
+    pub api_key: Option<String>,
 }
 
 impl ProviderOverride {
     fn merge_json(&mut self, v: &serde_json::Value) -> Result<(), String> {
-        if v.get("api_key").is_some() {
-            return Err(
-                "models.providers.api_key 明文禁止经设置链路写入——密钥仅存 api_key_env 引用（§11）"
-                    .into(),
-            );
+        if let Some(k) = v.get("api_key") {
+            let k = k.as_str().ok_or("models.providers.api_key 须为字符串")?;
+            if k.is_empty() {
+                return Err("models.providers.api_key 不可为空".into());
+            }
+            self.api_key = Some(k.to_string());
         }
         if let Some(k) = v.get("kind") {
             let k = k.as_str().ok_or("models.providers.kind 须为字符串")?;
@@ -121,6 +126,9 @@ impl ProviderOverride {
         }
         if let Some(e) = &self.api_key_env {
             o.insert("api_key_env".into(), serde_json::Value::String(e.clone()));
+        }
+        if let Some(k) = &self.api_key {
+            o.insert("api_key".into(), serde_json::Value::String(k.clone()));
         }
         serde_json::Value::Object(o)
     }
@@ -256,6 +264,14 @@ impl SettingsOverrides {
                     }
                     let mut ov = ProviderOverride::default();
                     ov.merge_json(entry).map_err(|e| format!("{name}: {e}"))?;
+                    // api_key「缺席即保留」（v1.165）：GET 不回显、UI 无法重发，
+                    // 载荷未携带该字段时继承既有覆盖值（整条缺席 = 删除 provider）
+                    if !entry.get("api_key").is_some() {
+                        ov.api_key = self
+                            .models_providers
+                            .get(name)
+                            .and_then(|prev| prev.api_key.clone());
+                    }
                     built.insert(name.clone(), ov);
                 }
                 // 整体替换覆盖表（UI 每次保存发全量，支持删除）；基础 config 条目不受影响
@@ -377,6 +393,9 @@ impl SettingsOverrides {
             }
             if let Some(e) = &ov.api_key_env {
                 entry.api_key_env = Some(e.clone());
+            }
+            if let Some(k) = &ov.api_key {
+                entry.api_key = Some(k.clone());
             }
         }
     }

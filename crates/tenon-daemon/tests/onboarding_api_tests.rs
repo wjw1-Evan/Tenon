@@ -1,6 +1,7 @@
-//! 免费模型引导 API 集成测试（§15 v1.163）：`PUT /secrets/{name}` 校验与
-//! 钥匙串写入回读、`POST /models/verify` 对本地 mock 上游的试连闭环
-//! （含 GLM thinking 翻译在真实 HTTP 链路上的端到端断言）。
+//! 免费模型引导 API 集成测试（§15 v1.163 / v1.165）：provider `api_key` 直存
+//! settings.json 的持久化 / 回显剥离 / 缺席保留语义、`POST /models/verify`
+//! 对本地 mock 上游的试连闭环（含 GLM thinking 翻译在真实 HTTP 链路上的
+//! 端到端断言）。
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,7 +11,7 @@ use axum::routing::post;
 use axum::Json;
 use serde_json::{json, Value};
 use tenon_daemon::{serve, DaemonOptions};
-use tenon_models::{KeyStore, MockProvider};
+use tenon_models::MockProvider;
 
 fn base(port: u16) -> String {
     format!("http://127.0.0.1:{port}")
@@ -86,74 +87,81 @@ async fn start_mock_upstream(status: u16, captured: Arc<std::sync::Mutex<Option<
     port
 }
 
-/// 密钥名域校验（§15 `^[A-Z][A-Z0-9_]{0,63}$`）与载荷校验，全部 400。
+/// v1.165 密钥直存（§11 双轨）：PUT /settings 接受 provider `api_key` 明文 →
+/// 持久化 settings.json（0600）→ GET 永不回显；覆盖表整体替换时载荷缺席
+/// `api_key` 即保留既有值（UI 无法重发不可回显字段）；整条缺席（删除
+/// provider）即随条目消失。
 #[tokio::test]
-async fn put_secret_rejects_invalid_name_and_payload() {
-    let (_tmp, port, token) = start_daemon().await;
+async fn settings_api_key_persists_redacted_and_survives_absent_field() {
+    let (tmp, port, token) = start_daemon().await;
     let client = client_with_token(&token);
+    let settings_path = tmp.path().join("settings.json");
 
-    // 空名在路由层即不可达（/secrets/ 不匹配 {name} 段），不进用例
-    for name in ["abc", "1ABC", "A-B", &"A".repeat(65)] {
-        let resp = client
-            .put(format!("{}/secrets/{}", base(port), name))
-            .json(&json!({"value": "x"}))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), 400, "密钥名 {name:?} 应被拒绝");
-    }
-    // 缺 value / 空 value
-    for body in [json!({}), json!({"value": ""})] {
-        let resp = client
-            .put(format!("{}/secrets/TENON_V163_TEST", base(port)))
-            .json(&body)
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), 400);
-    }
-    // 未带 token 直接 401（凭据写入是高特权操作，必须在鉴权层内）
-    let anon = reqwest::Client::new();
-    let resp = anon
-        .put(format!("{}/secrets/TENON_V163_TEST", base(port)))
-        .json(&json!({"value": "x"}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 401);
-}
-
-/// 钥匙串写入回读（真实 OS 凭据库；不可用环境跳过，不假失败）。
-#[tokio::test]
-async fn put_secret_writes_and_reads_back_via_keychain() {
-    let (_tmp, port, token) = start_daemon().await;
-    let client = client_with_token(&token);
-    let name = "TENON_V163_TEST_SECRET";
-    let value = "test-key-value-xyz";
-
-    // 环境门：先直连 KeychainStore 往返确认凭据库真的可用——
-    // 不能拿 HTTP 500 当「环境不可用」跳过（v1.164：那会掩盖真实回归）
-    let gate = tenon_models::KeychainStore::new();
-    gate.set("TENON_V163_TEST_GATE", "gate-value");
-    let keychain_ok = gate.get("TENON_V163_TEST_GATE").as_deref() == Some("gate-value");
-    gate.delete("TENON_V163_TEST_GATE");
-    if !keychain_ok {
-        eprintln!("跳过：系统凭据库不可用");
-        return;
-    }
-
+    let glm = json!({
+        "kind": "openai",
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "model": "glm-4.7-flash",
+        "api_key": "sk-live-secret-xyz"
+    });
     let resp = client
-        .put(format!("{}/secrets/{name}", base(port)))
-        .json(&json!({"value": value}))
+        .put(format!("{}/settings", base(port)))
+        .json(&json!({"models": {"default": "glm", "providers": {"glm": glm}}}))
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200, "凭据库可用时 /secrets 必须成功");
-    // 回读确认（HTTP 层无 GET，防旁路读取——直接用 KeychainStore 验证）
-    let keys = tenon_models::KeychainStore::new();
-    assert_eq!(keys.get(name).as_deref(), Some(value));
-    keys.delete(name);
-    assert!(keys.get(name).is_none());
+    assert_eq!(resp.status(), 200);
+
+    // 持久化：settings.json 含明文（0600 文件 = 用户本机权威存储）
+    let persisted = std::fs::read_to_string(&settings_path).unwrap();
+    assert!(
+        persisted.contains("sk-live-secret-xyz"),
+        "明文应落 settings.json"
+    );
+
+    // GET 永不回显密钥
+    let view: Value = client
+        .get(format!("{}/settings", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let glm_view = &view["models"]["providers"]["glm"];
+    assert!(glm_view.get("api_key").is_none(), "GET 不得回显 api_key");
+    assert_eq!(glm_view["overridden"], true);
+
+    // 缺席保留：重发不含 api_key 的全量表（模拟设置面板保存），密钥仍在盘上
+    let resp = client
+        .put(format!("{}/settings", base(port)))
+        .json(&json!({"models": {"default": "glm", "providers": {"glm": {
+            "kind": "openai",
+            "base_url": "https://open.bigmodel.cn/api/paas/v4",
+            "model": "glm-4.7-flash"
+        }}}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let persisted = std::fs::read_to_string(&settings_path).unwrap();
+    assert!(
+        persisted.contains("sk-live-secret-xyz"),
+        "载荷缺席 api_key 应保留既有值"
+    );
+
+    // 整条缺席 = 删除 provider，密钥随之消失
+    let resp = client
+        .put(format!("{}/settings", base(port)))
+        .json(&json!({"models": {"default": "", "providers": {}}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let persisted = std::fs::read_to_string(&settings_path).unwrap();
+    assert!(
+        !persisted.contains("sk-live-secret-xyz"),
+        "删除 provider 应连带清除密钥"
+    );
 }
 
 /// 试连闭环：GLM 模型名触发 thinking disabled 翻译、Bearer 透传、成功回包。

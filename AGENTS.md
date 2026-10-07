@@ -72,7 +72,7 @@ cargo run -p tenon-evals -- --provider glm   # 附录 D 10 任务基准
 - **编辑器与 Agent 共享同一 LSP 宿主**（tenon-lsp 多路复用）：一次索引行为一致，Agent `lsp_query` 与编辑器诊断同实例；
 - **回滚走独立 shadow git 快照库**（tenon-snapshot）：零写用户仓库 `.git`；
 - **沙箱三态**：macOS Seatbelt / Linux Landlock+seccomp / Windows WSL2（tenon-sandbox）；
-- **密钥不落盘**：配置只允许 `api_key_env` 环境变量引用；
+- **密钥存储双轨**（v1.165 用户裁定简化）：`api_key` 可直存配置文件（settings.json / config.local.toml，0600；GET /settings 永不回显），或经 `api_key_env` 环境变量 / OS 凭据库引用（解析优先级见 design.md §11）；
 - **模型接入**：默认 `~/.tenon/config.toml`（schema 见 design.md 附录 E）；仓库根 `config.local.toml`（gitignored）仅供本地联调，dev 脚本会显式 `--config` 传入。
 
 ## 约定

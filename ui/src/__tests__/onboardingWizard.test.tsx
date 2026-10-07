@@ -16,7 +16,6 @@ function makeApi(overrides: Record<string, ReturnType<typeof vi.fn>> = {}) {
     verifyModel: vi
       .fn()
       .mockResolvedValue({ ok: true, model: "glm-4.7-flash", latency_ms: 42 }),
-    putSecret: vi.fn().mockResolvedValue({ ok: true }),
     putSettings: vi.fn().mockResolvedValue(NEXT_SETTINGS),
     setUiPrefs: vi.fn(),
     models: vi.fn().mockResolvedValue({ models: [], default: "", laya: null }),
@@ -68,7 +67,7 @@ describe("OnboardingWizard", () => {
     expect(screen.getByTestId("onboarding-step-key")).toBeTruthy();
   });
 
-  it("完成：先写钥匙串再写设置；putSettings 只含 api_key_env 引用名，永不落明文", async () => {
+  it("完成：单次 putSettings 直存 api_key（v1.165 简化，不再经钥匙串）", async () => {
     const api = makeApi();
     const onDone = vi.fn();
     render(
@@ -83,23 +82,15 @@ describe("OnboardingWizard", () => {
     fireEvent.click(screen.getByTestId("onboarding-finish"));
 
     await waitFor(() => expect(onDone).toHaveBeenCalled());
-    // 顺序不变式：钥匙串写入成功后才提交设置
-    expect(api.putSecret).toHaveBeenCalledWith("ZHIPU_API_KEY", "sk-secret-xyz");
-    expect(
-      (api.putSecret as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]
-    ).toBeLessThan(
-      (api.putSettings as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]
-    );
-    // 密钥不变式：settings 载荷只有引用名，明文只出现在 verify / secrets 调用里
     const payload = (api.putSettings as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(payload.models.default).toBe("glm");
+    // 直存轨（§11 v1.165）：api_key 明文随 provider 一并写入 settings.json（0600）
     expect(payload.models.providers.glm).toEqual({
       kind: "openai",
       base_url: "https://open.bigmodel.cn/api/paas/v4",
       model: "glm-4.7-flash",
-      api_key_env: "ZHIPU_API_KEY",
+      api_key: "sk-secret-xyz",
     });
-    expect(JSON.stringify(payload)).not.toContain("sk-secret-xyz");
     expect(onDone).toHaveBeenCalledWith(NEXT_SETTINGS);
   });
 

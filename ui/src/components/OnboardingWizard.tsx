@@ -1,8 +1,9 @@
-// 接入免费模型向导（§7.1 / §11 / §15 v1.163）：智谱 GLM-4.7-Flash 官方免费档
-// 开箱引导——三步（介绍 → 注册拿 Key → 验证并一键写入配置）。首启合并视图无
-// provider 且未跳过时自动弹出（App 接线）；模型空态与设置 Models 可重开。
-// 密钥不变式（§11）：明文只经 PUT /secrets 入系统钥匙串与 POST /models/verify
-// 试连（唯一豁免端点），PUT /settings 载荷只含 api_key_env 引用名，永不落盘。
+// 接入免费模型向导（§7.1 / §11 / §15 v1.163，v1.165 简化）：智谱 GLM-4.7-Flash
+// 官方免费档开箱引导——三步（介绍 → 注册拿 Key → 验证并一键写入配置）。首启
+// 合并视图无 provider 且未跳过时自动弹出（App 接线）；模型空态与设置 Models 可重开。
+// 密钥直存（v1.165 §11 双轨）：验证经 POST /models/verify，完成 = 单次
+// PUT /settings 把 api_key 与 provider 一并写入 settings.json（0600）并热生效；
+// GET /settings 永不回显密钥。
 import { useState } from "react";
 import type {
   SettingsData,
@@ -16,7 +17,6 @@ export const GLM_PRESET = {
   name: "glm",
   baseUrl: "https://open.bigmodel.cn/api/paas/v4",
   model: "glm-4.7-flash",
-  keyEnv: "ZHIPU_API_KEY",
 } as const;
 
 const ZHIPU_PORTAL_URL = "https://open.bigmodel.cn";
@@ -76,8 +76,8 @@ export function OnboardingWizard({ api, t, settings, onDone, onSkip }: Props) {
     setFinishing(true);
     setFinishError(null);
     try {
-      await api.putSecret(GLM_PRESET.keyEnv, apiKey.trim());
-      // provider 覆盖表整体替换（§15）：合并既有条目避免误删用户配置
+      // provider 覆盖表整体替换（§15）：合并既有条目避免误删用户配置；
+      // api_key 直存 settings.json（0600，GET 不回显）
       const existing = settings?.models?.providers ?? {};
       const next = await api.putSettings({
         models: {
@@ -88,7 +88,7 @@ export function OnboardingWizard({ api, t, settings, onDone, onSkip }: Props) {
               kind: "openai",
               base_url: GLM_PRESET.baseUrl,
               model: GLM_PRESET.model,
-              api_key_env: GLM_PRESET.keyEnv,
+              api_key: apiKey.trim(),
             },
           },
         },

@@ -18,7 +18,7 @@ use tenon_agent::session::{
     sanitize_title, AgentConfig, AgentSession, ControlCommand, TaskOutcome,
 };
 use tenon_core::context::ProjectRules;
-use tenon_models::{KeyStore, ModelProvider};
+use tenon_models::ModelProvider;
 use tenon_snapshot::SnapshotStore;
 use tenon_store::{EventKind, SessionStatus};
 
@@ -106,8 +106,8 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
             get(get_project_ui_state).put(put_project_ui_state),
         )
         .route("/models", get(list_models))
-        // 密钥写入与试连验证（§15 v1.163 免费模型引导配套）
-        .route("/secrets/{name}", put(put_secret))
+        // 试连验证（§15 v1.163 免费模型引导配套）；v1.165 密钥直存 settings，
+        // 钥匙串写入通道 /secrets 已移除
         .route("/models/verify", post(verify_model))
         .route("/pairing", get(pairing_info))
         .route("/evals", get(list_evals))
@@ -3404,62 +3404,9 @@ async fn put_ui_prefs(State(state): State<Arc<DaemonState>>, Json(body): Json<Va
     Json(json!({"ok": true})).into_response()
 }
 
-// ---------- 密钥写入与试连验证（§15 v1.163 免费模型引导） ----------
+// ---------- 试连验证（§15 v1.163 免费模型引导；v1.165 /secrets 已移除，密钥直存 settings.json） ----------
 
-/// 密钥名与 `api_key_env` 引用名同域：`^[A-Z][A-Z0-9_]{0,63}$`。
-fn valid_secret_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    match chars.next() {
-        Some(c) if c.is_ascii_uppercase() => {}
-        _ => return false,
-    }
-    name.len() <= 64 && chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
-}
-
-/// 密钥写入系统钥匙串（§11 密钥存储 / §15）：明文仅内存中转，持久只进
-/// OS 凭据库（service `tenon.keys`），不落盘 / 不入事件溯源 / 不打日志。
-/// 无 GET——防旁路读取，写入方自持明文；写入后回读校验，失败 500。
-async fn put_secret(
-    State(_state): State<Arc<DaemonState>>,
-    Path(name): Path<String>,
-    Json(body): Json<Value>,
-) -> Response {
-    if !valid_secret_name(&name) {
-        return api_err(StatusCode::BAD_REQUEST, "密钥名须为 ^[A-Z][A-Z0-9_]{0,63}$");
-    }
-    let Some(value) = body.get("value").and_then(|v| v.as_str()) else {
-        return api_err(StatusCode::BAD_REQUEST, "须为 {\"value\": \"…\"}");
-    };
-    if value.is_empty() {
-        return api_err(StatusCode::BAD_REQUEST, "密钥值不能为空");
-    }
-    // macOS 钥匙串写入走「密码 + 复述」双行 stdin 协议（§11），换行会错位
-    if value.contains('\n') || value.contains('\r') {
-        return api_err(StatusCode::BAD_REQUEST, "密钥值不能含换行");
-    }
-    // 阻塞式 security CLI 进程调用，放专用线程池避免卡 runtime
-    let result = {
-        let name = name.clone();
-        let value = value.to_string();
-        tokio::task::spawn_blocking(move || {
-            let keys = tenon_models::KeychainStore::new();
-            keys.set(&name, &value);
-            keys.get(&name).is_some_and(|v| v == value)
-        })
-        .await
-    };
-    match result {
-        Ok(true) => Json(json!({"ok": true})).into_response(),
-        Ok(false) => api_err(StatusCode::INTERNAL_SERVER_ERROR, "系统凭据库写入失败"),
-        Err(e) => api_err(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("凭据写入任务: {e}"),
-        ),
-    }
-}
-
-/// 试连验证（§15 v1.163）：引导向导贴 Key 后发一次极小测试请求，
-/// **明文 api_key 唯一豁免端点**（其余端点维持 400 拒绝不变）；请求体不打日志。
+/// 试连验证（§15 v1.163）：引导向导贴 Key 后发一次极小测试请求；请求体不打日志。
 async fn verify_model(State(_state): State<Arc<DaemonState>>, Json(body): Json<Value>) -> Response {
     let base_url = body
         .get("base_url")

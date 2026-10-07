@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v1.164** |
-| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.156）· 2026-10-07（v1.157-v1.162）· 2026-10-08（v1.163-v1.164） |
+| 版本 | **v1.165** |
+| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.156）· 2026-10-07（v1.157-v1.162）· 2026-10-08（v1.163-v1.165） |
 | 状态 | 定稿（v1.10 决策闭环），M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 | 历史评审 | v0.1 / v0.3 两轮共 41 项、v1.0 复审 21 项问题的结论已全部并入本方案（过程文档已清理） |
@@ -317,7 +317,7 @@ GlobalScheduler（全局并发 / 成本 / 通知）
 | Checkpoint 时间轴 | 侧栏 | 事件流 + 快照点，任意回滚 / 撤销回滚（unrevert） |
 | 语言包安装向导 | 检测到语言缺包 | 一键安装、运行时检测与官方指引 |
 | 设置 | 全局（Cmd/Ctrl+, 或命令面板） | **v1.121 起为 Codex 式模态框：左侧分类导航，右侧只渲染当前分类**；General 承载编辑器保存方式（v1.75）与代理参数（首改缓冲 / 命令超时）；Models / Permissions / Plugins / Skills 分别承载模型（v1.40）、权限策略（v1.85：工具黑名单、单任务成本上限；强制交互档随 v1.89 审批移除而删除）、MCP 插件管理（v1.84 设立，v1.145 重构为 GitHub 市场获取 + 已装管理，§13.5）、技能管理（v1.130，§13.4；v1.145 增市场获取子视图）；Updates 分类（v1.83：更新通道 manual \| auto；v1.92 收敛遥测开关）随更新固定自动整体移除（v1.154）；外观档与语言仅保留顶栏入口（v1.92 去重） |
-| **接入免费模型向导** | 首启无 provider 自动弹出；模型选择器空态 / 设置 Models 可重开 | **v1.163**：三步向导（免费模型介绍 → 智谱开放平台注册拿 Key → 验证并一键写入配置，预设 glm / glm-4.7-flash 免费档，§11）；可跳过，跳过经 ui-prefs 记忆不再自动弹；密钥经 `PUT /secrets` 入系统钥匙串、配置经 `PUT /settings` 热生效（§15），全程明文不落盘 |
+| **接入免费模型向导** | 首启无 provider 自动弹出；模型选择器空态 / 设置 Models 可重开 | **v1.163**：三步向导（免费模型介绍 → 智谱开放平台注册拿 Key → 验证并一键写入配置，预设 glm / glm-4.7-flash 免费档，§11）；可跳过，跳过经 ui-prefs 记忆不再自动弹；v1.165 简化：密钥与 provider 经 `PUT /settings` 一次写入本机配置文件 settings.json（0600）并热生效，不再经系统钥匙串（§15） |
 | 命令面板 | Cmd+Shift+P | 全部命令可达（无障碍要求） |
 | Evals 报告 | M3 | 五指标 + 对比版本 |
 
@@ -669,11 +669,11 @@ L4 按包隔离、语言服务器按需启动；子代理限定单包；检索�
 ## 11. 模型层
 
 - **接入**：OpenAI / Anthropic / DeepSeek / Ollama 原生 + **OpenAI 兼容端点通用 provider**（base URL + Key）；设置面板模型分区（v1.40）提供常用提供商预设（OpenAI / Anthropic / DeepSeek / Ollama / 智谱 GLM——后两者经 OpenAI 兼容接入），新增 provider 只填名称 / 协议族 / base_url / 默认模型 / 密钥环境变量引用；
-- **免费模型引导（v1.163）**：智谱 **GLM-4.7-Flash 官方免费档**（0 元、不限量）作为开箱引导预设——`kind="openai"`、`base_url=https://open.bigmodel.cn/api/paas/v4`、`model=glm-4.7-flash`、`api_key_env=ZHIPU_API_KEY`；首启合并视图无任何 provider 且用户未跳过时自动弹出三步引导向导（§7.1）：向导内贴 Key 经 `POST /models/verify` 试连验证 → `PUT /secrets` 写入钥匙串 → `PUT /settings` 写入 provider 覆盖即热生效，密钥明文全程不落盘（密钥存储不变式不变）；GLM 推理模型思考默认开启且计入 `max_tokens`，OpenAI 兼容路径对 GLM 目标（base_url 含 bigmodel.cn 或 model 名 glm 前缀）将 `reasoning_effort=low/minimal/none` 翻译为 `thinking:{"type":"disabled"}`（与 Anthropic 路径既有做法同规），避免小预算请求（如标题生成 max_tokens=128）被思考耗尽返回空 content；
+- **免费模型引导（v1.163）**：智谱 **GLM-4.7-Flash 官方免费档**（0 元、不限量）作为开箱引导预设——`kind="openai"`、`base_url=https://open.bigmodel.cn/api/paas/v4`、`model=glm-4.7-flash`；首启合并视图无任何 provider 且用户未跳过时自动弹出三步引导向导（§7.1）：向导内贴 Key 经 `POST /models/verify` 试连验证 → `PUT /settings` 一并写入 api_key 与 provider 覆盖即热生效（v1.165 简化：密钥直存 settings.json 0600，§11 密钥存储双轨）；GLM 推理模型思考默认开启且计入 `max_tokens`，OpenAI 兼容路径对 GLM 目标（base_url 含 bigmodel.cn 或 model 名 glm 前缀）将 `reasoning_effort=low/minimal/none` 翻译为 `thinking:{"type":"disabled"}`（与 Anthropic 路径既有做法同规），避免小预算请求（如标题生成 max_tokens=128）被思考耗尽返回空 content；
 - **本地决策模型（Laya）**：产品自管小型分类模型，承接代理循环结构化判定（用途 / 分发 / 边界见 §9.8）；启动自动下载并启用（静态 registry + 签名 + 版本锁定，无确认卡，v1.71）、本地 CPU 推理零 token 成本；不可用即整体回退，不阻塞任何功能；
 - **路由**：v1 显式（`/model` 与设置面板）+ 轻量启发式（纯读任务提示轻模型）；auto 路由实验特性默认关（置信度展示、一键改派、可反馈）；
 - **成本**（v1.93 接线）：价格表来源 = provider 配置可选 `price_in_per_mtok` / `price_out_per_mtok`（美元 / 百万 token，缺省 0 = 未知模型不计、宁少报不虚报）；daemon 按默认模型构建价格表注入会话，每回合计价累计入 `model_usage.cost_usd` 并作为熔断预算输入（§9.3）；本地模型（含 Laya）显示「本地 · 0 成本」，token 单独统计；任务级 / 会话级 / 项目级归因；**缓存与速度观测（v1.129）**：usage 增缓存命中输入 token 采集（OpenAI 兼容 = `prompt_tokens_details.cached_tokens`，Anthropic = `cache_read_input_tokens`，未报告 / 本地模型 = 0），命中率 = cached / input——OpenAI 系 cached ⊆ prompt_tokens 口径自洽，Anthropic 系不打 `cache_control` 断点则缓存不启用、恒 0 不虚报；每回合模型流耗时（provider 流建立 → 权威 Final 到达）记入 `model_usage.duration_ms`，输出速度 = output / duration 为权威实测（区别于 UI 轮询差值的流中近似）；
-- **密钥存储**：`api_key_env` 名先查 daemon 环境变量，缺失时读取操作系统凭据库（macOS Keychain / Linux libsecret / Windows PasswordVault）；持久写入只进入 OS 凭据库，不落盘明文；
+- **密钥存储（v1.165 简化为双轨）**：① **直存轨（默认引导路径）**——`models.providers.<name>.api_key` 明文存 `settings.json`（0600，仅当前用户可读）；GET /settings 永不回显该字段，覆盖表整体替换时载荷缺席 `api_key` 即保留既有值（UI 无法重发不可回显字段）；② **引用轨**——`api_key_env` 环境变量引用名先查 daemon 环境变量，缺失时读取操作系统凭据库（macOS Keychain / Linux libsecret / Windows PasswordVault），适合不愿明文落盘的用户。解析优先级：`api_key_env` 有值即走引用轨，否则回退 `api_key` 直存值；`PUT /secrets` 钥匙串写入通道随 v1.165 移除（KeychainStore 写能力保留为库内设施）；
 - **降级**：供应商不可用时可切换会话模型，任务上下文随迁。
 
 ---
@@ -946,10 +946,9 @@ signature: "<sig>"
 | GET | `/market/{owner}/{repo}` | 拉取市场清单原文（镜像链：jsDelivr → raw.githubusercontent；10s 超时，进程内 5 分钟缓存，§13.5） |
 | POST | `/market/install` | 安装市场条目 `{source, kind: skill\|mcp, name}`——技能落 `~/.tenon/skills/`（重名 409，同 source+path 更新）；MCP 校验白名单后写 `mcp.servers` 新会话生效 |
 | POST | `/market/uninstall` | 卸载市场条目 `{kind, name}`——技能删目录（仅市场 sidecar 条目）、MCP 删 `mcp.servers` 条目 |
-| GET / PUT | `/settings` | 全局设置。GET 返回合并后的生效值；PUT 接受已知键子集（`session.first_edit_buffer_ms` / `exec.command_timeout_s`；v1.40 增 `models.default` / `models.providers.<name>.{kind,base_url,wire_api,model,api_key_env}`），校验后写入 `~/.tenon/settings.json`（0600）并即时生效——**新会话**按新值构建（既有会话保持各自配置）；`session.mode` 与 `privacy.*` 键已随 v1.92 移除（无行为消费方，不设无效开关）；v1.130 增 `skills.disabled`（技能名称数组，整体替换——停用条目不进技能目录、`skill_use` 拒绝，新会话生效，§13.4）。v1.145 增 `market.sources`（市场源 owner/repo 数组，整体替换，默认空，§13.5）与 `mcp.servers`（MCP 服务器表 `{name: {command, args, env?, enabled, permissions?, source?}}`：command 启动器白名单、args 无控制字符、env 值仅 `env:VAR` 引用、整体替换、新会话生效，§13.5）。models 校验（v1.40）：provider 名 `^[a-z][a-z0-9_-]{0,63}$`、kind ∈ openai / anthropic / openai_responses、base_url 须 http(s)、`models.default` 须指向已配置 provider；`models.providers` 整体替换覆盖表（UI 每次保存发全量，支持删除；同名单条目按字段合并，未覆盖字段保留配置文件值）；GET 合并视图 provider 条目带 `overridden` 标记（纯配置文件条目不可经设置删除，只能编辑生成覆盖），`models.default=""` 清除覆盖回退配置值；**含 `api_key` 明文的请求 400 拒绝**（v1.163 起唯一豁免：`POST /models/verify` 试连端点）——密钥仅以 `api_key_env` 引用（§11：daemon 环境变量优先，缺失读取 OS 凭据库），PUT 成功即重建 provider 表 |
+| GET / PUT | `/settings` | 全局设置。GET 返回合并后的生效值；PUT 接受已知键子集（`session.first_edit_buffer_ms` / `exec.command_timeout_s`；v1.40 增 `models.default` / `models.providers.<name>.{kind,base_url,wire_api,model,api_key_env}`），校验后写入 `~/.tenon/settings.json`（0600）并即时生效——**新会话**按新值构建（既有会话保持各自配置）；`session.mode` 与 `privacy.*` 键已随 v1.92 移除（无行为消费方，不设无效开关）；v1.130 增 `skills.disabled`（技能名称数组，整体替换——停用条目不进技能目录、`skill_use` 拒绝，新会话生效，§13.4）。v1.145 增 `market.sources`（市场源 owner/repo 数组，整体替换，默认空，§13.5）与 `mcp.servers`（MCP 服务器表 `{name: {command, args, env?, enabled, permissions?, source?}}`：command 启动器白名单、args 无控制字符、env 值仅 `env:VAR` 引用、整体替换、新会话生效，§13.5）。models 校验（v1.40）：provider 名 `^[a-z][a-z0-9_-]{0,63}$`、kind ∈ openai / anthropic / openai_responses、base_url 须 http(s)、`models.default` 须指向已配置 provider；`models.providers` 整体替换覆盖表（UI 每次保存发全量，支持删除；同名单条目按字段合并，未覆盖字段保留配置文件值）；GET 合并视图 provider 条目带 `overridden` 标记（纯配置文件条目不可经设置删除，只能编辑生成覆盖），`models.default=""` 清除覆盖回退配置值；v1.165 起 `models.providers.<name>.api_key` 允许明文直存（用户裁定简化：settings.json 0600 仅当前用户可读；GET 永不回显该字段；覆盖表整体替换时载荷缺席 `api_key` 即保留既有值——UI 无法重发不可回显字段），PUT 成功即重建 provider 表（解析优先级见 §11 密钥存储双轨） |
 | GET | `/models` | 模型清单与 Laya 状态（版本 / 已下载 / 加载 / 设备，§9.8）；设置面板模型分区（v1.40）消费它渲染默认模型下拉与 Laya 状态卡 |
-| PUT | `/secrets/{name}` | 密钥写入系统钥匙串（v1.163，§11 免费模型引导配套）：`{value}` 明文仅内存中转，持久只进 OS 凭据库（service `tenon.keys`），不落盘 / 不入事件溯源 / 不打日志；凭据库为真实用户级设施，定位恒取 getpwuid 真实主目录、不受 daemon dev HOME 隔离影响（v1.164：隔离下 security 默认钥匙串解析失败会退回 System.keychain 并弹授权对话框）；macOS 写入语义（v1.164 实测钉死）：`security add-generic-password -w` 必须末参（紧随其后的任何 token 会被当作密码值），密码经 stdin 双行（值 + 复述）传递，值不得含换行（校验 400 拒绝）；name 校验 `^[A-Z][A-Z0-9_]{0,63}$`（与 `api_key_env` 引用名同域，如 `ZHIPU_API_KEY`）；写入后回读校验，失败 500；无 GET（防旁路读取，写入方自持明文） |
-| POST | `/models/verify` | 引导向导试连验证（v1.163）：`{kind?, base_url, model, api_key}`——**明文 `api_key` 唯一豁免端点**（其余端点维持 400 拒绝不变），daemon 以 15s 超时构建临时 provider 发一次极小测试请求（max_tokens=16、GLM 目标 thinking disabled），返回 `{ok:true, model, latency_ms}` 或 4xx `{ok:false, error}`；base_url 须 http(s)；请求体不打日志 |
+| POST | `/models/verify` | 引导向导试连验证（v1.163）：`{kind?, base_url, model, api_key}`，daemon 以 15s 超时构建临时 provider 发一次极小测试请求（max_tokens=16、GLM 目标 thinking disabled），返回 `{ok:true, model, latency_ms}` 或 4xx `{ok:false, error}`；base_url 须 http(s)；请求体不打日志 |
 | GET | `/costs` | 成本归因（会话级；`?session=` 必带，v1.92 收敛——月度聚合无消费方）；返回体含 `cached_tokens` / `duration_ms`（v1.129，命中率与均速由消费方派生） |
 | POST | `/ws-ticket` | 一次性 WS 票据 |
 | POST | `/lan/enable` | 启用局域网配对 / 重新生成一次性配对码（主 token）；`--lan` 启动即自动启用（§12.6 v1.157） |
