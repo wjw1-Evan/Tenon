@@ -5,6 +5,8 @@
 # - HOME 隔离到 .tenon-dev/：不污染真实 daemon 数据 / endpoint 文件 / 单实例锁
 # - 监听 crates/**.rs：自动 cargo build + 重启；端口与 token 固定，
 #   UI 免刷新自动重连（会话与项目状态全在 daemon + 磁盘，§6.2）
+# - 会话退出自动清理 target/debug/incremental（deps/ 不动；检测到
+#   cargo/rustc 运行中让路；TENON_DEV_NOCLEAN=1 跳过）
 #
 # 独立使用：pnpm dev:daemon；一键（daemon + Vite HMR）：pnpm dev
 set -u
@@ -18,11 +20,26 @@ STAMP="$ROOT/.tenon-dev/build-stamp"
 mkdir -p "$DEV_HOME"
 
 child=""
+clean_build_cache() {
+    [ "${TENON_DEV_NOCLEAN:-0}" = "1" ] && return 0
+    # 共享工作树有并行会话：cargo/rustc 在跑就别动增量缓存
+    if pgrep -x cargo >/dev/null 2>&1 || pgrep -x rustc >/dev/null 2>&1; then
+        echo "[dev-daemon] 检测到 cargo/rustc 进程，跳过增量缓存清理"
+        return 0
+    fi
+    if [ -d "$ROOT/target/debug/incremental" ]; then
+        size=$(du -sh "$ROOT/target/debug/incremental" 2>/dev/null | cut -f1)
+        rm -rf "$ROOT/target/debug/incremental"
+        echo "[dev-daemon] 已清理增量编译缓存（${size:-大小未知}）"
+    fi
+}
 cleanup() {
+    trap - EXIT INT TERM HUP
     [ -n "$child" ] && kill "$child" 2>/dev/null
+    clean_build_cache
     exit 0
 }
-trap cleanup INT TERM
+trap cleanup EXIT INT TERM HUP
 
 build_and_start() {
     if [ -n "$child" ]; then

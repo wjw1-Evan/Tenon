@@ -50,6 +50,8 @@ pnpm dev            # 一键：dev daemon + vite HMR。dev daemon 固定 127.0.0
 pnpm dev:daemon     # 仅 dev daemon（配合 pnpm ui）
 ```
 
+dev 会话退出（INT/TERM/HUP/正常退出）自动清理 `target/debug/incremental` 纯缓存（deps/ 不动，防 target 无 GC 膨胀）；`TENON_DEV_NOCLEAN=1` 跳过，检测到并行 cargo/rustc 进程自动让路。
+
 检查与测试（CI 同款，提交前跑齐）：
 
 ```bash

@@ -13,7 +13,7 @@ cleanup() {
     kill "$watcher" 2>/dev/null
     exit 0
 }
-trap cleanup INT TERM
+trap cleanup INT TERM HUP
 
 pnpm --filter tenon-ui dev
 cleanup
