@@ -221,17 +221,23 @@ impl SnapshotStore {
         cmd.stderr(Stdio::piped());
         cmd.stdout(Stdio::piped());
         let mut child = cmd.spawn().map_err(|e| SnapshotError::Git(e.to_string()))?;
-        if let Some(input) = stdin {
-            child
-                .stdin
-                .take()
-                .expect("piped stdin")
-                .write_all(input)
-                .map_err(|e| SnapshotError::Git(e.to_string()))?;
-        }
+        // stdin 写入放独立线程：check-ignore --stdin 是边读边写的流式命令，
+        // 主线程先 write_all 后读 stdout，双方管道缓冲满时互等死锁
+        //（大仓库 stdin/输出同时 >64KB 即触发，且持有进程内快照锁）
+        let stdin_handle = stdin.map(|input| {
+            let mut piped = child.stdin.take().expect("piped stdin");
+            let data = input.to_vec();
+            std::thread::spawn(move || {
+                // EPIPE（git 提前退出）按无输出处理，错误由 git 退出码承载
+                let _ = piped.write_all(&data);
+            })
+        });
         let out = child
             .wait_with_output()
             .map_err(|e| SnapshotError::Git(e.to_string()))?;
+        if let Some(handle) = stdin_handle {
+            let _ = handle.join();
+        }
         if !out.status.success() {
             return Err(SnapshotError::Git(format!(
                 "git {args:?} failed: {}",
@@ -321,14 +327,35 @@ impl SnapshotStore {
         self.configure_and_seed()?;
         self.stage_all()?;
         let tree = self.git(&["write-tree"])?;
-        Ok(tree.trim().to_string())
+        let tree = tree.trim().to_string();
+        // 快照树挂 ref + 登记（gc 可达性，见 gc()）：快照点只是 tree oid、
+        // 无 ref 链，gc --prune 会把 SQLite 里仍被引用的历史树当垃圾剪掉
+        let _ = self.git(&["update-ref", &format!("refs/tenon/trees/{tree}"), &tree]);
+        let dir = self.tree_registry_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join(&tree), b""); // mtime = 最后快照时间
+        Ok(tree)
+    }
+
+    /// 快照树登记目录（文件名 = tree oid，mtime = 最后快照时间）。
+    /// 放 shadow_root 内（内核托管，不在用户工作区，per-shadow-repo）。
+    fn tree_registry_dir(&self) -> std::path::PathBuf {
+        self.shadow_root.join("tree-registry")
     }
 
     fn blob_of(&self, tree: &str, path: &str) -> Result<Option<String>> {
-        match self.git(&["cat-file", "blob", &format!("{tree}:{path}")]) {
-            Ok(s) => Ok(Some(s)),
-            Err(_) => Ok(None),
+        // 先以 ls-tree 判存在性：cat-file 对「路径不在树里」与「树对象缺失」
+        // 同样报错——一律当不存在会把树损坏误判成「AI 新建文件」，
+        // revert_files 随之删除用户文件（必须让 Err 中止）
+        let entry = self.git(&["ls-tree", "-z", tree, "--", path])?;
+        if entry.trim_end_matches('\0').is_empty() {
+            return Ok(None);
         }
+        Ok(Some(self.git(&[
+            "cat-file",
+            "blob",
+            &format!("{tree}:{path}"),
+        ])?))
     }
 
     fn read_workspace_file(&self, path: &str) -> Option<String> {
@@ -349,9 +376,11 @@ impl SnapshotStore {
         if full.exists() {
             std::fs::remove_file(&full)?;
         }
-        // 清理空目录（体验细节，忽略失败）
+        // 清理空目录（体验细节，忽略失败）；工作区根本身绝不删
         if let Some(parent) = full.parent() {
-            let _ = std::fs::remove_dir(parent);
+            if parent != self.work_tree {
+                let _ = std::fs::remove_dir(parent);
+            }
         }
         Ok(())
     }
@@ -476,8 +505,31 @@ impl SnapshotStore {
     }
 
     /// shadow 库定时 gc（§10.3：每小时后台，默认 prune 7 天）。
+    ///
+    /// 快照树的可达性由 snapshot() 挂的 `refs/tenon/trees/<oid>` 保证；
+    /// 过期清理按登记目录 mtime（最后快照时间）删 ref 后再 gc——
+    /// 无 ref 的历史树会被 `--prune` 直接剪掉，rollback/revert 随之失效。
     pub fn gc(&self, keep_days: u32) -> Result<()> {
         let _guard = self.lock.lock().expect("gc lock");
+        let cutoff = std::time::SystemTime::now()
+            - std::time::Duration::from_secs(keep_days as u64 * 24 * 3600);
+        let registry = self.tree_registry_dir();
+        if let Ok(entries) = std::fs::read_dir(&registry) {
+            for entry in entries.flatten() {
+                let expired = entry
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .map(|at| at < cutoff)
+                    .unwrap_or(false);
+                if !expired {
+                    continue;
+                }
+                if let Some(name) = entry.file_name().to_str() {
+                    let _ = self.git(&["update-ref", "-d", &format!("refs/tenon/trees/{name}")]);
+                }
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
         self.git(&["gc", "--quiet", &format!("--prune={keep_days}.days.ago")])?;
         Ok(())
     }
@@ -592,6 +644,20 @@ mod tests {
         write(store.work_tree(), "a.txt", "changed\n");
         let t3 = store.snapshot().unwrap();
         assert_ne!(t1, t3);
+    }
+
+    #[test]
+    fn gc_keeps_referenced_trees_restorable() {
+        // 快照树挂 ref 后：gc 不得破坏 SQLite 仍引用的历史树（rollback 语义）
+        let (_d, _s, store) = setup("ws-gc");
+        write(store.work_tree(), "a.txt", "v1\n");
+        let t1 = store.snapshot().unwrap();
+        write(store.work_tree(), "a.txt", "v2\n");
+        let _t2 = store.snapshot().unwrap();
+
+        store.gc(7).unwrap();
+        store.restore(&t1).unwrap();
+        assert_eq!(read(store.work_tree(), "a.txt"), "v1\n");
     }
 
     #[test]

@@ -188,7 +188,12 @@ impl FileWatcher {
     }
 
     /// 阻塞等待一批事件（去抖：`window` 内的事件合并去重）。
+    /// 去抖窗口有硬上限：事件持续到达（间隔 <80ms 的风暴）时封批返回，
+    /// 否则消费端连 stop 位都检查不到。
     pub fn next_batch(&self, window: Duration) -> Vec<ChangeEvent> {
+        const DEBOUNCE_GAP: Duration = Duration::from_millis(80);
+        const MAX_BATCH_WINDOW: Duration = Duration::from_millis(500);
+        const MAX_BATCH_EVENTS: usize = 10_000;
         let mut out = Vec::new();
         let first = match self.rx.recv_timeout(window) {
             Ok(e) => e,
@@ -196,9 +201,13 @@ impl FileWatcher {
             Err(RecvTimeoutError::Disconnected) => return out,
         };
         out.push(first);
-        // 去抖窗口内继续收集
+        // 去抖窗口内继续收集（风暴时按窗口/数量硬上限封批）
+        let deadline = std::time::Instant::now() + MAX_BATCH_WINDOW;
         loop {
-            match self.rx.recv_timeout(Duration::from_millis(80)) {
+            if out.len() >= MAX_BATCH_EVENTS || std::time::Instant::now() >= deadline {
+                break;
+            }
+            match self.rx.recv_timeout(DEBOUNCE_GAP) {
                 Ok(e) => out.push(e),
                 Err(RecvTimeoutError::Timeout) => break,
                 Err(RecvTimeoutError::Disconnected) => break,
@@ -218,8 +227,10 @@ impl FileWatcher {
 }
 
 fn should_ignore(rel: &str) -> bool {
-    const IGNORED: [&str; 5] = [".git/", "target/", "node_modules/", "dist/", ".tenon/"];
-    IGNORED.iter().any(|p| rel.starts_with(p)) || rel == ".git"
+    // 任意路径段命中即忽略：只匹配顶层前缀会放行 packages/*/node_modules/**
+    // 与嵌套 dist/**（pnpm monorepo 常态），FSEvents 事件风暴被放大
+    const IGNORED_SEGMENTS: [&str; 5] = [".git", "target", "node_modules", "dist", ".tenon"];
+    rel.split('/').any(|seg| IGNORED_SEGMENTS.contains(&seg))
 }
 
 #[cfg(test)]

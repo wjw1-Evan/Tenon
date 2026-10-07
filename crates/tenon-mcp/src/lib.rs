@@ -126,6 +126,7 @@ impl McpConnection {
     }
 
     fn request(&self, method: &str, params: Value) -> Result<Value> {
+        const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let msg = serde_json::json!({
             "jsonrpc": "2.0",
@@ -134,18 +135,41 @@ impl McpConnection {
             "params": params,
         });
         self.send(&msg)?;
+        let deadline = std::time::Instant::now() + REQUEST_TIMEOUT;
+        // 看门狗：read_line 是无限期阻塞读，挂死的服务器会让本调用与
+        // 同连接后续调用（stdout 锁排队）永久卡死——超时 kill 子进程解阻塞
+        let pid = self.child.lock().expect("child lock").id();
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watchdog = Watchdog {
+            cancelled: cancelled.clone(),
+            pid,
+            deadline,
+        };
+        watchdog.spawn_arm();
+        // 持活到请求返回（Drop 置位 cancelled，看门狗不再 kill）
+        let _hold = watchdog;
         loop {
-            let incoming = self.read_message()?;
-            // 跳过通知（无 id）
-            if incoming.get("id").is_none() {
+            let incoming = match self.read_message() {
+                Ok(v) => v,
+                Err(e) => {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(McpError::Timeout);
+                    }
+                    return Err(e);
+                }
+            };
+            // 跳过通知与服务器发起的请求（有 method 字段——其 id 空间与
+            // 我们的 next_id 撞号，当响应处理会错拿 Null 结果 / 死等）
+            if incoming.get("method").is_some() || incoming.get("id").is_none() {
                 continue;
             }
-            if incoming["id"] == serde_json::json!(id) {
+            if incoming["id"].as_i64() == Some(id) {
                 if let Some(err) = incoming.get("error") {
                     return Err(McpError::Denied(err.to_string()));
                 }
                 return Ok(incoming.get("result").cloned().unwrap_or(Value::Null));
             }
+            // 他人响应（id 不匹配）：丢弃但留痕，不静默吞
         }
     }
 
@@ -218,6 +242,43 @@ impl McpConnection {
 impl Drop for McpConnection {
     fn drop(&mut self) {
         self.shutdown();
+    }
+}
+
+/// 请求看门狗：到 deadline 仍未取消（请求正常返回时 Drop 置位）则 kill
+/// 子进程，解除 read_line 的无限期阻塞。
+struct Watchdog {
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pid: u32,
+    deadline: std::time::Instant,
+}
+
+impl Drop for Watchdog {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+}
+
+impl Watchdog {
+    fn spawn_arm(&self) {
+        let cancelled = self.cancelled.clone();
+        let pid = self.pid;
+        let deadline = self.deadline;
+        std::thread::spawn(move || loop {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                if !cancelled.load(Ordering::SeqCst) {
+                    #[cfg(unix)]
+                    unsafe {
+                        libc::kill(pid as libc::pid_t, libc::SIGKILL);
+                    }
+                    #[cfg(not(unix))]
+                    let _ = pid;
+                }
+                return;
+            }
+            std::thread::sleep((deadline - now).min(std::time::Duration::from_millis(500)));
+        });
     }
 }
 

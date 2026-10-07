@@ -15,6 +15,9 @@ pub struct AnthropicProvider {
     api_key: String,
     default_model: Option<String>,
     client: reqwest::Client,
+    /// 流式专用：总超时会剪断长生成（reqwest 的 timeout 覆盖到响应体读完），
+    /// 改为连接 + 空闲读超时
+    stream_client: reqwest::Client,
 }
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -172,6 +175,11 @@ impl AnthropicProvider {
                 .timeout(std::time::Duration::from_secs(120))
                 .build()
                 .expect("reqwest client"),
+            stream_client: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(30))
+                .read_timeout(std::time::Duration::from_secs(180))
+                .build()
+                .expect("reqwest stream client"),
         }
     }
 
@@ -355,6 +363,10 @@ impl ModelProvider for AnthropicProvider {
         if !system.is_empty() {
             body["system"] = serde_json::json!(system);
         }
+        // 与 chat() 同口径：low-effort 调用显式关 thinking，防思考吃光 max_tokens
+        if req.reasoning_effort.as_deref() == Some("low") {
+            body["thinking"] = serde_json::json!({"type": "disabled"});
+        }
         if !req.tools.is_empty() {
             body["tools"] = serde_json::json!(req
                 .tools
@@ -368,8 +380,9 @@ impl ModelProvider for AnthropicProvider {
         }
 
         let url = format!("{}/v1/messages", self.base_url);
+        // 流式走 stream_client（无总超时；连接 30s + 空闲读 180s）
         let mut request = self
-            .client
+            .stream_client
             .post(&url)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .json(&body);

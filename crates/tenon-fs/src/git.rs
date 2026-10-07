@@ -27,20 +27,17 @@ pub fn status_map(root: &Path) -> HashMap<String, GitStatus> {
             continue;
         }
         let (xy, rest) = entry.split_at(2);
-        // rename 记录为 "R  old\0new\0"
-        let path = if xy.contains('R') {
-            match parts.next() {
-                Some(new) => new.trim_start().to_string(),
-                None => rest.trim_start().to_string(),
-            }
-        } else {
-            rest.trim_start().to_string()
-        };
+        // 重命名/复制是两条记录：`XY <new>\0<orig>\0`——entry 余量即新路径，
+        // 下一条记录是原路径（消费掉，否则后续条目整体错位）
+        if xy.contains('R') || xy.contains('C') {
+            let _orig = parts.next();
+        }
+        let path = rest.trim_start().to_string();
         let status = match xy.trim() {
             "M" | "AM" | "MM" => GitStatus::Modified,
             "A" => GitStatus::Added,
             "D" | "AD" => GitStatus::Deleted,
-            "R" => GitStatus::Renamed,
+            "R" | "C" => GitStatus::Renamed,
             "??" => GitStatus::Untracked,
             "!!" => GitStatus::Ignored,
             _ => GitStatus::Modified,
@@ -194,16 +191,13 @@ pub fn changed_files(root: &Path) -> Vec<GitChangedFile> {
             index_status = "A".to_string();
             worktree_status = "A".to_string();
         }
-        if statuses.contains('R') {
-            let old_path = parts.next().map(str::to_string);
-            let path = parts
-                .next()
-                .map(str::trim)
-                .unwrap_or(remainder.trim_start())
-                .to_string();
+        if statuses.contains('R') || statuses.contains('C') {
+            // `XY <new>\0<orig>\0`：entry 余量为新路径，下一条记录是原路径；
+            // 旧解析按三条记录消费会把下一条的状态行当路径，逐条错乱
+            let old_path = parts.next().map(|p| p.trim().replace('\\', "/"));
             files.push(GitChangedFile {
-                path: path.replace('\\', "/"),
-                old_path: old_path.map(|path| path.replace('\\', "/")),
+                path: remainder.trim_start().replace('\\', "/"),
+                old_path,
                 index_status,
                 worktree_status,
             });
@@ -369,6 +363,38 @@ mod tests {
         let map = status_map(&root);
         assert_eq!(map.get("tracked.txt"), Some(&GitStatus::Modified));
         assert_eq!(map.get("new.txt"), Some(&GitStatus::Untracked));
+    }
+
+    #[test]
+    fn rename_records_key_new_path_and_do_not_shift_later_entries() {
+        let (_d, root) = git_repo();
+        std::fs::write(root.join("old.txt"), "v1\n").unwrap();
+        run(&root, &["add", "."]);
+        run(&root, &["commit", "-qm", "init"]);
+        // staged rename + 其后跟一条普通修改：旧解析把重命名按错边消费，
+        // 会导致后续条目整体错位
+        run(&root, &["mv", "old.txt", "new.txt"]);
+        std::fs::write(root.join("later.txt"), "later\n").unwrap();
+
+        let map = status_map(&root);
+        assert_eq!(
+            map.get("new.txt"),
+            Some(&GitStatus::Renamed),
+            "重命名后新路径应显示 Renamed，实际 {map:?}"
+        );
+        assert!(!map.contains_key("old.txt"), "原路径不应作为键");
+        assert_eq!(map.get("later.txt"), Some(&GitStatus::Untracked));
+
+        let files = changed_files(&root);
+        let renamed = files
+            .iter()
+            .find(|f| f.path == "new.txt")
+            .expect("changed_files 应含新路径");
+        assert_eq!(renamed.old_path.as_deref(), Some("old.txt"));
+        assert!(
+            files.iter().any(|f| f.path == "later.txt"),
+            "重命名其后的条目不得错位丢失：{files:?}"
+        );
     }
 
     #[test]

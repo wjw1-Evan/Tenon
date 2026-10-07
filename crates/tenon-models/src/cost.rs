@@ -23,13 +23,13 @@ impl PriceTable {
         if let Some(r) = self.rates.get(&m) {
             return Some(*r);
         }
-        // 前缀匹配（glm-4.6 → glm 系列）
-        for (k, v) in &self.rates {
-            if m.starts_with(k.as_str()) {
-                return Some(*v);
-            }
-        }
-        None
+        // 前缀匹配（glm-4.6 → glm 系列）：键互为前缀时取最长匹配——
+        // BTreeMap 字典序先到的短键（gpt-4）会截胡更特异的 gpt-4o，价差误报
+        self.rates
+            .iter()
+            .filter(|(k, _)| m.starts_with(k.as_str()))
+            .max_by_key(|(k, _)| k.len())
+            .map(|(_, v)| *v)
     }
 }
 
@@ -68,5 +68,15 @@ mod tests {
         let table = PriceTable::new().with_rate("glm", 0.6, 2.2);
         let cost = compute_cost(&table, "glm-4.6-air", 1_000_000, 0);
         assert!((cost - 0.6).abs() < 1e-9);
+    }
+
+    #[test]
+    fn prefix_fallback_prefers_most_specific_key() {
+        // gpt-4 与 gpt-4o 互为前缀：gpt-4o-mini 必须命中更特异的 gpt-4o 价
+        let table = PriceTable::new()
+            .with_rate("gpt-4", 30.0, 60.0)
+            .with_rate("gpt-4o", 2.5, 10.0);
+        let cost = compute_cost(&table, "gpt-4o-mini", 1_000_000, 0);
+        assert!((cost - 2.5).abs() < 1e-9, "应命中 gpt-4o 而非 gpt-4");
     }
 }

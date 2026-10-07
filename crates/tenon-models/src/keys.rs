@@ -111,11 +111,14 @@ impl KeyStore for KeychainStore {
     fn set(&self, name: &str, value: &str) {
         #[cfg(target_os = "macos")]
         {
+            use std::io::Write;
             // 先删后写（幂等）
             let _ = std::process::Command::new("security")
                 .args(["delete-generic-password", "-s", &self.service, "-a", name])
                 .output();
-            let _ = std::process::Command::new("security")
+            // `-w` 不带值时 security 从 stdin 读密码——密钥经 argv 传递会被
+            // 同用户任意进程在 ps 窗口期读到（Linux 路径早已用 stdin）
+            let mut child = match std::process::Command::new("security")
                 .args([
                     "add-generic-password",
                     "-s",
@@ -123,10 +126,21 @@ impl KeyStore for KeychainStore {
                     "-a",
                     name,
                     "-w",
-                    value,
                     "-U",
                 ])
-                .output();
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(_) => return,
+            };
+            if let Some(stdin) = child.stdin.as_mut() {
+                let _ = stdin.write_all(value.as_bytes());
+            }
+            drop(child.stdin.take()); // 关闭 stdin 通知 EOF
+            let _ = child.wait();
         }
 
         #[cfg(not(target_os = "macos"))]

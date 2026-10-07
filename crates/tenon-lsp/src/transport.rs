@@ -88,6 +88,18 @@ impl FrameWrite for ProcessWriter {
     }
 }
 
+impl Drop for ProcessWriter {
+    fn drop(&mut self) {
+        // initialize 失败 / 宿主未 shutdown 即丢弃时，Child 的 kill+wait 只
+        // 存在于 shutdown()——不兜底则语言服务器成孤儿进程、退出后变僵尸，
+        // daemon 长期运行 + 多项目反复开关会稳步泄漏
+        if let Ok(mut child) = self.child.lock() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
 // ---------- 通道传输（测试 / 假服务器） ----------
 
 struct SharedEnd {

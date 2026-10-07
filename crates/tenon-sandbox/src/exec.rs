@@ -73,7 +73,15 @@ impl SandboxSpec {
     }
 }
 
-/// 执行 shell 命令（经 `sh -c`），超时后杀死进程。
+/// 沙箱构建产物：Command + 需要存活到子进程读完的资源（macOS 的 Seatbelt
+/// profile 临时文件——sandbox-exec 在 exec 时读取，提前删除会丢沙箱）。
+struct BuiltCommand {
+    cmd: std::process::Command,
+    #[allow(dead_code)]
+    profile_keepalive: Option<tempfile::TempPath>,
+}
+
+/// 执行 shell 命令（经 `sh -c`），超时后杀死整棵进程树。
 pub fn exec_command(
     command: &str,
     cwd: &Path,
@@ -84,51 +92,46 @@ pub fn exec_command(
     let out_path = tmp.path().join("stdout");
     let err_path = tmp.path().join("stderr");
 
-    let mut built = build_sandboxed_command(command, sandbox).unwrap_or_else(|| {
-        let mut c = std::process::Command::new("/bin/sh");
-        c.arg("-c").arg(command);
-        c
-    });
-    built.current_dir(cwd);
-    built.env_clear();
-    // 最小环境：命令工具链需要 PATH / HOME / LANG
-    built.env("PATH", std::env::var("PATH").unwrap_or_default());
-    built.env("HOME", std::env::var("HOME").unwrap_or_default());
-    built.env("LANG", "C.UTF-8");
-    built.stdin(Stdio::null());
-    built.stdout(std::fs::File::create(&out_path)?);
-    built.stderr(std::fs::File::create(&err_path)?);
-
-    let mut child = built.spawn()?;
-    let start = Instant::now();
-    let mut timed_out = false;
-    let status = loop {
-        match child.try_wait()? {
-            Some(st) => break Some(st),
-            None => {
-                if start.elapsed() >= timeout {
-                    timed_out = true;
-                    let _ = child.kill();
-                    break Some(child.wait()?);
-                }
-                std::thread::sleep(Duration::from_millis(15));
+    let mut built = match build_sandboxed_command(command, sandbox)? {
+        Some(b) => b,
+        None => {
+            let mut c = std::process::Command::new("/bin/sh");
+            c.arg("-c").arg(command);
+            BuiltCommand {
+                cmd: c,
+                profile_keepalive: None,
             }
         }
     };
+    built.cmd.current_dir(cwd);
+    built.cmd.env_clear();
+    // 最小环境：命令工具链需要 PATH / HOME / LANG
+    built
+        .cmd
+        .env("PATH", std::env::var("PATH").unwrap_or_default());
+    built
+        .cmd
+        .env("HOME", std::env::var("HOME").unwrap_or_default());
+    built.cmd.env("LANG", "C.UTF-8");
+    built.cmd.stdin(Stdio::null());
+    built.cmd.stdout(std::fs::File::create(&out_path)?);
+    built.cmd.stderr(std::fs::File::create(&err_path)?);
+    set_own_process_group(&mut built.cmd);
 
-    let stdout = std::fs::read_to_string(&out_path).unwrap_or_default();
-    let stderr = std::fs::read_to_string(&err_path).unwrap_or_default();
+    let mut child = built.cmd.spawn()?;
+    let (exit_code, timed_out) = wait_with_timeout(&mut child, timeout);
+    // profile 须存活到子进程退出（sandbox-exec 启动后才读取），此处才清理
+    drop(built);
 
     Ok(ExecOutcome {
-        exit_code: status.and_then(|s| s.code()),
-        stdout,
-        stderr,
+        exit_code,
+        stdout: read_lossy(&out_path),
+        stderr: read_lossy(&err_path),
         timed_out,
     })
 }
-
 /// argv 直执版本：用于代理侧 `gh` / 平台 CLI，不经 shell 解释。
-/// `extra_env` 只追加最小环境；凭据仍来自用户本机 CLI 配置或注入环境。
+/// `extra_env` 只追加最小环境；凭证来自用户本机 CLI 配置或注入环境。
 pub fn exec_argv(
     program: &str,
     args: &[String],
@@ -155,56 +158,117 @@ pub fn exec_argv(
     built.stdin(Stdio::null());
     built.stdout(std::fs::File::create(&out_path)?);
     built.stderr(std::fs::File::create(&err_path)?);
+    set_own_process_group(&mut built);
 
     let mut child = built.spawn()?;
-    let start = Instant::now();
-    let mut timed_out = false;
-    let status = loop {
-        match child.try_wait()? {
-            Some(status) => break Some(status),
-            None if start.elapsed() >= timeout => {
-                timed_out = true;
-                let _ = child.kill();
-                break Some(child.wait()?);
-            }
-            None => std::thread::sleep(Duration::from_millis(15)),
-        }
-    };
+    let (exit_code, timed_out) = wait_with_timeout(&mut child, timeout);
 
     Ok(ExecOutcome {
-        exit_code: status.and_then(|s| s.code()),
-        stdout: std::fs::read_to_string(&out_path).unwrap_or_default(),
-        stderr: std::fs::read_to_string(&err_path).unwrap_or_default(),
+        exit_code,
+        stdout: read_lossy(&out_path),
+        stderr: read_lossy(&err_path),
         timed_out,
     })
 }
 
+/// 子进程自立进程组：超时才能 killpg 击杀整棵树——`sh -c "npm test"` 派生的
+/// 孙进程被 init 收养后不受直接子进程 kill 影响，会带着网络继续跑。
+#[cfg(unix)]
+fn set_own_process_group(cmd: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+    cmd.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn set_own_process_group(_cmd: &mut std::process::Command) {}
+
+/// 等待 + 超时整树击杀。
+fn wait_with_timeout(child: &mut std::process::Child, timeout: Duration) -> (Option<i32>, bool) {
+    let start = Instant::now();
+    let mut timed_out = false;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break Some(st),
+            Ok(None) => {
+                if start.elapsed() >= timeout {
+                    timed_out = true;
+                    kill_process_tree(child.id());
+                    break child.wait().ok();
+                }
+                std::thread::sleep(Duration::from_millis(15));
+            }
+            Err(_) => break None,
+        }
+    };
+    (status.and_then(|s| s.code()), timed_out)
+}
+
+#[cfg(unix)]
+fn kill_process_tree(pid: u32) {
+    // 进程组整体击杀，兜底再杀直接子进程（孙进程被 init 收养后不随父死）
+    unsafe {
+        libc::killpg(pid as libc::pid_t, libc::SIGKILL);
+        libc::kill(pid as libc::pid_t, libc::SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_process_tree(pid: u32) {
+    let _ = pid; // Windows 侧由调用方 taskkill / 忽略
+}
+
+/// 读取输出文件：非 UTF-8 字节（进度条/本地化输出常见）以 U+FFFD 替换，
+/// 不再整段静默清空失真证据通道。
+fn read_lossy(path: &Path) -> String {
+    std::fs::read(path)
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .unwrap_or_default()
+}
+
 #[cfg(target_os = "macos")]
-fn build_sandboxed_command(command: &str, sandbox: &SandboxSpec) -> Option<std::process::Command> {
+fn build_sandboxed_command(
+    command: &str,
+    sandbox: &SandboxSpec,
+) -> std::io::Result<Option<BuiltCommand>> {
     if matches!(sandbox, SandboxSpec::None) {
-        return None;
+        return Ok(None);
     }
     if !Path::new("/usr/bin/sandbox-exec").exists() {
-        return None; // sandbox-exec 不可用 → 降级直跑
+        return Ok(None); // sandbox-exec 不可用 → 降级直跑（文档化降级，§12.3 M0）
     }
     let network = sandbox.network();
-    let project_root = sandbox.project_root()?.to_path_buf();
+    let project_root = sandbox
+        .project_root()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "缺项目根"))?
+        .to_path_buf();
     let profile_text = crate::seatbelt::seatbelt_profile(&project_root, &network, &[]);
-    let pf = write_profile_file(&profile_text).ok()?;
+    // profile 落盘失败 → 让 spawn 失败（fail closed）：纯 IO 错误静默降级为
+    // 无沙箱执行违背沙箱降级原则，且调用方无从区分
+    let profile = write_profile_file(&profile_text)?;
+    let profile_path = profile.to_path_buf();
     let mut c = std::process::Command::new("/usr/bin/sandbox-exec");
-    c.arg("-f").arg(&pf);
+    c.arg("-f").arg(&profile_path);
     c.arg("/bin/sh").arg("-c").arg(command);
-    Some(c)
+    Ok(Some(BuiltCommand {
+        cmd: c,
+        profile_keepalive: Some(profile),
+    }))
 }
 
 #[cfg(target_os = "linux")]
-fn build_sandboxed_command(command: &str, sandbox: &SandboxSpec) -> Option<std::process::Command> {
+fn build_sandboxed_command(
+    command: &str,
+    sandbox: &SandboxSpec,
+) -> std::io::Result<Option<BuiltCommand>> {
     use std::os::unix::process::CommandExt;
 
     if matches!(sandbox, SandboxSpec::None) {
-        return None;
+        return Ok(None);
     }
-    let project_root = sandbox.project_root()?.to_path_buf();
+    let project_root = sandbox
+        .project_root()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "缺项目根"))?
+        .to_path_buf();
     let linux_sandbox = crate::linux::LinuxSandbox {
         offline: sandbox.offline(),
         write_paths: vec![
@@ -218,32 +282,33 @@ fn build_sandboxed_command(command: &str, sandbox: &SandboxSpec) -> Option<std::
     unsafe {
         c.pre_exec(move || linux_sandbox.apply());
     }
-    Some(c)
+    Ok(Some(BuiltCommand {
+        cmd: c,
+        profile_keepalive: None,
+    }))
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn build_sandboxed_command(
     _command: &str,
     _sandbox: &SandboxSpec,
-) -> Option<std::process::Command> {
-    None
+) -> std::io::Result<Option<BuiltCommand>> {
+    Ok(None)
 }
 
 /// 仅 macOS Seatbelt 路径消费（profile 落盘供 sandbox-exec -f）。
+/// tempfile：O_CREAT|O_EXCL + 随机名 + 0600——固定可预测路径可被同机进程
+/// 预置/在 write 与 sandbox-exec 读取之间替换为攻击者 profile。
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn write_profile_file(profile: &str) -> std::io::Result<PathBuf> {
+fn write_profile_file(profile: &str) -> std::io::Result<tempfile::TempPath> {
+    use std::io::Write;
     let dir = std::env::temp_dir().join("tenon-sbx");
     std::fs::create_dir_all(&dir)?;
-    let name = format!(
-        "profile-{}.sb",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    );
-    let path = dir.join(name);
-    std::fs::write(&path, profile)?;
-    Ok(path)
+    // NamedTempFile：O_CREAT|O_EXCL + 随机名 + unix 下默认 0600——固定可预测
+    // 路径可被同机进程预置/在 write 与 sandbox-exec 读取之间替换 profile
+    let mut f = tempfile::NamedTempFile::new_in(&dir)?;
+    f.write_all(profile.as_bytes())?;
+    Ok(f.into_temp_path())
 }
 
 #[cfg(test)]
@@ -313,6 +378,32 @@ mod tests {
         .unwrap();
         assert!(out.timed_out);
         assert!(start.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn timeout_kills_grandchildren_too() {
+        // `sh -c` 派生的后台孙进程不随直接子进程死（被 init 收养继续跑）：
+        // 超时必须 killpg 击杀整棵进程组，否则沙箱超时形同虚设
+        let marker = std::env::temp_dir().join(format!("tenon-grandchild-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let cmd = format!(
+            "sh -c 'sleep 1.2; touch {m}; sleep 30' & sleep 30",
+            m = marker.to_string_lossy()
+        );
+        let out = exec_command(
+            &cmd,
+            Path::new("/tmp"),
+            Duration::from_millis(400),
+            &SandboxSpec::None,
+        )
+        .unwrap();
+        assert!(out.timed_out);
+        std::thread::sleep(Duration::from_millis(1800));
+        assert!(
+            !marker.exists(),
+            "孙进程应在超时后被进程组击杀（marker 不应出现）"
+        );
+        let _ = std::fs::remove_file(&marker);
     }
 
     #[test]

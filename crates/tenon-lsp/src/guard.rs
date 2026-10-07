@@ -164,35 +164,41 @@ pub fn uri_within(project_root: &Path, uri: &str) -> bool {
 pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
     let rest = uri.strip_prefix("file://")?;
     // file:///path/to → /path/to
-    let mut path = if let Some(idx) = rest.find('/') {
+    let raw = if let Some(idx) = rest.find('/') {
         &rest[idx..]
     } else {
         rest
     };
-    // 简易 percent-decode
-    let mut decoded = String::with_capacity(path.len());
-    let bytes = path.as_bytes();
+    // percent-decode 按字节累积再整体 UTF-8 解码：逐字节 `as char` 是 Latin-1
+    // 语义，`%E4%B8%AD%E6%96%87` 会被拆成 6 个错误字符（非 ASCII 路径全解错，
+    // 诊断缓存键与守卫判定连锁失真）
+    let bytes = percent_decode(raw.as_bytes())?;
+    let decoded = String::from_utf8(bytes).ok()?;
+    // Windows: /C:/... → C:/...
+    let p = if decoded.len() > 2 && decoded.starts_with('/') && decoded.as_bytes()[2] == b':' {
+        &decoded[1..]
+    } else {
+        &decoded
+    };
+    Some(PathBuf::from(p))
+}
+
+fn percent_decode(input: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(input.len());
     let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() + 1 && i + 2 < bytes.len() {
-            let hex = &path[i + 1..i + 3];
+    while i < input.len() {
+        if input[i] == b'%' && i + 2 < input.len() {
+            let hex = std::str::from_utf8(&input[i + 1..i + 3]).ok()?;
             if let Ok(v) = u8::from_str_radix(hex, 16) {
-                decoded.push(v as char);
+                out.push(v);
                 i += 3;
                 continue;
             }
         }
-        decoded.push(path.as_bytes()[i] as char);
+        out.push(input[i]);
         i += 1;
     }
-    path = &decoded;
-    // Windows: /C:/... → C:/...
-    let p = if path.len() > 2 && path.starts_with('/') && path.as_bytes()[2] == b':' {
-        &path[1..]
-    } else {
-        path
-    };
-    Some(PathBuf::from(p))
+    Some(out)
 }
 
 #[cfg(test)]

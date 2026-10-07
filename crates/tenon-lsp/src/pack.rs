@@ -83,12 +83,27 @@ pub fn language_id_for(file: &str) -> &'static str {
 }
 
 /// file:// URI（项目相对路径 → 绝对 URI）。
+/// 完整 percent-encode（非保留字符外全部转义）：LSP 规范要求服务器对非
+/// ASCII / 保留字符编码；只转义 `%` 与空格会让本地构造的键与服务器推送的
+/// 诊断键不相等——非 ASCII 路径文件的诊断永远查不到。
 pub fn file_uri(project_root: &Path, rel: &str) -> String {
     let abs = project_root.join(rel);
     let abs = std::fs::canonicalize(&abs).unwrap_or(abs);
-    let text = abs.to_string_lossy();
-    let encoded = text.replace('%', "%25").replace(' ', "%20");
-    format!("file://{encoded}")
+    format!("file://{}", percent_encode_path(&abs.to_string_lossy()))
+}
+
+/// 路径成分 percent-encode（RFC 3986 非保留字符 + `/` 分隔符保留）。
+pub fn percent_encode_path(text: &str) -> String {
+    let mut encoded = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                encoded.push(byte as char)
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
 }
 
 #[cfg(test)]

@@ -116,16 +116,13 @@ pub struct PatchOp {
 /// 生成统一 diff（用于证据卡与 diff 面板）。
 pub fn unified_diff(before: &str, after: &str, path: &str) -> String {
     let diff = similar::TextDiff::from_lines(before, after);
-    let mut out = String::new();
-    out.push_str(&format!("--- a/{path}\n+++ b/{path}\n"));
-    out.push_str(
-        &diff
-            .unified_diff()
-            .context_radius(3)
-            .header("a", "b")
-            .to_string(),
-    );
-    out
+    // 头部交给 similar 生成（带真实路径）；再手工 push 一对 `--- a` 会双头
+    let a = format!("a/{path}");
+    let b = format!("b/{path}");
+    diff.unified_diff()
+        .context_radius(3)
+        .header(a.as_str(), b.as_str())
+        .to_string()
 }
 
 /// 统计 diff 的变更行数（新增 + 删除），供熔断器记账。
@@ -139,6 +136,22 @@ pub fn count_changed_lines(before: &str, after: &str) -> u64 {
         }
     }
     n
+}
+
+#[cfg(test)]
+mod diff_tests {
+    use super::unified_diff;
+
+    #[test]
+    fn unified_diff_single_header_with_path() {
+        let out = unified_diff("a\nb\n", "a\nB\n", "src/lib.rs");
+        assert!(out.starts_with("--- a/src/lib.rs\n+++ b/src/lib.rs\n"));
+        assert_eq!(
+            out.matches("--- a/src/lib.rs").count(),
+            1,
+            "diff 头不得重复输出：{out}"
+        );
+    }
 }
 
 #[cfg(test)]

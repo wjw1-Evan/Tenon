@@ -101,7 +101,12 @@ impl LspManager {
         let key = (root.to_path_buf(), pack.language.to_string());
         let mut hosts = self.hosts.lock().await;
         if let Some(e) = hosts.get(&key) {
-            return Ok(e.clone());
+            // 死宿主（服务器崩溃 / EOF）不得命中缓存：摘除后走重建，
+            // 否则该项目的语义功能静默死亡直到项目关闭
+            if e.lock().expect("host entry lock").host.is_alive() {
+                return Ok(e.clone());
+            }
+            hosts.remove(&key);
         }
         if !command_on_path(&pack.command) {
             return Err(LspManagerError::PackUnavailable(format!(
@@ -122,7 +127,9 @@ impl LspManager {
         host.initialize(REQUEST_TIMEOUT)
             .map_err(|e| LspManagerError::Request(format!("initialize 失败: {e}")))?;
 
-        // 诊断缓存线程：收集 publishDiagnostics 推送
+        // 诊断缓存线程：收集 publishDiagnostics 推送。
+        // 键归一化到本地路径字符串：服务器与本地对 URI 的编码细节可能不同
+        // （转义集差异），直接拿 URI 字符串做键会永远查不到（非 ASCII 路径必现）
         let diagnostics: Arc<std::sync::Mutex<HashMap<String, (Instant, serde_json::Value)>>> =
             Arc::new(std::sync::Mutex::new(HashMap::new()));
         let rx = host.subscribe();
@@ -131,10 +138,11 @@ impl LspManager {
             for note in rx {
                 if note.method == "textDocument/publishDiagnostics" {
                     if let Some(uri) = note.params.get("uri").and_then(|u| u.as_str()) {
+                        let key = normalize_uri_key(uri);
                         diag_cache
                             .lock()
                             .expect("diag lock")
-                            .insert(uri.to_string(), (Instant::now(), note.params.clone()));
+                            .insert(key, (Instant::now(), note.params.clone()));
                     }
                 }
             }
@@ -274,7 +282,11 @@ impl LspManager {
                     return Ok(serde_json::json!({ "items": items }));
                 }
                 if kind == "unchanged" {
-                    return Ok(serde_json::json!({ "items": [] }));
+                    // unchanged = 「上次报告仍有效」：直接回空数组会把已有诊断
+                    // 抹成干净（对验证通道是误判）——回退到推送缓存内容
+                    let cached = wait_diagnostics(&diag_cache, &uri, Duration::from_millis(200))
+                        .unwrap_or(serde_json::Value::Array(vec![]));
+                    return Ok(serde_json::json!({ "items": cached }));
                 }
             }
             let items = wait_diagnostics(&diag_cache, &uri, DIAGNOSTICS_WAIT)?;
@@ -401,11 +413,19 @@ fn global_npm_root() -> Option<String> {
     .clone()
 }
 
+/// 诊断缓存键：URI → 归一化本地路径字符串（见 entry() 内注释）。
+fn normalize_uri_key(uri: &str) -> String {
+    crate::guard::uri_to_path(uri)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| uri.to_string())
+}
+
 fn wait_diagnostics(
     cache: &std::sync::Mutex<HashMap<String, (Instant, serde_json::Value)>>,
     uri: &str,
     window: Duration,
 ) -> Result<serde_json::Value, LspManagerError> {
+    let key = normalize_uri_key(uri);
     let deadline = Instant::now() + window;
     // 竞态防御：部分服务器（tsserver）先推一份空诊断、分析完成后再推真实
     // 结果；若首个空推送立即返回，会把真实类型错误吞成「干净」（验证通道
@@ -415,7 +435,7 @@ fn wait_diagnostics(
     loop {
         {
             let cache = cache.lock().expect("diag lock");
-            if let Some((at, params)) = cache.get(uri) {
+            if let Some((at, params)) = cache.get(&key) {
                 if at.elapsed() < Duration::from_secs(30) {
                     let items = params.get("diagnostics").cloned().unwrap_or_default();
                     let is_empty = items.as_array().map(|a| a.is_empty()).unwrap_or(false);

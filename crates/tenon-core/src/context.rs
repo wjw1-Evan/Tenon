@@ -70,6 +70,7 @@ impl ProjectRules {
         let mut rules = ProjectRules::default();
         let mut cleaned = String::new();
         let mut in_block = false;
+        let mut block_lines: Vec<&str> = Vec::new();
         for line in md.lines() {
             let trimmed = line.trim();
             if !in_block && trimmed == "<!-- tenon:rules" {
@@ -77,35 +78,32 @@ impl ProjectRules {
                 continue;
             }
             if in_block {
+                block_lines.push(line);
                 if trimmed == "-->" {
-                    in_block = false;
-                } else if let Some((k, v)) = trimmed.split_once(':') {
-                    let k = k.trim();
-                    let v = v.trim().trim_matches('"');
-                    match k {
-                        "readonly" => rules.readonly = Some(v == "true"),
-                        "deny_tools" => {
-                            rules.denied_tools = v
-                                .trim_matches(|c| c == '[' || c == ']')
-                                .split(',')
-                                .map(|s| s.trim().to_string())
-                                .filter(|s| !s.is_empty())
-                                .collect();
+                    for bl in &block_lines {
+                        if let Some((k, v)) = bl.trim().split_once(':') {
+                            let k = k.trim();
+                            let v = v.trim().trim_matches('"');
+                            match k {
+                                "readonly" => rules.readonly = Some(v == "true"),
+                                "deny_tools" => rules.denied_tools = parse_quoted_list(v),
+                                "deny_commands" => rules.denied_commands = parse_quoted_list(v),
+                                _ => {}
+                            }
                         }
-                        "deny_commands" => {
-                            rules.denied_commands = v
-                                .trim_matches(|c| c == '[' || c == ']')
-                                .split(',')
-                                .map(|s| s.trim().to_string())
-                                .filter(|s| !s.is_empty())
-                                .collect();
-                        }
-                        _ => {}
                     }
+                    block_lines.clear();
+                    in_block = false;
                 }
                 continue;
             }
             cleaned.push_str(line);
+            cleaned.push('\n');
+        }
+        // 到文件尾仍未闭合：不把块内容当规则（权限只收窄不误设），
+        // 也不静默吞掉——原样回退为纯文本上下文
+        for bl in block_lines {
+            cleaned.push_str(bl);
             cleaned.push('\n');
         }
         (rules, cleaned.trim().to_string())
@@ -190,6 +188,16 @@ impl TokenBudget {
 pub fn estimate_tokens(text: &str) -> u64 {
     // 经验近似：中英混合 ~3.5 字符/token；保守取 3。
     (text.chars().count() as u64).div_ceil(3)
+}
+
+/// 解析 `deny_tools: ["git_push", http_fetch]` 风格的列表字面量。
+/// 逐元素剥引号：元素保留引号字符会与真实工具名 `==` 永不相等，拒绝静默失效。
+fn parse_quoted_list(v: &str) -> Vec<String> {
+    v.trim_matches(|c| c == '[' || c == ']')
+        .split(',')
+        .map(|s| s.trim().trim_matches('"').to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 #[cfg(test)]
@@ -282,6 +290,29 @@ mod tests {
         assert_eq!(widen.readonly, Some(false));
         base.merge_narrowing(&widen);
         assert_eq!(base.readonly, Some(true), "铁律二：AGENTS.md 只收窄");
+    }
+
+    #[test]
+    fn agents_md_quoted_list_entries_lose_quotes() {
+        // 带引号条目若保留引号字符，与真实工具名 == 永不相等 → 拒绝静默失效
+        let (rules, _) =
+            ProjectRules::parse_agents_md("<!-- tenon:rules\ndeny_tools: [\"git_push\"]\n-->");
+        assert_eq!(rules.denied_tools, vec!["git_push".to_string()]);
+    }
+
+    #[test]
+    fn unclosed_rules_block_falls_back_to_plain_text() {
+        let md = "# Title\n\n<!-- tenon:rules\ndeny_tools: [git_push]\ntruncated tail line";
+        let (rules, rest) = ProjectRules::parse_agents_md(md);
+        assert!(
+            rules.denied_tools.is_empty(),
+            "未闭合块不产生权限（权限只收窄不误设）"
+        );
+        assert!(rest.contains("# Title"));
+        assert!(
+            rest.contains("truncated tail line"),
+            "未闭合块内容必须回退为纯文本，不得静默吞掉"
+        );
     }
 
     #[test]

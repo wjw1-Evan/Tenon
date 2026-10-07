@@ -330,6 +330,9 @@ const SCHEMA_VERSION: i64 = 11;
 const DDL: &str = r#"
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
+-- 多实例（壳 --no-lock 双开 / CLI 与 daemon 并存）并发写时，无 busy handler
+-- 会立即返回 SQLITE_BUSY 而非等待——迁移路径出错会让第二个 daemon 直接启动失败
+PRAGMA busy_timeout = 5000;
 
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
@@ -1204,7 +1207,7 @@ impl Store {
             return Err(StoreError::InvalidMemory("记忆内容不能为空".into()));
         }
         if let Some(existing) =
-            self.find_similar_memory(&rec.embedding, &rec.project_id, threshold)?
+            self.find_similar_memory(&rec.embedding, &rec.scope, &rec.project_id, threshold)?
         {
             self.conn.execute(
                 "UPDATE memories
@@ -1258,25 +1261,39 @@ impl Store {
         Ok((mem, false))
     }
 
-    /// 与候选记忆（同项目 project 层 + 全部 global preference 层）做余弦相似度，
-    /// 返回最高分且达阈值的一条。
+    /// 与候选记忆做余弦相似度，返回最高分且达阈值的一条。
+    /// 候选池按写入作用域隔离：global 写入只与 global preference 去重；
+    /// project 写入只与本项目的 project 记忆去重——project 记忆若命中
+    /// global 行会改写其 content/source_session（项目事实污染所有项目，
+    /// §10.1 的 global 层「永不承载仓库内容」约束被破坏）。
     fn find_similar_memory(
         &mut self,
         embedding: &[f32],
+        scope: &str,
         project_id: &str,
         threshold: f32,
     ) -> Result<Option<Memory>> {
-        let ids: Vec<String> = self
-            .conn
-            .prepare(
-                "SELECT id FROM memories
-             WHERE (scope = 'global' AND kind = 'preference')
-                OR (scope = 'project' AND project_id = ?1)",
-            )
-            .and_then(|mut stmt| {
-                stmt.query_map([project_id], |r| r.get::<_, String>(0))?
-                    .collect::<std::result::Result<Vec<_>, _>>()
-            })?;
+        let ids: Vec<String> = if scope == "global" {
+            self.conn
+                .prepare(
+                    "SELECT id FROM memories
+                     WHERE scope = 'global' AND kind = 'preference'",
+                )
+                .and_then(|mut stmt| {
+                    stmt.query_map([], |r| r.get::<_, String>(0))?
+                        .collect::<std::result::Result<Vec<_>, _>>()
+                })?
+        } else {
+            self.conn
+                .prepare(
+                    "SELECT id FROM memories
+                     WHERE scope = 'project' AND project_id = ?1",
+                )
+                .and_then(|mut stmt| {
+                    stmt.query_map([project_id], |r| r.get::<_, String>(0))?
+                        .collect::<std::result::Result<Vec<_>, _>>()
+                })?
+        };
         let mut best: Option<(f32, String)> = None;
         for id in ids {
             let stored: Option<Vec<u8>> = self
@@ -1528,22 +1545,35 @@ impl Store {
     ) -> Result<ModelUsage> {
         let now = Self::now();
         let project_id = self.project_id_for_session(session_id);
-        self.conn.execute(
-            "INSERT INTO model_usage (session_id, project_id, provider, model, input_tokens, output_tokens, cached_input_tokens, duration_ms, cost_usd, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![session_id, project_id, provider, model, input_tokens, output_tokens, cached_input_tokens, duration_ms, cost_usd, now],
-        )?;
-        // 按月聚合（永久，§14.2）
-        let month = &now[..7];
-        self.conn.execute(
-            "INSERT INTO model_usage_monthly (month, input_tokens, output_tokens, cost_usd)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(month) DO UPDATE SET
-               input_tokens = input_tokens + ?2,
-               output_tokens = output_tokens + ?3,
-               cost_usd = cost_usd + ?4",
-            params![month, input_tokens, output_tokens, cost_usd],
-        )?;
+        // 明细与月度聚合同事务：两写间崩溃会让月表永久少记（月表语义为
+        // 永久只增，无任何从明细重建的路径）
+        self.conn.execute_batch("BEGIN")?;
+        let result = (|| -> Result<()> {
+            self.conn.execute(
+                "INSERT INTO model_usage (session_id, project_id, provider, model, input_tokens, output_tokens, cached_input_tokens, duration_ms, cost_usd, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![session_id, project_id, provider, model, input_tokens, output_tokens, cached_input_tokens, duration_ms, cost_usd, now],
+            )?;
+            // 按月聚合（永久，§14.2）
+            let month = &now[..7];
+            self.conn.execute(
+                "INSERT INTO model_usage_monthly (month, input_tokens, output_tokens, cost_usd)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(month) DO UPDATE SET
+                   input_tokens = input_tokens + ?2,
+                   output_tokens = output_tokens + ?3,
+                   cost_usd = cost_usd + ?4",
+                params![month, input_tokens, output_tokens, cost_usd],
+            )?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => self.conn.execute_batch("COMMIT")?,
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                return Err(e);
+            }
+        }
         Ok(ModelUsage {
             id: self.conn.last_insert_rowid(),
             session_id: session_id.to_string(),
@@ -1831,26 +1861,49 @@ impl Store {
             rows.collect::<std::result::Result<Vec<_>, _>>()?
         };
         for sid in &stale {
+            // 已归档过（上次 DELETE events 后崩溃的重跑）：events 为空时
+            // 直接跳过——用零事件覆盖先前完好的归档会把事件溯源链永久截断
             let events = self.events(sid)?;
+            if events.is_empty() {
+                continue;
+            }
             let usage = self.session_usage(sid)?;
             let record = serde_json::json!({
                 "session_id": sid,
                 "events": events,
                 "model_usage": usage,
             });
+            // 先写临时文件再 rename：归档中途崩溃不留半截文件
+            let tmp = archive_dir.join(format!("{sid}.session.jsonl.gz.tmp"));
             let path: PathBuf = archive_dir.join(format!("{}.session.jsonl.gz", sid));
-            let f = std::fs::File::create(path)?;
-            let mut enc = GzEncoder::new(f, Compression::default());
-            enc.write_all(record.to_string().as_bytes())?;
-            enc.finish()?;
-            self.conn
-                .execute("DELETE FROM events WHERE session_id = ?1", [sid])?;
-            self.conn
-                .execute("DELETE FROM tool_calls WHERE session_id = ?1", [sid])?;
-            self.conn
-                .execute("DELETE FROM model_usage WHERE session_id = ?1", [sid])?;
-            self.conn
-                .execute("DELETE FROM checkpoints WHERE session_id = ?1", [sid])?;
+            {
+                let f = std::fs::File::create(&tmp)?;
+                let mut enc = GzEncoder::new(f, Compression::default());
+                enc.write_all(record.to_string().as_bytes())?;
+                enc.finish()?;
+            }
+            std::fs::rename(&tmp, &path)?;
+            // 四条 DELETE 包进单事务：逐条自动提交间崩溃会留下孤儿行，
+            // 且重跑时按「events 已空」误判已归档（见上）
+            self.conn.execute_batch("BEGIN")?;
+            let result = (|| -> Result<()> {
+                self.conn
+                    .execute("DELETE FROM events WHERE session_id = ?1", [sid])?;
+                self.conn
+                    .execute("DELETE FROM tool_calls WHERE session_id = ?1", [sid])?;
+                self.conn
+                    .execute("DELETE FROM model_usage WHERE session_id = ?1", [sid])?;
+                self.conn
+                    .execute("DELETE FROM checkpoints WHERE session_id = ?1", [sid])?;
+                Ok(())
+            })();
+            match result {
+                Ok(()) => self.conn.execute_batch("COMMIT")?,
+                Err(e) => {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    return Err(e);
+                }
+            }
         }
         Ok(stale)
     }

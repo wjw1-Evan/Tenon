@@ -16,6 +16,9 @@ pub struct OpenAiCompatProvider {
     api_key: String,
     default_model: Option<String>,
     client: reqwest::Client,
+    /// 流式专用：总超时会剪断长生成（reqwest 的 timeout 覆盖到响应体读完，
+    /// 16k token 回合常超 120s），改为连接 + 空闲读超时
+    stream_client: reqwest::Client,
     local: bool,
 }
 
@@ -31,6 +34,11 @@ impl OpenAiCompatProvider {
                 .timeout(std::time::Duration::from_secs(120))
                 .build()
                 .expect("reqwest client"),
+            stream_client: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(30))
+                .read_timeout(std::time::Duration::from_secs(180))
+                .build()
+                .expect("reqwest stream client"),
             local,
         }
     }
@@ -377,7 +385,8 @@ impl ModelProvider for OpenAiCompatProvider {
         }
 
         let url = format!("{}/chat/completions", self.base_url);
-        let mut request = self.client.post(&url).json(&body);
+        // 流式走 stream_client（无总超时；连接 30s + 空闲读 180s）
+        let mut request = self.stream_client.post(&url).json(&body);
         if !self.api_key.is_empty() {
             request = request.bearer_auth(&self.api_key);
         }

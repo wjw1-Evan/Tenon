@@ -81,7 +81,13 @@ fn patterns() -> &'static [Pattern] {
             },
             Pattern {
                 kind: SecretKind::PrivateKey,
-                re: Regex::new(r"-----BEGIN [A-Z ]*PRIVATE KEY-----").unwrap(),
+                // 跨行匹配整个 PEM 块：只替换 BEGIN 头行会把 base64 主体
+                // 原样留给模型上下文（§12.4），密钥本体仍完整泄漏；
+                // 无 END 行的截断块退化为只拦头行
+                re: Regex::new(
+                    r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----|-----BEGIN [A-Z ]*PRIVATE KEY-----",
+                )
+                .unwrap(),
             },
             Pattern {
                 kind: SecretKind::GenericAssign,
@@ -183,6 +189,20 @@ mod tests {
     fn private_key_block_detected() {
         assert!(contains_secret("-----BEGIN RSA PRIVATE KEY-----"));
         assert!(contains_secret("-----BEGIN OPENSSH PRIVATE KEY-----"));
+    }
+
+    #[test]
+    fn private_key_full_block_body_is_redacted() {
+        let pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA7x9mVq2\n-----END RSA PRIVATE KEY-----\n";
+        let out = redact(pem);
+        assert!(
+            !out.contains("MIIEpAIBAAKCAQEA7x9mVq2"),
+            "base64 主体必须整体脱敏"
+        );
+        assert!(out.contains("[REDACTED:private_key]"));
+        // 截断块（无 END）至少拦头行
+        let truncated = redact("-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAA");
+        assert!(!truncated.contains("BEGIN OPENSSH"));
     }
 
     #[test]

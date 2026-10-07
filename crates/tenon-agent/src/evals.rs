@@ -351,6 +351,16 @@ impl EvalRunner {
             }
         }
 
+        // 任务未达 Done（Paused / Error）＝ 未完成，直接判 fail——
+        // 此前依赖后续预算/断言偶然命中，Paused 结局会漏判为 pass
+        match outcome {
+            TaskOutcome::Done(_) => {}
+            TaskOutcome::Paused { reason, .. } => {
+                failures.push(format!("任务未完成（paused）：{reason}"))
+            }
+            TaskOutcome::Error(e) => failures.push(format!("任务未完成（error）：{e}")),
+        }
+
         // 预算（§18.3：超出即 fail）
         if steps > task.budget.max_steps {
             failures.push(format!("步数超预算：{} > {}", steps, task.budget.max_steps));

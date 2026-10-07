@@ -37,7 +37,14 @@ pub fn merge_three_way(base: &str, ours: &str, theirs: &str) -> Result<String, M
             (Some(o), None) => (o.clone(), Side::Ours),
             (None, Some(t)) => (t.clone(), Side::Theirs),
             (Some(o), Some(t)) => {
-                if o.base_start <= t.base_start {
+                // 同起点时零宽插入先消费（插入逻辑上位于替换区之前），
+                // 否则替换块先把 base_pos 推过插入点，emit 将倒序
+                let o_first = if o.base_start == t.base_start {
+                    o.base_start == o.base_end || t.base_start != t.base_end
+                } else {
+                    o.base_start < t.base_start
+                };
+                if o_first {
                     (o.clone(), Side::Ours)
                 } else {
                     (t.clone(), Side::Theirs)
@@ -45,22 +52,21 @@ pub fn merge_three_way(base: &str, ours: &str, theirs: &str) -> Result<String, M
             }
         };
 
-        // 与另一侧的 hunk 是否重叠（区间相交，或同位置的插入对插入）
+        // 与另一侧任一未消费 hunk 是否重叠。只看对侧当前指针会漏判
+        // 「对侧后续 hunk 落入本 hunk 已应用区间」的组合（两侧按 base 排序互不回退，
+        // 已消费的对侧 hunk 在其消费时刻已与本国后续 hunk 两两检查过）。
         let overlap = match side {
-            Side::Ours => theirs_hunks
-                .get(ti)
-                .map(|t| overlaps(&hunk, t))
-                .unwrap_or(false),
-            Side::Theirs => ours_hunks
-                .get(oi)
-                .map(|o| overlaps(o, &hunk))
-                .unwrap_or(false),
+            Side::Ours => theirs_hunks[ti..].iter().any(|t| overlaps(&hunk, t)),
+            Side::Theirs => ours_hunks[oi..].iter().any(|o| overlaps(o, &hunk)),
         };
 
         if overlap {
             let o = ours_hunks[oi].clone();
             let t = theirs_hunks[ti].clone();
-            if o.replacement == t.replacement && o.base_start == t.base_start {
+            if o.replacement == t.replacement
+                && o.base_start == t.base_start
+                && o.base_end == t.base_end
+            {
                 // 两侧相同改动：取一次
                 emit(&mut result, &base_lines, base_pos, o.base_start);
                 result.push_str(&o.replacement);
@@ -106,8 +112,22 @@ struct Hunk {
 }
 
 fn overlaps(a: &Hunk, b: &Hunk) -> bool {
-    a.base_start < b.base_end && b.base_start < a.base_end
-        || (a.base_start == b.base_start && a.base_end == b.base_end)
+    // 区间相交（端点相接不算冲突：相邻行各自改动可干净合并）
+    if a.base_start < b.base_end && b.base_start < a.base_end {
+        return true;
+    }
+    // 等区间：同位置插入对插入、同范围替换对替换
+    if a.base_start == b.base_start && a.base_end == b.base_end {
+        return true;
+    }
+    // 零宽插入严格落在对方替换区间内部：锚定行已被对方删除，位置语义无法保全
+    if a.base_start == a.base_end {
+        return b.base_start < a.base_start && a.base_start < b.base_end;
+    }
+    if b.base_start == b.base_end {
+        return a.base_start < b.base_start && b.base_start < a.base_end;
+    }
+    false
 }
 
 fn split_lines(s: &str) -> Vec<&str> {
@@ -115,6 +135,11 @@ fn split_lines(s: &str) -> Vec<&str> {
 }
 
 fn emit(out: &mut String, base_lines: &[&str], from: usize, to: usize) {
+    // from > to 意味着 hunk 区间乱序（上游重叠判定漏判），宁可显式失败也不静默丢行
+    debug_assert!(
+        from <= to,
+        "merge emit 倒序：base_pos={from} > hunk.start={to}"
+    );
     for line in base_lines.iter().take(to).skip(from) {
         out.push_str(line);
     }
@@ -212,5 +237,54 @@ mod tests {
         assert!(!merged.contains("l2"));
         assert!(!merged.contains("l8"));
         assert!(merged.contains("l1") && merged.contains("l10"));
+    }
+
+    #[test]
+    fn later_theirs_hunk_inside_applied_ours_region_conflicts() {
+        // ours 把 l6-l8 整段替换为 X；theirs 在 l6 前插入 A（边界零宽，不冲突）
+        // 且把 l7 改为 B（落入 ours 已应用区间）——旧实现只看对侧当前指针，
+        // 漏判后既不报冲突又静默复活 ours 已删除的行，产出损坏内容
+        let lines: Vec<&str> = BASE.lines().collect();
+        let mut ours: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+        ours.splice(5..8, ["X".to_string()]);
+        let ours = format!("{}\n", ours.join("\n"));
+
+        let mut theirs: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+        theirs.splice(5..5, ["A".to_string()]);
+        theirs[6] = "B".to_string();
+        let theirs = format!("{}\n", theirs.join("\n"));
+
+        assert!(merge_three_way(BASE, &ours, &theirs).is_err());
+    }
+
+    #[test]
+    fn boundary_insertion_beside_replacement_merges() {
+        // ours 替换 l6-l8 为 X；theirs 仅在 l6 前插入 A（边界零宽插入，相邻不冲突）
+        let lines: Vec<&str> = BASE.lines().collect();
+        let mut ours: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+        ours.splice(5..8, ["X".to_string()]);
+        let ours = format!("{}\n", ours.join("\n"));
+
+        let mut theirs: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+        theirs.splice(5..5, ["A".to_string()]);
+        let theirs = format!("{}\n", theirs.join("\n"));
+
+        let merged = merge_three_way(BASE, &ours, &theirs).unwrap();
+        assert!(merged.contains("A\nX\n"), "插入应落在替换块之前：{merged}");
+    }
+
+    #[test]
+    fn insertion_strictly_inside_replaced_region_conflicts() {
+        // ours 替换 l6-l8 为 X；theirs 在 l7 前插入 A——锚定行 l7 已被 ours 删除
+        let lines: Vec<&str> = BASE.lines().collect();
+        let mut ours: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+        ours.splice(5..8, ["X".to_string()]);
+        let ours = format!("{}\n", ours.join("\n"));
+
+        let mut theirs: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+        theirs.splice(6..6, ["A".to_string()]);
+        let theirs = format!("{}\n", theirs.join("\n"));
+
+        assert!(merge_three_way(BASE, &ours, &theirs).is_err());
     }
 }

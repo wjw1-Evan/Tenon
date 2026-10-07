@@ -1447,8 +1447,8 @@ impl AgentSession {
                 if level == Level::B {
                     let prospective_new = call.name == "apply_patch"
                         && !self
-                            .config
-                            .project_root
+                            .tool_ctx
+                            .root
                             .join(
                                 call.arguments
                                     .get("file")
@@ -1663,7 +1663,9 @@ impl AgentSession {
                             }
                         }
                     }
-                    let lines = self.count_project_lines(&output.changed_files);
+                    // 熔断行数按本回合真实 diff（新增+删除）记账：按文件总行数
+                    // 累计会 把「重复编辑同一大文件」误记为巨额改动而提前熔断
+                    let lines = output.lines_changed.unwrap_or(0);
                     let status = self.circuit.lock().await.record_patch(PatchFootprint {
                         total_files_touched: self.touched_files.lock().await.len() as u32,
                         lines_changed: lines,
@@ -1713,6 +1715,23 @@ impl AgentSession {
             }
         }
 
+        // ---- 回合上限耗尽：无收尾回答 ≠ 任务完成 ----
+        // 模型 24 轮持续只发工具调用时，此前静默走「Done + 空答案 + 发送队列
+        // 继续出队」；应转 Paused 交用户处置（续跑 / 停止）
+        if paused_reason.is_none() && error_msg.is_none() && final_answer.is_none() {
+            self.force_state(State::Paused).await;
+            self.set_status(SessionStatus::Paused).await;
+            paused_reason = Some(format!(
+                "达到回合上限（{} 轮）仍未产出收尾回答；可再发消息续跑或停止",
+                self.config.max_tool_rounds
+            ));
+            self.emit(
+                EventKind::Error,
+                &serde_json::json!({"rounds_exhausted": self.config.max_tool_rounds}),
+            )
+            .await;
+        }
+
         // ---- 验证（VERIFYING，双通道 / 降级通道，§9.4）----
         if paused_reason.is_none() && error_msg.is_none() && !changed_files.is_empty() {
             self.force_state(State::Verifying).await;
@@ -1734,12 +1753,29 @@ impl AgentSession {
                 reason,
             };
         }
-        if let Some(err) = error_msg {
+        if let Some(mut err) = error_msg {
             // 失败语义：回滚到最近写前快照（§10.3 崩溃恢复：EXECUTING 中失败不保留半成品）
             if let Some(pre) = last_pre_tree {
-                let _ = self.snapshots.restore(&pre);
-                self.emit(EventKind::Rollback, &serde_json::json!({"to": pre}))
-                    .await;
+                match self.snapshots.restore(&pre) {
+                    Ok(()) => {
+                        self.emit(EventKind::Rollback, &serde_json::json!({"to": pre}))
+                            .await;
+                    }
+                    Err(e) => {
+                        // restore 失败时半成品留在工作区：不得照发 Rollback 造成
+                        // Trace 与磁盘不一致，显式上报回滚失败（不变式 §10.3）
+                        tracing::error!("失败收尾回滚失败（快照点 {pre}）: {e}");
+                        self.emit(
+                            EventKind::Error,
+                            &serde_json::json!({
+                                "rollback_failed": e.to_string(),
+                                "intended_tree": pre,
+                            }),
+                        )
+                        .await;
+                        err = format!("{err}（自动回滚失败：{e}；快照点 {pre}）");
+                    }
+                }
             }
             self.force_state(State::RolledBack).await;
             self.set_status(SessionStatus::Error).await;
@@ -1767,16 +1803,6 @@ impl AgentSession {
             steps,
             rolled_back: false,
         })
-    }
-
-    fn count_project_lines(&self, files: &[String]) -> u64 {
-        let mut n = 0u64;
-        for f in files {
-            if let Ok(content) = std::fs::read_to_string(self.config.project_root.join(f)) {
-                n += content.lines().count() as u64;
-            }
-        }
-        n
     }
 
     async fn snapshot_unavailable(&self, e: tenon_snapshot::SnapshotError) -> TaskOutcome {
@@ -1891,7 +1917,8 @@ impl AgentSession {
 
     /// 验证（§9.4）：测试双通道；无测试清单走降级通道（低强度）。
     async fn verify(&self, changed: Vec<String>) -> (bool, String, bool) {
-        let root = self.config.project_root.clone();
+        // 受管 worktree 会话的验证必须在 worktree 上跑：主根无改动 → 假「通过」
+        let root = self.tool_ctx.root.clone();
         let command_cwd = match &self.config.working_dir {
             Some(dir) if dir.is_absolute() => dir.clone(),
             Some(dir) => root.join(dir),
@@ -1958,7 +1985,7 @@ impl AgentSession {
         let mut queried = 0usize;
         for file in changed.iter().take(10) {
             let result = lsp
-                .request(&self.config.project_root, file, "diagnostics", 0, 0, None)
+                .request(&self.tool_ctx.root, file, "diagnostics", 0, 0, None)
                 .await;
             match result {
                 Ok(value) => {

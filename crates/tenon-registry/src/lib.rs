@@ -131,6 +131,28 @@ pub fn parse_manifest(yaml: &str) -> Result<PluginManifest> {
     Ok(m)
 }
 
+/// 权限串白名单：`<fs|net> [.资源]+ :<scope>[:<子scope>]*`——
+/// 如 `fs.read:project`、`net:registry:pypi`。此前「含冒号即通过」会让
+/// `admin:all` 之类任意串绕过校验（权限是安装审批 UI 高亮的数据源）。
+fn is_valid_permission(perm: &str) -> bool {
+    let mut parts = perm.split(':');
+    let Some(resource) = parts.next() else {
+        return false;
+    };
+    let resource_ok = resource == "net" || resource.starts_with("fs.");
+    let scopes: Vec<&str> = parts.collect();
+    let scope_ok = !scopes.is_empty()
+        && scopes.iter().all(|s| {
+            !s.is_empty()
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '*' || c == '_')
+        });
+    let resource_chars_ok = resource
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
+    resource_ok && resource_chars_ok && scope_ok
+}
+
 fn validate(m: &PluginManifest) -> Result<()> {
     if m.id.is_empty() || !m.id.contains('.') {
         return Err(RegistryError::Invalid("id 须为 <scope>.<name> 形式".into()));
@@ -148,11 +170,8 @@ fn validate(m: &PluginManifest) -> Result<()> {
         )));
     }
     for perm in &m.permissions {
-        if !perm.contains(':') && perm != "fs.read:project" {
-            // 权限形如 <class>:<scope>；fs.read:project 为规范样例
-            if !perm.starts_with("fs.") && !perm.starts_with("net.") {
-                return Err(RegistryError::Invalid(format!("未知权限: {perm}")));
-            }
+        if !is_valid_permission(perm) {
+            return Err(RegistryError::Invalid(format!("未知权限: {perm}")));
         }
     }
     Ok(())
@@ -198,11 +217,13 @@ pub fn verify_manifest_signature(
 /// 静态 index 中按条目校验（签名对 sha256 hex 字节，与 Laya 同约定）。
 pub fn verify_entry(entry: &RegistryEntry, public_key_hex: &str) -> Result<()> {
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-    // 开发模式（占位全零公钥，无任何密钥配置）：跳过签名（无钥可验），
+    // 开发模式（显式全零占位公钥，无任何密钥配置）：跳过签名（无钥可验），
     // 仅要求 sha256 完整性字段存在（下载后仍强制 SHA-256 校验）。
+    // 空串 / 错长公钥 fail closed——空串对 all() 是 vacuous true，会静默
+    // 进入免验签分支。
     // 保留字条目的官方签名约束由 pre_install_check 单独把关（§12.5）；
     // 正式发布注入真实公钥后，签名校验无条件强制。
-    if public_key_hex.bytes().all(|b| b == b'0') {
+    if !public_key_hex.is_empty() && public_key_hex.bytes().all(|b| b == b'0') {
         if entry.sha256.len() != 64 {
             return Err(RegistryError::Invalid("条目缺 sha256".into()));
         }
@@ -213,16 +234,18 @@ pub fn verify_entry(entry: &RegistryEntry, public_key_hex: &str) -> Result<()> {
     else {
         return Err(RegistryError::BadSignature);
     };
+    let Ok(pk_arr): std::result::Result<[u8; 32], _> = pk_bytes.try_into() else {
+        return Err(RegistryError::BadSignature);
+    };
     let (Ok(vk), Ok(sig)) = (
-        VerifyingKey::from_bytes(&pk_bytes.try_into().unwrap_or([0u8; 32])),
+        VerifyingKey::from_bytes(&pk_arr),
         Signature::from_slice(&sig_bytes),
     ) else {
         return Err(RegistryError::BadSignature);
     };
-    let Ok(digest) = hex::decode(&entry.sha256) else {
-        return Err(RegistryError::BadSignature);
-    };
-    if vk.verify(&digest, &sig).is_err() {
+    // 签名对象 = sha256 hex 字符串字节（与 Laya 验签同约定；对 raw 解码字节
+    // 验签会让按约定签出的官方条目全部 BadSignature）
+    if vk.verify(entry.sha256.as_bytes(), &sig).is_err() {
         return Err(RegistryError::BadSignature);
     }
     Ok(())
@@ -460,11 +483,21 @@ signature: ""
             url: "u".into(),
             description: String::new(),
         };
-        e.signature = hex::encode(sk.sign(&hex::decode(&e.sha256).unwrap()).to_bytes());
+        // 约定：对 sha256 hex 字符串字节签名（与 Laya 同口径）
+        e.signature = hex::encode(sk.sign(e.sha256.as_bytes()).to_bytes());
         assert!(verify_entry(&e, &pk).is_ok());
         e.sha256 = sha256_hex(b"tampered");
         assert!(matches!(
             verify_entry(&e, &pk),
+            Err(RegistryError::BadSignature)
+        ));
+        // 空 / 错长公钥 fail closed（空串不得 vacuously 进入开发模式）
+        assert!(matches!(
+            verify_entry(&e, ""),
+            Err(RegistryError::BadSignature)
+        ));
+        assert!(matches!(
+            verify_entry(&e, "abcd"),
             Err(RegistryError::BadSignature)
         ));
     }

@@ -18,6 +18,10 @@ use std::os::unix::io::RawFd;
 use std::path::Path;
 
 // ---------- Landlock 常量（linux/landlock.h，ABI v1） ----------
+// 位序必须与内核 UAPI 一致：EXECUTE 占 1<<0，READ_FILE=1<<2、READ_DIR=1<<3、
+// MAKE_SYM=1<<12。此前常量整体左移错一位：handled 集漏 MAKE_SYM（沙箱内可
+// 任意处建符号链接），/ 规则的「读」实际是 EXECUTE|READ_FILE 而漏 READ_DIR
+// （断网态 cargo/ls 对全盘目录列举 EACCES）。
 
 const LANDLOCK_CREATE_RULESET: libc::c_long = 444;
 const LANDLOCK_ADD_RULE: libc::c_long = 445;
@@ -25,20 +29,22 @@ const LANDLOCK_RESTRICT_SELF: libc::c_long = 446;
 
 const LANDLOCK_RULE_PATH_BENEATH: libc::c_int = 1;
 
-const LANDLOCK_ACCESS_FS_READ_FILE: u64 = 1 << 0;
+const LANDLOCK_ACCESS_FS_EXECUTE: u64 = 1 << 0;
 const LANDLOCK_ACCESS_FS_WRITE_FILE: u64 = 1 << 1;
-const LANDLOCK_ACCESS_FS_READ_DIR: u64 = 1 << 2;
-const LANDLOCK_ACCESS_FS_REMOVE_DIR: u64 = 1 << 3;
-const LANDLOCK_ACCESS_FS_REMOVE_FILE: u64 = 1 << 4;
-const LANDLOCK_ACCESS_FS_MAKE_CHAR: u64 = 1 << 5;
-const LANDLOCK_ACCESS_FS_MAKE_DIR: u64 = 1 << 6;
-const LANDLOCK_ACCESS_FS_MAKE_REG: u64 = 1 << 7;
-const LANDLOCK_ACCESS_FS_MAKE_SOCK: u64 = 1 << 8;
-const LANDLOCK_ACCESS_FS_MAKE_FIFO: u64 = 1 << 9;
-const LANDLOCK_ACCESS_FS_MAKE_BLOCK: u64 = 1 << 10;
-const LANDLOCK_ACCESS_FS_MAKE_SYM: u64 = 1 << 11;
+const LANDLOCK_ACCESS_FS_READ_FILE: u64 = 1 << 2;
+const LANDLOCK_ACCESS_FS_READ_DIR: u64 = 1 << 3;
+const LANDLOCK_ACCESS_FS_REMOVE_DIR: u64 = 1 << 4;
+const LANDLOCK_ACCESS_FS_REMOVE_FILE: u64 = 1 << 5;
+const LANDLOCK_ACCESS_FS_MAKE_CHAR: u64 = 1 << 6;
+const LANDLOCK_ACCESS_FS_MAKE_DIR: u64 = 1 << 7;
+const LANDLOCK_ACCESS_FS_MAKE_REG: u64 = 1 << 8;
+const LANDLOCK_ACCESS_FS_MAKE_SOCK: u64 = 1 << 9;
+const LANDLOCK_ACCESS_FS_MAKE_FIFO: u64 = 1 << 10;
+const LANDLOCK_ACCESS_FS_MAKE_BLOCK: u64 = 1 << 11;
+const LANDLOCK_ACCESS_FS_MAKE_SYM: u64 = 1 << 12;
 
-const ACCESS_READ: u64 = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR;
+const ACCESS_READ: u64 =
+    LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR;
 const ACCESS_WRITE: u64 = LANDLOCK_ACCESS_FS_WRITE_FILE
     | LANDLOCK_ACCESS_FS_REMOVE_DIR
     | LANDLOCK_ACCESS_FS_REMOVE_FILE
@@ -52,12 +58,22 @@ const ACCESS_WRITE: u64 = LANDLOCK_ACCESS_FS_WRITE_FILE
 
 const PR_SET_NO_NEW_PRIVS: libc::c_int = 38;
 const SECCOMP_SET_MODE_FILTER: libc::c_int = 1;
-const AUDIT_ARCH_X86_64: u32 = 0xC000_003E;
+
+// seccomp 的 arch 与 syscall nr 因架构而异；不匹配时过滤器静默变 no-op，
+// 未支持架构必须显式失败而非放行一切
+#[cfg(target_arch = "x86_64")]
+const AUDIT_ARCH: u32 = 0xC000_003E; // AUDIT_ARCH_X86_64
+#[cfg(target_arch = "aarch64")]
+const AUDIT_ARCH: u32 = 0xC000_00B7; // AUDIT_ARCH_AARCH64
 
 const AF_UNIX: u32 = 1;
 const AF_INET: u32 = 2;
 const AF_INET6: u32 = 10;
+
+#[cfg(target_arch = "x86_64")]
 const SYS_SOCKET: u32 = 41;
+#[cfg(target_arch = "aarch64")]
+const SYS_SOCKET: u32 = 198;
 const ENETDOWN: u32 = 100;
 
 #[repr(C)]
@@ -244,7 +260,7 @@ fn bpf_jump(code: u16, k: u32, jt: u8, jf: u8) -> SockFilter {
 fn network_filter() -> [SockFilter; 14] {
     [
         bpf_stmt(BPF_LD | BPF_W | BPF_ABS, OFF_ARCH),
-        bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 0, 11),
+        bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH, 0, 11),
         bpf_stmt(BPF_LD | BPF_W | BPF_ABS, OFF_NR),
         bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, SYS_SOCKET, 0, 9),
         bpf_stmt(BPF_LD | BPF_W | BPF_ABS, OFF_ARGS0),
@@ -261,26 +277,36 @@ fn network_filter() -> [SockFilter; 14] {
 }
 
 fn apply_seccomp_network_filter() -> Result<(), io::Error> {
-    let filter = network_filter();
-    let fprog = SockFprog {
-        len: filter.len() as u16,
-        filter: filter.as_ptr(),
-    };
-    if unsafe { libc::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
-        return Err(io::Error::last_os_error());
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "seccomp inet 过滤器未支持该 CPU 架构（fail closed，不放行未过滤网络）",
+        ));
     }
-    let rc = unsafe {
-        libc::syscall(
-            libc::SYS_seccomp,
-            SECCOMP_SET_MODE_FILTER,
-            0u32,
-            &fprog as *const SockFprog,
-        )
-    };
-    if rc != 0 {
-        return Err(io::Error::last_os_error());
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    {
+        let filter = network_filter();
+        let fprog = SockFprog {
+            len: filter.len() as u16,
+            filter: filter.as_ptr(),
+        };
+        if unsafe { libc::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let rc = unsafe {
+            libc::syscall(
+                libc::SYS_seccomp,
+                SECCOMP_SET_MODE_FILTER,
+                0u32,
+                &fprog as *const SockFprog,
+            )
+        };
+        if rc != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -322,5 +348,20 @@ mod tests {
     fn errno_action_encodes_enetdown() {
         assert_eq!(BPF_RET_ERRNO_ENETDOWN & 0xFFFF, ENETDOWN);
         assert_eq!(BPF_RET_ERRNO_ENETDOWN >> 16, 0x0005);
+    }
+
+    #[test]
+    fn landlock_access_masks_match_kernel_abi_v1() {
+        // 内核 UAPI 位序锚点（防再次整体错位）：
+        // EXECUTE=1<<0, WRITE_FILE=1<<1, READ_FILE=1<<2, READ_DIR=1<<3, MAKE_SYM=1<<12
+        assert_eq!(LANDLOCK_ACCESS_FS_EXECUTE, 1 << 0);
+        assert_eq!(LANDLOCK_ACCESS_FS_WRITE_FILE, 1 << 1);
+        assert_eq!(LANDLOCK_ACCESS_FS_READ_FILE, 1 << 2);
+        assert_eq!(LANDLOCK_ACCESS_FS_READ_DIR, 1 << 3);
+        assert_eq!(LANDLOCK_ACCESS_FS_MAKE_SYM, 1 << 12);
+        // 读 = 可执行 + 读文件 + 列目录（工具链在 / 下运行与列举的先决条件）
+        assert_eq!(ACCESS_READ, 0b1101);
+        // 写集合必须把 MAKE_SYM 纳管（否则沙箱内可在任意 DAC 允许处建符号链接）
+        assert!(ACCESS_WRITE & LANDLOCK_ACCESS_FS_MAKE_SYM != 0);
     }
 }

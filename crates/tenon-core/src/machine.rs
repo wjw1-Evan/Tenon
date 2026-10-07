@@ -229,14 +229,15 @@ impl StateMachine {
             (State::Error, Event::Abort) => State::RolledBack,
 
             // ---------- 终态 ----------
-            (State::Done, Event::Reset) => {
+            (State::Done, Event::Reset) | (State::RolledBack, Event::Reset) => {
+                // 任何终态复位都清零计数：否则「回滚→新任务」继承上一任务的
+                // fix_rounds / model_retries 预算，首个验证失败即 Paused
                 self.model_retries_used = 0;
                 self.fix_rounds_used = 0;
                 self.resume_state = None;
                 State::Idle
             }
             (State::Done, Event::Abort) => State::RolledBack,
-            (State::RolledBack, Event::Reset) => State::Idle,
 
             _ => return Err(TransitionError::Invalid { state: from, event }),
         };
@@ -424,6 +425,48 @@ mod tests {
         );
         assert_eq!(m.transition(Event::Abort).unwrap(), State::RolledBack);
         assert_eq!(m.transition(Event::Reset).unwrap(), State::Idle);
+    }
+
+    #[test]
+    fn rolled_back_reset_clears_budget_counters() {
+        // 「回滚 → 新任务」若继承上一任务的 fix_rounds/model_retries，
+        // 新任务首个验证失败即 Paused、首个模型错误即预算耗尽
+        let mut m = StateMachine::with_limits(Limits {
+            fix_rounds: 1,
+            ..Limits::default()
+        });
+        drive(
+            &mut m,
+            &[
+                Event::Start,
+                Event::SensingDone,
+                Event::NeedChange,
+                Event::BufferElapsed,
+                Event::ExecutionDone,
+                Event::VerificationFailed,
+                Event::FixRoundDone,
+                Event::VerificationFailed, // 预算用尽 → Paused
+                Event::Abort,              // → RolledBack
+                Event::Reset,
+            ],
+        );
+        assert_eq!(m.state(), State::Idle);
+        assert_eq!(m.fix_rounds_used(), 0, "Reset 后修复预算应清零");
+        // 新任务首个验证失败应可正常进入 Fixing，而非立刻 Paused
+        drive(
+            &mut m,
+            &[
+                Event::Start,
+                Event::SensingDone,
+                Event::NeedChange,
+                Event::BufferElapsed,
+                Event::ExecutionDone,
+            ],
+        );
+        assert_eq!(
+            m.transition(Event::VerificationFailed).unwrap(),
+            State::Fixing
+        );
     }
 
     #[test]

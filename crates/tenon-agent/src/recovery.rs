@@ -38,8 +38,7 @@ pub async fn recover_stale_sessions(
             .filter(|s| {
                 matches!(
                     s.status,
-                    SessionStatus::Idle
-                        | SessionStatus::Sensing
+                    SessionStatus::Sensing
                         | SessionStatus::Deciding
                         | SessionStatus::Executing
                         | SessionStatus::Verifying
@@ -49,6 +48,12 @@ pub async fn recover_stale_sessions(
             .map(|s| (s.id, s.project_id))
             .collect()
     };
+    // 注：Idle 不入陈旧集——它是合法静止态（daemon 消息级撤销后显式置回、
+    // 新建会话也以 Idle 建行），误判会在每次重启时批量转 RolledBack 并污染 Trace。
+    // Paused 也不扫：store 中 Paused 既可能是「任务中途挂起（daemon 活着等
+    // Resume，崩溃后确属遗留）」也可能是「任务以 Paused 收尾（熔断 / 快照
+    // 不可用 / 回合耗尽——文件已在盘上，用户发新消息即续作）」，重启即回滚
+    // 会误删后者的已写改动；两类状态在 store 层不可区分，保守不处置。
 
     for (session_id, project_id) in stale {
         let mut errors: Vec<(String, String)> = Vec::new();

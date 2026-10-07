@@ -19,6 +19,11 @@ pub struct ToolOutput {
     /// B 级写操作产生的改动文件集（供熔断 / checkpoint / revert 记账）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub changed_files: Vec<String>,
+    /// 本次写入的真实变更行数（新增 + 删除，unified diff 口径）——熔断器
+    /// lines_changed 预算按此记账；按全文件行数累计会把「重复编辑同一
+    /// 大文件」误记为巨额改动而提前熔断。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lines_changed: Option<u64>,
     /// 命令输出（run_tests / run_build）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
@@ -45,6 +50,7 @@ impl ToolOutput {
             ok: true,
             content: content.into(),
             changed_files: vec![],
+            lines_changed: None,
             exit_code: None,
             dirty_conflict: None,
             dirty_merged: None,
@@ -55,6 +61,7 @@ impl ToolOutput {
             ok: false,
             content: content.into(),
             changed_files: vec![],
+            lines_changed: None,
             exit_code: None,
             dirty_conflict: None,
             dirty_merged: None,
@@ -132,10 +139,11 @@ fn safe_git_remote(remote: &str) -> bool {
 }
 
 /// 分支 / tag 短名白名单：拒绝 refspec、option 前缀、控制字符与常见 shell 元字符。
+/// `+` 前缀是 refspec 强制更新标记（force push），必须拒绝。
 fn safe_git_branch(branch: &str) -> bool {
     !branch.is_empty()
         && branch.len() <= 256
-        && !branch.starts_with(['-', '/'])
+        && !branch.starts_with(['-', '/', '+'])
         && branch.chars().all(|c| {
             !c.is_whitespace()
                 && !c.is_control()
@@ -233,7 +241,13 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
         }
         "list_dir" => {
             let path = args.get("path").and_then(|p| p.as_str()).unwrap_or(".");
-            let dir = ctx.root.join(path);
+            // A 级只读也必须过作用域校验：`Path::join` 遇绝对路径整体替换，
+            // `list_dir {"path":"/etc"}` 此前可直接列沙箱外任意目录
+            let rel = match project_rel(ctx, path) {
+                Ok(r) => r,
+                Err(e) => return e,
+            };
+            let dir = ctx.root.join(&rel);
             match std::fs::read_dir(&dir) {
                 Ok(entries) => {
                     let mut names: Vec<String> = entries
@@ -335,7 +349,19 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                 Ok(r) => r,
                 Err(e) => return e,
             };
-            let before = ctx.files.read_file(&rel).unwrap_or_default();
+            // 读失败（二进制 / 权限）≠ 文件不存在：unwrap_or_default 会把
+            // 「读不了」当「空文件」整文件覆盖，毁坏二进制资产
+            let before = match ctx.files.read_file(&rel) {
+                Ok(c) => c,
+                Err(tenon_fs::FsError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                    String::new()
+                }
+                Err(e) => {
+                    return ToolOutput::err(format!(
+                        "读取原文件失败，apply_patch 拒绝整文件覆盖（{rel}）: {e}"
+                    ))
+                }
+            };
             let mut lines: Vec<String> = before.lines().map(String::from).collect();
             match op.range {
                 Some((start, end)) => {
@@ -386,7 +412,11 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                                 content: format!(
                                     "已写入 {rel}（人机共编：与未保存的用户改动三方合并）\n{diff}"
                                 ),
-                                changed_files: vec![rel],
+                                changed_files: vec![rel.clone()],
+                                lines_changed: Some(tenon_core::count_changed_lines(
+                                    &before,
+                                    &merged_text,
+                                )),
                                 exit_code: None,
                                 dirty_conflict: None,
                                 dirty_merged: Some(true),
@@ -399,6 +429,7 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                                     "人机共编冲突：{rel} 存在未保存的用户改动，与代理改动冲突。                                     写入已阻断，等待用户在三栏预览中处置（§8.6）。"
                                 ),
                                 changed_files: vec![],
+                                lines_changed: None,
                                 exit_code: None,
                                 dirty_conflict: Some(DirtConflictView {
                                     path: rel,
@@ -419,7 +450,8 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                     ToolOutput {
                         ok: true,
                         content: format!("已写入 {rel}\n{diff}"),
-                        changed_files: vec![rel],
+                        changed_files: vec![rel.clone()],
+                        lines_changed: Some(tenon_core::count_changed_lines(&before, &after)),
                         exit_code: None,
                         dirty_conflict: None,
                         dirty_merged: None,
@@ -461,6 +493,7 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                         out.stderr.trim()
                     ),
                     changed_files: vec![],
+                    lines_changed: None,
                     exit_code: out.exit_code,
                     dirty_conflict: None,
                     dirty_merged: None,
@@ -489,6 +522,7 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                         out.stderr.trim()
                     ),
                     changed_files: vec![],
+                    lines_changed: None,
                     exit_code: out.exit_code,
                     dirty_conflict: None,
                     dirty_merged: None,
@@ -684,6 +718,7 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                         out.stdout, out.stderr
                     )),
                     changed_files: vec![],
+                    lines_changed: None,
                     exit_code: out.exit_code,
                     dirty_conflict: None,
                     dirty_merged: None,
@@ -759,6 +794,7 @@ fn create_pull_request(ctx: &ToolContext, args: &serde_json::Value) -> ToolOutpu
                 ok: out.success() && !out.timed_out,
                 content: tenon_core::redact::redact(&text),
                 changed_files: vec![],
+                lines_changed: None,
                 exit_code: out.exit_code,
                 dirty_conflict: None,
                 dirty_merged: None,
@@ -1080,7 +1116,8 @@ mod tests {
     #[test]
     fn git_push_rejects_branch_refspec_and_option_names() {
         let (_d, c) = ctx();
-        for branch in ["-force", "main:other", "a b"] {
+        // "+main" 是 refspec 强制更新标记（force push 覆盖远端历史），必须拒绝
+        for branch in ["-force", "main:other", "a b", "+main"] {
             let out = execute_tool(
                 &c,
                 "git_push",

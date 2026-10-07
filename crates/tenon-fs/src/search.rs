@@ -148,12 +148,17 @@ pub fn replace_preview(
             continue;
         }
         let path = entry.path();
+        // 读前先按 metadata 过滤大小：整读后再丢上限对内存爆无防护
+        //（项目里的 GB 级数据文件会让每次替换预览全量进内存）
+        let over_size = std::fs::metadata(path)
+            .map(|m| m.len() > opts.max_file_bytes)
+            .unwrap_or(true);
+        if over_size {
+            continue;
+        }
         let Ok(content) = std::fs::read_to_string(path) else {
             continue; // 二进制 / 非 UTF-8 跳过
         };
-        if content.len() > opts.max_file_bytes as usize {
-            continue;
-        }
         if !re.is_match(&content) {
             continue;
         }
@@ -208,14 +213,22 @@ pub fn replace_selected(
             }
         };
         let abs = root.join(normalized);
+        // 读前按 metadata 拦超限（同 replace_preview：整读后判上限不防内存爆）
+        match std::fs::metadata(&abs) {
+            Ok(m) if m.len() > opts.max_file_bytes => {
+                failed.push((rel.clone(), "file exceeds replace size limit".into()));
+                continue;
+            }
+            Err(e) => {
+                failed.push((rel.clone(), e.to_string()));
+                continue;
+            }
+            Ok(_) => {}
+        }
         let Ok(content) = std::fs::read_to_string(&abs) else {
             failed.push((rel.clone(), "binary, missing, or non-UTF-8".into()));
             continue;
         };
-        if content.len() > opts.max_file_bytes as usize {
-            failed.push((rel.clone(), "file exceeds replace size limit".into()));
-            continue;
-        }
         if !re.is_match(&content) {
             failed.push((rel.clone(), "no matches".into()));
             continue;

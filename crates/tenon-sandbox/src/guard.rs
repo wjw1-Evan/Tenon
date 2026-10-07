@@ -62,13 +62,13 @@ impl WriteGuard {
 
     /// 校验绝对路径写入目标。
     pub fn check_abs(&self, target: &Path) -> Result<(), SandboxError> {
-        // .git 内部保护
-        for anc in target.ancestors() {
-            if anc.file_name().map(|f| f == ".git").unwrap_or(false) && target.starts_with(anc) {
-                return Err(SandboxError::GitInternal(
-                    target.to_string_lossy().into_owned(),
-                ));
-            }
+        // .git 内部保护：词法层先拦直接路径，canonicalize 后还要复查——
+        // 仓库可携带符号链接别名（如 build -> .git/hooks），词法组件不含
+        // `.git` 但解析结果落入用户仓库 .git 内，只查一层会被绕过
+        if under_git_dir(target) {
+            return Err(SandboxError::GitInternal(
+                target.to_string_lossy().into_owned(),
+            ));
         }
         // 符号链接逃逸检测：从最深存在目录逐级 canonicalize
         let mut to_canon = target.to_path_buf();
@@ -87,6 +87,11 @@ impl WriteGuard {
                     }
                     if !real_full.starts_with(&self.root) {
                         return Err(SandboxError::PathEscape(
+                            target.to_string_lossy().into_owned(),
+                        ));
+                    }
+                    if under_git_dir(&real_full) {
+                        return Err(SandboxError::GitInternal(
                             target.to_string_lossy().into_owned(),
                         ));
                     }
@@ -113,6 +118,12 @@ impl WriteGuard {
             }
         }
     }
+}
+
+/// 路径任一层级组件为 `.git`（ancestors 自带前缀语义，无需再 starts_with）。
+fn under_git_dir(p: &Path) -> bool {
+    p.ancestors()
+        .any(|anc| anc.file_name().map(|f| f == ".git").unwrap_or(false))
 }
 
 #[cfg(test)]
@@ -167,6 +178,20 @@ mod tests {
         let outside = tempfile::tempdir().unwrap();
         std::os::unix::fs::symlink(outside.path(), d.path().join("link")).unwrap();
         assert!(g.check_write_rel("link/evil.txt").is_err());
+    }
+
+    #[test]
+    fn rejects_symlink_alias_into_git() {
+        // 恶意仓库可携带 build -> .git/hooks 符号链接：词法路径不含 `.git`，
+        // 但解析结果落入用户仓库 .git —— 必须在 canonicalize 后复查拦截
+        let (d, g) = guard();
+        let root = d.path();
+        std::fs::create_dir_all(root.join(".git/hooks")).unwrap();
+        std::os::unix::fs::symlink(".git/hooks", root.join("build")).unwrap();
+        assert!(g.check_write_rel("build/pre-commit").is_err());
+        // 指向 .git 整体的别名同样拦截
+        std::os::unix::fs::symlink(".git", root.join("gitz")).unwrap();
+        assert!(g.check_write_rel("gitz/config").is_err());
     }
 
     #[test]

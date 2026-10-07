@@ -153,7 +153,12 @@ impl LspHost {
         // 拉取诊断、hover/补全等由请求驱动无需声明
         let mut params = serde_json::json!({
             "processId": std::process::id(),
-            "rootUri": format!("file://{}", self.root.to_string_lossy()),
+            // 完整 percent-encode（路径含空格 / 非 ASCII 时裸拼是非法 URI，
+            // 严格的服务器（pyright）会工作区匹配失败）
+            "rootUri": format!(
+                "file://{}",
+                crate::pack::percent_encode_path(&self.root.to_string_lossy())
+            ),
             "capabilities": {
                 "textDocument": {
                     "publishDiagnostics": {
