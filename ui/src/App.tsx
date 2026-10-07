@@ -1374,6 +1374,12 @@ export default function App({
               }
             }}
             onDirtyConflict={setDirtyConflict}
+            onShowDiff={(diff) => {
+              // v1.160 回合改动摘要徽标：回合聚合 diff 注入底部面板并展开 timeline tab
+              setLatestDiff(diff);
+              setTimelineOpen(true);
+              setBottomTab("timeline");
+            }}
             followMode={followMode}
             onToggleFollow={toggleFollow}
             injectedTask={injectedTask ?? undefined}

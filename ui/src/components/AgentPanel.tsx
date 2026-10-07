@@ -70,6 +70,8 @@ interface Props {
   onDraftSend?: (text: string) => Promise<void>;
   onStateChange?: (s: AgentStateName) => void;
   onLatestDiff?: (diff: string | null) => void;
+  /** v1.160 回合改动摘要徽标：点击徽标注入该回合聚合 diff 并展开底部 Diff（App 持有面板状态）。 */
+  onShowDiff?: (diff: string) => void;
   onDirtyConflict?: (c: DirtyConflictView | null) => void;
   onPatchLines?: (path: string, lines: number[]) => void;
   /** 跟随模式（§8.5）：代理写入时编辑器自动滚动到改动处；App 持有状态，此处仅展示开关。 */
@@ -214,6 +216,7 @@ export function AgentPanel({
   onToggleFollow,
   injectedTask,
   onModelSwitched,
+  onShowDiff,
 }: Props) {
   const [events, setEvents] = useState<EventItem[]>([]);
   const [streamText, setStreamText] = useState("");
@@ -769,6 +772,8 @@ export function AgentPanel({
                   </div>
                 )}
                 <TurnUsageBadge turn={turn} t={t} />
+                {/* v1.160 回合改动摘要徽标：含改动回合原地展示「N 文件 · +A −B」，点击开底部 Diff */}
+                <TurnDiffChip items={turn.items} t={t} onShow={(d) => onShowDiff?.(d)} />
               </div>
             </section>
           );
@@ -1024,6 +1029,39 @@ export function AgentPanel({
   );
 }
 
+/** v1.160 回合改动摘要：回合内全部 patch_applied 的 unified diff 聚合统计——
+ * 文件数 = `+++ b/` 头去重（/dev/null 不计）；新增/删除 = hunk 内 +/− 行计数
+ * （`---`/`+++`/`@@` 头不计）；无任何可解析 diff 返回 null；diff 字段为按事件序拼接全文。 */
+export function turnDiffStats(
+  items: EventItem[],
+): { diff: string; files: number; additions: number; deletions: number } | null {
+  const parts: string[] = [];
+  const files = new Set<string>();
+  let additions = 0;
+  let deletions = 0;
+  for (const ev of items) {
+    if (ev.type !== "patch_applied") continue;
+    const d = diffFromPatchEvent(ev.payload);
+    if (!d) continue;
+    parts.push(d);
+    let inHunk = false;
+    for (const line of d.split("\n")) {
+      if (line.startsWith("+++ ")) {
+        const p = line.slice(4).trim();
+        if (p !== "/dev/null") files.add(p);
+        inHunk = false;
+      } else if (line.startsWith("@@")) {
+        inHunk = true;
+      } else if (inHunk) {
+        if (line.startsWith("+")) additions += 1;
+        else if (line.startsWith("-")) deletions += 1;
+      }
+    }
+  }
+  if (parts.length === 0) return null;
+  return { diff: parts.join("\n"), files: files.size, additions, deletions };
+}
+
 /** §9.2 A 级只读工具：不落步骤卡，按回合聚合为单行摘要（v1.112 降噪；明细见「轨迹」tab）。
  * laya_decide（v1.124）仅折叠步骤卡，计数与判定详情由 turn-laya 徽标承载。 */
 const READ_ONLY_TOOLS = new Set(["read_file", "list_dir", "grep", "git_read", "lsp_query", "laya_decide", "subtasks"]);
@@ -1072,6 +1110,34 @@ function TurnUsageBadge({ turn, t }: { turn: Turn; t: Translate }) {
     <div className="turn-usage" data-testid="turn-usage">
       {parts.join(" · ")}
     </div>
+  );
+}
+
+/** v1.160 回合改动摘要徽标（§7.5，Codex 形态）：「N 文件 · +A −B」，点击注入回合聚合
+ * diff 并展开底部 Diff（onShowDiff 由 App 接管面板状态）；无改动回合不渲染。 */
+function TurnDiffChip({
+  items,
+  t,
+  onShow,
+}: {
+  items: EventItem[];
+  t: Translate;
+  onShow: (diff: string) => void;
+}) {
+  const stats = useMemo(() => turnDiffStats(items), [items]);
+  if (!stats) return null;
+  return (
+    <button
+      type="button"
+      className="turn-diffchip"
+      data-testid="turn-diffchip"
+      title={t("thread.diffchip_hint")}
+      onClick={() => onShow(stats.diff)}
+    >
+      {t("thread.diffchip_files", { n: stats.files })}{" "}
+      <span className="chip-add">+{stats.additions}</span>{" "}
+      <span className="chip-del">−{stats.deletions}</span>
+    </button>
   );
 }
 

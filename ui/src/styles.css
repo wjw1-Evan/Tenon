@@ -1505,6 +1505,23 @@ button:disabled { opacity: 0.45; cursor: default; }
   padding: 1px 0;
   font-variant-numeric: tabular-nums;
 }
+/* 回合改动摘要徽标（v1.160）：「N 文件 · +A −B」紧凑按钮，hover accent；增删行用状态绿/红 */
+.turn-diffchip {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-family: inherit;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+.turn-diffchip:hover { border-color: var(--accent); color: var(--accent-text); }
+.turn-diffchip .chip-add { color: var(--ok); }
+.turn-diffchip .chip-del { color: var(--error); }
 /* 用户气泡下功能按钮组（v1.123）：复制 / 撤销 / 重做——撤销 hover 用错误色提示破坏性 */
 .turn-actions { display: flex; align-items: center; gap: 4px; margin-top: 2px; }
 /* 回合模型标注（v1.131）：热切换 / fallback 后各回合如实展示所用模型；

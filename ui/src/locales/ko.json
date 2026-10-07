@@ -403,5 +403,7 @@
   "update.ready.title": "업데이트 v{version} 다운로드 완료",
   "update.ready.install": "지금 업데이트",
   "update.ready.later": "나중에",
-  "mention.title": "파일 참조"
+  "mention.title": "파일 참조",
+  "thread.diffchip_files": "{n}개 파일",
+  "thread.diffchip_hint": "이 턴 변경사항 보기"
 }

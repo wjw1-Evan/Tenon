@@ -403,5 +403,7 @@
   "update.ready.title": "Update v{version} downloaded",
   "update.ready.install": "Install now",
   "update.ready.later": "Later",
-  "mention.title": "File references"
+  "mention.title": "File references",
+  "thread.diffchip_files": "{n} files",
+  "thread.diffchip_hint": "View changes from this turn"
 }
