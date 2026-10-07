@@ -402,5 +402,6 @@
   "update.notes.dismiss": "Got it",
   "update.ready.title": "Update v{version} downloaded",
   "update.ready.install": "Install now",
-  "update.ready.later": "Later"
+  "update.ready.later": "Later",
+  "mention.title": "File references"
 }

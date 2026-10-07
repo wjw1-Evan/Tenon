@@ -402,5 +402,6 @@
   "update.notes.dismiss": "知道了",
   "update.ready.title": "已下載更新 v{version}",
   "update.ready.install": "立即更新",
-  "update.ready.later": "下次再說"
+  "update.ready.later": "下次再說",
+  "mention.title": "檔案參照"
 }

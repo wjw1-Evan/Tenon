@@ -402,5 +402,6 @@
   "update.notes.dismiss": "확인",
   "update.ready.title": "업데이트 v{version} 다운로드 완료",
   "update.ready.install": "지금 업데이트",
-  "update.ready.later": "나중에"
+  "update.ready.later": "나중에",
+  "mention.title": "파일 참조"
 }

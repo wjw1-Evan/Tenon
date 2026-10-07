@@ -21,6 +21,34 @@ export interface DirtyConflictView {
   theirs: string;
 }
 
+/** v1.159 补全命中：fuzzy 端点返回子集（path 唯一键，插入只消费 path）。 */
+interface MentionHit {
+  path: string;
+  name: string;
+  kind: "dir" | "file";
+  score: number;
+}
+
+/** v1.159 触发词提取：光标前最近一个未闭合 `@` 起到光标处为过滤词。
+ * 收窄条件：@ 位于文本首或其前一字符为空白（`a@b` 邮箱形态不触发），
+ * @ 与光标之间不得出现空白（空白即 token 闭合）。 */
+export function extractMentionQuery(
+  text: string,
+  caret: number,
+): { start: number; query: string } | null {
+  let i = caret - 1;
+  while (i >= 0) {
+    const ch = text[i];
+    if (ch === "@") {
+      if (i > 0 && !/\s/.test(text[i - 1])) return null;
+      return { start: i, query: text.slice(i + 1, caret) };
+    }
+    if (/\s/.test(ch)) return null;
+    i -= 1;
+  }
+  return null;
+}
+
 interface Props {
   api: TenonApi;
   t: Translate;
@@ -198,6 +226,11 @@ export function AgentPanel({
   const [draftInputs, setDraftInputs] = useState<Record<string, string>>({});
   // 文件拖入对话框（v1.110）：dragover 高亮 + 落下插入 @path 引用。
   const [inputDrop, setInputDrop] = useState(false);
+  // v1.159 输入内 @ 文件引用补全（§7.5）：mention = 触发 token（start=输入文本中 @ 下标，
+  // query=@ 后过滤词）；命中列表随 fuzzy 防抖刷新，键盘 ↑↓/Enter/Tab/Esc 全可达。
+  const [mention, setMention] = useState<{ start: number; query: string } | null>(null);
+  const [mentionHits, setMentionHits] = useState<MentionHit[]>([]);
+  const [mentionIndex, setMentionIndex] = useState(0);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const [busy, setBusy] = useState(false);
   const [stopRequested, setStopRequested] = useState(false);
@@ -228,6 +261,40 @@ export function AgentPanel({
   const activeProject = projects?.find((p) => p.id === projectId);
   const showContext = Boolean(projectId && projects && projects.length > 0 && (isDraft || sessionId));
 
+  // v1.159：textarea 值 + 光标 → 触发词同步（onSelect 覆盖键入 / 点击移动光标两种路径；
+  // 无 active project 不触发——fuzzy 是 project-scoped）。
+  const syncMention = () => {
+    const el = inputRef.current;
+    if (!el) return;
+    setMention(projectId ? extractMentionQuery(el.value, el.selectionStart ?? el.value.length) : null);
+  };
+
+  // v1.159：fuzzy 命中随触发词防抖刷新（120ms，与 Cmd+P 同节奏）；每轮 alive 防慢响应竞态。
+  useEffect(() => {
+    if (!mention || !projectId) {
+      setMentionHits([]);
+      setMentionIndex(0);
+      return;
+    }
+    let alive = true;
+    const timer = window.setTimeout(() => {
+      api
+        .fuzzyFiles(projectId, mention.query, 8)
+        .then((r) => {
+          if (!alive) return;
+          setMentionHits(r.hits ?? []);
+          setMentionIndex(0);
+        })
+        .catch(() => {
+          if (alive) setMentionHits([]);
+        });
+    }, 120);
+    return () => {
+      alive = false;
+      window.clearTimeout(timer);
+    };
+  }, [api, mention, projectId]);
+
   // 会话切换即清空本地事件流：轮询按 after=0 重新拉取，若不清空，
   // 上一会话的事件残留会导致新会话线程显示旧会话消息（实测缺陷）。
   useEffect(() => {
@@ -237,6 +304,8 @@ export function AgentPanel({
     setLatestDiff(null);
     setStopRequested(false);
     setQueue([]);
+    setMention(null);
+    setMentionHits([]);
   }, [sessionId]);
 
   // 流式输出保持最新增量可见；用户向上回看时不强制拉底。
@@ -335,6 +404,7 @@ export function AgentPanel({
   async function send() {
     const text = inputValue.trim();
     if (!text) return;
+    setMention(null);
     // 键盘 Cmd+Enter 路径没有按钮的 disabled 守卫：连按会重复发送 /
     // 草稿态建出双会话（两个代理并行写同一项目）
     if (busy) return;
@@ -384,6 +454,29 @@ export function AgentPanel({
   async function resume() {
     if (!sessionId) return;
     await api.control(sessionId, "resume");
+  }
+
+  // v1.159：选中补全项——@ 前缀整体替换为 `@路径 `（trailing 空格续写），光标落引用之后。
+  function chooseMention(hit: MentionHit | undefined) {
+    if (!hit || !mention) return;
+    const el = inputRef.current;
+    const caret = el?.selectionStart ?? inputValue.length;
+    const before = inputValue.slice(0, mention.start);
+    const after = inputValue.slice(caret);
+    const inserted = `@${hit.path} `;
+    const pos = before.length + inserted.length;
+    setInputValue(before + inserted + after);
+    setMention(null);
+    setMentionHits([]);
+    // 受控值经 React 重渲染落 DOM 后再复位光标（value 变更会重置 selection）。
+    window.setTimeout(() => {
+      try {
+        inputRef.current?.setSelectionRange(pos, pos);
+      } catch {
+        // jsdom 等环境不支持 setSelectionRange，忽略
+      }
+      inputRef.current?.focus();
+    }, 0);
   }
 
   // v1.147 发送消息队列（§9.1）：移除 / 点击气泡回填编辑 / 冻结期手动续发。
@@ -810,11 +903,43 @@ export function AgentPanel({
           ref={inputRef}
           value={inputValue}
           placeholder={t("message.placeholder")}
-          onChange={(e) => setInputValue(e.target.value)}
+          onChange={(e) => {
+            setInputValue(e.target.value);
+            // v1.159：键入即重算触发词（含删除 @ 关闭浮层）；DOM 值此刻已含新字符。
+            syncMention();
+          }}
+          onSelect={syncMention}
+          onBlur={() => setMention(null)}
           onKeyDown={(e) => {
             if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
               e.preventDefault();
               send();
+              return;
+            }
+            // v1.159 补全浮层键盘链路：↑↓ 移动 / Enter·Tab 选中 / Esc 仅收浮层
+            // （优先于输入框既有 Esc blur 语义——弹层开时 Esc 归弹层）。
+            if (mention && mentionHits.length > 0) {
+              if (e.key === "ArrowDown") {
+                e.preventDefault();
+                setMentionIndex((i) => (i + 1) % mentionHits.length);
+                return;
+              }
+              if (e.key === "ArrowUp") {
+                e.preventDefault();
+                setMentionIndex((i) => (i - 1 + mentionHits.length) % mentionHits.length);
+                return;
+              }
+              if (e.key === "Enter" || e.key === "Tab") {
+                e.preventDefault();
+                chooseMention(mentionHits[mentionIndex]);
+                return;
+              }
+              if (e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+                setMention(null);
+                return;
+              }
             }
             if (e.key === "Escape") {
               // 输入框 Esc 只收键盘，不触发全局「暂停代理」
@@ -824,6 +949,35 @@ export function AgentPanel({
           }}
           data-testid="task-input"
         />
+        {/* v1.159 @ 文件引用补全浮层（§7.5，Codex 形态）：弹在输入区上方；命中项
+            onMouseDown preventDefault 保持输入框焦点（不触发 blur 收层竞态）。 */}
+        {mention && mentionHits.length > 0 && (
+          <ul
+            className="mention-menu"
+            data-testid="mention-menu"
+            role="listbox"
+            aria-label={t("mention.title")}
+          >
+            {mentionHits.map((h, i) => (
+              <li
+                key={h.path}
+                role="option"
+                aria-selected={i === mentionIndex}
+                className={i === mentionIndex ? "mention-item mention-active" : "mention-item"}
+                data-testid={`mention-item-${i}`}
+                title={h.path}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  chooseMention(h);
+                }}
+                onMouseEnter={() => setMentionIndex(i)}
+              >
+                <span className="mention-kind">{h.kind === "dir" ? "▸" : "·"}</span>
+                {h.path}
+              </li>
+            ))}
+          </ul>
+        )}
         <div className="agent-input-foot">
           <ModelRoutingPanel
             api={api}

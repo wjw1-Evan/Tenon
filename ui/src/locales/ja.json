@@ -402,5 +402,6 @@
   "update.notes.dismiss": "OK",
   "update.ready.title": "アップデート v{version} のダウンロードが完了しました",
   "update.ready.install": "今すぐ更新",
-  "update.ready.later": "後で"
+  "update.ready.later": "後で",
+  "mention.title": "ファイル参照"
 }

@@ -1771,6 +1771,7 @@ button:disabled { opacity: 0.45; cursor: default; }
 
 /* 输入区（v1.51）：组合容器——textarea 在上，底行左模型 pill 右发送（参考 ZCode 客户端输入区） */
 .agent-input {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -1781,6 +1782,46 @@ button:disabled { opacity: 0.45; cursor: default; }
   background: var(--raised);
   flex-shrink: 0;
   transition: border-color 0.15s, box-shadow 0.15s;
+}
+/* v1.159 @ 文件引用补全浮层（§7.5）：弹在输入区上方，命中列表窄幅 + 滚动 */
+.mention-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 10px;
+  right: 10px;
+  max-height: 220px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-m);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  z-index: 60;
+}
+.mention-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: var(--radius-s);
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.mention-item.mention-active {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+.mention-kind {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 10px;
+  width: 10px;
 }
 .agent-input:focus-within {
   border-color: var(--accent);
