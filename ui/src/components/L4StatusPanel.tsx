@@ -52,7 +52,13 @@ export function L4StatusPanel({ api, t, projectId }: Props) {
     const connect = async () => {
       if (!alive) return;
       try {
-        socket = await api.connectEvents(handleEvent, projectId);
+        const ws = await api.connectEvents(handleEvent, projectId);
+        // await 期间组件可能已卸载：关掉逃逸连接（同 App.tsx WS 修复）
+        if (!alive) {
+          ws.close();
+          return;
+        }
+        socket = ws;
         socket.onclose = () => {
           if (!alive) return;
           retry = window.setTimeout(() => void connect(), 1000);

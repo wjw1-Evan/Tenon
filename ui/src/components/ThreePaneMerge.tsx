@@ -1,6 +1,6 @@
 // 三栏合并预览（设计方案 §8.6）：你的改动 / 代理改动 / 合并结果（base）。
 // 用户三选一：应用合并结果（前端 merge）/ 保留我的 / 应用代理版本。
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { mergeThreeWay } from "../lib/merge";
 
 export interface DirtyConflict {
@@ -35,8 +35,14 @@ export function ThreePaneMerge({ conflict, onResolve, labels }: Props) {
   }, [conflict]);
 
   const [selected, setSelected] = useState<"merged" | "theirs" | "ours">(merged ? "merged" : "theirs");
+  // 冲突对象被新事件整体替换时组件不重挂载：选中态必须随冲突重置，
+  // 否则残留的 "merged" 遇到合并失败的新冲突会把空串写盘（文件被清空）
+  useEffect(() => {
+    setSelected(merged ? "merged" : "theirs");
+  }, [conflict, merged]);
   const chosen =
     selected === "ours" ? conflict.ours : selected === "theirs" ? conflict.theirs : merged ?? "";
+  const applyDisabled = selected === "merged" && !merged;
 
   return (
     <div className="merge-pane" data-testid="three-pane-merge">
@@ -88,7 +94,11 @@ export function ThreePaneMerge({ conflict, onResolve, labels }: Props) {
         </div>
       </div>
       <div className="merge-actions">
-        <button data-testid="merge-apply" onClick={() => onResolve(conflict.path, chosen, true)}>
+        <button
+          data-testid="merge-apply"
+          disabled={applyDisabled}
+          onClick={() => onResolve(conflict.path, chosen, true)}
+        >
           {labels.apply}
         </button>
         <button

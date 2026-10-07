@@ -622,6 +622,13 @@ export default function App({
     },
     [t]
   );
+  // 注入任务消费后清除：AgentPanel 的 effect 依赖 sessionId + injectedTask，
+  // 任务不清零会在此后每次切换会话时向新会话重发同一修复任务（幽灵任务）
+  useEffect(() => {
+    if (!injectedTask) return;
+    const timer = window.setTimeout(() => setInjectedTask(null), 0);
+    return () => window.clearTimeout(timer);
+  }, [injectedTask]);
 
   /** 行内指令（§8.5 / S2 / T8）：选区上下文组装后直接发送当前项目会话。
    *  v1.126：主根草稿态改走草稿首发链路（建会话再发），不再静默丢弃；
@@ -657,7 +664,13 @@ export default function App({
       }
       if (!projectId) return;
       const r = await api.readFile(projectId, path);
-      setTabsByProject((prev) => ({ ...prev, [projectId]: [...(prev[projectId] ?? []), { path, content: r.content }] }));
+      setTabsByProject((prev) => {
+        const list = prev[projectId] ?? [];
+        // 闭包里的 tabs 是旧值：两次快速打开同一文件会各自判「未打开」
+        // 产生重复 tab（React key 冲突），函数式更新内再判重
+        if (list.some((tab) => tab.path === path)) return prev;
+        return { ...prev, [projectId]: [...list, { path, content: r.content }] };
+      });
       setActivePathByProject((prev) => ({ ...prev, [projectId]: path }));
       if (line) setGotoLine({ path, line, token: Date.now() });
     },
@@ -744,6 +757,9 @@ export default function App({
       const projectId = projectIdRef.current;
       if (!projectId) return;
       if (change.type === "renamed") {
+        // 旧路径的去抖自动保存必须取消：1s 后 fire 会把已重命名走的旧路径
+        // 文件用旧内容「复活」在磁盘上
+        autosaverRef.current?.cancel(change.from);
         setTabsByProject((prev) => ({
           ...prev,
           [projectId]: (prev[projectId] ?? []).map((tab) =>
@@ -777,6 +793,8 @@ export default function App({
         return;
       }
       if (change.type !== "deleted") return;
+      // 已删文件的去抖写盘同样取消，否则旧内容重新落盘
+      autosaverRef.current?.cancel(change.path);
       const tabs = tabsByProjectRef.current[projectId] ?? [];
       const nextActive =
         activePathByProjectRef.current[projectId] === change.path
@@ -835,11 +853,20 @@ export default function App({
       },
       onSettings: () => setSettingsOpen(true),
       onPauseOrClose: () => {
-        if (paletteOpen) setPaletteOpen(false);
-        else if (sessionId) api.control(sessionId, "pause");
+        // 弹层在开：任何 Esc 优先收弹层而非暂停代理（编辑器浮层 / 查找器 /
+        // 改名模态等已在各自 onKeyDown preventDefault，此处兜底全局态）
+        if (paletteOpen) {
+          setPaletteOpen(false);
+          return;
+        }
+        if (editorOpen) {
+          setEditorOpen(false);
+          return;
+        }
+        if (sessionId) api.control(sessionId, "pause");
       },
     }),
-    [api, sessionId, paletteOpen, activePath, saveNow]
+    [api, sessionId, paletteOpen, editorOpen, activePath, saveNow]
   );
   useShortcuts(handlers);
 
@@ -1016,6 +1043,8 @@ export default function App({
       setFileTreeVersion((version) => version + 1);
       scheduleSummary();
       if (event.type === "removed") {
+        // WS 侧删除同样取消去抖写盘（磁盘文件已被外部删除/代理清理）
+        autosaverRef.current?.cancel(event.path);
         setTabsByProject((prev) => ({
           ...prev,
           [projectId]: (prev[projectId] ?? []).filter((tab) => tab.path !== event.path),
@@ -1053,7 +1082,14 @@ export default function App({
     const connect = async () => {
       if (!alive) return;
       try {
-        socket = await api.connectEvents((event) => void handleEvent(event), projectId);
+        const ws = await api.connectEvents((event) => void handleEvent(event), projectId);
+        // 换票 / 握手 await 期间项目已切换（cleanup 已跑）：及时关掉这条
+        // 逃逸连接，否则它保持打开直到页面刷新、事件持续到达被丢弃
+        if (!alive) {
+          ws.close();
+          return;
+        }
+        socket = ws;
         socket.onclose = () => {
           if (!alive) return;
           retry = window.setTimeout(() => void connect(), 1000);

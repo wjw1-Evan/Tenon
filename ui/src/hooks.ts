@@ -27,6 +27,9 @@ export function useShortcuts(handlers: ShortcutHandlers) {
         e.preventDefault();
         handlers.onInlineInstruction?.();
       } else if (e.key === "Escape") {
+        // 弹层 / 输入框各自处理的 Esc 会 preventDefault：全局暂停代理
+        // 不得再触发（关弹层误暂停运行中任务是常见踩踏）
+        if (e.defaultPrevented) return;
         handlers.onPauseOrClose?.();
       } else if (mod && e.key === ".") {
         e.preventDefault();

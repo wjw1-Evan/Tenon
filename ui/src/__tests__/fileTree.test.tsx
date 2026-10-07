@@ -163,7 +163,7 @@ describe("FileTree", () => {
     await waitFor(() =>
       expect(fileOpsMock).toHaveBeenCalledWith("project-1", [{ op: "delete", path: "src" }])
     );
-    expect(confirmSpy).toHaveBeenCalledWith("delete src?");
+    expect(confirmSpy).toHaveBeenCalledWith("tree.delete_confirm");
     expect(onOperation).toHaveBeenCalledWith({ type: "deleted", path: "src" });
     expect(screen.queryByTestId("tree-context-menu")).not.toBeInTheDocument();
   });
@@ -195,6 +195,6 @@ describe("FileTree", () => {
       expect(fileOpsMock).toHaveBeenCalledWith("project-1", [{ op: "delete", path: "old.ts" }])
     );
     expect(onOperation).toHaveBeenCalledWith({ type: "deleted", path: "old.ts" });
-    expect(confirmSpy).toHaveBeenCalledWith("delete old.ts?");
+    expect(confirmSpy).toHaveBeenCalledWith("tree.delete_confirm");
   });
 });

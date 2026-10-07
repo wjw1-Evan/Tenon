@@ -335,6 +335,9 @@ export function AgentPanel({
   async function send() {
     const text = inputValue.trim();
     if (!text) return;
+    // 键盘 Cmd+Enter 路径没有按钮的 disabled 守卫：连按会重复发送 /
+    // 草稿态建出双会话（两个代理并行写同一项目）
+    if (busy) return;
     // 草稿任务首发（v1.116）：此刻才建会话（App 落库后回填激活会话），随后的
     // 发送经既有路径；失败保留输入可重试，错误经 App 层呈现。
     if (!sessionId) {
@@ -814,6 +817,8 @@ export function AgentPanel({
               send();
             }
             if (e.key === "Escape") {
+              // 输入框 Esc 只收键盘，不触发全局「暂停代理」
+              e.preventDefault();
               (e.target as HTMLTextAreaElement).blur();
             }
           }}

@@ -246,7 +246,10 @@ export function FileTree({
     if (!menu) return;
     const close = () => setMenu(null);
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setMenu(null);
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setMenu(null);
+      }
     };
     window.addEventListener("click", close);
     window.addEventListener("resize", close);
@@ -305,7 +308,7 @@ export function FileTree({
   };
 
   const deleteEntry = (entry: Entry) => {
-    if (!window.confirm(`delete ${entry.path}?`)) return;
+    if (!window.confirm(t("tree.delete_confirm", { path: entry.path }))) return;
     void run({ op: "delete", path: entry.path }, { type: "deleted", path: entry.path });
   };
 

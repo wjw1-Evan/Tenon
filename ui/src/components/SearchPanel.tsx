@@ -44,6 +44,16 @@ export function SearchPanel({ api, t, projectId, onOpenFile, onChanged }: Props)
     [selected]
   );
 
+  // 切换项目清空结果：旧项目的 hits/selected 若保留，apply() 会用
+  // 新 projectId + 旧 selectedPaths 把替换写进新项目的同名文件
+  useEffect(() => {
+    setHits([]);
+    setPreviews({});
+    setSelected({});
+    setSearched(false);
+    setError(null);
+  }, [projectId]);
+
   /** 纯文本模式：转义正则元字符后按字面搜索（对用户隐藏 rg 正则门槛）。 */
   const effectiveQuery = useMemo(
     () =>

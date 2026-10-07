@@ -71,7 +71,7 @@ export function InlineInstruction({ open, selection, activePath, t, onClose, onS
   };
 
   return (
-    <div className="inline-overlay" onKeyDown={(e) => e.key === "Escape" && onClose()}>
+    <div className="inline-overlay" onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); onClose(); } }}>
       <div
         className="inline-card"
         role="dialog"

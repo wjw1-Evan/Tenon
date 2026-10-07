@@ -52,7 +52,10 @@ export function CommandPalette({ open, onClose, commands, t }: Props) {
           placeholder={t("command.placeholder")}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Escape") onClose();
+            if (e.key === "Escape") {
+              e.preventDefault();
+              onClose();
+            }
             if (e.key === "Enter") {
               e.preventDefault();
               runAt(activeIndex);

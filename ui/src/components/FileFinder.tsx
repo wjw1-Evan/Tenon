@@ -179,7 +179,10 @@ export function FileFinder({
             setActiveIndex(0);
           }}
           onKeyDown={(event) => {
-            if (event.key === "Escape") onClose();
+            if (event.key === "Escape") {
+              event.preventDefault();
+              onClose();
+            }
             if (event.key === "ArrowDown") {
               event.preventDefault();
               setActiveIndex((index) => Math.min(index + 1, Math.max(hits.length - 1, 0)));

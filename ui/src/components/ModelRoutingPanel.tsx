@@ -52,7 +52,10 @@ export function ModelRoutingPanel({ api, sessionId, t, onSwitched }: Props) {
   useEffect(() => {
     if (!dialogOpen) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setDialogOpen(false);
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setDialogOpen(false);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
