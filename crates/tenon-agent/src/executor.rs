@@ -527,24 +527,6 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                     ));
                 }
             };
-
-            let rel = match project_rel(ctx, &op.file) {
-                Ok(r) => r,
-                Err(e) => return e,
-            };
-            // 读失败（二进制 / 权限）≠ 文件不存在：unwrap_or_default 会把
-            // 「读不了」当「空文件」整文件覆盖，毁坏二进制资产
-            let before = match ctx.files.read_file(&rel) {
-                Ok(c) => c,
-                Err(tenon_fs::FsError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
-                    String::new()
-                }
-                Err(e) => {
-                    return ToolOutput::err(format!(
-                        "读取原文件失败，apply_patch 拒绝整文件覆盖（{rel}）: {e}"
-                    ))
-                }
-            };
             let mut lines: Vec<String> = before.lines().map(String::from).collect();
             match op.range {
                 Some((start, end)) => {
@@ -925,7 +907,7 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                             return ToolOutput::err(format!(
                                 "无法识别当前分支: {}",
                                 String::from_utf8_lossy(&out.stderr).trim()
-                            ))
+                            ));
                         }
                         Err(e) => return ToolOutput::err(format!("git 失败: {e}")),
                     }
@@ -1119,6 +1101,7 @@ mod tests {
         );
         assert!(out.contains("丢弃 500 字符"), "尾注写明丢弃量");
     }
+
     /// v1.188 §9.2：search/replace 区间解析——精确唯一 / 多命中 / 空白归一降级。
     #[test]
     fn search_replace_span_semantics() {
@@ -3421,8 +3404,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
         let files = [
-            ("MyApp.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>"),
-            ("Program.cs", "var builder = WebApplication.CreateBuilder(args);\n"),
+            (
+                "MyApp.csproj",
+                "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>",
+            ),
+            (
+                "Program.cs",
+                "var builder = WebApplication.CreateBuilder(args);\n",
+            ),
         ];
         for (path, content) in files {
             let out = execute_tool(
@@ -3453,8 +3442,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
         let files = [
-            ("Dockerfile", "FROM node:20-alpine\nWORKDIR /app\nCOPY . .\nRUN npm ci\nCMD [\"npm\", \"start\"]\n"),
-            ("docker-compose.yml", "version: \"3\"\nservices:\n  app:\n    build: .\n"),
+            (
+                "Dockerfile",
+                "FROM node:20-alpine\nWORKDIR /app\nCOPY . .\nRUN npm ci\nCMD [\"npm\", \"start\"]\n",
+            ),
+            (
+                "docker-compose.yml",
+                "version: \"3\"\nservices:\n  app:\n    build: .\n",
+            ),
         ];
         for (path, content) in files {
             let out = execute_tool(
