@@ -17,6 +17,7 @@ import { aiLinesFromDiff } from "../lib/aiLines";
 import { ModelRoutingPanel } from "./ModelRoutingPanel";
 import { markWorkspaceInputReady } from "../lib/performance";
 import { toast } from "../lib/toast";
+import { loadDrafts, saveDrafts, type DraftStore } from "../lib/drafts";
 
 export interface DirtyConflictView {
   path: string;
@@ -233,7 +234,13 @@ export function AgentPanel({
   const [traceEpoch, setTraceEpoch] = useState(0);
   // 草稿输入文本 per-project（v1.126）：多项目并行草稿互不串扰——
   // 发送成功随草稿清除；弃草稿重进「＋ 新任务」时文本恢复（草稿意图 v1.116 同语义）。
-  const [draftInputs, setDraftInputs] = useState<Record<string, string>>({});
+  // v1.177 §7.2：草稿持久化 localStorage——draftsRef 为权威内存副本（挂载单次
+  // load，防发送清除后重读持久层复活旧条目），草稿态初始化自 drafts 表。
+  const draftsRef = useRef<DraftStore | null>(null);
+  if (draftsRef.current === null) draftsRef.current = loadDrafts();
+  const [draftInputs, setDraftInputs] = useState<Record<string, string>>(
+    draftsRef.current.drafts,
+  );
   // 文件拖入对话框（v1.110）：dragover 高亮 + 落下插入 @path 引用。
   const [inputDrop, setInputDrop] = useState(false);
   // v1.159 输入内 @ 文件引用补全（§7.5）：mention = 触发 token（start=输入文本中 @ 下标，
@@ -262,6 +269,23 @@ export function AgentPanel({
   useEffect(() => {
     markWorkspaceInputReady();
   }, []);
+
+  // v1.177 §7.2：切换会话恢复该会话的输入草稿（刷新 / 重启回来续写）。
+  useEffect(() => {
+    if (!sessionId) return;
+    setInput(draftsRef.current?.sessions[sessionId] ?? "");
+  }, [sessionId]);
+
+  // v1.177 §7.2：草稿防抖持久化（600ms）——drafts 表跟随 draftInputs 状态
+  // （发送删键经状态流转自然落盘），sessions 表跟随会话态输入缓冲。
+  useEffect(() => {
+    const store = draftsRef.current;
+    if (!store) return;
+    store.drafts = draftInputs;
+    if (sessionId) store.sessions[sessionId] = input;
+    const timer = window.setTimeout(() => saveDrafts(store), 600);
+    return () => window.clearTimeout(timer);
+  }, [draftInputs, input, sessionId]);
 
   // 草稿态（v1.116）：无会话但持有待启动意图——输入可用，首发建会话。
   const isDraft = !sessionId && draft === true;
