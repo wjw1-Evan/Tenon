@@ -6995,3 +6995,171 @@ async fn subagent_orchestrator_runs_children_in_worktrees() {
     let root_a = std::fs::read_to_string(dir.path().join("a.rs")).unwrap();
     assert!(!root_a.contains("CHILD-A"), "主根不受子代理影响");
 }
+
+/// §9.5 v1.190：spawn_subagents 全链路集成——HTTP 建会话发任务 → 模型工具
+/// 分发 → 真实编排器（worktree 隔离 + 子会话登记）→ 子改动落在各自
+/// worktree、主根不受影响、工具输出经 CommandRun 管道回传。
+#[tokio::test]
+async fn spawn_subagents_full_path_via_http() {
+    let script = vec![
+        ScriptedReply::Mixed {
+            text: "两文件并行改造，分发子代理".into(),
+            tool: (
+                "spawn_subagents".to_string(),
+                serde_json::json!({"tasks": [
+                    {"instruction": "写 child-a.txt", "files": ["child-a.txt"]},
+                    {"instruction": "写 child-b.txt", "files": ["child-b.txt"]}
+                ]}),
+            ),
+        },
+        // 两个子代理各消费一份（顺序无关、内容相同——共享脚本的确定性）
+        ScriptedReply::Mixed {
+            text: String::new(),
+            tool: (
+                "apply_patch".to_string(),
+                serde_json::json!({"file": "child-a.txt", "content": "MARK-A"}),
+            ),
+        },
+        ScriptedReply::Mixed {
+            text: String::new(),
+            tool: (
+                "apply_patch".to_string(),
+                serde_json::json!({"file": "child-b.txt", "content": "MARK-B"}),
+            ),
+        },
+        ScriptedReply::Text("子代理批次完成".into()),
+    ];
+    let (dir, port, token) = start_daemon(script).await;
+    let client = client_with_token(&token);
+
+    // git 仓库夹具（worktree 隔离要求 git；至少一个 commit 供 worktree add HEAD）
+    let repo = tempfile::tempdir().unwrap();
+    std::fs::write(repo.path().join("readme.md"), "base\n").unwrap();
+    for args in [
+        vec!["init", "-q", "."],
+        vec!["config", "user.email", "t@t"],
+        vec!["config", "user.name", "t"],
+        vec!["add", "-A"],
+        vec!["commit", "-qm", "init"],
+    ] {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(&args)
+            .output()
+            .expect("git");
+    }
+
+    // 登记项目 + 建会话 + 发任务
+    let r = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": repo.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let r = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({ "project_id": pid }))
+        .send()
+        .await
+        .unwrap();
+    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    client
+        .post(format!("{}/session/{sid}/message", base(port)))
+        .json(&serde_json::json!({ "text": "并行任务" }))
+        .send()
+        .await
+        .unwrap();
+
+    // 轮询至终态（子代理链路分钟级）
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+    let mut status;
+    loop {
+        assert!(std::time::Instant::now() < deadline, "任务 90s 未完成");
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        // 偶发 200 空体（观察于轮询竞态窗口）→ 容忍重试并留痕
+        let body = client
+            .get(format!("{}/session/{sid}", base(port)))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap_or_default();
+        match serde_json::from_str::<serde_json::Value>(&body) {
+            Ok(s) => {
+                status = s["status"].as_str().unwrap_or("").to_string();
+                if matches!(status.as_str(), "done" | "error" | "paused") {
+                    break;
+                }
+            }
+            Err(_) => eprintln!("轮询遇到空体/坏体，重试: {body:?}"),
+        }
+    }
+    assert_eq!(status, "done", "任务应完成");
+
+    // Trace 断言：spawn_subagents 走 CommandRun 管道且批次 2 项
+    let r = client
+        .get(format!("{}/session/{sid}/trace?after=0", base(port)))
+        .send()
+        .await
+        .unwrap();
+    let trace = r.json::<serde_json::Value>().await.unwrap();
+    let events = trace["events"].as_array().unwrap();
+    let spawn_run = events
+        .iter()
+        .find(|e| e["type"] == "command_run" && e["payload"]["tool"] == "spawn_subagents")
+        .expect("spawn_subagents 应有 CommandRun 事件");
+    let output = spawn_run["payload"]["output"]["content"].as_str().unwrap();
+    assert!(output.contains("2 项"), "批次摘要: {output}");
+
+    // 子会话登记可达（合并 / 丢弃端点的前提）
+    // 行形态："[done] sub-x <session_id>"——只取 [status] 开头行的 uuid token
+    //（worktree 行含路径，find("01a1") 会误抓「项目id/子会话id」拼接串）
+    let child_ids: Vec<String> = output
+        .split('\n')
+        .filter(|l| l.starts_with('['))
+        .filter_map(|l| l.split_whitespace().nth(2).map(String::from))
+        .collect();
+    assert!(!child_ids.is_empty(), "输出含子会话 id: {output}");
+    for cid in &child_ids {
+        let s = client
+            .get(format!("{}/session/{cid}", base(port)))
+            .send()
+            .await
+            .unwrap()
+            .json::<serde_json::Value>()
+            .await
+            .unwrap();
+        assert_eq!(s["status"], "done", "子会话 {cid}: {s}");
+    }
+
+    // worktree 隔离：子改动在各自 worktree，主根不动
+    let wt_root = dir.path().join("worktrees").join(&pid);
+    let mut seen_a = false;
+    let mut seen_b = false;
+    for entry in std::fs::read_dir(&wt_root).unwrap() {
+        let wt = entry.unwrap().path();
+        let a = std::fs::read_to_string(wt.join("child-a.txt")).unwrap_or_default();
+        let b = std::fs::read_to_string(wt.join("child-b.txt")).unwrap_or_default();
+        if a.contains("MARK-A") {
+            seen_a = true;
+            assert!(!b.contains("MARK-B"), "子 worktree 文件集隔离: {wt:?}");
+        } else if b.contains("MARK-B") {
+            seen_b = true;
+            assert!(!a.contains("MARK-A"), "子 worktree 文件集隔离: {wt:?}");
+        }
+    }
+    assert!(seen_a && seen_b, "两个子 worktree 各含各自改动");
+    assert!(
+        !repo.path().join("child-a.txt").exists() && !repo.path().join("child-b.txt").exists(),
+        "主根不受子代理影响"
+    );
+}
