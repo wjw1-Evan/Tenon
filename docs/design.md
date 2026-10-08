@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v1.180** |
-| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.156）· 2026-10-07（v1.157-v1.162）· 2026-10-08（v1.163-v1.180） |
+| 版本 | **v1.183** |
+| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.156）· 2026-10-07（v1.157-v1.162）· 2026-10-08（v1.163-v1.183） |
 | 状态 | 定稿（v1.10 决策闭环），M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 | 历史评审 | v0.1 / v0.3 两轮共 41 项、v1.0 复审 21 项问题的结论已全部并入本方案（过程文档已清理） |
@@ -145,8 +145,28 @@ Codex CLI 已开源且核心为 Rust 实现（codex-rs 工作区，另有遗留 
 | 13 | Langfuse | MIT / 可自托管 | LLM trace 数据模型（span / generation / cost）与看板 | §14.2 AgentTrace、§18.3 报告 |
 | 14 | Jan | Apache-2.0 / **Tauri** | Tauri 桌面壳生产实践 + 本地模型管理 UX（发现 / 下载 / 切换） | §6.2、§11 |
 | 15 | Neovim | Apache-2.0 | LSP 客户端与 tree-sitter 的极简参考实现 | §8.2 |
+| 16 | DeepSeek Harness（DSH） | MIT / TS monorepo（Cordis 插件容器，「Everything is a Plugin」） | 单调 ToolGuard 与 fail-closed 审批、事件溯源会话格式（模型可见即已记录）、压缩即可选能力、能力接缝（Provider 可整体替换执行世界）——**§3.3 专节对标** | §6.3、§9.1、§9.2、§10.2、§10.3、§12.3 |
 
 **闭源观察清单**（只看 UX，不作代码参考）：Claude Code（hooks / 子代理 / rewind）、Cursor（Composer / 后台代理）、GitHub Copilot Agent Mode、Windsurf、Warp——每个里程碑末体验一轮，差异点记入 Evals 观察笔记。
+
+### 3.3 开源对标：DeepSeek Harness（deepseek-ai/deepseek-harness，MIT）
+
+DeepSeek 开源的通用 agent harness（`dsh`，pnpm/TS monorepo，Cordis 插件容器驱动，口号「Everything is a Plugin」；本地 Web 入口 + daemon 形态与本项目同构），与本项目同问题域（agent 循环 / 工具管线 / 沙箱审批 / 事件溯源会话）。§1 行业表与 §3 主表的 DSH 列即此项目，v1.183 起升格为与 §3.1 codex 同级的实现层重点研读对象（用户指定）：
+
+| 对标点 | dsh 实现（官方文档为证） | 对应本方案 | 动作 |
+|---|---|---|---|
+| 插件容器 | Cordis：插件=实现 Service 的对象占稳定 ctx key，`inject` 声明依赖、就绪才启动；所有注册是 `ctx.effect()` 可逆副作用、卸载即撤销；**无特权内核**——模型适配器、工具注册表、会话日志、agent loop 皆插件；bundle + profile + patch 按序叠加装配，`--dump-config` 可打印最终树 | §6.3「核心稳定、外围皆插件」（Tenon 更保守：内核循环、权限模型、LSP 宿主编译进内核） | 印证方向但不引入服务容器框架；工具/模型/语言包继续走 trait + 静态 registry + MCP 路线（§13.3），内核/插件边界维持裁定 |
+| 工具执行管线 | 六阶段序：`tool/call` 记录 → presentCall → pre-execute waterfall（hooks/权限/沙箱，allow/deny/ask）→ **单调 ToolGuard**（只能 deny 或弃权，后继监听器不可把拒绝翻案成放行）→ approval 一次性询问（无应答者 fail-closed）→ execute around（超时/重试/metrics）→ post-execute（可阻止/替换/附加上下文）；PTC `run_code` 子调用重入同一管线 | §9.2 动作分级 + §12.2 审批 | 评估以测试固化「拒绝单调性」不变式：分级/hook/黑名单任一环节拒绝后，后继环节不得放行（Tenon 分级为前置判定天然单调，v1.180 hook block 语义一致，补不变式测试即可） |
+| 沙箱失败语义 | SandboxMode 只管文件效果（read-only / workspace-write / danger-full-access）**逐调用携带**而非固定；enforcement 诚实上报 full/partial（旧 Landlock、Windows ACL 缺口）；`confine()` 返回 denialSignatures——先判 runner 失败（基础设施故障）再判 denial（沙箱正常拦截）；无后端时 `SANDBOX_UNAVAILABLE` 显式失败、禁止静默透传 | §12.3 沙箱三态 | 命令失败归因参考：timedOut/signal/exitCode 正交独立上报不嵌套；评估「沙箱拦截 vs 执行器故障」二分归因与无沙箱可用时的显式错误路径 |
+| 会话事件溯源 | 「模型可见即已记录」不变式——LLM 消息历史是派生 surface（append/replace），从不单独存储；assistant 消息内嵌产生它的完整带时间 stream；请求头快照使每个模型请求可由日志纯函数重建；已提交 generation 不可变、格式迁移链逐级 vN→vN+1 | §10.3 / §14.2 事件溯源（SQLite Trace） | 印证方向；评估把「可由 Trace 完整重建模型可见历史」列为审计口径（附录 A 证据链补强项） |
+| 上下文压缩 | 压缩是可选能力（seam）：摘要= 带 `surfaceOp: replace` 的持久事件、回放可确定性重现压缩后对话；pressure（pre-step 内阈值）与 context-overflow（请求失败后「压缩再重试」）双触发；先工具结果确定性剪枝再摘要；压缩全程持锁、崩溃留可检测遗留锁而非假完成；tool call/result 配对边界必须保持 | §10.2 Token 预算与压缩（v1.105 省略式 + v1.161 手动） | **确定借鉴「overflow 恢复路径」**：provider 报上下文超限时自动触发一次压缩再重试（当前仅阈值前置省略、无溢出恢复）；摘要式压缩若引入，须按 dsh 口径做持久事件 + 回放可重现 |
+| 子代理 | `toolFilter` 是「可见性而非权限」——过滤子代理可声明调用的工具，权限另走 parent/child 直接边界（sibling 与跨级被拒）；子级失败 resolve 非 completed stopReason 而非 reject；结算通知独立事件 kind、防把运行时记账记作子级话语；多提供方（in-process / ACP / Codex / Claude Code）按名注册共存 | §9.7 子代理（受管 worktree 并行，v1.87） | 实装子代理工具白名单时区分「可见性过滤」与「权限审批」两层不复用；失败语义对齐「resolve 非 completed 而非 reject」 |
+| 防御性模式清单 | 正交事实独立上报；错误形态在公共 API 边界规范化；启动命令清洗 `*KEY*/*SECRET*/*TOKEN*/*PASSWORD*` 环境变量；spill 文件 0700 私有目录 + 随机名 + `wx` 独占打开；符号链接用 unlink 删而非递归 rm；分发器隔离用户回调异常 | §12.1 威胁模型 / §12.3 | 纳入安全巡检清单逐条对照；env 密钥清洗与 spill 文件形态 Tenon 暂无对应物，列 M2 巡检项 |
+| hooks | 原生等价物=waterfall 事件（agent/pre-step、tools/pre-execute）；桥接包兼容 Claude Code / Codex `hooks.json`（六事件、阻塞带模型可见原因 + 附加上下文、失败仅记录不中断） | §13.6 用户 hooks（v1.180，HookConfig + block/continue） | 印证形态一致（配置驱动、block 带原因、仅审计不含参数原文）；评估兼容 Claude Code hooks.json 作为导入格式 |
+| 评测组织 | benchmarks 按**被测用户路径**组织（一目录一路径，不镜像包树）；输入一律合成固定常量、禁真实 session/网络；参考机与 CI 时间尺度分开记录；**性能预算不可被环境变量覆盖** | 附录 D Evals / §18 | 印证任务集形态；「性能预算不可旁路」原则写入 §18 门禁纪律 |
+| 工程流程 | 生成式文档目录（tool / persistence / config catalog 从源码生成 + freshness 门禁）；postmortem 只记「流程为何放过 bug」并强制落地防护措施；i18n.yaml 按标题 hash 配对、门禁强制双语同步 | 全局流程（design-changelog 只追加、UI 双语、CLAUDE/AGENTS.md） | 借鉴 postmortem 形态（安全事件/逃逸 bug 复盘落在 design-changelog 对应行）；目录生成不引入（Tenon 规模手维护即可） |
+
+**研读纪律**（同 §3.1）：借鉴机制与不变式，不拷贝代码（TS→Rust 无直接可拷性，保持本项目独立演进）；引用遵守 MIT 许可与 NOTICE。
 
 ---
 
