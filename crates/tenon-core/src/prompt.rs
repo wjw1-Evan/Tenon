@@ -84,6 +84,10 @@ pub fn tool_catalog() -> String {
         (Tool::RunBuild, "沙箱内构建（断网）"),
         (Tool::InstallDeps, "沙箱内经镜像代理安装依赖"),
         (Tool::HttpFetch, "抓取 URL（C 级：直执并审计目标）"),
+        (
+            Tool::WebSearch,
+            "网络搜索（免密钥 DuckDuckGo）：返回标题 / 链接 / 摘要列表；需要时效性信息（新版本、新闻、文档现状）时先用",
+        ),
         (Tool::GitCommit, "git 提交（D 级：直执并审计）"),
         (Tool::GitPush, "git 推送（D 级：直执并审计）"),
         (Tool::CreatePr, "创建 PR（C+D 复合：直执并审计）"),
@@ -204,6 +208,8 @@ mod tests {
         // §9.2 v1.179 计划模式：使用规则节 + 工具目录条目
         assert!(p.contains("计划模式"), "计划模式节进提示");
         assert!(p.contains("submit_plan"), "计划工具进目录");
+        // §9.2 v1.182 web_search 进目录
+        assert!(p.contains("web_search"), "搜索工具进目录");
     }
 
     #[test]

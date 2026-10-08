@@ -336,6 +336,7 @@
   "tool.run_build": "运行构建",
   "tool.install_deps": "安装依赖",
   "tool.http_fetch": "请求",
+  "tool.web_search": "网络搜索",
   "tool.git_commit": "提交 git",
   "tool.git_push": "推送 git",
   "tool.create_pr": "创建 PR",

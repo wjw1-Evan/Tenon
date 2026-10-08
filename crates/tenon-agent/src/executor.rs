@@ -552,7 +552,7 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
             }
         }
 
-        // ---------- C 级出网 ----------
+        // ---------- C 级出网（v1.182 起统一经 SSRF 守卫，§9.2 webfetch） ----------
         "http_fetch" => {
             if ctx.readonly.load(Ordering::Relaxed) {
                 return ToolOutput::err("只读会话禁用网络访问");
@@ -565,22 +565,12 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
             //（"Cannot start a runtime from within a runtime"）
             let url = url.to_string();
             let fetched = run_async(async move {
-                match reqwest::Client::builder()
-                    .no_proxy()
-                    .build()
-                    .expect("http client")
-                    .get(&url)
-                    .timeout(Duration::from_secs(30))
-                    .send()
-                    .await
-                {
-                    Ok(resp) => {
-                        let status = resp.status().as_u16();
-                        let body = resp.text().await.unwrap_or_default();
-                        Ok((status, body))
-                    }
-                    Err(e) => Err(e.to_string()),
-                }
+                crate::webfetch::fetch_public_text(
+                    &url,
+                    crate::webfetch::HTTP_FETCH_BODY_CAP,
+                    Duration::from_secs(30),
+                )
+                .await
             });
             match fetched {
                 Ok(Ok((status, body))) => {
@@ -591,6 +581,23 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                     ))
                 }
                 Ok(Err(e)) | Err(e) => ToolOutput::err(format!("抓取失败: {e}")),
+            }
+        }
+        "web_search" => {
+            if ctx.readonly.load(Ordering::Relaxed) {
+                return ToolOutput::err("只读会话禁用网络访问");
+            }
+            let Some(query) = args.get("query").and_then(|v| v.as_str()) else {
+                return ToolOutput::err("缺少 query 参数");
+            };
+            let max_raw = args.get("max_results").and_then(|v| v.as_u64());
+            let (query, max) = match crate::webfetch::validate_search_args(query, max_raw) {
+                Ok(v) => v,
+                Err(e) => return ToolOutput::err(e),
+            };
+            match run_async(crate::webfetch::web_search(query, max)) {
+                Ok(Ok(out)) => ToolOutput::ok(out),
+                Ok(Err(e)) | Err(e) => ToolOutput::err(format!("搜索失败: {e}")),
             }
         }
 
@@ -1259,6 +1266,66 @@ mod tests {
             &serde_json::json!({"file": "blocked.txt", "range": null, "content": "x"}),
         );
         assert!(!out.ok, "readonly should block write");
+    }
+
+    #[test]
+    fn http_fetch_ssrf_guard_blocks_loopback() {
+        // v1.182 §9.2：守卫在连接前拒绝 loopback——监听套接字存活以证未触达
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(
+            &c,
+            "http_fetch",
+            &serde_json::json!({"url": format!("http://127.0.0.1:{port}/secret")}),
+        );
+        assert!(!out.ok, "loopback 抓取应被 SSRF 守卫拒绝");
+        assert!(
+            out.content.contains("SSRF"),
+            "拒绝理由应点明守卫: {}",
+            out.content
+        );
+    }
+
+    #[test]
+    fn http_fetch_rejects_non_http_scheme() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        let out = execute_tool(
+            &c,
+            "http_fetch",
+            &serde_json::json!({"url": "ftp://example.com/file"}),
+        );
+        assert!(!out.ok);
+        assert!(out.content.contains("scheme"), "{}", out.content);
+    }
+
+    #[test]
+    fn web_search_validation_and_readonly() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        // 缺参 / 空参 / 越界——校验错误回模型可重试
+        let missing = execute_tool(&c, "web_search", &serde_json::json!({}));
+        assert!(!missing.ok && missing.content.contains("query"));
+        let empty = execute_tool(&c, "web_search", &serde_json::json!({"query": "   "}));
+        assert!(!empty.ok && empty.content.contains("query"));
+        let over = execute_tool(
+            &c,
+            "web_search",
+            &serde_json::json!({"query": "x", "max_results": 11}),
+        );
+        assert!(!over.ok && over.content.contains("max_results"));
+        // 只读会话禁用（同 http_fetch，C 级）
+        let ro = ToolContext::new(dir.path(), Duration::from_secs(30));
+        ro.readonly
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let blocked = execute_tool(
+            &ro,
+            "web_search",
+            &serde_json::json!({"query": "tenon ide"}),
+        );
+        assert!(!blocked.ok, "只读会话应拒绝 web_search");
     }
 
     #[test]

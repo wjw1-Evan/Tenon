@@ -336,6 +336,7 @@
   "tool.run_build": "執行建置",
   "tool.install_deps": "安裝依賴",
   "tool.http_fetch": "請求",
+  "tool.web_search": "網路搜尋",
   "tool.git_commit": "提交 git",
   "tool.git_push": "推送 git",
   "tool.create_pr": "建立 PR",

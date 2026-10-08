@@ -336,6 +336,7 @@
   "tool.run_build": "ビルド実行",
   "tool.install_deps": "依存インストール",
   "tool.http_fetch": "取得",
+  "tool.web_search": "ウェブ検索",
   "tool.git_commit": "git コミット",
   "tool.git_push": "git プッシュ",
   "tool.create_pr": "PR 作成",

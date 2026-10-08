@@ -133,6 +133,7 @@ const KNOWN_TOOLS = new Set([
   "run_build",
   "install_deps",
   "http_fetch",
+  "web_search",
   "git_commit",
   "git_push",
   "create_pr",

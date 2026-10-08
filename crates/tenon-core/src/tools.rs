@@ -4,7 +4,7 @@
 //! |---|---|
 //! | A | read_file / list_dir / grep / git_read / lsp_query / laya_decide（v1.124）/ skill_use（v1.130 §13.4）/ subtasks（v1.146） |
 //! | B | apply_patch / run_tests / run_build / install_deps |
-//! | C | http_fetch |
+//! | C | http_fetch / web_search（v1.182） |
 //! | D | git_commit / git_push / create_pr |
 //! | 按声明 | plugin_*（外部进程插件映射分级） |
 
@@ -27,6 +27,9 @@ pub enum Tool {
     /// 计划提交（§9.2，v1.179 Codex 形态计划模式）：复杂任务先计划后执行，
     /// 零工作区副作用；提交即暂停待用户批准。
     SubmitPlan,
+    /// 网络搜索（§9.2，v1.182）：DuckDuckGo Lite 免密钥后端，C 级出网并审计，
+    /// SSRF 守卫与 http_fetch 同轨（tenon-agent webfetch）。
+    WebSearch,
     ApplyPatch,
     RunTests,
     RunBuild,
@@ -51,6 +54,7 @@ impl Tool {
             Tool::SkillUse => "skill_use",
             Tool::Subtasks => "subtasks",
             Tool::SubmitPlan => "submit_plan",
+            Tool::WebSearch => "web_search",
             Tool::ApplyPatch => "apply_patch",
             Tool::RunTests => "run_tests",
             Tool::RunBuild => "run_build",
@@ -77,7 +81,7 @@ impl Tool {
             | Tool::Subtasks
             | Tool::SubmitPlan => Level::A,
             Tool::ApplyPatch | Tool::RunTests | Tool::RunBuild | Tool::InstallDeps => Level::B,
-            Tool::HttpFetch => Level::C,
+            Tool::HttpFetch | Tool::WebSearch => Level::C,
             Tool::GitCommit | Tool::GitPush => Level::D,
             Tool::CreatePr => Level::Composite,
             Tool::Plugin => return None,
@@ -95,6 +99,7 @@ impl Tool {
             "skill_use" => Tool::SkillUse,
             "subtasks" => Tool::Subtasks,
             "submit_plan" => Tool::SubmitPlan,
+            "web_search" => Tool::WebSearch,
             "apply_patch" => Tool::ApplyPatch,
             "run_tests" => Tool::RunTests,
             "run_build" => Tool::RunBuild,
@@ -182,6 +187,7 @@ mod tests {
         assert_eq!(Tool::RunBuild.level(), Some(Level::B));
         assert_eq!(Tool::InstallDeps.level(), Some(Level::B));
         assert_eq!(Tool::HttpFetch.level(), Some(Level::C));
+        assert_eq!(Tool::WebSearch.level(), Some(Level::C), "v1.182 §9.2 出网");
         assert_eq!(Tool::GitCommit.level(), Some(Level::D));
         assert_eq!(Tool::GitPush.level(), Some(Level::D));
         assert_eq!(Tool::CreatePr.level(), Some(Level::Composite));
@@ -203,6 +209,7 @@ mod tests {
             Tool::RunBuild,
             Tool::InstallDeps,
             Tool::HttpFetch,
+            Tool::WebSearch,
             Tool::GitCommit,
             Tool::GitPush,
             Tool::CreatePr,

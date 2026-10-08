@@ -336,6 +336,7 @@
   "tool.run_build": "Run build",
   "tool.install_deps": "Install deps",
   "tool.http_fetch": "Fetch",
+  "tool.web_search": "Web search",
   "tool.git_commit": "Git commit",
   "tool.git_push": "Git push",
   "tool.create_pr": "Create PR",

@@ -13,6 +13,7 @@ pub mod hooks;
 pub mod recovery;
 pub mod session;
 pub mod subagents;
+pub mod webfetch;
 
 pub use evals::{Assertion, EvalBudget, EvalCaseResult, EvalRunner, EvalSuiteReport, EvalTask};
 pub use executor::{execute_tool, ToolContext, ToolOutput};
