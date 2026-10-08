@@ -67,6 +67,59 @@ describe("OnboardingWizard", () => {
     expect(screen.getByTestId("onboarding-step-key")).toBeTruthy();
   });
 
+  it("v1.169 免费档自动回退：首选 429 限流自动改试 glm-4.5-flash 并按其写入", async () => {
+    const api = makeApi({
+      verifyModel: vi.fn((payload: { model: string }) =>
+        payload.model === "glm-4.7-flash"
+          ? Promise.reject(new Error("API 400: HTTP 429: 该模型当前访问量过大"))
+          : Promise.resolve({ ok: true, model: "glm-4.5-flash", latency_ms: 30 })
+      ),
+    });
+    const onDone = vi.fn();
+    render(
+      <OnboardingWizard api={api} t={t} settings={{ session: {} }} onDone={onDone} onSkip={() => {}} />
+    );
+    fireEvent.click(screen.getByTestId("onboarding-next"));
+    fireEvent.change(screen.getByTestId("onboarding-key-input"), {
+      target: { value: "sk-fallback" },
+    });
+    fireEvent.click(screen.getByTestId("onboarding-verify"));
+    await screen.findByTestId("onboarding-step-done");
+    // 回退标注可见
+    expect(screen.getByTestId("onboarding-fallback-note")).toBeTruthy();
+    // 完成按后备模型写入
+    fireEvent.click(screen.getByTestId("onboarding-finish"));
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    const payload = (api.putSettings as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(payload.models.providers.glm.model).toBe("glm-4.5-flash");
+    // 两次调用：先首选后后备
+    expect((api.verifyModel as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0].model)).toEqual([
+      "glm-4.7-flash",
+      "glm-4.5-flash",
+    ]);
+  });
+
+  it("v1.169 fetch 层失败映射友好文案（不再裸 TypeError）", async () => {
+    const api = makeApi({
+      verifyModel: vi.fn().mockRejectedValue(new TypeError("Load failed")),
+    });
+    render(
+      <OnboardingWizard api={api} t={t} settings={{ session: {} }} onDone={() => {}} onSkip={() => {}} />
+    );
+    fireEvent.click(screen.getByTestId("onboarding-next"));
+    fireEvent.change(screen.getByTestId("onboarding-key-input"), {
+      target: { value: "sk-net" },
+    });
+    fireEvent.click(screen.getByTestId("onboarding-verify"));
+    await waitFor(() => screen.getByTestId("onboarding-verify-error"));
+    expect(screen.getByTestId("onboarding-verify-error").textContent).toContain(
+      "onboarding.daemon_unreachable"
+    );
+    expect(screen.getByTestId("onboarding-verify-error").textContent).not.toContain("TypeError");
+    // 两个候选档都试过才报错
+    expect(api.verifyModel).toHaveBeenCalledTimes(2);
+  });
+
   it("完成：单次 putSettings 直存 api_key（v1.165 简化，不再经钥匙串）", async () => {
     const api = makeApi();
     const onDone = vi.fn();

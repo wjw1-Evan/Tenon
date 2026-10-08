@@ -460,5 +460,7 @@
   "shortcuts.stop": "停止当前任务",
   "shortcuts.inline": "行内 AI 指令",
   "shortcuts.save": "立即保存",
-  "shortcuts.close_tab": "关闭编辑器标签"
+  "shortcuts.close_tab": "关闭编辑器标签",
+  "onboarding.fallback_note": "首选免费模型限流中，已自动改用 {model}（同为官方免费档）。",
+  "onboarding.daemon_unreachable": "无法连接本地 Tenon 服务（可能正在重启），请稍候重试。"
 }

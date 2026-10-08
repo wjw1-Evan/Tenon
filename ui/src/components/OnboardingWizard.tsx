@@ -1,6 +1,9 @@
-// 接入免费模型向导（§7.1 / §11 / §15 v1.163，v1.165 简化）：智谱 GLM-4.7-Flash
-// 官方免费档开箱引导——三步（介绍 → 注册拿 Key → 验证并一键写入配置）。首启
-// 合并视图无 provider 且未跳过时自动弹出（App 接线）；模型空态与设置 Models 可重开。
+// 接入免费模型向导（§7.1 / §11 / §15 v1.163，v1.165 简化，v1.169 回退）：
+// 智谱官方免费档开箱引导——三步（介绍 → 注册拿 Key → 验证并一键写入配置）。
+// 首启合并视图无 provider 且未跳过时自动弹出（App 接线）；模型空态与设置
+// Models 可重开。验证按免费档顺序自动回退（glm-4.7-flash 限流 → glm-4.5-flash，
+// 同为官方 0 元档，完成步标注实际选用）；fetch 层失败（daemon 重启窗口等
+// 网络态）显示友好文案而非裸 TypeError。
 // 密钥直存（v1.165 §11 双轨）：验证经 POST /models/verify，完成 = 单次
 // PUT /settings 把 api_key 与 provider 一并写入 settings.json（0600）并热生效；
 // GET /settings 永不回显密钥。
@@ -16,8 +19,10 @@ import type { Translate } from "../lib/i18n";
 export const GLM_PRESET = {
   name: "glm",
   baseUrl: "https://open.bigmodel.cn/api/paas/v4",
-  model: "glm-4.7-flash",
 } as const;
+
+/** 免费档候选（v1.169）：验证按序尝试，首选限流自动回退后备（同为 0 元档）。 */
+export const GLM_FREE_MODELS = ["glm-4.7-flash", "glm-4.5-flash"] as const;
 
 const ZHIPU_PORTAL_URL = "https://open.bigmodel.cn";
 const ZHIPU_APIKEYS_URL = "https://open.bigmodel.cn/usercenter/apikeys";
@@ -43,6 +48,9 @@ export function OnboardingWizard({ api, t, settings, onDone, onSkip }: Props) {
   const [verifyError, setVerifyError] = useState<string | null>(null);
   const [finishing, setFinishing] = useState(false);
   const [finishError, setFinishError] = useState<string | null>(null);
+  // v1.169 免费档自动回退：验证实际选用的模型（首选限流时为后备档）
+  const [chosenModel, setChosenModel] = useState<string>(GLM_FREE_MODELS[0]);
+  const [fallbackModel, setFallbackModel] = useState<string | null>(null);
 
   function skip() {
     // 跳过记忆持久化（fire-and-forget）：本会话内也不再自动弹
@@ -64,25 +72,43 @@ export function OnboardingWizard({ api, t, settings, onDone, onSkip }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [verifying, finishing]);
 
+  /** fetch 层失败（daemon 重启窗口等网络态）映射友好文案（§7.1 v1.169）。 */
+  function friendlyVerifyError(err: unknown): string {
+    const s = String(err);
+    if (/Load failed|Failed to fetch|NetworkError|network request failed/i.test(s)) {
+      return t("onboarding.daemon_unreachable");
+    }
+    return s;
+  }
+
   async function verify() {
     if (!apiKey.trim() || verifying) return;
     setVerifying(true);
     setVerifyError(null);
     setVerified(null);
-    try {
-      const r = await api.verifyModel({
-        kind: "openai",
-        base_url: GLM_PRESET.baseUrl,
-        model: GLM_PRESET.model,
-        api_key: apiKey.trim(),
-      });
-      setVerified(r);
-      setStep("done");
-    } catch (e) {
-      setVerifyError(String(e));
-    } finally {
-      setVerifying(false);
+    setFallbackModel(null);
+    // v1.169：按免费档顺序尝试，首选限流自动改用后备（同为官方 0 元档）
+    let lastErr: unknown = null;
+    for (const model of GLM_FREE_MODELS) {
+      try {
+        const r = await api.verifyModel({
+          kind: "openai",
+          base_url: GLM_PRESET.baseUrl,
+          model,
+          api_key: apiKey.trim(),
+        });
+        setChosenModel(model);
+        setFallbackModel(model === GLM_FREE_MODELS[0] ? null : model);
+        setVerified(r);
+        setStep("done");
+        setVerifying(false);
+        return;
+      } catch (e) {
+        lastErr = e;
+      }
     }
+    setVerifyError(String(lastErr ?? "verify failed"));
+    setVerifying(false);
   }
 
   async function finish() {
@@ -101,7 +127,7 @@ export function OnboardingWizard({ api, t, settings, onDone, onSkip }: Props) {
             [GLM_PRESET.name]: {
               kind: "openai",
               base_url: GLM_PRESET.baseUrl,
-              model: GLM_PRESET.model,
+              model: chosenModel,
               api_key: apiKey.trim(),
             },
           },
@@ -150,7 +176,7 @@ export function OnboardingWizard({ api, t, settings, onDone, onSkip }: Props) {
           <div className="onboarding-body" data-testid="onboarding-step-intro">
             <p>{t("onboarding.intro")}</p>
             <div className="onboarding-model-card" data-testid="onboarding-model-card">
-              <code>{GLM_PRESET.model}</code>
+              <code>{GLM_FREE_MODELS[0]}</code>
               <span className="onboarding-free-badge">{t("onboarding.free_badge")}</span>
             </div>
             <p className="muted settings-note">{t("onboarding.intro_note")}</p>
@@ -210,7 +236,7 @@ export function OnboardingWizard({ api, t, settings, onDone, onSkip }: Props) {
             {verifyError && (
               <div className="onboarding-error" role="alert" data-testid="onboarding-verify-error">
                 {t("onboarding.verify_failed")}
-                <span className="muted"> {verifyError}</span>
+                <span className="muted"> {friendlyVerifyError(verifyError)}</span>
               </div>
             )}
             <div className="onboarding-actions">
@@ -240,10 +266,15 @@ export function OnboardingWizard({ api, t, settings, onDone, onSkip }: Props) {
           <div className="onboarding-body" data-testid="onboarding-step-done">
             <p data-testid="onboarding-verify-ok">
               {t("onboarding.verify_ok", {
-                model: verified?.model ?? GLM_PRESET.model,
+                model: verified?.model ?? chosenModel,
                 latency: verified?.latency_ms ?? 0,
               })}
             </p>
+            {fallbackModel && (
+              <p className="muted" data-testid="onboarding-fallback-note">
+                {t("onboarding.fallback_note", { model: fallbackModel })}
+              </p>
+            )}
             <p className="muted">{t("onboarding.done_intro")}</p>
             {finishError && (
               <div className="onboarding-error" role="alert" data-testid="onboarding-finish-error">

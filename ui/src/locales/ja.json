@@ -460,5 +460,7 @@
   "shortcuts.stop": "現在のタスクを停止",
   "shortcuts.inline": "インライン AI 指示",
   "shortcuts.save": "今すぐ保存",
-  "shortcuts.close_tab": "エディタタブを閉じる"
+  "shortcuts.close_tab": "エディタタブを閉じる",
+  "onboarding.fallback_note": "第一候補の無料モデルがレート制限中のため、{model}（同じく公式無料モデル）に自動切り替えしました。",
+  "onboarding.daemon_unreachable": "ローカルの Tenon サービスに接続できません（再起動中の可能性）。しばらく待ってから再試行してください。"
 }
