@@ -612,7 +612,7 @@ export function AgentPanel({
     prevStatusRef.current = status;
     if (!shouldNotifyOnTransition(prev, status, document.hidden)) return;
     void notifyTaskFinished(
-      activeProject?.display_name ?? "Tenon",
+      activeProject?.display_name ?? "Tenon Harness",
       status === "done" ? t("thread.notify_done") : t("thread.notify_error"),
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps -- t 经 prop 稳定传入；activeProject 跟随轮询

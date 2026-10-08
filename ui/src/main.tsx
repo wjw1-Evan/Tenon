@@ -82,7 +82,7 @@ function renderSplash(): void {
   el.innerHTML = `
     <div id="boot-splash">
       <div class="boot-mark">T</div>
-      <div class="boot-name">Tenon</div>
+      <div class="boot-name">Tenon Harness</div>
       <div class="boot-note">${escapeHtml(t("boot.connecting"))}</div>
       <div class="boot-dots"><i></i><i></i><i></i></div>
     </div>`;

@@ -225,3 +225,5 @@
 | v1.207 | store 性能——SQLite synchronous=NORMAL（WAL 标准搭配）+ cache_size 8MB |
 
 | v1.208 | L4 检索性能——两段式查询（评分不取 text、top_k 后按 id 回取）+ select_nth 部分排序 |
+
+| v1.209 | 显示名称统一为 Tenon Harness（窗口/启动屏/水印/选择框/通知回退；productName 同步；代号与包标识不变） |
