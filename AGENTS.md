@@ -6,17 +6,17 @@
 
 ## 铁律：设计驱动开发
 
-**`docs/design.md` 是开发的唯一依据**，当前版本以文件头部为准（工作树常领先于 README/HEAD）；全量版本演进表在 **`docs/design-changelog.md`**（v1.132 自 design.md 头部外移，只追加不改写）：
+**`docs/design.md` 是开发的唯一依据**，当前版本以文件头部为准（工作树常领先于 README/HEAD）；版本演进索引在 **`docs/design-changelog.md`**（v1.132 自 design.md 头部外移；v1.194 起为薄索引——每版一行「版本号 + 一行标题」，变更细节由 git 提交信息唯一承载）：
 
 1. 动手前先读 design.md 相关章节（实施：§6-18；安全：§12 全篇）；
 2. 发现设计缺陷 / 遗漏 / 与实现冲突：**先改 design.md 再写代码**，不允许代码与设计静默偏离；
-3. 每次设计变更在 `docs/design-changelog.md` 表尾加一行（递增版本号 + 一行要点），并同步 design.md 头部「版本 / 日期」元数据。
+3. 每次设计变更在 `docs/design-changelog.md` 表尾加一行（递增版本号 + 一行标题，不复述细节），提交信息以 `v<版本>：标题` 开头——变更细节（动机 / 方案 / 测试 / 门禁）由 git 提交信息唯一承载；并同步 design.md 头部「版本 / 日期」元数据。
 
 版本号与协作注意：
 
 - **并行 agent 会话共用此工作树**：design.md 版本号会被并行会话占用，加版本前必须在文档锁内查 changelog 表尾的最新版本（见下条）；禁用 `git stash`；提交时按 hunk 只提自己的改动；功能勿依赖他人未提交的设施；禁用脚本盲改共享在途文件；
 - **共享设计文档锁**：docs/design.md、docs/design-changelog.md、AGENTS.md 为并行会话共同必改文件——改动前 `scripts/design-lock.sh acquire "<本次版本号>"`，锁内完成「读 changelog 表尾定版本 → 追加演进行 → 同步 design.md 头部元数据」，改完立即 `release`；锁只覆盖文档编辑窗口，不跨构建 / 测试；持锁超 15 分钟未续期视为陈旧可被接管，长编辑用 `refresh` 续期（详见脚本头部说明）；
-- README 不维护版本更新记录（版本明细由 git 历史与 `docs/design-changelog.md` 演进表承载），勿向 README 追加版本条目；
+- README 不维护版本更新记录（版本明细由 git 提交信息与 `docs/design-changelog.md` 索引承载），勿向 README 追加版本条目；
 - 方向性 UI/UX 改动先给双参考方案（如 Codex 形态 vs ZCode 形态）供用户选择，再实现。
 
 ## 主动性要求
