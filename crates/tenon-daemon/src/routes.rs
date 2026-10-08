@@ -218,6 +218,10 @@ async fn create_agent_session(
     // §11 v1.171：自动 fallback 备用链（settings models.fallback 快照，新会话生效）。
     agent_cfg.fallback_providers =
         state.build_fallback_chain(provider.name(), &provider.default_model());
+    // §11 v1.174：生成参数（config [models.generation] 默认 + settings 覆盖，新会话生效）。
+    let effective = state.effective_models();
+    agent_cfg.generation_max_tokens = effective.generation.max_tokens;
+    agent_cfg.generation_temperature = effective.generation.temperature;
     // §10.1 v1.104 接线：L5 跨会话记忆开关（[memories].enabled，默认开）。
     agent_cfg.memories_enabled = state.config.memories.enabled;
     // §13.4 v1.130 接线：技能全局目录 + 停用名单（settings 快照，新会话生效）。

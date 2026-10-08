@@ -163,9 +163,60 @@ describe("SettingsDialog", () => {
           api_key_env: "DEEPSEEK_API_KEY",
         },
       },
+      fallback: [],
+      generation: {},
     });
     // 密钥不变式：载荷只有 api_key_env 引用，无明文 api_key
     expect(JSON.stringify(payload)).not.toContain('"api_key"');
+  });
+
+  it("模型分区：备用链与生成参数回填并进保存载荷（v1.174 §11）", async () => {
+    const put = vi.fn().mockResolvedValue(settings);
+    const withModels: SettingsData = {
+      ...settings,
+      models: {
+        default: "",
+        providers: {},
+        fallback: ["glm/glm-4.5-flash", "ollama"],
+        generation: { max_tokens: 4096, temperature: 0.7 },
+      },
+    };
+    render(
+      <SettingsDialog api={makeApi(put)} t={t} settings={withModels} saveMode="auto" onSaveModeChange={() => {}} onClose={() => {}} onSaved={() => {}} />
+    );
+    openSection("models");
+    expect((screen.getByTestId("settings-fallback-chain") as HTMLInputElement).value).toBe(
+      "glm/glm-4.5-flash, ollama"
+    );
+    expect((screen.getByTestId("settings-gen-max-tokens") as HTMLInputElement).value).toBe("4096");
+    expect((screen.getByTestId("settings-gen-temperature") as HTMLInputElement).value).toBe("0.7");
+    fireEvent.change(screen.getByTestId("settings-fallback-chain"), {
+      target: { value: "ollama, glm/glm-4.7-flash" },
+    });
+    fireEvent.change(screen.getByTestId("settings-gen-max-tokens"), {
+      target: { value: "8192" },
+    });
+    fireEvent.click(screen.getByTestId("settings-save"));
+    await waitFor(() => expect(put).toHaveBeenCalled());
+    const payload = put.mock.calls[0][0];
+    expect(payload.models.fallback).toEqual(["ollama", "glm/glm-4.7-flash"]);
+    expect(payload.models.generation).toEqual({ max_tokens: 8192, temperature: 0.7 });
+  });
+
+  it("模型分区：生成参数越界保存报错且不发请求（v1.174）", async () => {
+    const put = vi.fn();
+    render(
+      <SettingsDialog api={makeApi(put)} t={t} settings={settings} saveMode="auto" onSaveModeChange={() => {}} onClose={() => {}} onSaved={() => {}} />
+    );
+    openSection("models");
+    fireEvent.change(screen.getByTestId("settings-gen-max-tokens"), {
+      target: { value: "100" },
+    });
+    fireEvent.click(screen.getByTestId("settings-save"));
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toContain("generation_invalid")
+    );
+    expect(put).not.toHaveBeenCalled();
   });
 
   it("模型分区：删除覆盖 provider 后保存不再包含", async () => {

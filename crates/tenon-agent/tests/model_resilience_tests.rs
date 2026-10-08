@@ -24,6 +24,20 @@ async fn setup_with_fallback(
     StdStore,
     Arc<MockProvider>,
 ) {
+    setup_with_config(script, fallbacks, |_| {}).await
+}
+
+/// v1.174：可注入 AgentConfig 调整（生成参数等测试钩子）。
+async fn setup_with_config(
+    script: Vec<ScriptedReply>,
+    fallbacks: Vec<Arc<MockProvider>>,
+    configure: impl FnOnce(&mut AgentConfig),
+) -> (
+    tempfile::TempDir,
+    Arc<AgentSession>,
+    StdStore,
+    Arc<MockProvider>,
+) {
     let dir = tempfile::tempdir().unwrap();
     let store: StdStore = Arc::new(Mutex::new(Store::open_in_memory().unwrap()));
     let project_id = {
@@ -36,6 +50,7 @@ async fn setup_with_fallback(
     let provider = Arc::new(MockProvider::new("mock", "mock-1", script));
     let mut config = AgentConfig::for_project(dir.path().to_path_buf(), &project_id);
     config.first_edit_buffer_ms = 20; // 测试加速
+    configure(&mut config);
     config.fallback_providers = fallbacks
         .into_iter()
         .map(|m| m as Arc<dyn tenon_models::ModelProvider>)
@@ -195,4 +210,21 @@ async fn no_fallback_config_keeps_legacy_error_path() {
     let outcome = session.run_task("解释").await;
     assert!(matches!(outcome, TaskOutcome::Error(_)));
     assert_eq!(provider.calls().len(), 1);
+}
+
+#[tokio::test]
+async fn session_uses_configured_generation_params() {
+    // v1.174 §11：max_tokens / temperature 走 AgentConfig（settings
+    // models.generation 覆盖注入），不再硬编码 16384 / 0.2。
+    let (_d, session, _store, provider) =
+        setup_with_config(vec![ScriptedReply::Text("ok".into())], vec![], |cfg| {
+            cfg.generation_max_tokens = 4321;
+            cfg.generation_temperature = 0.7;
+        })
+        .await;
+    let outcome = session.run_task("解释").await;
+    assert!(matches!(outcome, TaskOutcome::Done(_)));
+    let calls = provider.calls();
+    assert_eq!(calls[0].max_tokens, 4321);
+    assert!((calls[0].temperature - 0.7).abs() < 1e-6);
 }

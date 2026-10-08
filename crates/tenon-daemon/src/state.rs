@@ -152,6 +152,9 @@ pub struct SettingsOverrides {
     /// v1.171 自动 fallback 链（§11）：`provider` 或 `provider/model` 形态的有序
     /// 备用名单（≤4 条，整体替换；新会话生效）。None = 不自动 fallback。
     pub models_fallback: Option<Vec<String>>,
+    /// v1.174 生成参数（§11）：None = 用 config `[models.generation]` 默认。
+    pub models_generation_max_tokens: Option<u32>,
+    pub models_generation_temperature: Option<f32>,
 }
 
 /// mcp.servers 单条校验（§13.5 安装期硬约束；settings PUT 与市场安装共用）。
@@ -246,6 +249,8 @@ impl SettingsOverrides {
             let mut next_default = self.models_default.clone();
             let mut next_providers = self.models_providers.clone();
             let mut next_fallback = self.models_fallback.clone();
+            let mut next_gen_max = self.models_generation_max_tokens;
+            let mut next_gen_temp = self.models_generation_temperature;
             if let Some(d) = models.get("default") {
                 let d = d.as_str().ok_or("models.default 须为字符串")?;
                 if d.is_empty() {
@@ -313,9 +318,31 @@ impl SettingsOverrides {
                 }
                 next_fallback = Some(built);
             }
+            if let Some(g) = models.get("generation") {
+                // v1.174 §11：生成参数覆盖；字段缺席即保留（与 fallback 同语义）
+                let obj = g.as_object().ok_or("models.generation 须为对象")?;
+                if let Some(v) = obj.get("max_tokens") {
+                    let v = v
+                        .as_u64()
+                        .ok_or("models.generation.max_tokens 须为非负整数")?;
+                    if !(256..=65536).contains(&v) {
+                        return Err("models.generation.max_tokens 取值 256-65536".into());
+                    }
+                    next_gen_max = Some(v as u32);
+                }
+                if let Some(v) = obj.get("temperature") {
+                    let v = v.as_f64().ok_or("models.generation.temperature 须为数字")?;
+                    if !(0.0..=2.0).contains(&v) {
+                        return Err("models.generation.temperature 取值 0.0-2.0".into());
+                    }
+                    next_gen_temp = Some(v as f32);
+                }
+            }
             self.models_default = next_default;
             self.models_providers = next_providers;
             self.models_fallback = next_fallback;
+            self.models_generation_max_tokens = next_gen_max;
+            self.models_generation_temperature = next_gen_temp;
         }
         if let Some(skills) = body.get("skills") {
             if let Some(v) = skills.get("disabled") {
@@ -399,6 +426,18 @@ impl SettingsOverrides {
                 ),
             );
         }
+        if self.models_generation_max_tokens.is_some()
+            || self.models_generation_temperature.is_some()
+        {
+            let mut generation = serde_json::Map::new();
+            if let Some(v) = self.models_generation_max_tokens {
+                generation.insert("max_tokens".into(), serde_json::json!(v));
+            }
+            if let Some(v) = self.models_generation_temperature {
+                generation.insert("temperature".into(), serde_json::json!(v));
+            }
+            models.insert("generation".into(), serde_json::Value::Object(generation));
+        }
         let skills = serde_json::json!({
             "disabled": self.skills_disabled.clone().unwrap_or_default(),
         });
@@ -423,6 +462,12 @@ impl SettingsOverrides {
     pub fn apply_models_to(&self, models: &mut tenon_config::ModelsConfig) {
         if let Some(d) = &self.models_default {
             models.default = d.clone();
+        }
+        if let Some(v) = self.models_generation_max_tokens {
+            models.generation.max_tokens = v;
+        }
+        if let Some(v) = self.models_generation_temperature {
+            models.generation.temperature = v;
         }
         for (name, ov) in &self.models_providers {
             let entry = models.providers.entry(name.clone()).or_default();
@@ -631,6 +676,76 @@ pub struct SessionEntry {
     /// 同步查改，杜绝并发双发竞态；AgentSession::running（暂停挂起期间同真）为兜底。
     pub busy: std::sync::atomic::AtomicBool,
     pub last_seq: i64,
+}
+
+#[cfg(test)]
+mod models_settings_tests {
+    use super::*;
+
+    #[test]
+    fn generation_and_fallback_validate_roundtrip_and_merge() {
+        // v1.174 §11：models.generation 校验 / 回显 / apply_models_to 合并；
+        // models.fallback（v1.171）同块原子提交。
+        let mut ov = SettingsOverrides::default();
+        ov.merge_json(&serde_json::json!({
+            "models": {
+                "fallback": ["glm/glm-4.5-flash", "ollama"],
+                "generation": { "max_tokens": 4096, "temperature": 0.7 }
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            ov.models_fallback.as_deref(),
+            Some(&["glm/glm-4.5-flash".to_string(), "ollama".to_string()][..])
+        );
+        assert_eq!(ov.models_generation_max_tokens, Some(4096));
+        assert_eq!(ov.models_generation_temperature, Some(0.7));
+
+        // GET 回显
+        let echo = ov.to_json()["models"].clone();
+        assert_eq!(echo["generation"]["max_tokens"], 4096);
+        assert!((echo["generation"]["temperature"].as_f64().unwrap() - 0.7).abs() < 1e-3);
+        assert_eq!(echo["fallback"][0], "glm/glm-4.5-flash");
+
+        // 合并进 config：generation 覆盖、其余默认保留
+        let mut models = tenon_config::ModelsConfig::default();
+        assert_eq!(models.generation.max_tokens, 16_384);
+        ov.apply_models_to(&mut models);
+        assert_eq!(models.generation.max_tokens, 4096);
+        assert!((models.generation.temperature - 0.7).abs() < 1e-6);
+        assert!(models.caching.enabled, "未触达的 caching 默认保留");
+    }
+
+    #[test]
+    fn generation_rejects_out_of_range() {
+        let mut ov = SettingsOverrides::default();
+        let err = ov
+            .merge_json(&serde_json::json!({
+                "models": { "generation": { "max_tokens": 100 } }
+            }))
+            .unwrap_err();
+        assert!(err.contains("256-65536"), "{err}");
+        let err = ov
+            .merge_json(&serde_json::json!({
+                "models": { "generation": { "temperature": 3.5 } }
+            }))
+            .unwrap_err();
+        assert!(err.contains("0.0-2.0"), "{err}");
+        // 校验失败不落半截状态（原子提交）
+        assert_eq!(ov.models_generation_max_tokens, None);
+    }
+
+    #[test]
+    fn generation_absent_fields_preserved() {
+        // 字段缺席即保留（UI 局部保存不互相抹除）
+        let mut ov = SettingsOverrides::default();
+        ov.merge_json(&serde_json::json!({
+            "models": { "generation": { "max_tokens": 8192 } }
+        }))
+        .unwrap();
+        assert_eq!(ov.models_generation_max_tokens, Some(8192));
+        assert_eq!(ov.models_generation_temperature, None);
+    }
 }
 
 #[cfg(test)]
@@ -1170,12 +1285,19 @@ impl DaemonState {
         )))
     }
 
-    /// 按「基础 config.models + 设置覆盖」重建 provider 表与默认 provider（v1.40）。
-    /// 优先级：CLI `--provider` > 设置覆盖 > 配置文件。注入 provider 始终保留。
-    pub fn rebuild_providers(&self) {
+    /// v1.174：基础 config.models + 设置覆盖合并（rebuild_providers / fallback 链 /
+    /// 会话生成参数共用一条合并路径）。
+    pub fn effective_models(&self) -> tenon_config::ModelsConfig {
         let ov = self.settings_overrides.lock().unwrap().clone();
         let mut models = self.config.models.clone();
         ov.apply_models_to(&mut models);
+        models
+    }
+
+    /// 按「基础 config.models + 设置覆盖」重建 provider 表与默认 provider（v1.40）。
+    /// 优先级：CLI `--provider` > 设置覆盖 > 配置文件。注入 provider 始终保留。
+    pub fn rebuild_providers(&self) {
+        let models = self.effective_models();
         let keys = tenon_models::ChainKeyStore::new();
         let caching_enabled = models.caching.enabled;
         let mut map: HashMap<String, Arc<dyn ModelProvider>> = HashMap::new();
@@ -1215,8 +1337,7 @@ impl DaemonState {
         if entries.is_empty() {
             return Vec::new();
         }
-        let mut models = self.config.models.clone();
-        ov.apply_models_to(&mut models);
+        let models = self.effective_models();
         let keys = tenon_models::ChainKeyStore::new();
         let caching_enabled = models.caching.enabled;
         let mut out = Vec::new();

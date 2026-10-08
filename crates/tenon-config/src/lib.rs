@@ -286,6 +286,23 @@ impl Default for CachingConfig {
     }
 }
 
+/// v1.174 §11 生成参数：会话模型回合的输出上限与采样温度
+/// （此前硬编码 session.rs；settings.json `models.generation` 可覆盖）。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct GenerationConfig {
+    pub max_tokens: u32,
+    pub temperature: f32,
+}
+
+impl Default for GenerationConfig {
+    fn default() -> Self {
+        Self {
+            max_tokens: 16_384,
+            temperature: 0.2,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ModelsConfig {
@@ -295,6 +312,8 @@ pub struct ModelsConfig {
     pub laya: LayaConfig,
     /// v1.173：Anthropic cache_control 断点整体开关（默认开）。
     pub caching: CachingConfig,
+    /// v1.174：会话回合生成参数（默认 16384 / 0.2）。
+    pub generation: GenerationConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -83,6 +83,10 @@ pub struct AgentConfig {
     /// 自动切换（上下文随迁）；daemon 按 settings `models.fallback` 快照构建注入，
     /// 新会话生效。空 = 不自动 fallback（主 provider 穷尽即 ERROR，行为同 v1.170 前）。
     pub fallback_providers: Vec<StdArc<dyn ModelProvider>>,
+    /// 生成参数（§11 v1.174）：会话模型回合的输出上限与采样温度
+    /// （settings `models.generation` 覆盖，新会话生效；默认 16384 / 0.2）。
+    pub generation_max_tokens: u32,
+    pub generation_temperature: f32,
 }
 
 impl std::fmt::Debug for AgentConfig {
@@ -130,6 +134,8 @@ impl AgentConfig {
             mcp: None,
             price_table: PriceTable::new(),
             fallback_providers: Vec::new(),
+            generation_max_tokens: 16_384,
+            generation_temperature: 0.2,
         }
     }
 }
@@ -1398,8 +1404,8 @@ impl AgentSession {
                 model: provider.default_model(),
                 messages: messages.clone(),
                 tools,
-                max_tokens: 16_384,
-                temperature: 0.2,
+                max_tokens: self.config.generation_max_tokens,
+                temperature: self.config.generation_temperature,
                 reasoning_effort: None,
             };
             // v1.171 §9.1 自动恢复：瞬时重试 + 自动 fallback 链在 call_model_resilient

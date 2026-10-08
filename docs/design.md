@@ -316,7 +316,7 @@ GlobalScheduler（全局并发 / 成本 / 通知）
 | 直执风险事件 | C/D 级动作 | 级别、动作详情、目标域名 / 参数、执行结果；不等待确认 |
 | Checkpoint 时间轴 | 侧栏 | 事件流 + 快照点，任意回滚 / 撤销回滚（unrevert） |
 | 语言包安装向导 | 检测到语言缺包 | 一键安装、运行时检测与官方指引 |
-| 设置 | 全局（Cmd/Ctrl+, 或命令面板） | **v1.121 起为 Codex 式模态框：左侧分类导航，右侧只渲染当前分类**；General 承载编辑器保存方式（v1.75）与代理参数（首改缓冲 / 命令超时）；Models / Permissions / Plugins / Skills 分别承载模型（v1.40）、权限策略（v1.85：工具黑名单、单任务成本上限；强制交互档随 v1.89 审批移除而删除）、MCP 插件管理（v1.84 设立，v1.145 重构为 GitHub 市场获取 + 已装管理，§13.5）、技能管理（v1.130，§13.4；v1.145 增市场获取子视图）；Updates 分类（v1.83：更新通道 manual \| auto；v1.92 收敛遥测开关）随更新固定自动整体移除（v1.154）；外观档与语言仅保留顶栏入口（v1.92 去重） |
+| 设置 | 全局（Cmd/Ctrl+, 或命令面板） | **v1.121 起为 Codex 式模态框：左侧分类导航，右侧只渲染当前分类**；General 承载编辑器保存方式（v1.75）与代理参数（首改缓冲 / 命令超时）；Models / Permissions / Plugins / Skills 分别承载模型（v1.40；v1.174 增备用模型链 `models.fallback` 与生成参数 `models.generation` 编辑）、权限策略（v1.85：工具黑名单、单任务成本上限；强制交互档随 v1.89 审批移除而删除）、MCP 插件管理（v1.84 设立，v1.145 重构为 GitHub 市场获取 + 已装管理，§13.5）、技能管理（v1.130，§13.4；v1.145 增市场获取子视图）；Updates 分类（v1.83：更新通道 manual \| auto；v1.92 收敛遥测开关）随更新固定自动整体移除（v1.154）；外观档与语言仅保留顶栏入口（v1.92 去重） |
 | **接入免费模型向导** | 首启无 provider 自动弹出；模型选择器空态 / 设置 Models 可重开 | **v1.163**：三步向导（免费模型介绍 → 智谱开放平台注册拿 Key → 验证并一键写入配置，预设 glm / glm-4.5-flash 免费档，§11）；可跳过，跳过经 ui-prefs 记忆不再自动弹；v1.165 简化：密钥与 provider 经 `PUT /settings` 一次写入本机配置文件 settings.json（0600）并热生效，不再经系统钥匙串（§15）；v1.169 免费档自动回退 + fetch 层失败友好文案；v1.170 首选换档：验证按 **glm-4.5-flash（稳定优先）→ glm-4.7-flash（能力更强但频繁限流）** 顺序尝试，完成步标注实际选用模型 |
 | 命令面板 | Cmd+Shift+P | 全部命令可达（无障碍要求） |
 | Evals 报告 | M3 | 五指标 + 对比版本 |
@@ -685,6 +685,7 @@ L4 按包隔离、语言服务器按需启动；子代理限定单包；检索�
 - **本地决策模型（Laya）**：产品自管小型分类模型，承接代理循环结构化判定（用途 / 分发 / 边界见 §9.8）；启动自动下载并启用（静态 registry + 签名 + 版本锁定，无确认卡，v1.71）、本地 CPU 推理零 token 成本；不可用即整体回退，不阻塞任何功能；
 - **路由**：v1 显式（`/model` 与设置面板）+ 轻量启发式（纯读任务提示轻模型）；auto 路由实验特性默认关（置信度展示、一键改派、可反馈）；
 - **成本**（v1.93 接线）：价格表来源 = provider 配置可选 `price_in_per_mtok` / `price_out_per_mtok`（美元 / 百万 token，缺省 0 = 未知模型不计、宁少报不虚报）；daemon 按默认模型构建价格表注入会话，每回合计价累计入 `model_usage.cost_usd` 并作为熔断预算输入（§9.3）；本地模型（含 Laya）显示「本地 · 0 成本」，token 单独统计；任务级 / 会话级 / 项目级归因；**缓存与速度观测（v1.129）**：usage 增缓存命中输入 token 采集（OpenAI 兼容 = `prompt_tokens_details.cached_tokens`，Anthropic = `cache_read_input_tokens`，未报告 / 本地模型 = 0），命中率 = cached / input——OpenAI 系 cached ⊆ prompt_tokens 口径自洽，Anthropic 系不打 `cache_control` 断点则缓存不启用、恒 0 不虚报；每回合模型流耗时（provider 流建立 → 权威 Final 到达）记入 `model_usage.duration_ms`，输出速度 = output / duration 为权威实测（区别于 UI 轮询差值的流中近似）；
+- **生成参数（v1.174）**：`[models.generation] max_tokens`（默认 16384）/ `temperature`（默认 0.2）——会话模型回合的输出上限与采样温度；settings.json `models.generation` 可覆盖（PUT 校验 max_tokens 256-65536 / temperature 0.0-2.0，新会话生效），设置面板 Models 分区可编辑；provider 级差异经多 provider 配置承载，不设 per-provider 覆盖（避免参数组合爆炸）；
 - **Prompt caching（v1.173）**：Anthropic 协议路径打 `cache_control: ephemeral` 断点——system 块（缓存工具定义 + 系统提示前缀）+ 最后一条消息的最后一个内容块（增量式会话前缀缓存：断点随回合前移、下回合命中），长会话重复上下文省约 90% 读取费用；命中量已入成本观测（v1.129 `cached_input_tokens` / 命中率）。OpenAI 兼容端点（OpenAI / DeepSeek / GLM）为供应商侧自动缓存（≥1024 token 前缀自动），无需断点、不改协议，`cached_tokens` 照常记账——此前 Anthropic 路径不打断点缓存整体不启用（恒 0）即本条修正的主因。`[models.caching] enabled`（默认开，config.toml；build_provider 默认开、daemon 按 配置关）整体开关；短提示（<1024 token）供应商侧本就不缓存、无额外写入费；
 - **密钥存储（v1.165 简化为双轨）**：① **直存轨（默认引导路径）**——`models.providers.<name>.api_key` 明文存 `settings.json`（0600，仅当前用户可读）；GET /settings 永不回显该字段，覆盖表整体替换时载荷缺席 `api_key` 即保留既有值（UI 无法重发不可回显字段）；② **引用轨**——`api_key_env` 环境变量引用名先查 daemon 环境变量，缺失时读取操作系统凭据库（macOS Keychain / Linux libsecret / Windows PasswordVault），适合不愿明文落盘的用户。解析优先级：`api_key_env` 有值即走引用轨，否则回退 `api_key` 直存值；`PUT /secrets` 钥匙串写入通道随 v1.165 移除（KeychainStore 写能力保留为库内设施）；
 - **自动 fallback 链（v1.171）**：`settings.json` `models.fallback` 有序备用模型名单（元素 `"provider"` = 用其配置默认模型，或 `"provider/model"` = 指定模型；≤4 条，整体替换语义，新会话生效，GET /settings 回显）——会话主 provider 瞬时错误重试穷尽（§9.1 自动恢复）后按序自动切换：上下文随迁、`model_fallback` 事件 `origin:"auto"` 入 Trace、切换后续回合固定用备用（不回切）。与显式路由正交：手动 `/model` 切换优先级与语义不变；默认空 = 不自动 fallback。运行时限流处理是 GLM 免费档 429 常态（v1.170 实测）的直接对策（v1.169/v1.170 只覆盖向导验证步）；
@@ -1236,6 +1237,13 @@ price_out_per_mtok = 0.0          # 可选：美元 / 百万输出 token
 enabled       = true              # 本地决策模型总开关（§9.8；false = 各集成点回退现状）
 auto_download = true              # daemon 启动自动下载并热装载（v1.71：无审批卡；v1.102：registry 多镜像 + 内置 starter 兜底，失败静默回退）；false = 不自动下载
 features      = ["intent", "risk", "routing", "agent_tool"]  # 集成点逐项开关（§9.8 表 #1-4；#4 = agent 可调用 laya_decide 工具，v1.124）
+
+[models.generation]               # 会话回合生成参数（v1.174 §11；settings.json models.generation 可覆盖，新会话生效）
+max_tokens  = 16384               # 输出上限（PUT 校验 256-65536）
+temperature = 0.2                 # 采样温度（0.0-2.0）
+
+[models.caching]                  # Prompt caching（v1.173 §11；仅影响 Anthropic cache_control 断点）
+enabled     = true
 
 [memories]                        # L5 跨会话对话记忆（§10.1，v1.104）
 enabled = true                    # false = 不提取不注入（手动 API 与既有数据不受影响）

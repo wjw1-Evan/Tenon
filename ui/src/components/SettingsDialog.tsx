@@ -92,6 +92,11 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, p
   const [defaultModel, setDefaultModel] = useState("");
   const [providers, setProviders] = useState<ProviderRow[]>([]);
   const [preset, setPreset] = useState("custom");
+  /** v1.174 §11：备用模型链（逗号分隔 provider 或 provider/model）。 */
+  const [fallbackText, setFallbackText] = useState("");
+  /** v1.174 §11：生成参数（空串 = 不覆盖，回退默认）。 */
+  const [genMaxTokens, setGenMaxTokens] = useState("");
+  const [genTemperature, setGenTemperature] = useState("");
   const [laya, setLaya] = useState<LayaStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -112,6 +117,18 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, p
     setMaxCost(policy.max_cost_usd == null ? "" : String(policy.max_cost_usd));
     setDefaultModel(String(settings.models?.default ?? ""));
     setProviders(rowsFromSettings(settings));
+    const fallback = settings.models?.fallback;
+    setFallbackText(Array.isArray(fallback) ? fallback.join(", ") : "");
+    setGenMaxTokens(
+      settings.models?.generation?.max_tokens == null
+        ? ""
+        : String(settings.models.generation.max_tokens),
+    );
+    setGenTemperature(
+      settings.models?.generation?.temperature == null
+        ? ""
+        : String(settings.models.generation.temperature),
+    );
     setSkillsDisabled(settings.skills?.disabled ?? []);
   }, [settings]);
 
@@ -217,12 +234,37 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, p
         if (p.api_key_env.trim()) entry.api_key_env = p.api_key_env.trim();
         providerPayload[p.name] = entry;
       }
+      // v1.174 §11：备用链（逗号/空分隔，去空去重）与生成参数（有效数字才携带）
+      const fallbackList = fallbackText
+        .split(/[,\s]+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const generationPayload: Record<string, number> = {};
+      if (genMaxTokens.trim()) {
+        const v = Number(genMaxTokens);
+        if (!Number.isInteger(v) || v < 256 || v > 65536) {
+          throw new Error(t("settings.models.generation_invalid"));
+        }
+        generationPayload.max_tokens = v;
+      }
+      if (genTemperature.trim()) {
+        const v = Number(genTemperature);
+        if (!Number.isFinite(v) || v < 0 || v > 2) {
+          throw new Error(t("settings.models.generation_invalid"));
+        }
+        generationPayload.temperature = v;
+      }
       const next = await api.putSettings({
         session: {
           first_edit_buffer_ms: bufferMs,
         },
         exec: { command_timeout_s: commandTimeout },
-        models: { default: defaultModel, providers: providerPayload },
+        models: {
+          default: defaultModel,
+          providers: providerPayload,
+          fallback: fallbackList,
+          generation: generationPayload,
+        },
       });
       onSaved(next);
       onClose();
@@ -394,6 +436,41 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, p
                       </option>
                     ))}
                   </select>
+                </div>
+
+                {/* v1.174 §11：备用模型链 + 生成参数（新会话生效） */}
+                <div className="settings-grid">
+                  <label htmlFor="set-fallback-chain">{t("settings.models.fallback")}</label>
+                  <input
+                    id="set-fallback-chain"
+                    data-testid="settings-fallback-chain"
+                    placeholder="glm/glm-4.5-flash, ollama"
+                    value={fallbackText}
+                    onChange={(e) => setFallbackText(e.target.value)}
+                  />
+                  <label htmlFor="set-gen-max-tokens">{t("settings.models.max_tokens")}</label>
+                  <input
+                    id="set-gen-max-tokens"
+                    data-testid="settings-gen-max-tokens"
+                    type="number"
+                    min={256}
+                    max={65536}
+                    placeholder="16384"
+                    value={genMaxTokens}
+                    onChange={(e) => setGenMaxTokens(e.target.value)}
+                  />
+                  <label htmlFor="set-gen-temperature">{t("settings.models.temperature")}</label>
+                  <input
+                    id="set-gen-temperature"
+                    data-testid="settings-gen-temperature"
+                    type="number"
+                    min={0}
+                    max={2}
+                    step={0.1}
+                    placeholder="0.2"
+                    value={genTemperature}
+                    onChange={(e) => setGenTemperature(e.target.value)}
+                  />
                 </div>
 
                 <div className="provider-list" data-testid="provider-list">

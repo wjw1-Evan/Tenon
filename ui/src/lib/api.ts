@@ -221,6 +221,10 @@ export interface SettingsData {
     default?: string;
     providers?: Record<string, ProviderSettings>;
     laya?: Record<string, unknown>;
+    /** v1.171 §11：有序备用模型链（`provider` 或 `provider/model`）。 */
+    fallback?: string[];
+    /** v1.174 §11：生成参数覆盖（字段缺席 = 用默认）。 */
+    generation?: { max_tokens?: number; temperature?: number };
     [k: string]: unknown;
   };
   /** 代理技能（§13.4 v1.130）：停用名单（新会话生效）。 */
