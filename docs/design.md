@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v1.187** |
-| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.156）· 2026-10-07（v1.157-v1.162）· 2026-10-08（v1.163-v1.187） |
+| 版本 | **v1.188** |
+| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.156）· 2026-10-07（v1.157-v1.162）· 2026-10-08（v1.163-v1.188） |
 | 状态 | 定稿（v1.10 决策闭环），M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 | 历史评审 | v0.1 / v0.3 两轮共 41 项、v1.0 复审 21 项问题的结论已全部并入本方案（过程文档已清理） |
@@ -564,7 +564,7 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 | `subtasks`（子任务清单，v1.146） | A | 多步任务主动分解与状态维护：`{items:[{title,status}]}` 全量状态替换（幂等；1–12 项，status ∈ `pending / in_progress / done`）；分发与边界见下文 |
 | `submit_plan`（计划提交，v1.179 Codex 形态计划模式） | A | 复杂任务先计划后执行：`{items:[string]}`（1–12 项、每项 ≤200 字符）→ `plan_submitted` 事件 + 会话转 PAUSED 等待批准；边界见下文 |
 | `mcp_meta_resources_list / mcp_meta_resources_read / mcp_meta_prompts_list / mcp_meta_prompts_get`（MCP 资源与提示，v1.187） | A | 跨服务器枚举 / 读取 MCP resources（URI）与 prompts（渲染后消息文本）；内容按不可信数据处理（§12.1）、输出截 20k + redact；只读会话仍拒（与 MCP 工具既有语义一致——调用即拉起外部进程）；名字与 `mcp_{server}_{tool}` 形式重叠时精确名优先 |
-| `apply_patch` | B | 结构化编辑（file + range + content），产生事件与 checkpoint |
+| `apply_patch` | B | 结构化编辑：① range 形式（file + range + content）；② search/replace 块格式（v1.188：file + search + replace，目标片段全文唯一匹配——精确优先、降级逐行空白归一序列匹配；零/多命中报错，与 range 互斥），产生事件与 checkpoint |
 | `run_tests` / `run_build` | B | 沙箱内，断网态；单命令超时默认 120s（附录 E） |
 | `install_deps` | B | 沙箱内，镜像代理态 |
 | `http_fetch` | C | 直接执行；目标域名写入审计事件 |

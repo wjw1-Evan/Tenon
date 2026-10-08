@@ -77,6 +77,50 @@ fn run_mcp_meta(
     }
 }
 
+/// v1.188 §9.2：search/replace 块格式的行区间解析——search 须在全文唯一
+/// （精确匹配优先；未命中降级为逐行 trim 归一的滑窗序列匹配）；零命中 /
+/// 多命中报错（防歧义写入）。返回 1-based 闭区间 (start, end)。
+fn search_replace_span(before: &str, search: &str) -> Result<(usize, usize), String> {
+    if search.is_empty() {
+        return Err("search 不可为空".into());
+    }
+    if let Some(first) = before.find(search) {
+        if before[first + search.len()..].contains(search) {
+            return Err("search 在文件中命中多处（须唯一——请扩大上下文片段）".into());
+        }
+        let start = before[..first].matches('\n').count() + 1;
+        let end = start + search.matches('\n').count();
+        return Ok((start, end));
+    }
+    // 降级：逐行 trim 归一滑窗（模型常给出缩进不一致的片段）
+    let hay: Vec<Option<String>> = before.lines().map(|l| Some(l.trim().to_string())).collect();
+    let needle: Vec<String> = search.lines().map(|l| l.trim().to_string()).collect();
+    if needle.is_empty() || hay.len() < needle.len() {
+        return Err("search 未在文件中命中（精确与空白归一均未命中）".into());
+    }
+    let mut hits: Vec<usize> = Vec::new();
+    for start in 0..=(hay.len() - needle.len()) {
+        let window: Vec<Option<String>> = hay[start..start + needle.len()]
+            .iter()
+            .map(|l| l.clone())
+            .collect();
+        let matched = window
+            .iter()
+            .zip(needle.iter())
+            .all(|(a, b)| a.as_deref() == Some(b.as_str()));
+        if matched {
+            hits.push(start);
+        }
+    }
+    match hits.len() {
+        1 => Ok((hits[0] + 1, hits[0] + needle.len())),
+        0 => Err("search 未在文件中命中（精确与空白归一均未命中）".into()),
+        n => Err(format!(
+            "search 空白归一后命中 {n} 处（须唯一——请扩大上下文片段）"
+        )),
+    }
+}
+
 /// 截断工具输出（trim 后按字符截断，尾注写明丢弃量与重取建议）。
 /// 先 redact 后截断的调用方（git_push / create_pr）保证密钥模式匹配不受截断影响。
 pub fn truncate_output(s: &str) -> String {
@@ -420,9 +464,73 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
             if ctx.readonly.load(Ordering::Relaxed) {
                 return ToolOutput::err("只读会话禁用写操作");
             }
-            let Ok(op) = serde_json::from_value::<PatchOp>(args.clone()) else {
-                return ToolOutput::err("apply_patch 参数非法（需 file/range/content）");
+            // v1.188 §9.2：search/replace 块格式（file + search + replace）——
+            // 解析为等价 range 操作后走既有链路；与 range 同给拒绝（防歧义）。
+            let op = match (
+                args.get("search").and_then(|v| v.as_str()),
+                args.get("replace").and_then(|v| v.as_str()),
+            ) {
+                (Some(search), Some(replace)) => {
+                    if args.get("range").is_some() {
+                        return ToolOutput::err("range 与 search/replace 不可同给（防歧义）");
+                    }
+                    let Some(file) = args.get("file").and_then(|v| v.as_str()) else {
+                        return ToolOutput::err("缺少 file 参数");
+                    };
+                    let rel_probe = match project_rel(ctx, file) {
+                        Ok(r) => r,
+                        Err(e) => return e,
+                    };
+                    let before_probe = match ctx.files.read_file(&rel_probe) {
+                        Ok(c) => c,
+                        Err(tenon_fs::FsError::Io(e))
+                            if e.kind() == std::io::ErrorKind::NotFound =>
+                        {
+                            return ToolOutput::err(format!(
+                                "目标文件不存在，search/replace 需既有文件（{rel_probe}）"
+                            ));
+                        }
+                        Err(e) => {
+                            return ToolOutput::err(format!("读取原文件失败（{rel_probe}）: {e}"));
+                        }
+                    };
+                    let (start, end) = match search_replace_span(&before_probe, search) {
+                        Ok(span) => span,
+                        Err(e) => return ToolOutput::err(e),
+                    };
+                    PatchOp {
+                        file: file.to_string(),
+                        range: Some((start, end)),
+                        content: replace.to_string(),
+                    }
+                }
+                _ => match serde_json::from_value::<PatchOp>(args.clone()) {
+                    Ok(op) => op,
+                    Err(_) => {
+                        return ToolOutput::err(
+                            "apply_patch 参数非法（需 file/range/content 或 file/search/replace）",
+                        );
+                    }
+                },
             };
+            let rel = match project_rel(ctx, &op.file) {
+                Ok(r) => r,
+                Err(e) => return e,
+            };
+            // 读失败（二进制 / 权限）≠ 文件不存在：unwrap_or_default 会把
+            // 「读不了」当「空文件」整文件覆盖，毁坏二进制资产
+            let before = match ctx.files.read_file(&rel) {
+                Ok(c) => c,
+                Err(tenon_fs::FsError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                    String::new()
+                }
+                Err(e) => {
+                    return ToolOutput::err(format!(
+                        "读取原文件失败，apply_patch 拒绝整文件覆盖（{rel}）: {e}"
+                    ));
+                }
+            };
+
             let rel = match project_rel(ctx, &op.file) {
                 Ok(r) => r,
                 Err(e) => return e,
@@ -1013,6 +1121,51 @@ mod tests {
             "保留前 20k 字符"
         );
         assert!(out.contains("丢弃 500 字符"), "尾注写明丢弃量");
+    }
+    /// v1.188 §9.2：search/replace 区间解析——精确唯一 / 多命中 / 空白归一降级。
+    #[test]
+    fn search_replace_span_semantics() {
+        let file = "l1\nl2\nl3 target here\nl4\nl5\nl3 target here\nl6\n";
+        // 多命中（精确）拒绝
+        assert!(search_replace_span(file, "l3 target here").is_err());
+        // 精确唯一
+        assert_eq!(search_replace_span(file, "l4").unwrap(), (4, 4));
+        // 多行片段
+        assert_eq!(search_replace_span(file, "l4\nl5").unwrap(), (4, 5));
+        // 未找到
+        assert!(search_replace_span(file, "nope").is_err());
+        // 空白归一降级命中（缩进不一致）
+        let indented = "fn a() {\n      let x = 1;\n}\n";
+        assert_eq!(search_replace_span(indented, "let x = 1;").unwrap(), (2, 2));
+        // 空白归一后多命中拒绝
+        let dup = "let x = 1;\nfn f() {\n    let x = 1;\n}\n";
+        assert!(search_replace_span(dup, "let x = 1;").is_err());
+        assert!(search_replace_span(file, "").is_err());
+    }
+
+    /// v1.188：search/replace 写入——唯一片段替换生效并记账。
+    #[test]
+    fn apply_patch_search_replace_writes() {
+        let (dir, c) = ctx();
+        std::fs::write(dir.path().join("f.txt"), "l1\nl2\nl3\nl4\n").unwrap();
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({"file": "f.txt", "search": "l2", "replace": "L2-改"}),
+        );
+        assert!(out.ok, "{}", out.content);
+        let content = std::fs::read_to_string(dir.path().join("f.txt")).unwrap();
+        assert_eq!(content, "l1\nL2-改\nl3\nl4\n");
+        assert_eq!(out.lines_changed, Some(2), "替换 1 行 = 删 1 + 加 1");
+
+        // range + search 同给拒绝
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({"file": "f.txt", "range": [1, 2], "search": "l1", "replace": "x"}),
+        );
+        assert!(!out.ok);
+        assert!(out.content.contains("不可同给"));
     }
 
     #[test]

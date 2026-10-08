@@ -300,7 +300,7 @@ fn tool_specs() -> Vec<ToolSpec> {
         ("git_read", "只读 git：status/log/diff", serde_json::json!({
             "type": "object", "properties": {"sub": {"type": "string", "enum": ["status", "log", "diff"]}}
         })),
-        ("apply_patch", "编辑文件：file + range(1-based 行区间含端点，缺省追加) + content", serde_json::json!({
+        ("apply_patch", "编辑文件（二选一）：① file + range(1-based 行区间含端点，缺省追加) + content；② 定向替换 file + search + replace（search 须在文件中唯一，空白不一致可容忍）——定向编辑优先用 ②", serde_json::json!({
             "type": "object",
             "properties": {
                 "file": {"type": "string"},
