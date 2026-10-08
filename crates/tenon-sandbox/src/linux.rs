@@ -361,7 +361,14 @@ mod tests {
         assert_eq!(LANDLOCK_ACCESS_FS_MAKE_SYM, 1 << 12);
         // 读 = 可执行 + 读文件 + 列目录（工具链在 / 下运行与列举的先决条件）
         assert_eq!(ACCESS_READ, 0b1101);
-        // 写集合必须把 MAKE_SYM 纳管（否则沙箱内可在任意 DAC 允许处建符号链接）
-        assert!(ACCESS_WRITE & LANDLOCK_ACCESS_FS_MAKE_SYM != 0);
+        // 写集合必须把 MAKE_SYM 纳管（否则沙箱内可在任意 DAC 允许处建符号链接）。
+        // 纯常量对比用 const 块在编译期锚定：位序再错位时测试编译即失败，
+        // 也避开 clippy::assertions_on_constants 对恒真 assert! 的 -D warnings 必红
+        const {
+            assert!(
+                ACCESS_WRITE & LANDLOCK_ACCESS_FS_MAKE_SYM != 0,
+                "ACCESS_WRITE 必须纳管 LANDLOCK_ACCESS_FS_MAKE_SYM（内核 UAPI ABI v1 位序锚点）"
+            );
+        }
     }
 }
