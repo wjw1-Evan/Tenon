@@ -382,6 +382,46 @@ fn tool_specs_read_only() -> Vec<ToolSpec> {
         .collect()
 }
 
+/// §13.3 v1.187：MCP 元工具 schema（跨服务器 resources / prompts；mcp 桥接入时
+/// 附加在服务器工具目录之后；只读先验轮白名单不含——调用即拉起外部进程）。
+fn mcp_meta_specs() -> [ToolSpec; 4] {
+    [
+        ToolSpec {
+            name: "mcp_meta_resources_list".into(),
+            description: "列出全部 MCP 服务器的可读资源（server / name / uri）".into(),
+            parameters: serde_json::json!({"type": "object", "properties": {}}),
+        },
+        ToolSpec {
+            name: "mcp_meta_resources_read".into(),
+            description: "读取指定 MCP 服务器资源文本：server + uri".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {"server": {"type": "string"}, "uri": {"type": "string"}},
+                "required": ["server", "uri"]
+            }),
+        },
+        ToolSpec {
+            name: "mcp_meta_prompts_list".into(),
+            description: "列出全部 MCP 服务器的提示模板（server / name / description）".into(),
+            parameters: serde_json::json!({"type": "object", "properties": {}}),
+        },
+        ToolSpec {
+            name: "mcp_meta_prompts_get".into(),
+            description:
+                "取指定 MCP 服务器提示模板的渲染文本：server + name（可选 arguments 对象）".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "server": {"type": "string"},
+                    "name": {"type": "string"},
+                    "arguments": {"type": "object"}
+                },
+                "required": ["server", "name"]
+            }),
+        },
+    ]
+}
+
 /// MCP 工具目录（§13.5 v1.145）：`mcp_{server}_{tool}` 进模型 schema；
 /// inputSchema 非 object 时兜底空 object；描述标注来源 server。
 /// 只读先验轮白名单天然不含 MCP 工具（外部进程能力面非只读）。
@@ -623,7 +663,10 @@ impl AgentSession {
                     .await
                     .map_err(|e| AgentError::Store(format!("MCP tools/list join 失败: {e}")))?;
                 tool_ctx.mcp_policy = host.level_policy_with(&tools);
-                build_mcp_specs(&tools)
+                // §13.3 v1.187：MCP 元工具（跨服务器 resources / prompts）随桥注入
+                let mut specs = build_mcp_specs(&tools);
+                specs.extend(mcp_meta_specs().iter().cloned());
+                specs
             }
             _ => Vec::new(),
         };

@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v1.186** |
-| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.156）· 2026-10-07（v1.157-v1.162）· 2026-10-08（v1.163-v1.186） |
+| 版本 | **v1.187** |
+| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.156）· 2026-10-07（v1.157-v1.162）· 2026-10-08（v1.163-v1.187） |
 | 状态 | 定稿（v1.10 决策闭环），M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 | 历史评审 | v0.1 / v0.3 两轮共 41 项、v1.0 复审 21 项问题的结论已全部并入本方案（过程文档已清理） |
@@ -563,6 +563,7 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 | `skill_use`（读取技能全文） | A | 技能目录注入系统提示，正文按需加载进上下文（§13.4，v1.130） |
 | `subtasks`（子任务清单，v1.146） | A | 多步任务主动分解与状态维护：`{items:[{title,status}]}` 全量状态替换（幂等；1–12 项，status ∈ `pending / in_progress / done`）；分发与边界见下文 |
 | `submit_plan`（计划提交，v1.179 Codex 形态计划模式） | A | 复杂任务先计划后执行：`{items:[string]}`（1–12 项、每项 ≤200 字符）→ `plan_submitted` 事件 + 会话转 PAUSED 等待批准；边界见下文 |
+| `mcp_meta_resources_list / mcp_meta_resources_read / mcp_meta_prompts_list / mcp_meta_prompts_get`（MCP 资源与提示，v1.187） | A | 跨服务器枚举 / 读取 MCP resources（URI）与 prompts（渲染后消息文本）；内容按不可信数据处理（§12.1）、输出截 20k + redact；只读会话仍拒（与 MCP 工具既有语义一致——调用即拉起外部进程）；名字与 `mcp_{server}_{tool}` 形式重叠时精确名优先 |
 | `apply_patch` | B | 结构化编辑（file + range + content），产生事件与 checkpoint |
 | `run_tests` / `run_build` | B | 沙箱内，断网态；单命令超时默认 120s（附录 E） |
 | `install_deps` | B | 沙箱内，镜像代理态 |
@@ -818,6 +819,8 @@ signature: "<sig>"
 - **官方通道（未来）**：registry 检索 → 权限 diff（相对已装版本新增权限高亮）→ 签名校验 + 版本锁定 → 沙箱内启动；升级同样走 diff 确认；语言包升级需过 Evals 门（§18.3）。
 
 ### 13.3 生态兼容
+
+**MCP 客户端能力面（v1.187）**：① **按 id 分发器**——连接内建单读者线程：响应按 id 路由至各自等待者（替代 v1.145 起的整回合串行化——v1.166 暂缓项落地）；服务器发起的请求（带 method + id）统一回 METHOD_NOT_FOUND（-32601）、通知丢弃；请求超时 / 连接断开时 pending 表清理，看门狗语义不变；② **resources / prompts**——四个 A 级元工具（见 §9.2）枚举 / 读取各 enabled 服务器的 resources 与 prompts，内容截 20k + redact、作为工具输出进上下文（不自动注入系统提示）；③ **sampling 暂缓**——服务器发起的 `sampling/createMessage` 需要将会话 provider 注入 MCP 宿主（依赖倒置 + 预算封顶），与循环内核耦合面大，本版统一回 METHOD_NOT_FOUND、行为与其他服务器发起请求一致，日后按需另行立项。
 
 | 来源 | 策略 |
 |---|---|

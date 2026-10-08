@@ -10,8 +10,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::Arc;
 use std::sync::Mutex;
 
 #[derive(Debug, thiserror::Error)]
@@ -64,15 +65,15 @@ impl McpLevelPolicy {
 }
 
 /// MCP 客户端连接（阻塞实现；daemon 侧经 spawn_blocking 调用）。
+/// v1.187 §13.3 起连接内置单读者线程按 id 分发响应——同连接可并发请求
+/// （替代 v1.145 起的整回合 call_lock 串行化，v1.166 暂缓项落地）。
 pub struct McpConnection {
-    stdin: Mutex<ChildStdin>,
-    stdout: Mutex<BufReader<ChildStdout>>,
+    /// 共享写端（v1.187：读者线程回复服务器发起请求的 METHOD_NOT_FOUND 也走它）。
+    stdin: Arc<Mutex<ChildStdin>>,
     child: Mutex<Child>,
     next_id: AtomicI64,
-    // 单路 stdout、无按 id 分发器：并发请求会互相读走对方的响应
-    // （双方都拿不到 → 白等满超时 → 看门狗误杀健康服务器）。
-    // 整个 request（发送+读回）持这把锁串行化，同连接排队执行。
-    call_lock: Mutex<()>,
+    /// id → 等待者的响应通道（读者线程路由；请求超时 / 连接断开时清理）。
+    pending: Arc<Mutex<std::collections::HashMap<i64, std::sync::mpsc::SyncSender<Value>>>>,
 }
 
 impl McpConnection {
@@ -101,14 +102,65 @@ impl McpConnection {
     }
 
     pub fn from_child(mut child: Child) -> io::Result<Self> {
-        let stdin = child.stdin.take().expect("piped stdin");
+        let stdin = Arc::new(Mutex::new(child.stdin.take().expect("piped stdin")));
         let stdout = child.stdout.take().expect("piped stdout");
+        let pending: Arc<
+            Mutex<std::collections::HashMap<i64, std::sync::mpsc::SyncSender<Value>>>,
+        > = Arc::new(Mutex::new(std::collections::HashMap::new()));
+        // 单读者线程（§13.3 v1.187）：响应按 id 路由进 pending 各自通道；
+        // 服务器发起的请求（method + id）统一回 METHOD_NOT_FOUND；通知丢弃。
+        // 读到 EOF / 解析失败即退出并清空 pending（等待者按超时语义收场）。
+        {
+            let pending = pending.clone();
+            let stdin = stdin.clone();
+            let mut reader = BufReader::new(stdout);
+            std::thread::spawn(move || {
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    let n = match reader.read_line(&mut line) {
+                        Ok(n) => n,
+                        Err(_) => break,
+                    };
+                    if n == 0 {
+                        break; // 服务器关闭
+                    }
+                    let Ok(msg) = serde_json::from_str::<Value>(line.trim()) else {
+                        continue;
+                    };
+                    if msg.get("method").is_some() {
+                        // 服务器发起的请求（有 id）必答 METHOD_NOT_FOUND；通知（无 id）丢弃
+                        if let Some(id) = msg.get("id").filter(|id| !id.is_null()) {
+                            let reply = serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "error": {
+                                    "code": -32601,
+                                    "message": "METHOD_NOT_FOUND（tenon 不支持服务器发起的请求）"
+                                }
+                            });
+                            let mut w = stdin.lock().expect("stdin lock");
+                            let _ = writeln!(w, "{reply}");
+                        }
+                        continue;
+                    }
+                    let Some(id) = msg["id"].as_i64() else {
+                        continue;
+                    };
+                    let waiter = pending.lock().expect("pending lock").remove(&id);
+                    if let Some(tx) = waiter {
+                        let _ = tx.send(msg);
+                    }
+                    // 无等待者的响应（请求方已超时放弃）：丢弃
+                }
+                pending.lock().expect("pending lock").clear();
+            });
+        }
         Ok(Self {
-            stdin: Mutex::new(stdin),
-            stdout: Mutex::new(BufReader::new(stdout)),
+            stdin,
             child: Mutex::new(child),
             next_id: AtomicI64::new(1),
-            call_lock: Mutex::new(()),
+            pending,
         })
     }
 
@@ -117,35 +169,29 @@ impl McpConnection {
         writeln!(w, "{value}").map_err(McpError::Io)
     }
 
-    fn read_message(&self) -> Result<Value> {
-        let mut r = self.stdout.lock().expect("stdout lock");
-        let mut line = String::new();
-        let n = r.read_line(&mut line)?;
-        if n == 0 {
-            return Err(McpError::Io(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "mcp server closed",
-            )));
-        }
-        serde_json::from_str(line.trim()).map_err(|e| McpError::Json(e.to_string()))
-    }
-
     fn request(&self, method: &str, params: Value) -> Result<Value> {
         const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
-        // 串行化整个请求往返：stdout 是单路流且无按 id 分发，
-        // 并发调用会互相吞响应（见 call_lock 注释）
-        let _serial = self.call_lock.lock().expect("call lock");
+        // v1.187 §13.3 按 id 分发：响应由单读者线程路由进本请求的通道，
+        // 同连接可并发请求（无 call_lock）；本函数只等自己的 id。
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        self.pending
+            .lock()
+            .expect("pending lock")
+            .insert(id, tx.clone());
         let msg = serde_json::json!({
             "jsonrpc": "2.0",
             "id": id,
             "method": method,
             "params": params,
         });
-        self.send(&msg)?;
+        if let Err(e) = self.send(&msg) {
+            self.pending.lock().expect("pending lock").remove(&id);
+            return Err(e);
+        }
         let deadline = std::time::Instant::now() + REQUEST_TIMEOUT;
-        // 看门狗：read_line 是无限期阻塞读，挂死的服务器会让本调用与
-        // 同连接后续调用（stdout 锁排队）永久卡死——超时 kill 子进程解阻塞
+        // 看门狗：挂死的服务器不回响应——超时 kill 子进程令读者线程 EOF 退出，
+        // 本调用按 Timeout 收场（kill_on_drop 语义与旧实现一致）
         let pid = self.child.lock().expect("child lock").id();
         let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let watchdog = Watchdog {
@@ -156,29 +202,26 @@ impl McpConnection {
         watchdog.spawn_arm();
         // 持活到请求返回（Drop 置位 cancelled，看门狗不再 kill）
         let _hold = watchdog;
-        loop {
-            let incoming = match self.read_message() {
-                Ok(v) => v,
-                Err(e) => {
-                    if std::time::Instant::now() >= deadline {
-                        return Err(McpError::Timeout);
-                    }
-                    return Err(e);
+        let wait = deadline.saturating_duration_since(std::time::Instant::now());
+        let outcome = match rx.recv_timeout(wait) {
+            Ok(response) => {
+                if let Some(err) = response.get("error") {
+                    Err(McpError::Denied(err.to_string()))
+                } else {
+                    Ok(response.get("result").cloned().unwrap_or(Value::Null))
                 }
-            };
-            // 跳过通知与服务器发起的请求（有 method 字段——其 id 空间与
-            // 我们的 next_id 撞号，当响应处理会错拿 Null 结果 / 死等）
-            if incoming.get("method").is_some() || incoming.get("id").is_none() {
-                continue;
             }
-            if incoming["id"].as_i64() == Some(id) {
-                if let Some(err) = incoming.get("error") {
-                    return Err(McpError::Denied(err.to_string()));
-                }
-                return Ok(incoming.get("result").cloned().unwrap_or(Value::Null));
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(McpError::Timeout),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                // 读者线程退出（服务器关闭 / 解析失败）：pending 已清空
+                Err(McpError::Io(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "mcp connection closed",
+                )))
             }
-            // 他人响应（id 不匹配）：丢弃但留痕，不静默吞
-        }
+        };
+        self.pending.lock().expect("pending lock").remove(&id);
+        outcome
     }
 
     fn notify(&self, method: &str, params: Value) -> Result<()> {
@@ -235,6 +278,61 @@ impl McpConnection {
             .unwrap_or_default();
         if is_error {
             return Err(McpError::Denied(text));
+        }
+        Ok(text)
+    }
+
+    /// resources/list：可读资源条目（v1.187 §13.3）。
+    pub fn list_resources(&self) -> Result<Value> {
+        self.request("resources/list", serde_json::json!({}))
+    }
+
+    /// resources/read：按 URI 读资源，拼接 text 内容（调用方负责截断 / redact）。
+    pub fn read_resource(&self, uri: &str) -> Result<String> {
+        let result = self.request("resources/read", serde_json::json!({ "uri": uri }))?;
+        let text: String = result
+            .get("contents")
+            .and_then(|c| c.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
+        if text.is_empty() {
+            return Err(McpError::Denied(format!("资源无文本内容: {uri}")));
+        }
+        Ok(text)
+    }
+
+    /// prompts/list：可用提示条目。
+    pub fn list_prompts(&self) -> Result<Value> {
+        self.request("prompts/list", serde_json::json!({}))
+    }
+
+    /// prompts/get：取渲染后的提示消息文本（拼接 user/assistant 文本块）。
+    pub fn get_prompt(&self, name: &str, arguments: Value) -> Result<String> {
+        let result = self.request(
+            "prompts/get",
+            serde_json::json!({ "name": name, "arguments": arguments }),
+        )?;
+        let text: String = result
+            .get("messages")
+            .and_then(|m| m.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|m| {
+                        m.get("content")
+                            .and_then(|c| c.get("text"))
+                            .and_then(|t| t.as_str())
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            })
+            .unwrap_or_default();
+        if text.is_empty() {
+            return Err(McpError::Denied(format!("提示无文本内容: {name}")));
         }
         Ok(text)
     }
@@ -442,6 +540,60 @@ impl McpHost {
     }
 
     /// 调用指定服务器的工具；失败丢弃连接（下次调用重启，§13.5）。
+    /// v1.187 §13.3：跨服务器枚举 resources（条目附来源 server；单台失败跳过）。
+    pub fn list_all_resources(&self) -> Vec<(String, Value)> {
+        let mut out = Vec::new();
+        for server in self.configs.keys() {
+            let enabled = self.configs.get(server).map(|c| c.enabled).unwrap_or(false);
+            if !enabled {
+                continue;
+            }
+            let Ok(conn) = self.connection_for(server) else {
+                continue;
+            };
+            if let Ok(result) = conn.list_resources() {
+                if let Some(entries) = result.get("resources").and_then(|r| r.as_array()) {
+                    for e in entries {
+                        out.push((server.clone(), e.clone()));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// v1.187 §13.3：读指定服务器资源文本（调用方截断 / redact）。
+    pub fn read_resource(&self, server: &str, uri: &str) -> Result<String> {
+        self.connection_for(server)?.read_resource(uri)
+    }
+
+    /// v1.187 §13.3：跨服务器枚举 prompts。
+    pub fn list_all_prompts(&self) -> Vec<(String, Value)> {
+        let mut out = Vec::new();
+        for server in self.configs.keys() {
+            let enabled = self.configs.get(server).map(|c| c.enabled).unwrap_or(false);
+            if !enabled {
+                continue;
+            }
+            let Ok(conn) = self.connection_for(server) else {
+                continue;
+            };
+            if let Ok(result) = conn.list_prompts() {
+                if let Some(entries) = result.get("prompts").and_then(|r| r.as_array()) {
+                    for e in entries {
+                        out.push((server.clone(), e.clone()));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// v1.187 §13.3：取指定服务器 prompt 渲染文本。
+    pub fn get_prompt(&self, server: &str, name: &str, arguments: Value) -> Result<String> {
+        self.connection_for(server)?.get_prompt(name, arguments)
+    }
+
     pub fn call(&self, server: &str, tool: &str, args: Value) -> Result<String> {
         let conn = self.connection_for(server)?;
         match conn.call_tool(tool, args) {

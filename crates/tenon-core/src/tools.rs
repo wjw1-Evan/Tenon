@@ -27,6 +27,9 @@ pub enum Tool {
     /// 计划提交（§9.2，v1.179 Codex 形态计划模式）：复杂任务先计划后执行，
     /// 零工作区副作用；提交即暂停待用户批准。
     SubmitPlan,
+    /// MCP 元工具（§13.3，v1.187）：跨服务器 resources / prompts 枚举与读取，
+    /// 零工作区副作用（外部进程只读调用）。
+    McpMeta,
     /// 网络搜索（§9.2，v1.182）：DuckDuckGo Lite 免密钥后端，C 级出网并审计，
     /// SSRF 守卫与 http_fetch 同轨（tenon-agent webfetch）。
     WebSearch,
@@ -54,6 +57,7 @@ impl Tool {
             Tool::SkillUse => "skill_use",
             Tool::Subtasks => "subtasks",
             Tool::SubmitPlan => "submit_plan",
+            Tool::McpMeta => "mcp_meta_*",
             Tool::WebSearch => "web_search",
             Tool::ApplyPatch => "apply_patch",
             Tool::RunTests => "run_tests",
@@ -79,7 +83,8 @@ impl Tool {
             | Tool::LayaDecide
             | Tool::SkillUse
             | Tool::Subtasks
-            | Tool::SubmitPlan => Level::A,
+            | Tool::SubmitPlan
+            | Tool::McpMeta => Level::A,
             Tool::ApplyPatch | Tool::RunTests | Tool::RunBuild | Tool::InstallDeps => Level::B,
             Tool::HttpFetch | Tool::WebSearch => Level::C,
             Tool::GitCommit | Tool::GitPush => Level::D,
@@ -99,6 +104,10 @@ impl Tool {
             "skill_use" => Tool::SkillUse,
             "subtasks" => Tool::Subtasks,
             "submit_plan" => Tool::SubmitPlan,
+            "mcp_meta_resources_list"
+            | "mcp_meta_resources_read"
+            | "mcp_meta_prompts_list"
+            | "mcp_meta_prompts_get" => Tool::McpMeta,
             "web_search" => Tool::WebSearch,
             "apply_patch" => Tool::ApplyPatch,
             "run_tests" => Tool::RunTests,

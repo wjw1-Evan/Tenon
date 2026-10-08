@@ -17,6 +17,66 @@ use tenon_sandbox::{exec_argv, exec_command};
 /// 事件存储侧由 append_event 的 payload 硬上限兜底。
 pub const TOOL_OUTPUT_MAX_CHARS: usize = 20_000;
 
+/// v1.187 §13.3：MCP 元工具执行（resources / prompts 跨服务器枚举与读取）。
+fn run_mcp_meta(
+    host: &std::sync::Arc<tenon_mcp::McpHost>,
+    name: &str,
+    args: &serde_json::Value,
+) -> Result<String, String> {
+    let list_entries = |entries: Vec<(String, serde_json::Value)>| -> Result<String, String> {
+        if entries.is_empty() {
+            return Ok("（无条目）".into());
+        }
+        let lines: Vec<String> = entries
+            .iter()
+            .map(|(server, e)| {
+                format!(
+                    "[{}] {} {}",
+                    server,
+                    e.get("name").and_then(|n| n.as_str()).unwrap_or(""),
+                    e.get("uri")
+                        .or_else(|| e.get("description"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                )
+            })
+            .collect();
+        Ok(lines.join("\n"))
+    };
+    match name {
+        "mcp_meta_resources_list" => list_entries(host.list_all_resources()),
+        "mcp_meta_prompts_list" => list_entries(host.list_all_prompts()),
+        "mcp_meta_resources_read" => {
+            let server = args
+                .get("server")
+                .and_then(|v| v.as_str())
+                .ok_or("缺少 server 参数")?;
+            let uri = args
+                .get("uri")
+                .and_then(|v| v.as_str())
+                .ok_or("缺少 uri 参数")?;
+            host.read_resource(server, uri).map_err(|e| e.to_string())
+        }
+        "mcp_meta_prompts_get" => {
+            let server = args
+                .get("server")
+                .and_then(|v| v.as_str())
+                .ok_or("缺少 server 参数")?;
+            let prompt_name = args
+                .get("name")
+                .and_then(|v| v.as_str())
+                .ok_or("缺少 name 参数")?;
+            let arguments = args
+                .get("arguments")
+                .cloned()
+                .unwrap_or(serde_json::json!({}));
+            host.get_prompt(server, prompt_name, arguments)
+                .map_err(|e| e.to_string())
+        }
+        _ => Err(format!("未知 MCP 元工具: {name}")),
+    }
+}
+
 /// 截断工具输出（trim 后按字符截断，尾注写明丢弃量与重取建议）。
 /// 先 redact 后截断的调用方（git_push / create_pr）保证密钥模式匹配不受截断影响。
 pub fn truncate_output(s: &str) -> String {
@@ -598,6 +658,40 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
             match run_async(crate::webfetch::web_search(query, max)) {
                 Ok(Ok(out)) => ToolOutput::ok(out),
                 Ok(Err(e)) | Err(e) => ToolOutput::err(format!("搜索失败: {e}")),
+            }
+        }
+
+        // ---------- MCP 元工具（§13.3 v1.187：跨服务器 resources / prompts；
+        // 只读会话仍拒——调用即拉起外部进程，与 MCP 工具既有语义一致；
+        // 精确名优先于 mcp_{server}_{tool} 解析，防同名服务器遮蔽） ----------
+        name @ ("mcp_meta_resources_list"
+        | "mcp_meta_resources_read"
+        | "mcp_meta_prompts_list"
+        | "mcp_meta_prompts_get") => {
+            if ctx.readonly.load(Ordering::Relaxed) {
+                return ToolOutput::err("只读会话禁用 MCP 工具");
+            }
+            let Some(host) = &ctx.mcp else {
+                return ToolOutput::err("MCP 桥未接入");
+            };
+            let host = host.clone();
+            let args_owned = args.clone();
+            let name_owned = name.to_string();
+            let call = run_async(async move {
+                tokio::task::spawn_blocking(move || run_mcp_meta(&host, &name_owned, &args_owned))
+                    .await
+                    .map_err(|e| format!("join: {e}"))
+                    .and_then(|r| r)
+            });
+            match call {
+                Ok(Ok(text)) => {
+                    let truncated: String = text.chars().take(20_000).collect();
+                    ToolOutput::ok(format!(
+                        "{name}\n{}",
+                        tenon_core::redact::redact(&truncated)
+                    ))
+                }
+                Ok(Err(e)) | Err(e) => ToolOutput::err(format!("MCP 元工具失败: {e}")),
             }
         }
 
@@ -3486,6 +3580,10 @@ while IFS= read -r line; do
     *'"initialize"'*) body='{}' ;;
     *'"tools/list"'*) body='{"tools":[{"name":"echo","description":"回显","inputSchema":{"type":"object"}}]}' ;;
     *'"tools/call"'*) body='{"content":[{"type":"text","text":"mcp-echo-ok"}]}' ;;
+    *'"resources/list"'*) body='{"resources":[{"uri":"file:///x.txt","name":"X 文档"}]}' ;;
+    *'"resources/read"'*) body='{"contents":[{"uri":"file:///x.txt","text":"RESOURCE-BODY"}]}' ;;
+    *'"prompts/list"'*) body='{"prompts":[{"name":"review","description":"审查"}]}' ;;
+    *'"prompts/get"'*) body='{"messages":[{"role":"user","content":{"type":"text","text":"PROMPT-BODY"}}]}' ;;
     *) continue ;;
   esac
   id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
@@ -3545,5 +3643,62 @@ done
         let out = execute_tool(&ro, "mcp_srv_echo", &serde_json::json!({}));
         assert!(!out.ok);
         assert!(out.content.contains("只读会话禁用"));
+    }
+
+    /// v1.187 §13.3：MCP 元工具——只读拒绝 + resources / prompts 快乐路径。
+    #[test]
+    fn mcp_meta_tools_readonly_and_happy_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = write_fake_mcp_script(dir.path());
+        let mut configs = std::collections::BTreeMap::new();
+        configs.insert(
+            "srv".to_string(),
+            tenon_mcp::McpServerConfig {
+                command: "sh".to_string(),
+                args: vec![script.to_string_lossy().to_string()],
+                env: Default::default(),
+                enabled: true,
+                permissions: vec![],
+                source: None,
+                version: None,
+            },
+        );
+        let host = std::sync::Arc::new(tenon_mcp::McpHost::new(configs, dir.path().to_path_buf()));
+        let mut c = ToolContext::new(dir.path(), Duration::from_secs(30));
+        c.mcp = Some(host.clone());
+        let mut ro = ToolContext::new(dir.path(), Duration::from_secs(30));
+        ro.mcp = Some(host);
+        ro.readonly.store(true, Ordering::Relaxed);
+
+        // 只读会话拒绝（调用即拉起外部进程，与 MCP 工具既有语义一致）
+        let out = execute_tool(&ro, "mcp_meta_resources_list", &serde_json::json!({}));
+        assert!(!out.ok, "只读必须拒绝: {out:?}");
+        assert!(out.content.contains("只读会话禁用"));
+
+        // 快乐路径：枚举 → 读取 → 提示渲染
+        let list = execute_tool(&c, "mcp_meta_resources_list", &serde_json::json!({}));
+        assert!(list.ok, "{}", list.content);
+        assert!(list.content.contains("X 文档"), "{}", list.content);
+        assert!(list.content.contains("[srv]"), "{}", list.content);
+
+        let read = execute_tool(
+            &c,
+            "mcp_meta_resources_read",
+            &serde_json::json!({"server": "srv", "uri": "file:///x.txt"}),
+        );
+        assert!(read.ok, "{}", read.content);
+        assert!(read.content.contains("RESOURCE-BODY"), "{}", read.content);
+
+        let plist = execute_tool(&c, "mcp_meta_prompts_list", &serde_json::json!({}));
+        assert!(plist.ok, "{}", plist.content);
+        assert!(plist.content.contains("review"), "{}", plist.content);
+
+        let pget = execute_tool(
+            &c,
+            "mcp_meta_prompts_get",
+            &serde_json::json!({"server": "srv", "name": "review"}),
+        );
+        assert!(pget.ok, "{}", pget.content);
+        assert!(pget.content.contains("PROMPT-BODY"), "{}", pget.content);
     }
 }
