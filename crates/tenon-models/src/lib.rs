@@ -78,6 +78,35 @@ impl ProviderError {
         }
     }
 
+    /// 上下文超限判定（v1.191 §10.2 溢出恢复）：4xx 错误体命中各家超限文案
+    /// 特征——OpenAI「maximum context length」/ Anthropic「prompt is too long」
+    /// / 通用「token」超限与中文「过长」等。误报代价仅为一次压缩重试，从宽收集。
+    pub fn is_context_overflow(&self) -> bool {
+        match self {
+            ProviderError::Http { status, body } if (400..500).contains(status) => {
+                let b = body.to_lowercase();
+                [
+                    "context length",
+                    "context_length",
+                    "context window",
+                    "maximum context",
+                    "prompt is too long",
+                    "too long",
+                    "too many tokens",
+                    "token limit",
+                    "input tokens exceed",
+                    "exceeds the maximum",
+                    "请缩短",
+                    "过长",
+                    "超限",
+                ]
+                .iter()
+                .any(|m| b.contains(m))
+            }
+            _ => false,
+        }
+    }
+
     /// 从响应头解析 Retry-After（v1.171）：仅秒数形态；HTTP 日期或非法值 = None。
     fn retry_after_from_headers(
         headers: &reqwest::header::HeaderMap,
@@ -308,6 +337,34 @@ pub fn build_provider_with_caching(
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn context_overflow_classification() {
+        // v1.191 §10.2 溢出恢复：各家 400 超限文案归一判定
+        let over = |status: u16, body: &str| {
+            ProviderError::Http {
+                status,
+                body: body.into(),
+            }
+            .is_context_overflow()
+        };
+        assert!(over(
+            400,
+            "This model's maximum context length is 8192 tokens. However, your messages resulted in 12290 tokens."
+        ));
+        assert!(over(
+            400,
+            "prompt is too long: 250000 tokens > 200000 token limit"
+        ));
+        assert!(over(400, "输入内容过长，请缩短后重试"));
+        assert!(!over(400, "1210 temperature参数非法：限制小数点[2]位"));
+        assert!(!over(401, "invalid api key"));
+        assert!(!over(
+            500,
+            "internal server error mentioning context length"
+        ));
+        assert!(!ProviderError::Network("context length".into()).is_context_overflow());
+    }
 
     #[test]
     fn transient_classification() {

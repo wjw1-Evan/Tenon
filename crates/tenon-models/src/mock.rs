@@ -29,6 +29,8 @@ pub enum ScriptedReply {
     RateLimited { retry_after_ms: Option<u64> },
     /// 模拟非瞬时故障（401 认证失败等，v1.171：不重试直接 fallback 链）。
     NonTransient(String),
+    /// 模拟上下文超限 400（v1.191 §10.2 溢出恢复：非瞬时，会话侧压缩后重试一次）。
+    ContextOverflow,
 }
 
 pub struct MockProvider {
@@ -241,6 +243,12 @@ impl ModelProvider for MockProvider {
                 return Err(crate::ProviderError::Http {
                     status: 401,
                     body: msg,
+                });
+            }
+            ScriptedReply::ContextOverflow => {
+                return Err(crate::ProviderError::Http {
+                    status: 400,
+                    body: "This model's maximum context length is 8192 tokens. However, your messages resulted in 12290 tokens.".into(),
                 });
             }
         };

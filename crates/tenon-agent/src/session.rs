@@ -1512,7 +1512,7 @@ impl AgentSession {
                 all
             };
             let provider = self.provider.read().await.clone();
-            let request = ChatRequest {
+            let mut request = ChatRequest {
                 model: provider.default_model(),
                 messages: messages.clone(),
                 tools,
@@ -1524,10 +1524,46 @@ impl AgentSession {
             // 内完成（不进 ERROR 态）；穷尽才落 ERROR 侧向出口（用户重试 / 切模型 /
             // 中止语义不变）。返回的 request 已按实际生效 provider 校正 model，
             // 决策卡如实标注（v1.131 语义）。
-            let (resp, turn_duration_ms, request) =
-                match self.call_model_resilient(&provider, request).await {
-                    Ok((r, ms, req)) => (r, ms, req),
+            //
+            // v1.191 §10.2 溢出恢复（DSH 确定借鉴项落地）：穷尽且末次错误为上下文
+            // 超限时，同一回合内强制省略一次陈旧工具输出再重试一次（压缩事件
+            // overflow:true）；再失败照常落 ERROR。压缩不可行（无可省略对象 /
+            // 配对自检失败）不重试——单回合至多恢复一次，防循环。
+            let mut overflow_recovered = false;
+            let (resp, turn_duration_ms, request) = 'overflow_recover: loop {
+                match self.call_model_resilient(&provider, request.clone()).await {
+                    Ok((r, ms, req)) => break (r, ms, req),
+                    Err(ModelTurnError::Interrupted) => {
+                        // 退避等待被打断（Esc / 停止）：按暂停落地，不误报模型失败
+                        self.force_state(State::Paused).await;
+                        self.set_status(SessionStatus::Paused).await;
+                        paused_reason = Some("模型重试等待被打断（Esc / 停止）".into());
+                        break 'rounds;
+                    }
                     Err(ModelTurnError::Exhausted(e)) => {
+                        if !overflow_recovered && e.is_context_overflow() {
+                            let before = estimate_messages_tokens(&messages);
+                            if let Some((compacted, elided)) = elide_stale_tool_outputs(&messages) {
+                                if tool_call_pairs_intact(&compacted) {
+                                    overflow_recovered = true;
+                                    messages = compacted;
+                                    request.messages = messages.clone();
+                                    self.emit(
+                                        EventKind::Compaction,
+                                        &serde_json::json!({
+                                            "round": _round,
+                                            "before_est_tokens": before,
+                                            "after_est_tokens": estimate_messages_tokens(&messages),
+                                            "elided_tool_results": elided,
+                                            "manual": false,
+                                            "overflow": true,
+                                        }),
+                                    )
+                                    .await;
+                                    continue 'overflow_recover;
+                                }
+                            }
+                        }
                         // 侧向出口：自动恢复穷尽 → ERROR
                         self.force_state(State::Error).await;
                         self.set_status(SessionStatus::Error).await;
@@ -1539,14 +1575,8 @@ impl AgentSession {
                         error_msg = Some(format!("模型调用失败: {e}"));
                         break 'rounds;
                     }
-                    Err(ModelTurnError::Interrupted) => {
-                        // 退避等待被打断（Esc / 停止）：按暂停落地，不误报模型失败
-                        self.force_state(State::Paused).await;
-                        self.set_status(SessionStatus::Paused).await;
-                        paused_reason = Some("模型重试等待被打断（Esc / 停止）".into());
-                        break 'rounds;
-                    }
-                };
+                }
+            };
             last_input_tokens = resp.usage.input_tokens;
             self.record_usage(resp.usage, turn_duration_ms).await;
             steps += 1;
