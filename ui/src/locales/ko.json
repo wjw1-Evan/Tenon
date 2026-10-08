@@ -250,7 +250,7 @@
   "onboarding.step_intro": "무료 모델",
   "onboarding.step_key": "키 발급",
   "onboarding.step_done": "완료",
-  "onboarding.intro": "Tenon은 지푸(Zhipu) 공식 무료 모델 GLM-4.7-Flash를 한 번에 연결할 수 있습니다——0원·무제한, 카드 등록 불필요.",
+  "onboarding.intro": "Tenon은 지푸(Zhipu) 공식 무료 모델 GLM-4.5-Flash를 한 번에 연결할 수 있습니다——0원·무제한, 카드 등록 불필요.",
   "onboarding.intro_note": "건너뛰고 나중에 설정 → 모델에서 직접 구성할 수도 있습니다.",
   "onboarding.free_badge": "공식 무료 · 0원 무제한",
   "onboarding.open_portal": "지푸 오픈 플랫폼 열기 ↗",

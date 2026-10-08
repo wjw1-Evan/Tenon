@@ -21,8 +21,10 @@ export const GLM_PRESET = {
   baseUrl: "https://open.bigmodel.cn/api/paas/v4",
 } as const;
 
-/** 免费档候选（v1.169）：验证按序尝试，首选限流自动回退后备（同为 0 元档）。 */
-export const GLM_FREE_MODELS = ["glm-4.7-flash", "glm-4.5-flash"] as const;
+/** 免费档候选（v1.170 首选换档）：glm-4.5-flash 稳定不限流优先（约 1 并发、
+ * 响应较慢），glm-4.7-flash 能力更强但实测频繁整档限流，降为自动回退档。
+ * 两档同为官方 0 元 / 128K 上下文 / 不限总量。 */
+export const GLM_FREE_MODELS = ["glm-4.5-flash", "glm-4.7-flash"] as const;
 
 const ZHIPU_PORTAL_URL = "https://open.bigmodel.cn";
 const ZHIPU_APIKEYS_URL = "https://open.bigmodel.cn/usercenter/apikeys";

@@ -15,7 +15,7 @@ function makeApi(overrides: Record<string, ReturnType<typeof vi.fn>> = {}) {
   return {
     verifyModel: vi
       .fn()
-      .mockResolvedValue({ ok: true, model: "glm-4.7-flash", latency_ms: 42 }),
+      .mockResolvedValue({ ok: true, model: "glm-4.5-flash", latency_ms: 42 }),
     putSettings: vi.fn().mockResolvedValue(NEXT_SETTINGS),
     setUiPrefs: vi.fn(),
     models: vi.fn().mockResolvedValue({ models: [], default: "", laya: null }),
@@ -44,7 +44,7 @@ describe("OnboardingWizard", () => {
     expect(api.verifyModel).toHaveBeenCalledWith({
       kind: "openai",
       base_url: "https://open.bigmodel.cn/api/paas/v4",
-      model: "glm-4.7-flash",
+      model: "glm-4.5-flash",
       api_key: "sk-test-abc",
     });
     expect(screen.getByTestId("onboarding-verify-ok")).toBeTruthy();
@@ -67,12 +67,12 @@ describe("OnboardingWizard", () => {
     expect(screen.getByTestId("onboarding-step-key")).toBeTruthy();
   });
 
-  it("v1.169 免费档自动回退：首选 429 限流自动改试 glm-4.5-flash 并按其写入", async () => {
+  it("v1.169 免费档自动回退：首选 429 限流自动改试 glm-4.7-flash 并按其写入", async () => {
     const api = makeApi({
       verifyModel: vi.fn((payload: { model: string }) =>
-        payload.model === "glm-4.7-flash"
+        payload.model === "glm-4.5-flash"
           ? Promise.reject(new Error("API 400: HTTP 429: 该模型当前访问量过大"))
-          : Promise.resolve({ ok: true, model: "glm-4.5-flash", latency_ms: 30 })
+          : Promise.resolve({ ok: true, model: "glm-4.7-flash", latency_ms: 30 })
       ),
     });
     const onDone = vi.fn();
@@ -91,11 +91,11 @@ describe("OnboardingWizard", () => {
     fireEvent.click(screen.getByTestId("onboarding-finish"));
     await waitFor(() => expect(onDone).toHaveBeenCalled());
     const payload = (api.putSettings as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(payload.models.providers.glm.model).toBe("glm-4.5-flash");
+    expect(payload.models.providers.glm.model).toBe("glm-4.7-flash");
     // 两次调用：先首选后后备
     expect((api.verifyModel as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0].model)).toEqual([
-      "glm-4.7-flash",
       "glm-4.5-flash",
+      "glm-4.7-flash",
     ]);
   });
 
@@ -141,7 +141,7 @@ describe("OnboardingWizard", () => {
     expect(payload.models.providers.glm).toEqual({
       kind: "openai",
       base_url: "https://open.bigmodel.cn/api/paas/v4",
-      model: "glm-4.7-flash",
+      model: "glm-4.5-flash",
       api_key: "sk-secret-xyz",
     });
     expect(onDone).toHaveBeenCalledWith(NEXT_SETTINGS);

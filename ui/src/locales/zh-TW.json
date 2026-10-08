@@ -250,7 +250,7 @@
   "onboarding.step_intro": "免費模型",
   "onboarding.step_key": "取得金鑰",
   "onboarding.step_done": "完成設定",
-  "onboarding.intro": "Tenon 可一鍵接入智譜官方免費模型 GLM-4.7-Flash——0 元、不限量，無需綁卡。",
+  "onboarding.intro": "Tenon 可一鍵接入智譜官方免費模型 GLM-4.5-Flash——0 元、不限量，無需綁卡。",
   "onboarding.intro_note": "也可以跳過，稍後在 設定 → 模型 中手動配置 provider。",
   "onboarding.free_badge": "官方免費 · 0 元不限量",
   "onboarding.open_portal": "開啟智譜開放平臺 ↗",

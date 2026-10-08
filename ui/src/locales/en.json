@@ -250,7 +250,7 @@
   "onboarding.step_intro": "Free model",
   "onboarding.step_key": "Get a key",
   "onboarding.step_done": "Finish",
-  "onboarding.intro": "Tenon can connect to Zhipu's official free model GLM-4.7-Flash in one step — $0, no usage quota, no credit card.",
+  "onboarding.intro": "Tenon can connect to Zhipu's official free model GLM-4.5-Flash in one step — $0, no usage quota, no credit card.",
   "onboarding.intro_note": "You can also skip this and configure providers manually later in Settings → Models.",
   "onboarding.free_badge": "Official free · $0, unlimited",
   "onboarding.open_portal": "Open the Zhipu open platform ↗",

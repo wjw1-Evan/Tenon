@@ -250,7 +250,7 @@
   "onboarding.step_intro": "無料モデル",
   "onboarding.step_key": "キー取得",
   "onboarding.step_done": "完了",
-  "onboarding.intro": "Tenon は智譜（Zhipu）公式の無料モデル GLM-4.7-Flash にワンステップで接続できます——0 円・無制限、クレジットカード不要。",
+  "onboarding.intro": "Tenon は智譜（Zhipu）公式の無料モデル GLM-4.5-Flash にワンステップで接続できます——0 円・無制限、クレジットカード不要。",
   "onboarding.intro_note": "スキップして後から 設定 → モデル で手動設定することもできます。",
   "onboarding.free_badge": "公式無料 · 0 円・無制限",
   "onboarding.open_portal": "智譜オープンプラットフォームを開く ↗",
