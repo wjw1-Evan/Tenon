@@ -294,6 +294,12 @@ pub async fn serve(options: DaemonOptions) -> std::io::Result<DaemonHandle> {
                     Ok(_) => {}
                     Err(e) => tracing::warn!("会话归档失败: {e}"),
                 }
+                // v1.172 存储治理（§14.2）：归档后按空闲页阈值回收 SQLite 文件
+                match store.maybe_vacuum() {
+                    Ok(true) => tracing::info!("归档后 VACUUM 完成（空闲页超阈值）"),
+                    Ok(false) => {}
+                    Err(e) => tracing::warn!("归档后 VACUUM 失败: {e}"),
+                }
             }
         });
     }

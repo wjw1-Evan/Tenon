@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v1.171** |
-| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.156）· 2026-10-07（v1.157-v1.162）· 2026-10-08（v1.163-v1.171） |
+| 版本 | **v1.172** |
+| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.156）· 2026-10-07（v1.157-v1.162）· 2026-10-08（v1.163-v1.172） |
 | 状态 | 定稿（v1.10 决策闭环），M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 | 历史评审 | v0.1 / v0.3 两轮共 41 项、v1.0 复审 21 项问题的结论已全部并入本方案（过程文档已清理） |
@@ -546,6 +546,8 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 
 **子任务清单（v1.146，用户令「对话发布任务 主动创建子任务来执行」）**：`subtasks` 走会话循环内联分发（§9.8 #4 `laya_decide` 同款——不经 `execute_tool` 同步面），参数 `{items:[{title,status}]}`（1–12 项、title 非空 ≤200 字符）为**全量状态替换**——幂等且对模型漂移鲁棒，每次调用重发整张清单；校验失败返回错误提示、不改现有状态。分级语义：零工作区副作用（只写会话内计划状态），故为 A 级、只读会话可用；但不进只读先验轮白名单（§9.8 纯问答首轮无需清单）。每次调用先落 `subtasks` 事件（§14.2，payload `{items:[{title,status}]}`）再走常规工具事件与 `tool_calls` Trace 行。系统提示（§9.6）向模型写明使用时机：**≥2 个有序步骤的任务先建清单（建议 2–8 项、每项一句话），开始 / 完成一项即更新状态，任务收尾时全部 `done`；单步任务与纯问答不用**。子代理并行执行不在本工具语义内（§9.5 另行版本）；清单是执行进度的用户可见承载，不构成跳过验证 / 熔断的理由（§9.3 / §9.4 不变）。**进度呈现双常驻面（v1.148）**：线程输入区上方常驻进度卡（§7.5，会话内执行可见）+ 侧栏任务行进度徽标（§7.2，跨会话可见，`GET /projects` 会话行携带最新快照计数 §15）——两处同源最新 `subtasks` 快照，只读呈现不新增动作面。
 
+**输出截断（v1.172，§14.2 存储治理同步）**：shell / 直执类工具（run_tests / run_build / install_deps / git_push / create_pr）与 git_read（status / log / diff）的输出统一截 20k 字符（http_fetch / MCP 既有同口径），截断尾注向模型写明丢弃量与「更窄命令重取」建议；read_file 维持 §9.2 超 10MB 拒读语义不变。
+
 ### 9.3 事中防护
 
 | 机制 | 默认 | 说明 |
@@ -886,9 +888,11 @@ signature: "<sig>"
 | l4_chunks | id, project_id, path, symbol, start_line, end_line, text, embedding | L4 检索切片、行区间、文本与本地向量（sqlite-vec 演进路径，§10.1） |
 | memories | id, scope, project_id, kind, content, importance, embedding, source_session, created_at, updated_at, last_seen_at | L5 跨会话对话记忆（§10.1，v1.104）：project 层按 project_id 隔离；global 层仅 kind=preference，永不承载仓库内容 |
 
-事件类型枚举：`user_input / sensing / decision / model_delta / patch_applied / command_run / direct_action / diagnostics / checkpoint / compaction / rollback / unrollback / model_fallback / decider_call / error / session_title / memory_saved / subtasks`（direct_action 是 v1.89 C/D 直执审计：工具 / 级别 / 关键参数；rollback / unrollback 对应 §10.3 回滚与撤销回滚；model_delta 为 §9.6 合并后的模型增量（Final 的 usage / tool calls 仍只按权威 Final 入账）；decider_call 为 §9.8 Laya 本地判定：类型 / 结果 / 耗时，不含输入原文（v1.124 起 `origin` 标记来源：缺省 = daemon 自动集成点，`agent_tool` = 模型经 `laya_decide` 工具主动调用）；session_title 为 v1.59 对话标题生成完成（payload `{title}`，UI 据此即时刷新对话列表）；memory_saved 为 v1.104 L5 记忆提取入库完成（payload `{count, ids}`，不含记忆原文）；subtasks 为 v1.146 子任务清单状态（§9.2，payload `{items:[{title,status}]}` 全量快照，UI 每回合以最新一次为准渲染）；均入 Trace 可审计）。旧库中的 `approval_request / approval_decision / approval_timeout` 只读回放兼容，新运行不再产生。
+事件类型枚举：`user_input / sensing / decision / model_delta / patch_applied / command_run / direct_action / diagnostics / checkpoint / compaction / rollback / unrollback / model_fallback / model_retry / decider_call / error / session_title / memory_saved / subtasks`（direct_action 是 v1.89 C/D 直执审计：工具 / 级别 / 关键参数；rollback / unrollback 对应 §10.3 回滚与撤销回滚；model_fallback 为模型切换（payload `origin` 区分手动 `/model` 与 §9.1 自动恢复）；model_retry 为 v1.171 §9.1 自动恢复的瞬时重试（payload `{provider, model, attempt, delay_ms, error}`）；model_delta 为 §9.6 合并后的模型增量（Final 的 usage / tool calls 仍只按权威 Final 入账）；decider_call 为 §9.8 Laya 本地判定：类型 / 结果 / 耗时，不含输入原文（v1.124 起 `origin` 标记来源：缺省 = daemon 自动集成点，`agent_tool` = 模型经 `laya_decide` 工具主动调用）；session_title 为 v1.59 对话标题生成完成（payload `{title}`，UI 据此即时刷新对话列表）；memory_saved 为 v1.104 L5 记忆提取入库完成（payload `{count, ids}`，不含记忆原文）；subtasks 为 v1.146 子任务清单状态（§9.2，payload `{items:[{title,status}]}` 全量快照，UI 每回合以最新一次为准渲染）；均入 Trace 可审计）。旧库中的 `approval_request / approval_decision / approval_timeout` 只读回放兼容，新运行不再产生。
 
 **增长治理**（v1.93 接线）：events / tool_calls 冷热分层——热数据留 SQLite，关闭超 `archive.events_days`（默认 90 天，daemon 每日定时执行）的会话压缩归档至 `~/.tenon/archive/`（仍全本地、可检索回载）；model_usage 明细随会话归档，项目 / 会话聚合经 `project_usage_totals` / `session_usage_totals` 即时查询（按月 / 按日聚合表无消费方，已删）；approvals 表仅作 v1.89 前旧库兼容。**手动归档（v1.103）**：`sessions.archived_at` 非空即在侧栏隐藏、可随时还原，数据不出库；自动压缩归档扫描含已手动归档会话（老归档按 `events_days` 最终压缩出库）；手动删除为事务级联硬删（events / tool_calls / checkpoints / model_usage / approvals / session 行），shadow 快照不随删（gc 老化）。
+
+**输出与 payload 上限 + 空闲页回收（v1.172 存储治理）**：① **工具输出统一截断**——run_tests / run_build / install_deps / git_push / create_pr 的 stdout+stderr 合并内容截 20k 字符（与 http_fetch / MCP 既有口径一致），尾注写明丢弃量、模型需全文时改用更窄命令重取（§9.2 同步）；② **events.payload 单条硬上限 256KB**——超限整体替换为 `{payload_truncated:true, original_bytes, note}` 标记（append_event 层最后防线；事件链 seq 完整性与回滚不受影响——回滚依赖 checkpoint tree + 文件集，不依赖 payload 原文；UI 呈现降级为标记），executor 层截断后的常规事件不触达；③ **归档扫描覆盖全部状态**——`updated_at` 超期的非终态会话（崩溃残留的 running / 长期搁置的 paused）一并压缩归档（活跃会话 updated_at 随活动刷新永不命中），消灭僵尸会话永久占库；④ **归档后空闲页回收**——归档定时任务内 `freelist > 10% 总页数且 >64 页` 时执行 VACUUM（SQLite 删行不缩文件；节流随归档每日一次，避免热路径独占写）。model_delta 逐块行放大随会话归档整体移出；活跃会话的流式增量不合并（事件链重放语义优先）。
 
 ---
 

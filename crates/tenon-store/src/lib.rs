@@ -185,6 +185,12 @@ impl EventKind {
     }
 }
 
+/// v1.172 存储治理（§14.2）：events.payload 单条硬上限。工具输出在 executor
+/// 层已截断（20k 字符），这里是最后防线——patch / 合并预览等超大 JSON 整体
+/// 替换为标记。事件链 seq 完整性与回滚不受影响（回滚依赖 checkpoint tree +
+/// 文件集，不依赖 payload 原文）。
+const EVENT_PAYLOAD_MAX_BYTES: usize = 256 * 1024;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
     pub id: String,
@@ -1025,6 +1031,18 @@ impl Store {
     ) -> Result<Event> {
         let now = Self::now();
         let project_id = self.project_id_for_session(session_id);
+        // v1.172 存储治理（§14.2）：payload 单条硬上限的最后防线（executor 层
+        // 输出已先截断）。超限整体替换为标记——事件链 seq 完整性与回滚不受
+        // 影响（回滚依赖 checkpoint tree + 文件集，不依赖 payload 原文）。
+        let mut payload_owned = payload.clone();
+        let raw = payload.to_string();
+        if raw.len() > EVENT_PAYLOAD_MAX_BYTES {
+            payload_owned = serde_json::json!({
+                "payload_truncated": true,
+                "original_bytes": raw.len(),
+                "note": "payload 超上限被整体替换（§14.2 v1.172 存储治理）",
+            });
+        }
         // seq 分配 + 插入包进 BEGIN IMMEDIATE：多实例并存（壳 --no-lock 双开 /
         // CLI 与 daemon 并存，本文件 DDL 注释明示支持）时，SELECT MAX 与 INSERT
         // 间的空窗会让两个进程算出同一 seq，败者撞 UNIQUE(session_id, seq)
@@ -1044,7 +1062,7 @@ impl Store {
                     project_id,
                     seq,
                     kind.as_str(),
-                    payload.to_string(),
+                    payload_owned.to_string(),
                     now
                 ],
             )?;
@@ -1054,7 +1072,7 @@ impl Store {
                 project_id,
                 seq,
                 kind,
-                payload: payload.clone(),
+                payload: payload_owned,
                 created_at: now,
             })
         })();
@@ -1892,8 +1910,10 @@ impl Store {
         let cutoff = (Utc::now() - chrono::Duration::days(days as i64)).to_rfc3339();
         let stale: Vec<String> = {
             let mut stmt = self.conn.prepare(
-                "SELECT id FROM sessions
-                 WHERE status IN ('done','error','rolled_back') AND updated_at < ?1",
+                // v1.172 存储治理：全状态覆盖——updated_at 超期的非终态会话
+                // （崩溃残留 running / 长期搁置 paused）一并归档，消灭僵尸占库；
+                // 活跃会话 updated_at 随活动刷新永不命中。
+                "SELECT id FROM sessions WHERE updated_at < ?1",
             )?;
             let rows = stmt.query_map([&cutoff], |r| r.get::<_, String>(0))?;
             rows.collect::<std::result::Result<Vec<_>, _>>()?
@@ -1945,6 +1965,22 @@ impl Store {
             }
         }
         Ok(stale)
+    }
+
+    /// v1.172 存储治理（§14.2）：空闲页超阈值时 VACUUM 回收磁盘空间。
+    /// 归档 / 删除只产生空闲页不缩小文件；`freelist > 10% 总页数且 >64 页`
+    /// 才执行（高频小回收无收益且独占写锁）。返回是否执行了 VACUUM。
+    /// 调用方应持 store 锁且避开热路径（daemon 归档定时任务内调用）。
+    pub fn maybe_vacuum(&mut self) -> Result<bool> {
+        let pages: i64 = self.conn.query_row("PRAGMA page_count", [], |r| r.get(0))?;
+        let freelist: i64 = self
+            .conn
+            .query_row("PRAGMA freelist_count", [], |r| r.get(0))?;
+        if pages == 0 || freelist < 64 || freelist * 10 <= pages {
+            return Ok(false);
+        }
+        self.conn.execute_batch("VACUUM")?;
+        Ok(true)
     }
 }
 
@@ -2551,6 +2587,82 @@ mod tests {
             .exists());
         // 新会话不动
         assert_eq!(s.events(&fresh.id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn archive_covers_stale_non_terminal_sessions() {
+        // v1.172 存储治理：崩溃残留的非终态会话（Idle / running 系）超期同样
+        // 归档——原 `status IN ('done','error','rolled_back')` 放过僵尸会话。
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = mem();
+        let proj = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(proj.path().to_str().unwrap()).unwrap();
+        let zombie = s.create_session(&p.id, "mock").unwrap();
+        s.append_event(&zombie.id, EventKind::UserInput, &json!({}))
+            .unwrap();
+        // 保持默认非终态（Idle），仅把 updated_at 推回 100 天前
+        s.conn
+            .execute(
+                "UPDATE sessions SET updated_at = ?2 WHERE id = ?1",
+                params![
+                    zombie.id,
+                    (Utc::now() - chrono::Duration::days(100)).to_rfc3339()
+                ],
+            )
+            .unwrap();
+        let archived = s.archive_old_sessions(90, dir.path()).unwrap();
+        assert_eq!(archived, vec![zombie.id.clone()]);
+        assert!(s.events(&zombie.id).unwrap().is_empty());
+        assert!(dir
+            .path()
+            .join(format!("{}.session.jsonl.gz", zombie.id))
+            .exists());
+    }
+
+    #[test]
+    fn payload_over_cap_replaced_with_marker() {
+        // v1.172 存储治理：payload 超 256KB 整体替换为标记；正常 payload 不触达。
+        let mut s = mem();
+        let proj = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(proj.path().to_str().unwrap()).unwrap();
+        let sid = s.create_session(&p.id, "mock").unwrap();
+        let big = "x".repeat(300 * 1024);
+        let ev = s
+            .append_event(&sid.id, EventKind::UserInput, &json!({ "blob": big }))
+            .unwrap();
+        assert_eq!(ev.payload["payload_truncated"], true);
+        assert!(ev.payload["original_bytes"].as_u64().unwrap() > 256 * 1024);
+        // 落库与返回一致（读回也是标记）
+        let events = s.events(&sid.id).unwrap();
+        assert_eq!(events[0].payload["payload_truncated"], true);
+
+        let ev2 = s
+            .append_event(&sid.id, EventKind::Decision, &json!({ "intent": "ok" }))
+            .unwrap();
+        assert_eq!(ev2.payload["intent"], "ok");
+        assert!(ev2.payload.get("payload_truncated").is_none());
+    }
+
+    #[test]
+    fn maybe_vacuum_runs_only_past_threshold() {
+        // v1.172 存储治理：空闲页低于阈值不动作；制造大表后删除应触发。
+        let mut s = mem();
+        assert!(!s.maybe_vacuum().unwrap(), "空库 / 低空闲页应跳过");
+        let proj = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(proj.path().to_str().unwrap()).unwrap();
+        let sid = s.create_session(&p.id, "mock").unwrap();
+        for i in 0..300 {
+            let blob = "y".repeat(20_000);
+            s.append_event(
+                &sid.id,
+                EventKind::UserInput,
+                &json!({ "blob": blob, "i": i }),
+            )
+            .unwrap();
+        }
+        s.conn.execute("DELETE FROM events", []).unwrap();
+        assert!(s.maybe_vacuum().unwrap(), "空闲页超阈值应触发 VACUUM");
+        assert!(!s.maybe_vacuum().unwrap(), "VACUUM 后空闲页归零应跳过");
     }
 
     #[test]

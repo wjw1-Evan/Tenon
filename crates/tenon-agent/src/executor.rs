@@ -12,6 +12,24 @@ use tenon_fs::{FileOps, FileService};
 use tenon_sandbox::WriteGuard;
 use tenon_sandbox::{exec_argv, exec_command};
 
+/// v1.172 存储治理（§14.2 / §9.2）：shell / 直执类工具输出统一截断上限。
+/// 与 http_fetch / MCP 既有口径一致（20k 字符）——双上限中的模型上下文侧，
+/// 事件存储侧由 append_event 的 payload 硬上限兜底。
+pub const TOOL_OUTPUT_MAX_CHARS: usize = 20_000;
+
+/// 截断工具输出（trim 后按字符截断，尾注写明丢弃量与重取建议）。
+/// 先 redact 后截断的调用方（git_push / create_pr）保证密钥模式匹配不受截断影响。
+pub fn truncate_output(s: &str) -> String {
+    let trimmed = s.trim();
+    let total = trimmed.chars().count();
+    if total <= TOOL_OUTPUT_MAX_CHARS {
+        return trimmed.to_string();
+    }
+    let kept: String = trimmed.chars().take(TOOL_OUTPUT_MAX_CHARS).collect();
+    let dropped = total - TOOL_OUTPUT_MAX_CHARS;
+    format!("{kept}\n…[输出已截断：丢弃 {dropped} 字符——请用更窄的命令 / 过滤参数重取所需片段]")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolOutput {
     pub ok: bool,
@@ -297,7 +315,7 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                 _ => tenon_fs::git::GitReadKind::Status,
             };
             match tenon_fs::git::git_read(&ctx.root, kind, &[]) {
-                Ok(out) => ToolOutput::ok(tenon_core::redact::redact(&out)),
+                Ok(out) => ToolOutput::ok(truncate_output(&tenon_core::redact::redact(&out))),
                 Err(e) => ToolOutput::err(format!("git 失败: {e}")),
             }
         }
@@ -486,12 +504,12 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
             match exec_command(&cmd, &ctx.command_cwd, ctx.command_timeout, &spec) {
                 Ok(out) => ToolOutput {
                     ok: out.success(),
-                    content: format!(
+                    content: truncate_output(&format!(
                         "$ {cmd}\nexit={}\n{}\n{}",
                         out.exit_code.unwrap_or(-1),
                         out.stdout.trim(),
                         out.stderr.trim()
-                    ),
+                    )),
                     changed_files: vec![],
                     lines_changed: None,
                     exit_code: out.exit_code,
@@ -518,12 +536,12 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
             match exec_command(cmd, &ctx.command_cwd, ctx.command_timeout, &spec) {
                 Ok(out) => ToolOutput {
                     ok: out.success(),
-                    content: format!(
+                    content: truncate_output(&format!(
                         "$ {cmd}\nexit={}\n{}\n{}",
                         out.exit_code.unwrap_or(-1),
                         out.stdout.trim(),
                         out.stderr.trim()
-                    ),
+                    )),
                     changed_files: vec![],
                     lines_changed: None,
                     exit_code: out.exit_code,
@@ -726,10 +744,10 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
             match exec_command(&command, &ctx.root, ctx.command_timeout, &spec) {
                 Ok(out) => ToolOutput {
                     ok: out.success(),
-                    content: tenon_core::redact::redact(&format!(
+                    content: truncate_output(&tenon_core::redact::redact(&format!(
                         "$ {command}\n{}\n{}",
                         out.stdout, out.stderr
-                    )),
+                    ))),
                     changed_files: vec![],
                     lines_changed: None,
                     exit_code: out.exit_code,
@@ -805,7 +823,7 @@ fn create_pull_request(ctx: &ToolContext, args: &serde_json::Value) -> ToolOutpu
             );
             ToolOutput {
                 ok: out.success() && !out.timed_out,
-                content: tenon_core::redact::redact(&text),
+                content: truncate_output(&tenon_core::redact::redact(&text)),
                 changed_files: vec![],
                 lines_changed: None,
                 exit_code: out.exit_code,
@@ -880,6 +898,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
         (dir, c)
+    }
+
+    #[test]
+    fn truncate_output_caps_and_annotates() {
+        // v1.172：短输出原样（trim）；超限截 20k 字符 + 尾注写明丢弃量
+        assert_eq!(truncate_output("  ok  "), "ok");
+        let big = "a".repeat(TOOL_OUTPUT_MAX_CHARS + 500);
+        let out = truncate_output(&big);
+        assert!(out.chars().count() > TOOL_OUTPUT_MAX_CHARS);
+        assert!(
+            out.chars().take(TOOL_OUTPUT_MAX_CHARS).all(|c| c == 'a'),
+            "保留前 20k 字符"
+        );
+        assert!(out.contains("丢弃 500 字符"), "尾注写明丢弃量");
     }
 
     #[test]
@@ -1058,10 +1090,11 @@ mod tests {
         c.command_cwd = nested.clone();
         let out = execute_tool(&c, "run_tests", &serde_json::json!({"command": "pwd"}));
         assert!(out.ok, "{out:?}");
+        // v1.172 起内容经 truncate_output（整体 trim，尾部换行去除）
         assert_eq!(
             out.content,
             format!(
-                "$ pwd\nexit=0\n{}\n",
+                "$ pwd\nexit=0\n{}",
                 nested.canonicalize().unwrap().display()
             )
         );
