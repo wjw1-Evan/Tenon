@@ -6,6 +6,7 @@
 //! - 会话 / 回滚 / 文件 / 搜索 / 成本端点一一对应 §15 表。
 
 mod auth;
+pub mod exec;
 mod lsp_edit;
 mod pairing;
 mod routes;

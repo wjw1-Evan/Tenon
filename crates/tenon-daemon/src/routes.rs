@@ -147,7 +147,7 @@ fn api_err(status: StatusCode, msg: impl Into<String>) -> Response {
 type ApiResult<T> = Result<T, (StatusCode, String)>;
 
 /// 共用的 project-scoped AgentSession 工厂。
-async fn create_agent_session(
+pub(crate) async fn create_agent_session(
     state: &Arc<DaemonState>,
     project: &tenon_store::Project,
     provider: Arc<dyn tenon_models::ModelProvider>,

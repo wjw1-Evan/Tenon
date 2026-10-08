@@ -3719,11 +3719,19 @@ async fn project_lsp_proxy_endpoint() {
         .send()
         .await
         .unwrap();
-    // 200（环境装了 ts 语言包）或 503 PackUnavailable（v1.167 起错误体附稳定
-    // 机器码 language_pack_unavailable，UI 按码降级、不依赖中文文案匹配）
+    // 200（环境装了 ts 语言包且目标文件可读）或 503（语言包缺失 → PackUnavailable
+    // 附稳定机器码 language_pack_unavailable，v1.167；语言包在但请求本身失败——
+    // 如目标文件不存在 → 无 code 的通用 503）。断言只钉死 v1.167 契约：
+    // 带 code 的 503 必须是 language_pack_unavailable；不钉死环境是否装包。
     if r.status() == 503 {
         let body: serde_json::Value = r.json().await.unwrap();
-        assert_eq!(body["code"], "language_pack_unavailable");
+        match body.get("code").and_then(|c| c.as_str()) {
+            Some(code) => assert_eq!(code, "language_pack_unavailable"),
+            None => assert!(
+                body.get("error").and_then(|e| e.as_str()).is_some(),
+                "503 错误体必带 error 文案: {body}"
+            ),
+        }
     } else {
         assert_ne!(r.status(), 401);
     }

@@ -5,6 +5,8 @@
 //!       `[--port <n>] [--token <t>]`（后两项开发热重载专用：固定端口 / token）
 //!       `[--web]`（Web 一键启动 v1.76：UI 产物预检 + URL 直出 + 自动开浏览器；
 //!       已有实例存活时复用 endpoint 直接打开浏览器后退出）
+//!       `[--exec "任务"]`（headless 一次性执行 v1.181：非交互跑完即退，
+//!       退出码 Done=0 / Paused=1 / Error=1；不取单实例锁、不起 HTTP）
 
 use tenon_config::Config;
 use tenon_daemon::{serve, DaemonOptions, InstanceLock};
@@ -32,6 +34,8 @@ async fn main() -> anyhow::Result<()> {
     let mut bind_port: Option<u16> = None;
     let mut fixed_token: Option<String> = None;
     let mut web = false;
+    // v1.181 §6.2 headless：`--exec "任务"` 非交互跑完即退（缺省 cwd）
+    let mut exec_task: Option<String> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -45,6 +49,13 @@ async fn main() -> anyhow::Result<()> {
             "--no-lock" => no_lock = true,
             "--lan" => lan_bind = true,
             "--web" => web = true,
+            "--exec" => match args.next() {
+                Some(t) if !t.is_empty() => exec_task = Some(t),
+                _ => {
+                    eprintln!("--exec 需要任务文本");
+                    std::process::exit(2);
+                }
+            },
             // 开发热重载：UI DEV 回落约定 127.0.0.1:9876 + token "dev"
             "--port" => match args.next().and_then(|v| v.parse::<u16>().ok()) {
                 Some(p) => bind_port = Some(p),
@@ -169,6 +180,17 @@ async fn main() -> anyhow::Result<()> {
         market_base: None,
         watch_poll_interval: None,
     };
+    // --exec headless（v1.181 §6.2）：复用上面 options（含配置发现链），不取锁、
+    // 不起 HTTP，与常驻 daemon 经 SQLite 多实例语义并存（§14.2）；stdout 仅事件行
+    if let Some(task) = exec_task {
+        let state = std::sync::Arc::new(tenon_daemon::DaemonState::new(options).await);
+        let project_path = project.unwrap_or_else(|| ".".into());
+        let outcome = tenon_daemon::exec::run_exec(state, &project_path, "", &task, |line| {
+            println!("{line}")
+        })
+        .await?;
+        std::process::exit(outcome.exit_code);
+    }
     if let Some(proj) = project {
         let mut store = tenon_store::Store::open(
             &options

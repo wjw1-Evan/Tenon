@@ -262,6 +262,8 @@ DeepSeek 开源的通用 agent harness（`dsh`，pnpm/TS monorepo，Cordis 插�
 | 语言服务器进程 | 每项目每语言一个，沙箱化 | 项目运行时活跃期 |
 | 插件进程 | 外部进程插件 / MCP | 按需 |
 
+**headless 一次性执行（v1.181）**：`tenon-daemon --exec "任务" [--project <路径>]` 非交互跑完即退（缺省 cwd）——不取单实例锁、不起 HTTP；复用全量会话链路（同一工具目录 / 降级隔离 / 防护 / 证据链），事件以人类可读行打 stdout（日志走 stderr）；会话与事件照常落库——脚本任务在 UI 会话列表可见可审计；退出码 Done=0 / Paused=1 / Error=1（计划模式暂停亦 1，伴 stderr 提示）。与常驻 daemon 并存：SQLite 多实例语义（§14.2），但 LSP / 沙箱运行时不共享（各自持有）。
+
 **生命周期规则**：动态端口 + 握手；单实例锁（多窗口 / 多项目共享，daemon 不是“单项目进程”）；`--project` 仅作为首屏种子，运行中可通过项目 API 追加打开；退出时清理全部子进程；UI 崩溃不丢会话（状态全在 daemon + 磁盘）。
 
 **GitHub 发布与桌面更新（v1.90，参考 Codex 桌面端后台更新体验）**：tag `v*` 推送触发 GitHub Actions 的 macOS arm64 / macOS x86_64 / Linux x86_64 / Windows x86_64 矩阵。每个构建先按目标三件套产出 release daemon + `ui/dist` + Tauri 包，Tauri Updater 私钥只在 Actions Secret 中出现，构建器生成安装包与其 minisign `.sig`；发布任务聚合为静态 `latest.json`（`version` / `notes` / `pub_date` / `platforms.<os-arch>.{url,signature}`），连同安装包和签名上传到当前 GitHub Release。客户端固定消费该仓库 `releases/latest/download/latest.json`：GitHub 的 HTTPS 保证传输完整性，Tauri minisign 公钥内置于桌面壳保证发布者真实性；任一签名失败即中止且不触达安装器。桌面壳启动即检查、每 6 小时至多一次（v1.90 起 5 分钟读 daemon `/settings` 判 `update.channel` 的出网门槛随 v1.154 通道移除一并删除）。发现新版本后后台下载校验，**下载完成后不自动重启**——由 UI 通知卡提示、用户单击「立即更新」才安装重启（v1.154，见下）。发布 tag 必须与 Cargo workspace / `tauri.conf.json` 语义化版本一致。v1.86 的 daemon-only 执行器继续服务无壳 Web / headless；桌面壳 spawn 时设置 `TENON_UPDATE_SURFACE=shell`，daemon auto 循环在该表面让位给完整包更新，避免同时下载 sidecar 与完整包。
