@@ -6,7 +6,7 @@
 //! 与 v1.187 前的 run_parallel 不同：批末不清理 worktree（清了子改动即丢）。
 //! 递归护栏：子会话不再注入编排器（depth=0 才注入），spawn 深度恒为 1。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -38,6 +38,31 @@ fn child_task_id(parent_session_id: &str, index: usize) -> String {
     format!("sub-{tail}-{index}")
 }
 
+/// §9.5 v1.211：子 worktree 验收——探测测试命令并在沙箱内运行
+/// （Offline 断网，120s 超时；与 §9.4 验证同规）。返回证据文本。
+fn verify_child_worktree(wt: &Path) -> String {
+    let Some(cmd) = tenon_agent::executor::detect_test_command(wt) else {
+        return "无测试命令，未验收".to_string();
+    };
+    let spec = tenon_sandbox::SandboxSpec::Offline {
+        project_root: wt.to_path_buf(),
+    };
+    match tenon_sandbox::exec_command(&cmd, wt, std::time::Duration::from_secs(120), &spec) {
+        Ok(out) => {
+            if out.success() {
+                format!("tests exit=0 ({cmd})")
+            } else {
+                let tail: String = out.stdout.lines().last().unwrap_or("").to_string();
+                format!(
+                    "tests FAILED (exit={}): {tail}",
+                    out.exit_code.unwrap_or(-1)
+                )
+            }
+        }
+        Err(e) => format!("测试运行失败: {e}"),
+    }
+}
+
 #[async_trait::async_trait]
 impl SubagentOrchestrator for DaemonSubagents {
     async fn run_batch(
@@ -66,6 +91,7 @@ impl SubagentOrchestrator for DaemonSubagents {
                 status: "rejected".into(),
                 answer: reason.clone(),
                 worktree: String::new(),
+                verification: String::new(),
             });
         }
 
@@ -83,6 +109,7 @@ impl SubagentOrchestrator for DaemonSubagents {
                             status: "error".into(),
                             answer: format!("受管 worktree 创建失败: {e}"),
                             worktree: String::new(),
+                            verification: String::new(),
                         });
                         continue;
                     }
@@ -107,6 +134,7 @@ impl SubagentOrchestrator for DaemonSubagents {
                             status: "error".into(),
                             answer: format!("子会话创建失败: {message}"),
                             worktree: String::new(),
+                            verification: String::new(),
                         });
                         continue;
                     }
@@ -143,12 +171,20 @@ impl SubagentOrchestrator for DaemonSubagents {
                     tenon_agent::session::TaskOutcome::Paused { reason, .. } => ("paused", reason),
                     tenon_agent::session::TaskOutcome::Error(e) => ("error", e),
                 };
+                // §9.5 v1.211 验收：Done 子任务在其 worktree 内沙箱跑测试，
+                // 证据随结果回传主对话（失败 → 主对话模型可再分发修复）
+                let verification = if status == "done" {
+                    verify_child_worktree(Path::new(&wt_path))
+                } else {
+                    "任务未完成，跳过验收".to_string()
+                };
                 results.push(SubagentResult {
                     task_id,
                     session_id,
                     status: status.into(),
                     answer,
                     worktree: wt_path,
+                    verification,
                 });
             }
         }

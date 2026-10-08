@@ -166,6 +166,9 @@ pub struct SubagentResult {
     pub answer: String,
     /// 受管 worktree 路径（合并 / 丢弃走子会话既有收尾端点）
     pub worktree: String,
+    /// v1.211 验收证据：`tests exit=0 (npm test)` / `tests FAILED (exit=1)` /
+    /// `无测试命令，未验收`（仅 Done 子任务验收）
+    pub verification: String,
 }
 
 /// v1.190 §9.5：子代理编排器——daemon 侧实现（worktree 池 + 子会话登记 +

@@ -1578,6 +1578,7 @@ async fn spawn_subagents_dispatches_to_orchestrator() {
                 status: "done".into(),
                 answer: format!("子任务 {i} 完成"),
                 worktree: format!("/wt/{i}"),
+                verification: "tests exit=0".to_string(),
             };
             Ok(vec![mk(0), mk(1)])
         }

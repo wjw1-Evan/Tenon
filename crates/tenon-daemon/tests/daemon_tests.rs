@@ -6980,8 +6980,10 @@ async fn subagent_orchestrator_runs_children_in_worktrees() {
         .iter()
         .find(|r| r.status == "rejected")
         .expect("相交任务应被拒绝");
+    // §9.5 v1.211 验收字段存在（无测试 fixture → 未验收标注）
     assert!(rejected.session_id.is_empty(), "被拒任务不创建子会话");
     assert!(done.session_id.len() >= 20, "子会话 id: {done:?}");
+    assert!(!done.verification.is_empty(), "验收证据字段: {done:?}");
     // 子会话已登记进 state.sessions（合并 / 丢弃端点由此可达）
     {
         let sessions = state.sessions.lock().await;

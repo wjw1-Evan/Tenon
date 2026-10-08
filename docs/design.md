@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | **v1.210** |
+| 版本 | **v1.204** |
 | 日期 | 2026-10-08 |
 | 状态 | 定稿，M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
@@ -362,8 +362,6 @@ GlobalScheduler（全局并发 / 成本 / 通知）
 
 三区均可全屏 / 折叠；布局按项目记忆。**线程主视图（v1.78 复刻 Codex app 形态；v1.110 右区退场后恒满宽；v1.137/v1.138 的源码主区替换与全屏弹层两案均当晚即撤，v1.139 起主区恒为任务对话）**：代理对话（线程）恒为弹性主区（flex:1）——v1.107/v1.108 曾在右侧停靠源码树与编辑器审查窗格，v1.110 应用户「源码在右侧显示太占地方」整体退场：右区、rightWidth 记忆与分隔把手全链删除，线程直接占满侧栏以外全宽；源码管理见「侧栏源码区」。**编辑器应用内浮层（v1.110，用户令「单击文件打开单独窗口进行编辑」；双参考方案选定应用内浮层、否决真多窗口；v1.139 随侧栏源码区回归）**：侧栏源码区单击文件行 / 模糊打开（Cmd+P）/ 搜索命中 / 符号与诊断跳转任一入口打开文件即弹出全屏编辑器浮层（多标签 / 分栏 / AI 行角标 / 自动保存 / 行内指令 Cmd+I 语义不变，§8.5；z 层与合并浮层同级、不透明背景），浮层头部 ✕ 关闭返回线程，最后一个 tab 关闭浮层随之收起；跟随模式不抢屏（v1.113：只就绪数据，浮层由用户主动打开）；activePath 不随浮层关闭清空——底部诊断 / Diff 仍指向最近活动文件；打开 tab 仍经项目 ui-state 持久化，重启后不自动弹浮层（点文件再现）。**文件拖入对话框（v1.110；v1.139 补全文件夹）**：源码区文件 / 文件夹行可拖拽（HTML5 私有 MIME），投到任务输入框即在输入末尾插入 `@路径` 引用（agent 经 read_file / list_dir 自主读取；本地项目文件不做附件上传），dragover 输入框描边高亮；树内行间拖拽仍为移动语义（v1.72）。项目切换器可以是顶栏下拉，也可以把另一个项目停靠为独立分栏 / 窗口；每个窗格维护独立 active `project_id`。底部不含「项目任务」页（v1.60 移除 v1.37 页面）：跨项目会话状态由各项目代理面板与项目行徽标呈现（v1.87 全局活动条已随 v1.98 移除），跨项目并发 / 成本仍由 GlobalScheduler 统一调度。**底部面板默认收起（v1.78，Codex 形态无常驻底栏；v1.107 底部 tabs 收敛为时间轴 / 轨迹 / 评估 / 终端（v1.197：项目级用户 shell 终端，xterm.js，项目级单实例、WS 票据鉴权、运行时关闭即回收）——「源码」tab 先迁 v1.107 右区源码树、随 v1.110 右区退场下线，bottomTab 枚举删 source、旧 ui-state 值回退 timeline）**：`timelineOpen` 初始 false；开合有可见入口（v1.61）——展开态 tabs 行右端为收起按钮，收起后底部保留细条（显示当前 bottom tab 名），点击细条或 Cmd/Ctrl+J、命令面板恢复展开；项目 ui-state 记忆优先于新默认（§7.2 项目状态持久化）。
 
-**思考过程显示（v1.210，Codex 形态）**：推理模型的思考内容（OpenAI 兼容 `reasoning_content` / Anthropic `thinking`）不再混入正文流——独立 `reasoning_delta` 事件（§14.2）持久化 + 推送，会话流以可折叠「思考过程」卡片呈现：思考中展开实时文本，正文开始输出后自动收起（可点开展开）；非推理模型无此卡片。
-
 **输入草稿持久化（v1.177）**：会话输入框草稿防抖 600ms 写 localStorage（`tenon:drafts`：`drafts` 表 = 草稿态 per-project 文本——v1.126 多项目互不串扰语义的持久化，`sessions` 表 = 会话态 per-session 输入缓冲）——刷新 / 重启恢复续写；发送成功即清除对应条目（草稿态删 project 键，会话态置空）；单条 ≤20k 字符、每表 ≤50 条按写入序淘汰，配额满 / 隐私模式静默放弃不提示。
 
 **视口自适应（v1.74）**：布局随视口宽度分三档自适应（`useViewport` resize 监听，档位判定与 clamp 为 `lib/viewport.ts` 纯函数）。三区结构在**宽屏（≥1180px）**不变；**中屏（800–1179px）**守护收敛——左 / 底栏尺寸在渲染期按视口比例 clamp（左栏 ≤24vw、下限 160px；底栏 ≤40vh、下限 100px；v1.110 移除右栏，effectiveRight 清除），clamp 只作用于渲染、不改写用户记忆尺寸与项目 ui-state，回宽屏即复原；**窄屏（<800px，半屏窗口 / 小屏设备）**浮层模式（v1.78 同步：线程恒为在流主区）——工作区转 compact，侧栏改为互斥浮层（绝对定位覆盖主区 + 遮罩，宽 ≤82vw、下限 220px），代理线程留在文档流占据主区（会话与回滚是核心动线，v1.74「进入窄屏默认展开代理浮层」随之取消），侧栏经 rail 唤出（点视图切浮层、同视图再点收起），源码工作台统一走弹出层（v1.138，与视口无关，v1.78 窄屏编辑器互斥浮层档取消），遮罩点击收起；浮层开合不写持久化状态——`sidebarOpen` 与项目 ui-state 不被窄屏污染，跨档位往返原样恢复；窄屏下编辑器分屏渲染期禁用（单栏），bottom-tabs 横向滚动，设置面板 <640px 单列表单，顶栏下拉 ≤34vw；命令面板 / 文件查找 / 模型选择等浮层按 min(内容宽, 94vw) 自适应。
@@ -399,8 +397,6 @@ GlobalScheduler（全局并发 / 成本 / 通知）
 | Cmd/Ctrl+/ | 快捷键速查表（§7.5，v1.167） |
 
 ### 7.5 设计系统要点
-
-- **显示名称（v1.209）**：用户可见名称统一为 **Tenon Harness**（窗口标题 / 启动屏 / 空编辑水印 / 目录选择框 / OS 通知回退标题）；产品代号 Tenon、包标识 dev.tenonide.tenon 与正文术语不变；
 
 - **状态色**：感知（蓝）、执行（黄）、验证（紫）、风险直执（橙）、失败（红）、完成（绿）；
 - **核心组件**：会话流卡片、证据卡片、直执风险卡、诊断条、AI 修改高亮区、时间轴节点、语言包安装卡；
@@ -958,11 +954,9 @@ signature: "<sig>"
 | l4_chunks | id, project_id, path, symbol, start_line, end_line, text, embedding | L4 检索切片、行区间、文本与本地向量（sqlite-vec 演进路径，§10.1） |
 | memories | id, scope, project_id, kind, content, importance, embedding, source_session, created_at, updated_at, last_seen_at | L5 跨会话对话记忆（§10.1，v1.104）：project 层按 project_id 隔离；global 层仅 kind=preference，永不承载仓库内容 |
 
-事件类型枚举：`user_input / sensing / decision / model_delta / patch_applied / command_run / direct_action / diagnostics / checkpoint / compaction / rollback / unrollback / model_fallback / model_retry / decider_call / error / session_title / memory_saved / subtasks`（direct_action 是 v1.89 C/D 直执审计：工具 / 级别 / 关键参数；rollback / unrollback 对应 §10.3 回滚与撤销回滚；model_fallback 为模型切换（payload `origin` 区分手动 `/model` 与 §9.1 自动恢复）；model_retry 为 v1.171 §9.1 自动恢复的瞬时重试（payload `{provider, model, attempt, delay_ms, error}`）；plan_submitted 为 v1.179 计划模式计划提交（§9.2，payload `{items:[string]}`，会话随即转 PAUSED 待批准）；reasoning_delta 为 v1.210 思考过程流增量（payload `{text}`，与 model_delta 同拐合档中）；hook_run 为 v1.180 用户 hooks 回调记录（§13.6，payload `{event, command, exit_code, duration_ms, action}`，不含参数原文）；model_delta 为 §9.6 合并后的模型增量（Final 的 usage / tool calls 仍只按权威 Final 入账）；decider_call 为 §9.8 Laya 本地判定：类型 / 结果 / 耗时，不含输入原文（v1.124 起 `origin` 标记来源：缺省 = daemon 自动集成点，`agent_tool` = 模型经 `laya_decide` 工具主动调用）；session_title 为 v1.59 对话标题生成完成（payload `{title}`，UI 据此即时刷新对话列表）；memory_saved 为 v1.104 L5 记忆提取入库完成（payload `{count, ids}`，不含记忆原文）；subtasks 为 v1.146 子任务清单状态（§9.2，payload `{items:[{title,status}]}` 全量快照，UI 每回合以最新一次为准渲染）；均入 Trace 可审计）。旧库中的 `approval_request / approval_decision / approval_timeout` 只读回放兼容，新运行不再产生。
+事件类型枚举：`user_input / sensing / decision / model_delta / patch_applied / command_run / direct_action / diagnostics / checkpoint / compaction / rollback / unrollback / model_fallback / model_retry / decider_call / error / session_title / memory_saved / subtasks`（direct_action 是 v1.89 C/D 直执审计：工具 / 级别 / 关键参数；rollback / unrollback 对应 §10.3 回滚与撤销回滚；model_fallback 为模型切换（payload `origin` 区分手动 `/model` 与 §9.1 自动恢复）；model_retry 为 v1.171 §9.1 自动恢复的瞬时重试（payload `{provider, model, attempt, delay_ms, error}`）；plan_submitted 为 v1.179 计划模式计划提交（§9.2，payload `{items:[string]}`，会话随即转 PAUSED 待批准）；hook_run 为 v1.180 用户 hooks 回调记录（§13.6，payload `{event, command, exit_code, duration_ms, action}`，不含参数原文）；model_delta 为 §9.6 合并后的模型增量（Final 的 usage / tool calls 仍只按权威 Final 入账）；decider_call 为 §9.8 Laya 本地判定：类型 / 结果 / 耗时，不含输入原文（v1.124 起 `origin` 标记来源：缺省 = daemon 自动集成点，`agent_tool` = 模型经 `laya_decide` 工具主动调用）；session_title 为 v1.59 对话标题生成完成（payload `{title}`，UI 据此即时刷新对话列表）；memory_saved 为 v1.104 L5 记忆提取入库完成（payload `{count, ids}`，不含记忆原文）；subtasks 为 v1.146 子任务清单状态（§9.2，payload `{items:[{title,status}]}` 全量快照，UI 每回合以最新一次为准渲染）；均入 Trace 可审计）。旧库中的 `approval_request / approval_decision / approval_timeout` 只读回放兼容，新运行不再产生。
 
 **增长治理**（v1.93 接线）：events / tool_calls 冷热分层——热数据留 SQLite，关闭超 `archive.events_days`（默认 90 天，daemon 每日定时执行）的会话压缩归档至 `~/.tenon/archive/`（仍全本地、可检索回载）；model_usage 明细随会话归档，项目 / 会话聚合经 `project_usage_totals` / `session_usage_totals` 即时查询（按月 / 按日聚合表无消费方，已删）；approvals 表仅作 v1.89 前旧库兼容。**手动归档（v1.103）**：`sessions.archived_at` 非空即在侧栏隐藏、可随时还原，数据不出库；自动压缩归档扫描含已手动归档会话（老归档按 `events_days` 最终压缩出库）；手动删除为事务级联硬删（events / tool_calls / checkpoints / model_usage / approvals / session 行），shadow 快照不随删（gc 老化）。
-
-**连接与 pragma（v1.207 性能）**：每连接 WAL + synchronous=NORMAL（崩溃不丢事务，仅掉电可能丢最后一次 checkpoint 前写入——事件源源每回合多次 append_event 的吞吐标准搭配）+ cache_size 8MB（事件 / l4_chunks 热页常驻）；
 
 **输出与 payload 上限 + 空闲页回收（v1.172 存储治理）**：① **工具输出统一截断**——run_tests / run_build / install_deps / git_push / create_pr 的 stdout+stderr 合并内容截 20k 字符（与 http_fetch / MCP 既有口径一致），尾注写明丢弃量、模型需全文时改用更窄命令重取（§9.2 同步）；② **events.payload 单条硬上限 256KB**——超限整体替换为 `{payload_truncated:true, original_bytes, note}` 标记（append_event 层最后防线；事件链 seq 完整性与回滚不受影响——回滚依赖 checkpoint tree + 文件集，不依赖 payload 原文；UI 呈现降级为标记），executor 层截断后的常规事件不触达；③ **归档扫描覆盖全部状态**——`updated_at` 超期的非终态会话（崩溃残留的 running / 长期搁置的 paused）一并压缩归档（活跃会话 updated_at 随活动刷新永不命中），消灭僵尸会话永久占库；④ **归档后空闲页回收**——归档定时任务内 `freelist > 10% 总页数且 >64 页` 时执行 VACUUM（SQLite 删行不缩文件；节流随归档每日一次，避免热路径独占写）。model_delta 逐块行放大随会话归档整体移出；活跃会话的流式增量不合并（事件链重放语义优先）。
 
