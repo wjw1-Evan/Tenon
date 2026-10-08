@@ -3541,8 +3541,10 @@ async fn verify_model(State(_state): State<Arc<DaemonState>>, Json(body): Json<V
     // 由集成测试在 mock 上游捕获原始 body 断言长尾不得出现
     req.temperature = 0.7;
     req.reasoning_effort = Some("low".into());
+    // 35s：glm-4.5-flash 免费档实测响应 14-25s（v1.176），15s 会把慢响应
+    // 误判为网络错误
     let provider = tenon_models::OpenAiCompatProvider::new("verify", &base_url, &api_key, None)
-        .with_timeout(std::time::Duration::from_secs(15));
+        .with_timeout(std::time::Duration::from_secs(35));
     let started = std::time::Instant::now();
     let result = provider.chat(&req).await;
     let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -3559,6 +3561,12 @@ async fn verify_model(State(_state): State<Arc<DaemonState>>, Json(body): Json<V
                 tenon_models::ProviderError::Http { status, body } => {
                     let short: String = body.chars().take(300).collect();
                     format!("HTTP {status}: {short}")
+                }
+                // 超时单独成文案（免费档响应慢是常态，v1.176），其余网络错误原样透出
+                tenon_models::ProviderError::Network(msg)
+                    if msg.contains("operation was timed out") || msg.contains("timed out") =>
+                {
+                    "上游响应超时（免费档响应较慢，请稍后重试）".to_string()
                 }
                 other => other.to_string(),
             };
