@@ -11,6 +11,8 @@ export interface SaveNowDeps {
   getContent: (path: string) => string | null;
   write: (path: string, content: string) => Promise<void>;
   onSaved: (path: string) => void;
+  /** 写盘失败回调（v1.167 通知接入）：失败保留未保存圆点语义不变。 */
+  onError?: (path: string, error: unknown) => void;
 }
 
 export async function saveNow(path: string, deps: SaveNowDeps): Promise<void> {
@@ -24,7 +26,8 @@ export async function saveNow(path: string, deps: SaveNowDeps): Promise<void> {
   try {
     await deps.write(path, content);
     deps.onSaved(path);
-  } catch {
-    // 写盘失败不回滚状态：内容仍在编辑器中，下次编辑 / 手动保存重试
+  } catch (error) {
+    // 写盘失败不回滚状态：内容仍在编辑器中，下次编辑或手动保存重试
+    deps.onError?.(path, error);
   }
 }

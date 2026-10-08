@@ -16,6 +16,7 @@ import { diffFromPatchEvent } from "./DiffPanel";
 import { aiLinesFromDiff } from "../lib/aiLines";
 import { ModelRoutingPanel } from "./ModelRoutingPanel";
 import { markWorkspaceInputReady } from "../lib/performance";
+import { toast } from "../lib/toast";
 
 export interface DirtyConflictView {
   path: string;
@@ -600,7 +601,7 @@ export function AgentPanel({
       const { checkpoints } = await api.checkpoints(sessionId);
       const cp = checkpoints.find((c) => c.event_seq === turn.firstPatchSeq);
       if (!cp) {
-        window.alert(t("thread.undo_failed"));
+        toast.error(t("thread.undo_failed"));
         return;
       }
       // v1.135 撤销三合一：①任务文本回填输入框；②文件修改随树回滚；③线程截断
@@ -612,7 +613,7 @@ export function AgentPanel({
       setStreamText("");
       setTraceEpoch((e) => e + 1);
     } catch {
-      window.alert(t("thread.undo_failed"));
+      toast.error(t("thread.undo_failed"));
     }
   }
 

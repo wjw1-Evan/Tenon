@@ -45,13 +45,19 @@ export function ThreePaneMerge({ conflict, onResolve, labels }: Props) {
   const applyDisabled = selected === "merged" && !merged;
 
   return (
-    <div className="merge-pane" data-testid="three-pane-merge">
+    <div
+      className="merge-pane"
+      role="dialog"
+      aria-modal="true"
+      aria-label={labels.title}
+      data-testid="three-pane-merge"
+    >
       <div className="merge-head">
         <strong>{labels.title}</strong>
         <code>{conflict.path}</code>
         {mergeError && <span className="muted">{labels.conflictNote}</span>}
       </div>
-      <div className="merge-cols">
+      <div className="merge-cols" role="radiogroup" aria-label={labels.title}>
         <div className="merge-col">
           <div className="merge-col-title">
             <label>

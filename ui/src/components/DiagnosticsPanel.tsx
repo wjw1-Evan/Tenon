@@ -31,9 +31,17 @@ function severityLabel(t: Translate, severity: number) {
   return t("diagnostic.info");
 }
 
-/** 无内置语言包的文件类型（daemon 返回 503）按「无诊断」降级，不作为错误轰炸。 */
-function isNoLanguagePackError(message: string): boolean {
-  return message.includes("语言包不可用");
+/** 无内置语言包的文件类型（daemon 返回 503）按「无诊断」降级，不作为错误轰炸。
+ *  v1.167 起优先按错误体稳定机器码判定（ApiError.code），中文子串匹配仅为
+ *  兼容回退（后端文案不再承担协议职责）。 */
+const LANGUAGE_PACK_UNAVAILABLE_CODE = "language_pack_unavailable";
+
+function isNoLanguagePackError(error: unknown): boolean {
+  if (typeof error === "object" && error !== null) {
+    const code = (error as { code?: unknown }).code;
+    if (code === LANGUAGE_PACK_UNAVAILABLE_CODE) return true;
+  }
+  return String(error).includes("语言包不可用");
 }
 
 function normalize(value: unknown, path: string): EditorDiagnostic[] {
@@ -106,12 +114,11 @@ export function DiagnosticsPanel({
         .catch((e) => {
           if (!alive) return;
           setItems([]);
-          const message = String(e);
-          if (isNoLanguagePackError(message)) {
+          if (isNoLanguagePackError(e)) {
             setError(null);
             setNoLanguagePack(true);
           } else {
-            setError(message);
+            setError(String(e));
             setNoLanguagePack(false);
           }
         })

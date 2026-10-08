@@ -22,10 +22,18 @@ export function LanguagePackWizard({ api, projectId, t, onInstalled }: Props) {
   const [packs, setPacks] = useState<PackInfo[]>([]);
   const [phase, setPhase] = useState<Record<string, string>>({});
   const [installError, setInstallError] = useState<Record<string, string>>({});
+  // 检测失败（v1.167）：不再静默为「无推荐」——向导区 inline 呈现错误
+  const [detectError, setDetectError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!projectId) return;
-    api.detectLanguagePacks(projectId).then((r) => setPacks(r.packs ?? [])).catch(() => {});
+    api.detectLanguagePacks(projectId).then((r) => {
+      setPacks(r.packs ?? []);
+      setDetectError(null);
+    }).catch((e) => {
+      setPacks([]);
+      setDetectError(String(e));
+    });
   }, [api, projectId]);
 
   async function install(language: string) {
@@ -42,7 +50,17 @@ export function LanguagePackWizard({ api, projectId, t, onInstalled }: Props) {
   }
 
   const needing = packs.filter((p) => !p.server_installed);
-  if (packs.length === 0) return null;
+  if (packs.length === 0) {
+    if (!detectError) return null;
+    return (
+      <div className="lp-wizard" data-testid="language-pack-wizard">
+        <div className="lp-title">{t("lp.title")}</div>
+        <div className="tree-error" role="alert" data-testid="lp-detect-error">
+          {detectError}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="lp-wizard" data-testid="language-pack-wizard">
@@ -52,9 +70,13 @@ export function LanguagePackWizard({ api, projectId, t, onInstalled }: Props) {
           <li key={p.language} data-testid={`lp-${p.language}`}>
             <span>{p.language}</span>
             {p.server_installed ? (
-              <span className="lp-ok">{t("lp.ready")}</span>
+              <span className="lp-ok" role="status">
+                {t("lp.ready")}
+              </span>
             ) : phase[p.language] === "installed" ? (
-              <span className="lp-ok">{t("lp.just_installed")}</span>
+              <span className="lp-ok" role="status" data-testid={`lp-installed-${p.language}`}>
+                {t("lp.just_installed")}
+              </span>
             ) : (
               <span className="lp-missing">
                 <span className="muted">{p.runtime_hint}</span>

@@ -23,7 +23,12 @@ export interface AutoSaver {
   dispose: () => void;
 }
 
-export function createAutoSaver(save: SaveFn, delayMs: number): AutoSaver {
+export function createAutoSaver(
+  save: SaveFn,
+  delayMs: number,
+  /** 写盘失败回调（v1.167 通知接入）：状态语义不变——内容留在编辑器、待重试。 */
+  onError?: (path: string, error: unknown) => void
+): AutoSaver {
   const pending = new Map<string, Entry>();
 
   function fire(path: string) {
@@ -32,7 +37,9 @@ export function createAutoSaver(save: SaveFn, delayMs: number): AutoSaver {
     pending.delete(path);
     window.clearTimeout(entry.timer);
     // 保存失败不回滚状态：内容仍在编辑器中，下次编辑 / 手动保存重试
-    void save(path, entry.content).catch(() => {});
+    void save(path, entry.content).catch((error) => {
+      onError?.(path, error);
+    });
   }
 
   return {

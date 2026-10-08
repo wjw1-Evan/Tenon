@@ -3063,3 +3063,119 @@ button:disabled { opacity: 0.45; cursor: default; }
 }
 .tree-context button:hover:not(:disabled) { background: var(--raised); }
 .tree-context button:disabled { opacity: 0.45; cursor: default; }
+
+/* ===== v1.167 交互反馈层：全局通知 / 连接状态点 / 快捷键速查表 ===== */
+
+/* 全局通知（§7.5）：右下角浮层，不占布局流；error 左缘红竖线 + ✕ 手关 */
+.toast-host {
+  position: fixed;
+  right: 14px;
+  bottom: 14px;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: min(380px, 88vw);
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 12px;
+  background: var(--overlay);
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--muted);
+  border-radius: var(--radius-m, 8px);
+  box-shadow: var(--shadow-pop);
+  font-size: 12.5px;
+  line-height: 1.45;
+  animation: pop-in 0.16s ease-out;
+}
+.toast-msg { flex: 1; word-break: break-word; }
+.toast-success { border-left-color: var(--ok); }
+.toast-info { border-left-color: var(--accent); }
+.toast-error { border-left-color: var(--error); }
+.toast-close {
+  flex: none;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.2;
+  padding: 1px 3px;
+  cursor: pointer;
+  border-radius: var(--radius-s, 4px);
+}
+.toast-close:hover { color: var(--fg-strong); background: var(--raised); }
+
+/* 连接状态点（§7.5）：顶栏常驻；点击强制重连 */
+.ws-dot {
+  width: 9px;
+  height: 9px;
+  padding: 0;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  background: var(--muted);
+  flex: none;
+}
+.ws-dot.ws-online { background: var(--ok); }
+.ws-dot.ws-connecting {
+  background: #d9a514;
+  animation: ws-pulse 1.6s ease-out infinite;
+}
+.ws-dot.ws-offline { background: var(--muted); }
+.ws-dot:hover { filter: brightness(1.25); }
+@keyframes ws-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(217, 165, 20, 0.45); }
+  70% { box-shadow: 0 0 0 6px rgba(217, 165, 20, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(217, 165, 20, 0); }
+}
+
+/* 快捷键速查表（§7.5）：命令面板同款浮层壳 */
+.shortcuts-pane {
+  width: min(460px, 92vw);
+  background: var(--overlay);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-l, 10px);
+  padding: 14px 16px;
+  box-shadow: var(--shadow-pop);
+  animation: pop-in 0.16s ease-out;
+  outline: none;
+}
+.shortcuts-head {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-strong);
+  margin-bottom: 10px;
+}
+.shortcuts-group { margin-bottom: 12px; }
+.shortcuts-group:last-child { margin-bottom: 0; }
+.shortcuts-group-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.shortcuts-pane ul { list-style: none; margin: 0; padding: 0; }
+.shortcuts-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 3px 0;
+  font-size: 12.5px;
+}
+.shortcuts-combo {
+  flex: none;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--fg);
+  background: var(--raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s, 4px);
+  padding: 2px 7px;
+}

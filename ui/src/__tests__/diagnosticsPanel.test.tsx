@@ -107,6 +107,29 @@ describe("DiagnosticsPanel 补充", () => {
     });
   });
 
+  it("language pack degradation prefers stable ApiError.code over zh substring (v1.167)", async () => {
+    // daemon v1.167 起 503 错误体附 code；文案不再承担协议职责
+    const coded = new Error("API 503: language pack unavailable") as Error & { code?: string };
+    coded.code = "language_pack_unavailable";
+    lspMock.mockRejectedValue(coded);
+    const { getByTestId, queryByText } = render(
+      <DiagnosticsPanel
+        api={api()}
+        t={(key) => key}
+        projectId="p1"
+        path="a.rs"
+        refreshToken={0}
+        sessionId={null}
+        onOpenFile={vi.fn()}
+        onFix={vi.fn()}
+      />
+    );
+    await waitFor(() => {
+      expect(getByTestId("diagnostics-no-language-pack")).toBeTruthy();
+    });
+    expect(queryByText(/API 503/)).toBeNull();
+  });
+
   it("severities render error/warning/info labels", async () => {
     lspMock.mockResolvedValue({
       result: {

@@ -1,7 +1,12 @@
 // daemon 本地 API 客户端（设计方案 §15）。
 // 认证：HTTP 用 X-Tenon-Token；WS 用一次性 ticket（首帧携带，ADR-10）。
 
-/** daemon 错误体统一为 {"error": "..."}；解析失败回退原文，避免把原始 JSON 泄漏进 UI。 */
+/** daemon 错误体统一为 {"error": "...", "code"?}；解析失败回退原文，避免把原始 JSON 泄漏进 UI。
+ *  code 为稳定机器码（§15 v1.167 起 LSP 503 附 language_pack_unavailable），供结构化判定。 */
+export interface ApiError extends Error {
+  code?: string;
+}
+
 function daemonErrorMessage(raw: string): string {
   try {
     const parsed = JSON.parse(raw) as { error?: unknown };
@@ -10,6 +15,16 @@ function daemonErrorMessage(raw: string): string {
     // 非 JSON 原样返回
   }
   return raw;
+}
+
+function daemonErrorCode(raw: string): string | undefined {
+  try {
+    const parsed = JSON.parse(raw) as { code?: unknown };
+    if (typeof parsed.code === "string" && parsed.code) return parsed.code;
+  } catch {
+    // 非 JSON 错误体无 code
+  }
+  return undefined;
 }
 
 export interface Handshake {
@@ -306,7 +321,10 @@ export class TenonApi {
     const resp = await fetch(`${this.base}${path}`, { ...init, headers, body });
     if (!resp.ok) {
       const text = await resp.text();
-      throw new Error(`API ${resp.status}: ${daemonErrorMessage(text)}`);
+      const error = new Error(`API ${resp.status}: ${daemonErrorMessage(text)}`) as ApiError;
+      const code = daemonErrorCode(text);
+      if (code) error.code = code;
+      throw error;
     }
     return (await resp.json()) as T;
   }

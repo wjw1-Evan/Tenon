@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import type { TenonApi } from "../lib/api";
 import { useResolvedLocale, type Translate } from "../lib/i18n";
+import { toast } from "../lib/toast";
 
 interface Checkpoint {
   id: string;
@@ -40,8 +41,10 @@ export function CheckpointTimeline({ api, t, sessionId }: Props) {
     setBusy(true);
     try {
       await api.rollbackCheckpoint(id);
-    } catch {
-      // 失败不挂起：时间轴 1.5s 轮询带回权威状态（回滚未生效则条目仍在）
+    } catch (e) {
+      // 失败不挂起：时间轴 1.5s 轮询带回权威状态（回滚未生效则条目仍在）；
+      // 但点击无果不得无感知（v1.167 toast）
+      toast.error(String(e));
     } finally {
       setBusy(false);
     }
@@ -74,7 +77,7 @@ export function CheckpointTimeline({ api, t, sessionId }: Props) {
         </button>
       </div>
       {checkpoints.length === 0 && <div className="muted">{t("timeline.empty")}</div>}
-      <ul>
+      <ul aria-label={t("panel.timeline")}>
         {[...checkpoints].reverse().map((cp) => (
           <li key={cp.id} className="timeline-node">
             <code className="tree-oid">{cp.tree.slice(0, 8)}</code>
@@ -86,7 +89,12 @@ export function CheckpointTimeline({ api, t, sessionId }: Props) {
               {new Date(cp.created_at).toLocaleTimeString(localeTag)}
             </time>
             <span className="files">{cp.files.join(", ") || "—"}</span>
-            <button disabled={busy} onClick={() => rollback(cp.id)}>
+            <button
+              type="button"
+              disabled={busy}
+              aria-label={t("timeline.rollback")}
+              onClick={() => rollback(cp.id)}
+            >
               {t("timeline.rollback")}
             </button>
           </li>

@@ -235,6 +235,8 @@ export function FileTree({
   onOperation,
 }: Props) {
   const [entries, setEntries] = useState<Entry[]>([]);
+  // 根层首次加载中（v1.167 三态补齐）：到位前列 loading 行，避免大仓库空窗期无反馈
+  const [loading, setLoading] = useState(true);
   const [rootDropActive, setRootDropActive] = useState(false);
   const [prompt, setPrompt] = useState<PromptState | null>(null);
   const [busy, setBusy] = useState(false);
@@ -264,7 +266,12 @@ export function FileTree({
   useEffect(() => {
     if (!projectId) return;
     let alive = true;
-    loadEntries(api, projectId, "", alive, (next) => setEntries(next));
+    setLoading(true);
+    loadEntries(api, projectId, "", alive, (next) => {
+      if (!alive) return;
+      setEntries(next);
+      setLoading(false);
+    });
     return () => {
       alive = false;
     };
@@ -349,6 +356,11 @@ export function FileTree({
           moveEntry(from, name);
         }}
       >
+        {loading && entries.length === 0 && (
+          <li className="muted" role="status" data-testid="tree-loading">
+            {t("tree.loading")}
+          </li>
+        )}
         {entries.map((entry) => (
           <TreeEntryRow
             key={entry.path}

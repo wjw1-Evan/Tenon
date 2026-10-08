@@ -1,4 +1,4 @@
-// hooks.ts 快捷键全覆盖测试。
+// hooks.ts 快捷键全覆盖测试（含 v1.167 扩展：Alt 档新任务 / 关标签 / 循环底部 tab / 速查表）。
 import { renderHook } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { useShortcuts } from "../hooks";
@@ -19,6 +19,10 @@ describe("useShortcuts", () => {
       onPanel: vi.fn(),
       onSave: vi.fn(),
       onSettings: vi.fn(),
+      onNewTask: vi.fn(),
+      onCloseTab: vi.fn(),
+      onCycleBottomTab: vi.fn(),
+      onShortcuts: vi.fn(),
     };
     renderHook(() => useShortcuts(handlers));
 
@@ -40,6 +44,26 @@ describe("useShortcuts", () => {
     expect(handlers.onSave).toHaveBeenCalledTimes(1);
     fireKey(",", { metaKey: true });
     expect(handlers.onSettings).toHaveBeenCalledTimes(1);
+    fireKey("n", { metaKey: true, altKey: true });
+    expect(handlers.onNewTask).toHaveBeenCalledTimes(1);
+    fireKey("w", { metaKey: true, altKey: true });
+    expect(handlers.onCloseTab).toHaveBeenCalledTimes(1);
+    fireKey("j", { metaKey: true, altKey: true });
+    expect(handlers.onCycleBottomTab).toHaveBeenCalledTimes(1);
+    fireKey("/", { metaKey: true });
+    expect(handlers.onShortcuts).toHaveBeenCalledTimes(1);
+  });
+
+  it("alt variants do not leak into plain handlers (mod+alt+j ≠ panel toggle)", () => {
+    const handlers = { onPanel: vi.fn(), onCycleBottomTab: vi.fn(), onNewTask: vi.fn() };
+    renderHook(() => useShortcuts(handlers));
+    fireKey("j", { metaKey: true, altKey: true });
+    expect(handlers.onCycleBottomTab).toHaveBeenCalledTimes(1);
+    expect(handlers.onPanel).not.toHaveBeenCalled();
+    // 无 Alt 的 n/w 不触发（防误触）
+    fireKey("n", { metaKey: true });
+    fireKey("w", { metaKey: true });
+    expect(handlers.onNewTask).not.toHaveBeenCalled();
   });
 
   it("does not trigger without modifier for mod-only shortcuts", () => {

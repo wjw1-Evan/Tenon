@@ -60,6 +60,10 @@ import {
 } from "./components/OnboardingWizard";
 import { UpdateNotesDialog } from "./components/UpdateNotesDialog";
 import { UpdateReadyToast } from "./components/UpdateReadyToast";
+import { ToastHost } from "./components/ToastHost";
+import { ShortcutsDialog } from "./components/ShortcutsDialog";
+import { WsStatusDot, type WsStatus } from "./components/WsStatusDot";
+import { toast } from "./lib/toast";
 import { CommandPalette, type Command } from "./components/CommandPalette";
 
 /** 侧栏视图（布局 §7.2 重设计）：activity rail 单视图切换，localStorage 记忆。 */
@@ -223,6 +227,10 @@ export default function App({
     });
   }, []);
   const projectIdRef = useRef<string | null>(null);
+  // 最新翻译器引用（v1.167）：autosaver / closeTab 等长生命周期回调经 ref 取当前
+  // 语言文案——不把 t 入依赖（重建 autosaver 会丢弃未冲刷的去抖计时器）
+  const tRef = useRef(t);
+  tRef.current = t;
   const projectUiStateLoaded = useRef<Set<string>>(new Set());
   const dirtyTimers = useRef<Map<string, number>>(new Map());
   const tabsByProjectRef = useRef<Record<string, EditorTab[]>>({});
@@ -239,7 +247,10 @@ export default function App({
     void api
       .getSettings()
       .then(setSettings)
-      .catch(() => {});
+      .catch((error) => {
+        // 设置加载失败：面板降级空值可继续用，但不得无感知（toast 一次）
+        toast.error(String(error));
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   // 保存模式（§8.2 v1.75）：auto（默认，去抖自动写盘）| manual（仅显式保存写盘）。
@@ -293,23 +304,35 @@ export default function App({
   const editorApiRef = useRef<{ undo: () => void; redo: () => void } | null>(null);
 
   useEffect(() => {
-    const saver = createAutoSaver(async (path, content) => {
-      const pid = projectIdRef.current;
-      if (!pid) return;
-      await api.writeFile(pid, path, content);
-      // 落盘成功 → 脏缓冲解除（§8.6「未保存缓冲」语义：已保存不再是缓冲）
-      await api.clearBuffer(pid, path).catch(() => {});
-      setUnsaved((prev) => {
-        if (!prev[path]) return prev;
-        const next = { ...prev };
-        delete next[path];
-        return next;
-      });
-    }, 1000);
+    const saver = createAutoSaver(
+      async (path, content) => {
+        const pid = projectIdRef.current;
+        if (!pid) return;
+        await api.writeFile(pid, path, content);
+        // 落盘成功 → 脏缓冲解除（§8.6「未保存缓冲」语义：已保存不再是缓冲）
+        await api.clearBuffer(pid, path).catch(() => {});
+        setUnsaved((prev) => {
+          if (!prev[path]) return prev;
+          const next = { ...prev };
+          delete next[path];
+          return next;
+        });
+      },
+      1000,
+      // 自动保存失败（v1.167）：内容留编辑器、圆点保留，toast 提示未落盘
+      (path) => toast.error(tRef.current("toast.save_failed", { path }))
+    );
     autosaverRef.current = saver;
     return () => saver.dispose();
   }, [api]);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  // WS 连接状态（§7.5 v1.167）：offline=初始未连接 / connecting=重连中 / online=已连接；
+  // wsEpoch 为强制重连计数器（顶栏状态点点击 +1 → effect 重建即打断 1s 退避）。
+  const [wsStatus, setWsStatus] = useState<WsStatus>("offline");
+  const [wsEpoch, setWsEpoch] = useState(0);
+  const reconnectWs = useCallback(() => setWsEpoch((epoch) => epoch + 1), []);
+  // 快捷键速查表（§7.5 v1.167）：Cmd/Ctrl+/ 或命令面板 help.shortcuts 打开。
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   // 编辑器应用内浮层（v1.110）：单击文件 / 模糊打开 / 搜索 / 诊断 / 跟随模式
   // 打开文件即弹出；✕ 关闭返回线程；会话内状态不持久化（重启后不自动弹出）。
   // 编辑器应用内浮层（§7.2 v1.110）：侧栏源码区 / 模糊 / 搜索 / 诊断打开文件即弹出；
@@ -659,12 +682,12 @@ export default function App({
     (instruction: string, target: InlineTarget) => {
       const task = buildInlineTask(instruction, target, t);
       if (sessionId) {
-        void api.sendMessage(sessionId, task).catch(() => {});
+        void api.sendMessage(sessionId, task).catch((error) => toast.error(String(error)));
         return;
       }
       const pid = projectIdRef.current;
       if (pid && draftByProjectRef.current[pid] === false) {
-        void sendDraftMessage(task).catch(() => {});
+        void sendDraftMessage(task).catch((error) => toast.error(String(error)));
       }
     },
     [api, sessionId, t, sendDraftMessage]
@@ -736,12 +759,50 @@ export default function App({
             delete next[p];
             return next;
           }),
+        // 手动保存失败（v1.167）：圆点保留待重试，toast 提示未落盘
+        onError: (p) => toast.error(tRef.current("toast.save_failed", { path: p })),
       }),
     [api]
   );
 
   /** LSP 写盘前 flush 未保存缓冲（§8.5 / v1.48）：与手动保存同路径。 */
   const flushFileForLsp = useCallback((path: string) => saveNow(path), [saveNow]);
+
+  /** 循环底部面板 tab（§7.5 v1.167 Cmd/Ctrl+Alt+J）：timeline→trace→evals；收起态先展开。 */
+  const cycleBottomTab = useCallback(() => {
+    const order = ["timeline", "trace", "evals"] as const;
+    setBottomTab((cur) => order[(order.indexOf(cur) + 1) % order.length]);
+    setTimelineOpen(true);
+  }, []);
+
+  /** 关闭编辑器标签（§7.5 v1.167，Cmd/Ctrl+Alt+W 复用）：冲刷待写盘内容后移除 tab；
+   *  flush 失败保留未保存圆点（save.ts 契约：失败保留待重试）并 toast 提示。 */
+  const closeTab = useCallback(
+    (p: string) => {
+      void autosaverRef.current
+        ?.flush(p)
+        .then(() => {
+          setUnsaved((prev) => {
+            if (!prev[p]) return prev;
+            const next = { ...prev };
+            delete next[p];
+            return next;
+          });
+        })
+        .catch(() => {
+          // 冲刷失败：圆点保留（下次编辑 / 手动保存重试），通知改动未落盘
+          toast.error(tRef.current("toast.save_failed", { path: p }));
+        });
+      setTabs((prev) => prev.filter((tab) => tab.path !== p));
+      if (activePath === p) {
+        setActivePath(tabs.find((tab) => tab.path !== p)?.path ?? null);
+      }
+      if (splitPath === p) {
+        setSplitPath(tabs.find((tab) => tab.path !== p && tab.path !== activePath)?.path ?? null);
+      }
+    },
+    [activePath, splitPath, tabs, setActivePath, setSplitPath, setTabs]
+  );
 
   const refreshFilesAfterLsp = useCallback(
     async (paths: string[]) => {
@@ -874,11 +935,23 @@ export default function App({
         if (p) void saveNow(p);
       },
       onSettings: () => setSettingsOpen(true),
+      // v1.167 快捷键扩展（§7.4）：新任务 / 关标签 / 循环底部 tab / 速查表
+      onNewTask: () => {
+        const project = projects.find((p) => p.id === projectId);
+        if (!project) return;
+        createProjectSession(project, false).catch((error) => toast.error(String(error)));
+      },
+      onCloseTab: () => {
+        if (activePath) closeTab(activePath);
+      },
+      onCycleBottomTab: cycleBottomTab,
+      onShortcuts: () => setShortcutsOpen(true),
       onPauseOrClose: () => {
         // 弹层在开：任何 Esc 优先收弹层而非暂停代理（编辑器浮层 / 查找器 /
         // 改名模态等已在各自 onKeyDown preventDefault，此处兜底全局态）
-        if (paletteOpen) {
+        if (paletteOpen || shortcutsOpen) {
           setPaletteOpen(false);
+          setShortcutsOpen(false);
           return;
         }
         if (editorOpen) {
@@ -888,7 +961,20 @@ export default function App({
         if (sessionId) api.control(sessionId, "pause");
       },
     }),
-    [api, sessionId, paletteOpen, editorOpen, activePath, saveNow]
+    [
+      api,
+      sessionId,
+      paletteOpen,
+      shortcutsOpen,
+      editorOpen,
+      activePath,
+      saveNow,
+      projects,
+      projectId,
+      createProjectSession,
+      closeTab,
+      cycleBottomTab,
+    ]
   );
   useShortcuts(handlers);
 
@@ -896,6 +982,8 @@ export default function App({
     () => [
       { id: "toggle.bottom", label: t("panel.bottom.toggle"), run: () => setTimelineOpen((v) => !v) },
       { id: "open.settings", label: t("settings.open"), run: () => setSettingsOpen(true) },
+      // v1.167 快捷键速查表（§7.5）：与 Cmd/Ctrl+/ 同入口
+      { id: "help.shortcuts", label: t("shortcuts.open"), run: () => setShortcutsOpen(true) },
       {
         id: "editor.inline_completion",
         label: inlineCompletionEnabled
@@ -1106,6 +1194,7 @@ export default function App({
 
     const connect = async () => {
       if (!alive) return;
+      setWsStatus("connecting");
       try {
         const ws = await api.connectEvents((event) => void handleEvent(event), projectId);
         // 换票 / 握手 await 期间项目已切换（cleanup 已跑）：及时关掉这条
@@ -1115,12 +1204,17 @@ export default function App({
           return;
         }
         socket = ws;
+        setWsStatus("online");
         socket.onclose = () => {
           if (!alive) return;
+          setWsStatus("connecting");
           retry = window.setTimeout(() => void connect(), 1000);
         };
       } catch {
-        if (alive) retry = window.setTimeout(() => void connect(), 1000);
+        if (alive) {
+          setWsStatus("connecting");
+          retry = window.setTimeout(() => void connect(), 1000);
+        }
       }
     };
     void connect();
@@ -1131,7 +1225,7 @@ export default function App({
       if (summaryTimer !== null) window.clearTimeout(summaryTimer);
       socket?.close();
     };
-  }, [api, projectId, refreshProjects]);
+  }, [api, projectId, refreshProjects, wsEpoch]);
 
   // 编辑器实例（§8.2）：任务模式 = 应用内浮层宿主（v1.110）；源码模式 = 工作台内嵌宿主
   // （v1.137）。同一份 props 两种宿主，任意时刻仅渲染其一。
@@ -1154,29 +1248,7 @@ export default function App({
       goto={gotoLine}
       onSelectionChange={setSelection}
       onSelect={setActivePath}
-      onClose={(p) => {
-        // 冲刷待写盘内容后再清未保存圆点：flush 失败保留圆点（save.ts 契约：
-        // 失败保留待重试）；fire-and-forget 的旧写法无论成败都先摘点，写盘
-        // 失败即静默丢改动
-        void autosaverRef.current
-          ?.flush(p)
-          .then(() => {
-            setUnsaved((prev) => {
-              if (!prev[p]) return prev;
-              const next = { ...prev };
-              delete next[p];
-              return next;
-            });
-          })
-          .catch(() => {});
-        setTabs((prev) => prev.filter((tab) => tab.path !== p));
-        if (activePath === p) {
-          setActivePath(tabs.find((tab) => tab.path !== p)?.path ?? null);
-        }
-        if (splitPath === p) {
-          setSplitPath(tabs.find((tab) => tab.path !== p && tab.path !== activePath)?.path ?? null);
-        }
-      }}
+      onClose={closeTab}
       onChange={(p, content) => {
         setTabs((prev) => prev.map((tab) => (tab.path === p ? { ...tab, content } : tab)));
         // §8.6：用户编辑 → 该文件 AI 角标解除 + 脏缓冲推送（去抖）
@@ -1211,6 +1283,7 @@ export default function App({
       <header className="app-head" data-tauri-drag-region>
         <strong data-tauri-drag-region>{t("app.title")}</strong>
         <span className="spacer" data-tauri-drag-region />
+        <WsStatusDot status={wsStatus} t={t} onReconnect={reconnectWs} />
         <ThemePicker api={api} t={t} />
         <LanguagePicker value={localePref} t={t} />
       </header>
@@ -1464,7 +1537,11 @@ export default function App({
             onResolve={(path, chosen, clear) => {
               void (async () => {
                 const pid = projectIdRef.current;
-                if (pid) await api.writeFile(pid, path, chosen).catch(() => {});
+                // 合并结果写盘失败（v1.167）：保留 tab 内容同步但必须可感知（否则
+                // 用户以为已应用、磁盘仍是旧内容）
+                if (pid) {
+                  await api.writeFile(pid, path, chosen).catch((error) => toast.error(String(error)));
+                }
                 if (pid && clear) await api.clearBuffer(pid, path).catch(() => {});
                 setTabs((prev) =>
                   prev.some((tab) => tab.path === path)
@@ -1608,6 +1685,10 @@ export default function App({
       <UpdateNotesDialog t={t} />
       {/* v1.154 更新就绪通知卡：下载完成等待用户确认安装（仅桌面壳） */}
       <UpdateReadyToast t={t} />
+      {/* 全局通知（§7.5 v1.167）：右下角堆叠；error 留驻手关、其余自动消退 */}
+      <ToastHost t={t} />
+      {/* 快捷键速查表（§7.5 v1.167） */}
+      <ShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} t={t} />
       <FileFinder
         open={finderOpen}
         onClose={() => setFinderOpen(false)}

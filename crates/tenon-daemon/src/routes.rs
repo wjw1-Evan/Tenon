@@ -2142,6 +2142,13 @@ async fn project_lsp_proxy(
         Err(tenon_lsp::LspManagerError::BadPath(p)) => {
             api_err(StatusCode::BAD_REQUEST, format!("路径越界: {p}"))
         }
+        // 语言包不可用（§15 v1.167）：503 错误体附稳定机器码，UI 按码判定降级
+        // （不再依赖中文文案子串匹配）；error 文案保持中文不变。
+        Err(e @ tenon_lsp::LspManagerError::PackUnavailable(_)) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": e.to_string(), "code": "language_pack_unavailable"})),
+        )
+            .into_response(),
         Err(e) => api_err(StatusCode::SERVICE_UNAVAILABLE, e.to_string()),
     }
 }

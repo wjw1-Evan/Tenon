@@ -1,4 +1,6 @@
-// 全局快捷键（设计方案 §7.4 核心集）。
+// 全局快捷键（设计方案 §7.4 核心集；组合显示单源 lib/shortcuts.ts）。
+// v1.167 扩展：Cmd/Ctrl+Alt+N 新任务、Alt+W 关编辑器标签、Alt+J 循环底部
+// tab、Cmd/Ctrl+/ 速查表——浏览器保留 Cmd/Ctrl+T/W，故取 Alt 档。
 import { useEffect } from "react";
 
 export interface ShortcutHandlers {
@@ -11,19 +13,24 @@ export interface ShortcutHandlers {
   onPanel?: () => void; // Cmd/Ctrl+J 底部面板（§7.4）
   onSave?: () => void; // Cmd/Ctrl+S（自动保存下的立即保存，§8.2）
   onSettings?: () => void; // Cmd/Ctrl+,（设置面板，§7.2）
+  onNewTask?: () => void; // Cmd/Ctrl+Alt+N 新任务（active 项目草稿态，v1.167）
+  onCloseTab?: () => void; // Cmd/Ctrl+Alt+W 关闭编辑器活动标签（v1.167）
+  onCycleBottomTab?: () => void; // Cmd/Ctrl+Alt+J 循环底部面板 tab（v1.167）
+  onShortcuts?: () => void; // Cmd/Ctrl+/ 快捷键速查表（v1.167）
 }
 
 export function useShortcuts(handlers: ShortcutHandlers) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
-      if (mod && e.shiftKey && e.key.toLowerCase() === "p") {
+      const key = e.key.toLowerCase();
+      if (mod && e.shiftKey && key === "p") {
         e.preventDefault();
         handlers.onPalette?.();
-      } else if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "p") {
+      } else if (mod && !e.shiftKey && !e.altKey && key === "p") {
         e.preventDefault();
         handlers.onGotoFile?.();
-      } else if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "i") {
+      } else if (mod && !e.shiftKey && !e.altKey && key === "i") {
         e.preventDefault();
         handlers.onInlineInstruction?.();
       } else if (e.key === "Escape") {
@@ -34,18 +41,31 @@ export function useShortcuts(handlers: ShortcutHandlers) {
       } else if (mod && e.key === ".") {
         e.preventDefault();
         handlers.onStop?.();
-      } else if (mod && !e.shiftKey && e.key.toLowerCase() === "b") {
+      } else if (mod && !e.shiftKey && !e.altKey && key === "b") {
         e.preventDefault();
         handlers.onSidebar?.();
-      } else if (mod && !e.shiftKey && e.key.toLowerCase() === "j") {
+      } else if (mod && e.altKey && !e.shiftKey && key === "j") {
+        // Alt 变体先于普通 J 判定（else-if 链），两者互不串扰
+        e.preventDefault();
+        handlers.onCycleBottomTab?.();
+      } else if (mod && !e.shiftKey && key === "j") {
         e.preventDefault();
         handlers.onPanel?.();
-      } else if (mod && e.key.toLowerCase() === "s") {
+      } else if (mod && !e.shiftKey && !e.altKey && key === "s") {
         e.preventDefault();
         handlers.onSave?.();
       } else if (mod && e.key === ",") {
         e.preventDefault();
         handlers.onSettings?.();
+      } else if (mod && e.altKey && !e.shiftKey && key === "n") {
+        e.preventDefault();
+        handlers.onNewTask?.();
+      } else if (mod && e.altKey && !e.shiftKey && key === "w") {
+        e.preventDefault();
+        handlers.onCloseTab?.();
+      } else if (mod && !e.shiftKey && !e.altKey && e.key === "/") {
+        e.preventDefault();
+        handlers.onShortcuts?.();
       }
     };
     window.addEventListener("keydown", onKey);

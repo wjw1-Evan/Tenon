@@ -3719,8 +3719,14 @@ async fn project_lsp_proxy_endpoint() {
         .send()
         .await
         .unwrap();
-    // LSP 可能 200 或 4xx/5xx（无语言包安装）
-    assert_ne!(r.status(), 401);
+    // 200（环境装了 ts 语言包）或 503 PackUnavailable（v1.167 起错误体附稳定
+    // 机器码 language_pack_unavailable，UI 按码降级、不依赖中文文案匹配）
+    if r.status() == 503 {
+        let body: serde_json::Value = r.json().await.unwrap();
+        assert_eq!(body["code"], "language_pack_unavailable");
+    } else {
+        assert_ne!(r.status(), 401);
+    }
 }
 
 #[tokio::test]
