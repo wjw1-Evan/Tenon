@@ -307,6 +307,7 @@
   "thread.rollback": "Rolled back to checkpoint",
   "thread.unrollback": "Reverted the last rollback",
   "thread.model_fallback": "Model fallback",
+  "thread.model_retry": "Transient model error, auto-retrying ({attempt}/10, next in {delay}s) · {error}",
   "thread.compaction": "Context compacted",
   "thread.memory_saved": "Memory updated",
   "thread.readonly_more": "Read-only step details are in the Trace panel below",

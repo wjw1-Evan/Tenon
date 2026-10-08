@@ -307,6 +307,7 @@
   "thread.rollback": "체크포인트로 롤백되었습니다",
   "thread.unrollback": "최근 롤백을 취소했습니다",
   "thread.model_fallback": "모델이 폴백되었습니다",
+  "thread.model_retry": "모델 일시 오류, 자동 재시도 중({attempt}/10회, {delay}초 후) · {error}",
   "thread.compaction": "컨텍스트가 압축되었습니다",
   "thread.memory_saved": "메모리가 업데이트되었습니다",
   "thread.readonly_more": "읽기 전용 단계의 자세한 내용은 하단「트레이스」패널을 참조하세요",

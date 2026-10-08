@@ -448,6 +448,9 @@ export function AgentPanel({
               setStreamText((prev) => prev + String(ev.payload.text ?? ""));
             }
             if (ev.type === "decision") setStreamText("");
+            // §9.1（v1.186）：瞬时错误自动重试——清掉失败尝试的流式残影
+            // （重试从头重流，不清则上一尝试文本与新区块叠字）
+            if (ev.type === "model_retry") setStreamText("");
             if (ev.type === "patch_applied") {
               const d = diffFromPatchEvent(ev.payload);
               if (d) {
@@ -869,12 +872,17 @@ export function AgentPanel({
                   const latestSubtasksId = [...turn.items]
                     .reverse()
                     .find((e) => e.type === "subtasks")?.id;
+                  // §9.1（v1.186）：回合内最新一次 model_retry 渲染重试行，更早的演进入「轨迹」
+                  const latestRetryId = [...turn.items]
+                    .reverse()
+                    .find((e) => e.type === "model_retry")?.id;
                   return turn.items.map((ev) => (
                     <EventNode
                       key={ev.id}
                       ev={ev}
                       t={t}
                       subtasksLatest={ev.id === latestSubtasksId}
+                      retryLatest={ev.id === latestRetryId}
                       onApprovePlan={
                         sessionId && ev.type === "plan_submitted"
                           ? () => void approvePlan()
@@ -1443,11 +1451,13 @@ function EventNode({
   ev,
   t,
   subtasksLatest,
+  retryLatest,
   onApprovePlan,
 }: {
   ev: EventItem;
   t: Translate;
   subtasksLatest: boolean;
+  retryLatest: boolean;
   onApprovePlan?: (() => void) | undefined;
 }) {
   switch (ev.type) {
@@ -1537,6 +1547,21 @@ function EventNode({
       // 同回合更早的状态演进入「轨迹」面板
       if (!subtasksLatest) return null;
       return <SubtasksCard ev={ev} t={t} />;
+    case "model_retry": {
+      // §9.1（v1.186）：瞬时错误自动重试行——回合内仅最新一次可见（更早的
+      // 演进入「轨迹」面板），让 ≤10 次自动重试的长退避可感知而非如假死；
+      // 错误摘要 >120 字符截断（Http 错误可能携带上游 body）。
+      if (!retryLatest) return null;
+      const attempt = Number(ev.payload.attempt ?? 0);
+      const delay = Math.round((Number(ev.payload.delay_ms ?? 0) / 1000) * 10) / 10;
+      const raw = String(ev.payload.error ?? "");
+      const error = raw.length > 120 ? `${raw.slice(0, 120)}…` : raw;
+      return (
+        <div className="turn-note" data-testid="turn-retry">
+          ↻ {t("thread.model_retry", { attempt, delay, error })}
+        </div>
+      );
+    }
     default:
       // sensing / checkpoint / session_title / 降级 / 压缩 / 记忆 / 未知：不渲染
       return null;

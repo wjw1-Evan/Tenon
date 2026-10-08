@@ -416,3 +416,35 @@ describe("流式草稿挂活跃回合", () => {
     expect(screen.queryAllByTestId("model-stream")).toHaveLength(1);
   });
 });
+
+describe("§9.1 v1.186 自动重试可见性", () => {
+  const tRetry = (key: string, vars?: Record<string, unknown>) =>
+    key === "thread.model_retry"
+      ? `自动重试(${vars?.attempt}/10,${vars?.delay}s)${vars?.error}`
+      : key;
+
+  it("model_retry 渲染轻量重试行，回合内仅最新一次可见", async () => {
+    const events = [
+      { id: 1, seq: 1, type: "user_input", payload: { text: "任务" } },
+      {
+        id: 2,
+        seq: 2,
+        type: "model_retry",
+        payload: { provider: "glm", model: "glm-4.7-flash", attempt: 1, delay_ms: 2000, error: "上游限流（429）" },
+      },
+      {
+        id: 3,
+        seq: 3,
+        type: "model_retry",
+        payload: { provider: "glm", model: "glm-4.7-flash", attempt: 2, delay_ms: 4000, error: "上游限流（429）" },
+      },
+      { id: 4, seq: 4, type: "decision", payload: { intent: "完成" } },
+    ];
+    render(<AgentPanel api={mockApi(events)} t={tRetry} sessionId="s1" />);
+    await screen.findByText("任务");
+    const notes = screen.getAllByTestId("turn-retry");
+    expect(notes).toHaveLength(1);
+    expect(notes[0].textContent).toContain("↻ 自动重试(2/10,4s)上游限流（429）");
+    expect(notes[0].textContent).not.toContain("(1/10");
+  });
+});

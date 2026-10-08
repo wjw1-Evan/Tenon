@@ -307,6 +307,7 @@
   "thread.rollback": "已回滚到检查点",
   "thread.unrollback": "已撤销最近回滚",
   "thread.model_fallback": "模型已降级",
+  "thread.model_retry": "模型瞬时错误，自动重试中（第 {attempt}/10 次，{delay}s 后）· {error}",
   "thread.compaction": "上下文已压缩",
   "thread.memory_saved": "记忆已更新",
   "thread.readonly_more": "只读步骤详情见底部「轨迹」面板",

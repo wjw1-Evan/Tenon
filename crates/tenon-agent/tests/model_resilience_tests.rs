@@ -228,3 +228,65 @@ async fn session_uses_configured_generation_params() {
     assert_eq!(calls[0].max_tokens, 4321);
     assert!((calls[0].temperature - 0.7).abs() < 1e-6);
 }
+
+#[tokio::test]
+async fn transient_retries_up_to_ten_then_succeeds() {
+    // v1.186 §9.1：主 provider 瞬时重试上限 2 → 10——429 ×10（Retry-After=10ms
+    // 压退避进亚秒）后第 11 次成功：恰 11 次调用、model_retry ×10、不进 ERROR。
+    let mut script = vec![
+        ScriptedReply::RateLimited {
+            retry_after_ms: Some(10),
+        };
+        10
+    ];
+    script.push(ScriptedReply::Text("第十次重试后恢复".into()));
+    let (_d, session, store, provider) = setup_with_fallback(script, vec![]).await;
+    let outcome = session.run_task("解释").await;
+    assert!(
+        matches!(outcome, TaskOutcome::Done(_)),
+        "第 10 次重试应成功: {outcome:?}"
+    );
+    assert_eq!(provider.calls().len(), 11, "1 次初始 + 10 次自动重试");
+    let mut st = store.lock().await;
+    let events = st.events(&session.session_id).unwrap();
+    let retries: Vec<_> = events
+        .iter()
+        .filter(|e| e.kind == EventKind::ModelRetry)
+        .collect();
+    assert_eq!(retries.len(), 10, "model_retry 事件 ×10: {retries:?}");
+    assert_eq!(retries[9].payload["attempt"], 10, "末次重试序号 = 10");
+    assert!(
+        !events.iter().any(|e| e.kind == EventKind::Error),
+        "自动恢复成功不得发 Error 事件"
+    );
+}
+
+#[tokio::test]
+async fn retry_budget_exhausted_after_ten_enters_error() {
+    // v1.186 §9.1：429 恒定（mock 脚本循环末项）——1 次初始 + 10 次重试全部
+    // 失败即穷尽落 ERROR，不得超出预算继续重试。
+    let (_d, session, store, provider) = setup_with_fallback(
+        vec![ScriptedReply::RateLimited {
+            retry_after_ms: Some(10),
+        }],
+        vec![],
+    )
+    .await;
+    let outcome = session.run_task("解释").await;
+    match outcome {
+        TaskOutcome::Error(msg) => assert!(msg.contains("限流"), "末次错误透传: {msg}"),
+        other => panic!("10 次重试穷尽应 ERROR: {other:?}"),
+    }
+    assert_eq!(provider.calls().len(), 11, "1 次初始 + 10 次重试，不得更多");
+    let mut st = store.lock().await;
+    let events = st.events(&session.session_id).unwrap();
+    assert!(
+        events.iter().any(|e| e.kind == EventKind::Error),
+        "穷尽后必须 ERROR"
+    );
+    let retries = events
+        .iter()
+        .filter(|e| e.kind == EventKind::ModelRetry)
+        .count();
+    assert_eq!(retries, 10, "model_retry 事件恰 ×10");
+}

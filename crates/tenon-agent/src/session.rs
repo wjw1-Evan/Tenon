@@ -165,7 +165,7 @@ pub enum TaskOutcome {
 
 /// v1.171 模型回合自动恢复结果（§9.1）：穷尽落 ERROR，退避中被打断按暂停落地。
 enum ModelTurnError {
-    /// 自动恢复全链穷尽（重试 ≤2 + fallback 链），携带末次错误。
+    /// 自动恢复全链穷尽（重试 ≤10 + fallback 链），携带末次错误。
     Exhausted(tenon_models::ProviderError),
     /// 退避等待期间收到 interrupt（Esc / 停止）——短路退出，按暂停语义处理。
     Interrupted,
@@ -1024,9 +1024,14 @@ impl AgentSession {
             .ok_or_else(|| tenon_models::ProviderError::Parse("模型流缺少最终响应".into()))
     }
 
+    /// v1.186 §9.1：主 provider 瞬时错误自动重试上限（用户裁定 10 次——GLM
+    /// 免费档 429 长时段限流常态下，v1.171 的 ≤2 不足以穿越限流窗口）。
+    const MODEL_TRANSIENT_RETRIES: u32 = 10;
+
     /// v1.171 韧性模型调用（§9.1 自动恢复 / §11 fallback 链）：瞬时错误
-    /// （429 / 408 / 5xx / 网络）同 provider 自动重试 ≤2（退避 2s→8s，429 的
-    /// Retry-After 优先、上限 60s），非瞬时错误不重试；主 provider 穷尽后按
+    /// （429 / 408 / 5xx / 网络）同 provider 自动重试 ≤10（v1.186 用户裁定
+    /// 上限；退避见 `backoff_delay`，429 的 Retry-After 优先、上限 60s），
+    /// 非瞬时错误不重试；主 provider 穷尽后按
     /// `config.fallback_providers` 顺序自动切换（上下文随迁、后续回合固定备用，
     /// `model_fallback` origin="auto"），每个备用 ≤1 次瞬时重试；全链穷尽返回
     /// `Exhausted`（调用方维持 ERROR 侧向出口语义）。退避等待可被 interrupt 打断
@@ -1037,8 +1042,9 @@ impl AgentSession {
         primary: &StdArc<dyn ModelProvider>,
         mut request: ChatRequest,
     ) -> Result<(tenon_models::ChatResponse, u64, ChatRequest), ModelTurnError> {
-        // (provider, 瞬时重试余量)：主 provider ≤2，每个备用 ≤1
-        let mut chain: Vec<(StdArc<dyn ModelProvider>, u32)> = vec![(primary.clone(), 2)];
+        // (provider, 瞬时重试余量)：主 provider ≤10（v1.186），每个备用 ≤1
+        let mut chain: Vec<(StdArc<dyn ModelProvider>, u32)> =
+            vec![(primary.clone(), Self::MODEL_TRANSIENT_RETRIES)];
         for fallback in &self.config.fallback_providers {
             chain.push((fallback.clone(), 1));
         }
@@ -1087,15 +1093,19 @@ impl AgentSession {
         })))
     }
 
-    /// 退避时长（§9.1 v1.171）：429 Retry-After 优先（上限 60s），否则 2s → 8s。
+    /// 退避时长（§9.1 v1.171/v1.186）：429 Retry-After 优先（上限 60s），否则
+    /// 指数退避 2s→4s→8s→16s、封顶 30s（重试上限 10 次，无 Retry-After 全程约
+    /// 3.5 分钟）。备用链 / 辅助调用首试（attempt=1）仍为 2s，语义不变。
     fn backoff_delay(err: &tenon_models::ProviderError, attempt: u32) -> Duration {
-        const CAP: Duration = Duration::from_secs(60);
-        let base = if attempt <= 1 {
-            Duration::from_secs(2)
-        } else {
-            Duration::from_secs(8)
+        const RETRY_AFTER_CAP: Duration = Duration::from_secs(60);
+        let base = match attempt {
+            0 | 1 => Duration::from_secs(2),
+            2 => Duration::from_secs(4),
+            3 => Duration::from_secs(8),
+            4 => Duration::from_secs(16),
+            _ => Duration::from_secs(30),
         };
-        err.retry_after().map_or(base, |d| d.min(CAP)).min(CAP)
+        err.retry_after().map_or(base, |d| d.min(RETRY_AFTER_CAP))
     }
 
     /// 可打断退避：true = 期间收到 interrupt（Esc / 停止）。
@@ -2844,5 +2854,57 @@ mod compaction_tests {
         );
         // 空列表 = 无 MCP 工具进目录。
         assert!(build_mcp_specs(&[]).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod backoff_tests {
+    use super::*;
+
+    /// v1.186 §9.1：退避序列 2s→4s→8s→16s→30s 封顶；429 的 Retry-After
+    /// 优先且上限 60s；无 Retry-After 的 429 走同一指数序列。
+    #[test]
+    fn backoff_schedule_exponential_then_cap() {
+        let net = |a: u32| {
+            AgentSession::backoff_delay(&tenon_models::ProviderError::Network("x".into()), a)
+        };
+        assert_eq!(net(1), Duration::from_secs(2));
+        assert_eq!(net(2), Duration::from_secs(4));
+        assert_eq!(net(3), Duration::from_secs(8));
+        assert_eq!(net(4), Duration::from_secs(16));
+        assert_eq!(net(5), Duration::from_secs(30), "第 5 次起重试封顶 30s");
+        assert_eq!(net(10), Duration::from_secs(30));
+
+        let limited = |ms: u64, a: u32| {
+            AgentSession::backoff_delay(
+                &tenon_models::ProviderError::RateLimited {
+                    body: "429".into(),
+                    retry_after: Some(Duration::from_millis(ms)),
+                },
+                a,
+            )
+        };
+        assert_eq!(
+            limited(10, 1),
+            Duration::from_millis(10),
+            "Retry-After 优先"
+        );
+        assert_eq!(
+            limited(90_000, 3),
+            Duration::from_secs(60),
+            "Retry-After 上限 60s（v1.171 语义不变）"
+        );
+        let plain_limited = AgentSession::backoff_delay(
+            &tenon_models::ProviderError::RateLimited {
+                body: "429".into(),
+                retry_after: None,
+            },
+            2,
+        );
+        assert_eq!(
+            plain_limited,
+            Duration::from_secs(4),
+            "无 Retry-After 走指数退避"
+        );
     }
 }

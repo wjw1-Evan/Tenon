@@ -497,12 +497,14 @@ async fn circuit_breaker_pauses_on_file_budget() {
 
 #[tokio::test]
 async fn model_failure_rolls_back_to_pre_task_state() {
+    // v1.186：用 NonTransient（不进自动重试）——本用例验证模型失败后的回滚管道，
+    // 重试预算已有专用快测；Failure=Network=瞬时，会吃满 10 次退避（约 3.5 分钟）。
     let (dir, session, _store, _p) = setup(vec![
         ScriptedReply::Tool {
             name: "apply_patch".into(),
             args: serde_json::json!({"file": "a.txt", "range": null, "content": "written\n"}),
         },
-        ScriptedReply::Failure("provider down".into()),
+        ScriptedReply::NonTransient("provider down".into()),
     ])
     .await;
     let outcome = session.run_task("改文件").await;
@@ -1296,7 +1298,9 @@ async fn session_run_task_with_patch_creates_checkpoint() {
 
 #[tokio::test]
 async fn session_run_task_error_produces_error_outcome() {
-    let script = vec![ScriptedReply::Failure("model exploded".into())];
+    // v1.186：用 NonTransient（不进自动重试）——本用例验证 Error 出口管道，
+    // Failure=Network=瞬时，会吃满 10 次退避（约 3.5 分钟）拖慢整个套件。
+    let script = vec![ScriptedReply::NonTransient("model exploded".into())];
     let (_d, session, _store, _p) = setup(script).await;
     let outcome = session.run_task("this will fail").await;
     // Failure may be handled gracefully or produce an Error outcome
