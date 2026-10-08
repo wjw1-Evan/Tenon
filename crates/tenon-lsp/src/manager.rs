@@ -45,6 +45,9 @@ type HostEntryCell = Arc<std::sync::Mutex<HostEntry>>;
 #[derive(Default)]
 pub struct LspManager {
     hosts: Mutex<HashMap<(PathBuf, String), HostEntryCell>>,
+    /// v1.200 §8.5 写回通道执行器：注入后透传给每个新 spawn 的宿主
+    /// （既有宿主不受影响；测试注入宿主经 insert_host 自带）。
+    edit_applier: Option<crate::writedit::EditApplier>,
 }
 
 impl std::fmt::Debug for LspManager {
@@ -56,6 +59,12 @@ impl std::fmt::Debug for LspManager {
 impl LspManager {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// v1.200 §8.5：注入写回执行器（daemon 在构造时调用；缺席 = applied:false）。
+    pub fn with_edit_applier(mut self, applier: crate::writedit::EditApplier) -> Self {
+        self.edit_applier = Some(applier);
+        self
     }
 
     /// 测试注入：预置宿主（假服务器）。
@@ -125,6 +134,7 @@ impl LspManager {
             root_path: root.to_path_buf(),
             guard: LspGuardConfig::new(root),
             initialization_options: init_options_for(&pack, root),
+            edit_applier: self.edit_applier.clone(),
         };
         let host = LspHost::connect(cfg, Box::new(conn.reader), Box::new(conn.writer));
         host.initialize(REQUEST_TIMEOUT)

@@ -29,7 +29,7 @@ pub struct Notification {
 }
 
 /// 宿主配置。
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct LspHostConfig {
     /// 语言标识（language pack key，如 "typescript"）。
     pub language: String,
@@ -39,6 +39,20 @@ pub struct LspHostConfig {
     pub guard: LspGuardConfig,
     /// initialize.initializationOptions（如 tsserver.path）。
     pub initialization_options: Option<serde_json::Value>,
+    /// v1.200 §8.5 写回通道：守卫放行的 workspace edits 交此执行器落盘。
+    /// 缺席 = `applied:false` 维持 v1.199 前行为（不得谎报落盘）。
+    pub edit_applier: Option<crate::writedit::EditApplier>,
+}
+
+impl std::fmt::Debug for LspHostConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LspHostConfig")
+            .field("language", &self.language)
+            .field("root_path", &self.root_path)
+            .field("guard", &self.guard)
+            .field("edit_applier", &self.edit_applier.as_ref().map(|_| "<fn>"))
+            .finish()
+    }
 }
 
 pub struct LspHost {
@@ -49,6 +63,8 @@ pub struct LspHost {
     pending: Arc<Mutex<HashMap<i64, std::sync::mpsc::SyncSender<RpcMessage>>>>,
     subscribers: Arc<Mutex<Vec<std::sync::mpsc::Sender<Notification>>>>,
     guard: Arc<LspGuard>,
+    /// v1.200 §8.5 写回通道执行器（缺席 = applied:false）。
+    edit_applier: Option<crate::writedit::EditApplier>,
     alive: Arc<AtomicBool>,
     reader_handle: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
@@ -69,6 +85,7 @@ impl LspHost {
             pending: Arc::new(Mutex::new(HashMap::new())),
             subscribers: Arc::new(Mutex::new(Vec::new())),
             guard,
+            edit_applier: config.edit_applier,
             alive: Arc::new(AtomicBool::new(true)),
             reader_handle: Mutex::new(None),
         });
@@ -298,10 +315,33 @@ fn handle_server_request(host: &Arc<LspHost>, msg: RpcMessage) {
             .guard
             .check_workspace_edit(&params.get("edit").cloned().unwrap_or_default())
         {
-            // 宿主不代写服务器发起的编辑（写盘统一走 daemon 写守卫链路）：
-            // 如实回 applied:false 交服务器走用户确认/重试，不得谎报已落盘
+            // v1.200 §8.5 写回通道：守卫放行 + 宿主注入执行器 → 解析（越界 /
+            // 双形态歧义 / 空集在此二道拒绝）拼接后交执行器落盘，如实回报；
+            // 执行器缺席（纯库消费方）维持 applied:false——不得谎报已落盘。
             GuardDecision::Allowed => {
-                RpcMessage::response(id, serde_json::json!({"applied": false}))
+                let edit = params.get("edit").cloned().unwrap_or_default();
+                match (
+                    host.edit_applier.as_ref(),
+                    crate::writedit::parse_workspace_edit(&host.root, &edit),
+                ) {
+                    (Some(applier), Ok(edits)) => match applier(edits) {
+                        Ok(files) => RpcMessage::response(
+                            id,
+                            serde_json::json!({"applied": true, "files": files}),
+                        ),
+                        Err(e) => RpcMessage::error_response(
+                            id,
+                            REQUEST_DENIED,
+                            &format!("写回失败: {e}"),
+                        ),
+                    },
+                    (None, _) => RpcMessage::response(id, serde_json::json!({"applied": false})),
+                    (_, Err(e)) => RpcMessage::error_response(
+                        id,
+                        REQUEST_DENIED,
+                        &format!("applyEdit 解析拒绝: {e}"),
+                    ),
+                }
             }
             GuardDecision::Denied => RpcMessage::error_response(
                 id,

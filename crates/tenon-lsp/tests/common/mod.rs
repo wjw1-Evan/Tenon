@@ -131,6 +131,7 @@ pub fn setup_host(
         root_path: project_root.to_path_buf(),
         guard: guard_cfg,
         initialization_options: None,
+        edit_applier: None,
     };
     LspHost::connect(cfg, Box::new(host_reader), Box::new(host_writer))
 }

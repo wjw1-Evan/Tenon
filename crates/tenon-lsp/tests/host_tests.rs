@@ -280,6 +280,7 @@ process.stdin.on('data', d => {
         root_path: dir.path().to_path_buf(),
         guard: guard_cfg,
         initialization_options: None,
+        edit_applier: None,
     };
     let host = tenon_lsp::LspHost::connect(cfg, Box::new(conn.reader), Box::new(conn.writer));
     let result = host.initialize(Duration::from_secs(10));

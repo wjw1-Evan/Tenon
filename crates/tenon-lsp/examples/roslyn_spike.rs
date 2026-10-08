@@ -67,6 +67,7 @@ fn main() {
         root_path: workspace.clone(),
         guard: LspGuardConfig::new(&workspace),
         initialization_options: None,
+        edit_applier: None,
     };
     let host = LspHost::connect(cfg, Box::new(conn.reader), Box::new(conn.writer));
     match host.initialize(Duration::from_secs(60)) {

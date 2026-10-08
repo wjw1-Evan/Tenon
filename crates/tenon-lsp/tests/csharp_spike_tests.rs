@@ -60,6 +60,7 @@ async fn csharp_lsp_sandboxed_handshake_and_semantics() {
         root_path: dir.path().to_path_buf(),
         guard: LspGuardConfig::new(dir.path()),
         initialization_options: None,
+        edit_applier: None,
     };
     let host = LspHost::connect(cfg, Box::new(conn.reader), Box::new(conn.writer));
 

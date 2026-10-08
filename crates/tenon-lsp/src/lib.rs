@@ -13,6 +13,7 @@ pub mod host;
 pub mod manager;
 pub mod pack;
 pub mod transport;
+pub mod writedit;
 
 pub use guard::{uri_within, GuardDecision, LspGuard, LspGuardConfig, ServerRequestReport};
 pub use host::{LspHost, LspHostConfig, LspHostError, Notification};
