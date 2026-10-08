@@ -11,11 +11,9 @@ use std::path::{Path, PathBuf};
 
 use crate::guard::uri_to_path;
 
-/// 守卫放行的编辑落盘执行器：第一参 = 宿主项目根（守卫校验所用的同一边界），
-/// 返回成功落盘的文件数。daemon 注入（写盘走 FileService 写守卫：
-/// resolve 前缀校验二道防线，watcher 自动传播变更）。
-pub type EditApplier =
-    Arc<dyn Fn(PathBuf, Vec<ServerFileEdit>) -> Result<usize, String> + Send + Sync>;
+/// 守卫放行的编辑落盘执行器：返回成功落盘的文件数。
+/// daemon 注入（写盘统一走宿主写链：写守卫 / 脏缓冲协调 / watcher）。
+pub type EditApplier = Arc<dyn Fn(Vec<ServerFileEdit>) -> Result<usize, String> + Send + Sync>;
 
 use std::sync::Arc;
 

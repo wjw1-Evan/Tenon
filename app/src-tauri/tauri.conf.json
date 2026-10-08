@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Tenon Harness",
+  "productName": "Tenon",
   "version": "0.1.6",
   "identifier": "dev.tenonide.tenon",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Tenon Harness",
+        "title": "Tenon",
         "width": 1560,
         "height": 980,
         "minWidth": 1080,

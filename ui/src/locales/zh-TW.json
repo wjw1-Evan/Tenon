@@ -314,7 +314,6 @@
   "thread.unrollback": "已撤銷最近回滾",
   "thread.model_fallback": "模型已降級",
   "thread.model_retry": "模型暫時錯誤，自動重試中（第 {attempt}/10 次，{delay}s 後）· {error}",
-  "thread.retry": "重試",
   "thread.compaction": "上下文已壓縮",
   "thread.memory_saved": "記憶已更新",
   "thread.readonly_more": "唯讀步驟詳情見底部「軌跡」面板",

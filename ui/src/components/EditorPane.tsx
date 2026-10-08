@@ -694,7 +694,7 @@ export function EditorPane({
           </section>
         ) : (
           <section className="editor-group">
-            <div className="muted editor-empty">Tenon Harness</div>
+            <div className="muted editor-empty">Tenon</div>
           </section>
         )}
         {splitTab && (

@@ -1,11 +1,6 @@
 //! 假语言服务器（测试用）：走通道传输，实现握手回显与守卫探测行为。
-//!
-//! 被多个测试二进制各自编译：辅助项按二进制不同部分未用，模块级放行。
-
-#![allow(dead_code)]
 
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Duration;
 
 use tenon_lsp::guard::LspGuardConfig;
@@ -141,35 +136,7 @@ pub fn setup_host(
     LspHost::connect(cfg, Box::new(host_reader), Box::new(host_writer))
 }
 
-/// 建立宿主 + 假服务器 + 注入写回执行器（v1.202 §8.5 写回通道测试）。
-pub fn setup_host_with_applier(
-    project_root: &Path,
-    behavior: FakeServerBehavior,
-    applier: Arc<
-        dyn Fn(PathBuf, Vec<tenon_lsp::writedit::ServerFileEdit>) -> Result<usize, String>
-            + Send
-            + Sync,
-    >,
-) -> Arc<LspHost> {
-    let ((server_reader, server_writer), (host_reader, host_writer)) = channel_pair();
-    spawn_fake_server(Box::new(server_reader), Box::new(server_writer), behavior);
-    let guard_cfg = LspGuardConfig::new(project_root);
-    let cfg = LspHostConfig {
-        language: "fake".into(),
-        root_path: project_root.to_path_buf(),
-        guard: guard_cfg,
-        initialization_options: None,
-        edit_applier: Some(applier),
-    };
-    LspHost::connect(cfg, Box::new(host_reader), Box::new(host_writer))
-}
-
-/// 临时项目根（守卫边界 = 该目录）。
-pub fn tmp_project() -> tempfile::TempDir {
-    tempfile::tempdir().expect("tmp project")
-}
-
-use std::path::PathBuf;
+use std::sync::Arc;
 
 /// 等待通知到达（测试辅助）。
 pub fn recv_notification(rx: &std::sync::mpsc::Receiver<Notification>) -> Notification {

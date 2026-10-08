@@ -141,21 +141,6 @@ impl EvalRunner {
     }
 
     /// 运行单任务：准备夹具目录 → 建会话 → 跑任务 → 判定断言。
-    /// v1.190 计划模式适配：计划暂停（等待批准）→ 自动批准续跑（≤2 次，
-    /// 语义等价 UI 侧「批准执行」= 发送批准文本新回合）。
-    async fn run_with_plan_approval(session: &AgentSession, task: &EvalTask) -> TaskOutcome {
-        let mut outcome = session.run_task(&task.instruction).await;
-        let mut approvals = 0;
-        while let TaskOutcome::Paused { reason, .. } = &outcome {
-            if approvals >= 2 || !reason.contains("计划") {
-                break;
-            }
-            approvals += 1;
-            outcome = session.run_task("计划已批准，请按计划执行。").await;
-        }
-        outcome
-    }
-
     pub async fn run_task(
         &self,
         task: &EvalTask,
@@ -198,7 +183,7 @@ impl EvalRunner {
         .await
         .expect("session");
 
-        let outcome = Self::run_with_plan_approval(session.as_ref(), task).await;
+        let outcome = session.run_task(&task.instruction).await;
         self.judge(task, &outcome, &session).await
     }
 
@@ -266,7 +251,7 @@ impl EvalRunner {
         .await
         .expect("session");
 
-        let outcome = Self::run_with_plan_approval(session.as_ref(), task).await;
+        let outcome = session.run_task(&task.instruction).await;
         self.judge(task, &outcome, &session).await
     }
 

@@ -215,15 +215,3 @@
 | **v1.197** | **集成终端（§7.2 / §7.4——补 C10 最后一项缺口：项目级用户 shell PTY + xterm.js 底部第四 tab，§7.4 预留 Cmd/Ctrl+` 键位落位）** |
 | v1.200 | LSP 写回通道库层（§8.5 / §12.1） |
 | **v1.201** | **路线图索引更新（§17）——终端区随 v1.197 由用户令「全部开发」提前自建落地（§7.2），「对齐 Zed ACP 不自造」收窄为 IDE 开放协议的后续可选演进；另注：v1.197 版本号被两会话并发使用（f2ecb34 头部瘦身 / 87c28d6 集成终端），此后取号自 v1.201 起 |
-| v1.203 | LSP 写回 daemon 写链接线（§8.5 / §12.1） |
-| v1.204 | 错误回合一键重试（§7.5） |
-
-| v1.205 | 测试补强（§9.5 / §18——spawn_subagents 全链路 HTTP 集成、evals 计划批准续跑回归） |
-
-| v1.206 | UI 主包瘦身——TerminalPanel/xterm 改 React.lazy 按需加载（主 chunk 3.93→3.61MB，-320KB） |
-
-| v1.207 | store 性能——SQLite synchronous=NORMAL（WAL 标准搭配）+ cache_size 8MB |
-
-| v1.208 | L4 检索性能——两段式查询（评分不取 text、top_k 后按 id 回取）+ select_nth 部分排序 |
-
-| v1.209 | 显示名称统一为 Tenon Harness（窗口/启动屏/水印/选择框/通知回退；productName 同步；代号与包标识不变） |

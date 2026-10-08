@@ -130,7 +130,7 @@ describe("EditorPane providers", () => {
       <EditorPane t={noop} api={api()} projectId="p1" tabs={[]} activePath={null}
         onSelect={noop} onClose={noop} onChange={noop} />
     );
-    expect(screen.getByText("Tenon")).toBeTruthy();
+    expect(screen.getByText("Tenon Harness")).toBeTruthy();
   });
 
   it("registers all language providers on mount", () => {

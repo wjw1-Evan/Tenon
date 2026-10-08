@@ -1381,35 +1381,7 @@ impl DaemonState {
         }
         let state = Self {
             store: Arc::new(Mutex::new(store)),
-            lsp: {
-                // v1.202 §8.5 / §12.1 写回通道接线：applyEdit 守卫放行后落盘。
-                // FileService 为无状态守卫包装（resolve 做第二道前缀校验），
-                // 闭包自足不引 state——LSP 读线程同步执行纯 fs 操作；
-                // 写盘后 watcher 自动传播变更；读失败 / 拼接拒绝 / 越界如实
-                // 报错给服务器（applied 错误响应），不谎报已落盘。
-                let lsp = Arc::new(LspManager::new());
-                lsp.set_edit_applier(Arc::new(move |root, edits| {
-                    let files = tenon_fs::FileService::new(&root);
-                    let mut done = 0usize;
-                    for e in edits {
-                        let rel = e
-                            .path
-                            .strip_prefix(&root)
-                            .map_err(|_| format!("越界: {}", e.path.display()))?
-                            .to_string_lossy()
-                            .into_owned();
-                        let current = std::fs::read_to_string(&e.path)
-                            .map_err(|er| format!("读取 {}: {er}", e.path.display()))?;
-                        let new = tenon_lsp::writedit::apply_file_edits(&current, &e.edits)?;
-                        files
-                            .write_file(&rel, &new)
-                            .map_err(|er| format!("写入 {rel}: {er}"))?;
-                        done += 1;
-                    }
-                    Ok(done)
-                }));
-                lsp
-            },
+            lsp: Arc::new(LspManager::new()),
             lan_pairing,
             lan_bind: options.lan_bind,
             force_lan_peer: options.force_lan_peer,

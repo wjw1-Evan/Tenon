@@ -47,8 +47,7 @@ pub struct LspManager {
     hosts: Mutex<HashMap<(PathBuf, String), HostEntryCell>>,
     /// v1.200 §8.5 写回通道执行器：注入后透传给每个新 spawn 的宿主
     /// （既有宿主不受影响；测试注入宿主经 insert_host 自带）。
-    /// v1.202：Mutex 化——daemon 在 Arc<Self> 构造后接线（set_edit_applier）。
-    edit_applier: std::sync::Mutex<Option<crate::writedit::EditApplier>>,
+    edit_applier: Option<crate::writedit::EditApplier>,
 }
 
 impl std::fmt::Debug for LspManager {
@@ -62,15 +61,10 @@ impl LspManager {
         Self::default()
     }
 
-    /// v1.200 §8.5：注入写回执行器（构造链式形态）。
-    pub fn with_edit_applier(self, applier: crate::writedit::EditApplier) -> Self {
-        *self.edit_applier.lock().expect("applier lock") = Some(applier);
+    /// v1.200 §8.5：注入写回执行器（daemon 在构造时调用；缺席 = applied:false）。
+    pub fn with_edit_applier(mut self, applier: crate::writedit::EditApplier) -> Self {
+        self.edit_applier = Some(applier);
         self
-    }
-
-    /// v1.202 §8.5：Arc 构造后接线（daemon 持 Arc<Self> 后调用）。
-    pub fn set_edit_applier(&self, applier: crate::writedit::EditApplier) {
-        *self.edit_applier.lock().expect("applier lock") = Some(applier);
     }
 
     /// 测试注入：预置宿主（假服务器）。
@@ -140,7 +134,7 @@ impl LspManager {
             root_path: root.to_path_buf(),
             guard: LspGuardConfig::new(root),
             initialization_options: init_options_for(&pack, root),
-            edit_applier: self.edit_applier.lock().expect("applier lock").clone(),
+            edit_applier: self.edit_applier.clone(),
         };
         let host = LspHost::connect(cfg, Box::new(conn.reader), Box::new(conn.writer));
         host.initialize(REQUEST_TIMEOUT)
