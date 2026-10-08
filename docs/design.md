@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v1.172** |
-| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.156）· 2026-10-07（v1.157-v1.162）· 2026-10-08（v1.163-v1.172） |
+| 版本 | **v1.173** |
+| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.156）· 2026-10-07（v1.157-v1.162）· 2026-10-08（v1.163-v1.173） |
 | 状态 | 定稿（v1.10 决策闭环），M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 | 历史评审 | v0.1 / v0.3 两轮共 41 项、v1.0 复审 21 项问题的结论已全部并入本方案（过程文档已清理） |
@@ -685,6 +685,7 @@ L4 按包隔离、语言服务器按需启动；子代理限定单包；检索�
 - **本地决策模型（Laya）**：产品自管小型分类模型，承接代理循环结构化判定（用途 / 分发 / 边界见 §9.8）；启动自动下载并启用（静态 registry + 签名 + 版本锁定，无确认卡，v1.71）、本地 CPU 推理零 token 成本；不可用即整体回退，不阻塞任何功能；
 - **路由**：v1 显式（`/model` 与设置面板）+ 轻量启发式（纯读任务提示轻模型）；auto 路由实验特性默认关（置信度展示、一键改派、可反馈）；
 - **成本**（v1.93 接线）：价格表来源 = provider 配置可选 `price_in_per_mtok` / `price_out_per_mtok`（美元 / 百万 token，缺省 0 = 未知模型不计、宁少报不虚报）；daemon 按默认模型构建价格表注入会话，每回合计价累计入 `model_usage.cost_usd` 并作为熔断预算输入（§9.3）；本地模型（含 Laya）显示「本地 · 0 成本」，token 单独统计；任务级 / 会话级 / 项目级归因；**缓存与速度观测（v1.129）**：usage 增缓存命中输入 token 采集（OpenAI 兼容 = `prompt_tokens_details.cached_tokens`，Anthropic = `cache_read_input_tokens`，未报告 / 本地模型 = 0），命中率 = cached / input——OpenAI 系 cached ⊆ prompt_tokens 口径自洽，Anthropic 系不打 `cache_control` 断点则缓存不启用、恒 0 不虚报；每回合模型流耗时（provider 流建立 → 权威 Final 到达）记入 `model_usage.duration_ms`，输出速度 = output / duration 为权威实测（区别于 UI 轮询差值的流中近似）；
+- **Prompt caching（v1.173）**：Anthropic 协议路径打 `cache_control: ephemeral` 断点——system 块（缓存工具定义 + 系统提示前缀）+ 最后一条消息的最后一个内容块（增量式会话前缀缓存：断点随回合前移、下回合命中），长会话重复上下文省约 90% 读取费用；命中量已入成本观测（v1.129 `cached_input_tokens` / 命中率）。OpenAI 兼容端点（OpenAI / DeepSeek / GLM）为供应商侧自动缓存（≥1024 token 前缀自动），无需断点、不改协议，`cached_tokens` 照常记账——此前 Anthropic 路径不打断点缓存整体不启用（恒 0）即本条修正的主因。`[models.caching] enabled`（默认开，config.toml；build_provider 默认开、daemon 按 配置关）整体开关；短提示（<1024 token）供应商侧本就不缓存、无额外写入费；
 - **密钥存储（v1.165 简化为双轨）**：① **直存轨（默认引导路径）**——`models.providers.<name>.api_key` 明文存 `settings.json`（0600，仅当前用户可读）；GET /settings 永不回显该字段，覆盖表整体替换时载荷缺席 `api_key` 即保留既有值（UI 无法重发不可回显字段）；② **引用轨**——`api_key_env` 环境变量引用名先查 daemon 环境变量，缺失时读取操作系统凭据库（macOS Keychain / Linux libsecret / Windows PasswordVault），适合不愿明文落盘的用户。解析优先级：`api_key_env` 有值即走引用轨，否则回退 `api_key` 直存值；`PUT /secrets` 钥匙串写入通道随 v1.165 移除（KeychainStore 写能力保留为库内设施）；
 - **自动 fallback 链（v1.171）**：`settings.json` `models.fallback` 有序备用模型名单（元素 `"provider"` = 用其配置默认模型，或 `"provider/model"` = 指定模型；≤4 条，整体替换语义，新会话生效，GET /settings 回显）——会话主 provider 瞬时错误重试穷尽（§9.1 自动恢复）后按序自动切换：上下文随迁、`model_fallback` 事件 `origin:"auto"` 入 Trace、切换后续回合固定用备用（不回切）。与显式路由正交：手动 `/model` 切换优先级与语义不变；默认空 = 不自动 fallback。运行时限流处理是 GLM 免费档 429 常态（v1.170 实测）的直接对策（v1.169/v1.170 只覆盖向导验证步）；
 - **辅助调用韧性（v1.171）**：单轮辅助模型调用（会话标题 v1.59 / AI ghost text 补全 / L5 记忆提取 v1.104）遇瞬时错误自动重试 ≤1（2s 退避，瞬时性判定与 §9.1 同规），仍失败维持各调用方既有静默回退语义（不产生 Error 事件、不阻塞任务）；

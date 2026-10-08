@@ -246,10 +246,23 @@ pub trait ModelProvider: Send + Sync {
 }
 
 /// 从 provider 配置构建具体适配器（tenon-config ProviderConfig → 实现）。
+/// Prompt caching 默认开（v1.173）；需按 `[models.caching].enabled` 关闭时用
+/// `build_provider_with_caching`。
 pub fn build_provider(
     name: &str,
     cfg: &tenon_config::ProviderConfig,
     keys: &dyn KeyStore,
+) -> ProviderResult<std::sync::Arc<dyn ModelProvider>> {
+    build_provider_with_caching(name, cfg, keys, true)
+}
+
+/// v1.173：caching=false 时关闭 Anthropic 路径的 cache_control 断点
+/// （OpenAI 兼容路径为供应商侧自动缓存，无协议面差异）。
+pub fn build_provider_with_caching(
+    name: &str,
+    cfg: &tenon_config::ProviderConfig,
+    keys: &dyn KeyStore,
+    caching_enabled: bool,
 ) -> ProviderResult<std::sync::Arc<dyn ModelProvider>> {
     // 密钥解析链：api_key_env 环境变量 → api_key 直填（仅开发期本地文件）→ 空
     let api_key = cfg
@@ -267,12 +280,10 @@ pub fn build_provider(
             &api_key,
             cfg.model.clone(),
         ))),
-        tenon_config::ProviderKind::Anthropic => Ok(std::sync::Arc::new(AnthropicProvider::new(
-            name,
-            &cfg.base_url,
-            &api_key,
-            cfg.model.clone(),
-        ))),
+        tenon_config::ProviderKind::Anthropic => Ok(std::sync::Arc::new(
+            AnthropicProvider::new(name, &cfg.base_url, &api_key, cfg.model.clone())
+                .with_prompt_caching(caching_enabled),
+        )),
         tenon_config::ProviderKind::OpenaiResponses => {
             // Responses 协议随 M1 落地；当前以 chat 协议兼容尝试（GLM/OpenAI 均提供 chat）。
             Ok(std::sync::Arc::new(OpenAiCompatProvider::new(

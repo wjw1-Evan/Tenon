@@ -273,6 +273,19 @@ impl Default for LayaConfig {
     }
 }
 
+/// v1.173 §11 Prompt caching：Anthropic 路径 cache_control 断点开关。
+/// OpenAI 兼容端点为供应商侧自动缓存，不受此开关影响。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CachingConfig {
+    pub enabled: bool,
+}
+
+impl Default for CachingConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ModelsConfig {
@@ -280,6 +293,8 @@ pub struct ModelsConfig {
     pub default: String,
     pub providers: std::collections::BTreeMap<String, ProviderConfig>,
     pub laya: LayaConfig,
+    /// v1.173：Anthropic cache_control 断点整体开关（默认开）。
+    pub caching: CachingConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -211,8 +211,16 @@ async fn anthropic_chat_maps_messages_auth_and_blocks() {
     assert_eq!(request.api_key.as_deref(), Some("secret"));
     assert_eq!(request.protocol_version.as_deref(), Some("2023-06-01"));
     let sent: serde_json::Value = serde_json::from_str(&request.body).unwrap();
-    assert_eq!(sent["system"], "stay safe");
+    // v1.173 prompt caching（默认开）：system 为 blocks 数组 + ephemeral 断点
+    assert_eq!(sent["system"][0]["type"], "text");
+    assert_eq!(sent["system"][0]["text"], "stay safe");
+    assert_eq!(sent["system"][0]["cache_control"]["type"], "ephemeral");
     assert_eq!(sent["messages"][0]["content"][0]["type"], "text");
+    // 最后一条消息的最后一个内容块打断点（增量式会话前缀缓存）
+    assert_eq!(
+        sent["messages"][2]["content"][0]["cache_control"]["type"],
+        "ephemeral"
+    );
     assert_eq!(sent["messages"][2]["content"][0]["type"], "tool_result");
     assert_eq!(sent["messages"][2]["content"][0]["tool_use_id"], "call_1");
     assert_eq!(sent["tools"][0]["input_schema"]["type"], "object");
@@ -222,6 +230,36 @@ async fn anthropic_chat_maps_messages_auth_and_blocks() {
     // v1.129：非流式缓存命中解析（cache_read_input_tokens）
     assert_eq!(resp.usage.cached_input_tokens, 7);
     assert_eq!(resp.finish_reason.as_deref(), Some("tool_use"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn anthropic_cache_control_disabled_keeps_plain_system() {
+    // v1.173：with_prompt_caching(false)（[models.caching].enabled=false 路径）
+    // 不打断点——system 回到纯串、消息块无 cache_control。
+    let response = serde_json::json!({
+        "model": "claude-actual",
+        "stop_reason": "end_turn",
+        "content": [{"type": "text", "text": "ok"}],
+        "usage": {"input_tokens": 1, "output_tokens": 1}
+    })
+    .to_string();
+    let (base, server) = serve_http("200 OK", "application/json", &response).await;
+    let req = protocol_request();
+    tenon_models::AnthropicProvider::new("anthropic", &base, "", None)
+        .with_prompt_caching(false)
+        .chat(&req)
+        .await
+        .unwrap();
+    let sent: serde_json::Value = serde_json::from_str(&server.await.unwrap().body).unwrap();
+    assert_eq!(sent["system"], "stay safe", "system 保持纯串");
+    for m in sent["messages"].as_array().unwrap() {
+        for block in m["content"].as_array().unwrap() {
+            assert!(
+                block.get("cache_control").is_none(),
+                "关闭后不得有断点: {block}"
+            );
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

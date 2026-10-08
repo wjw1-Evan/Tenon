@@ -1177,6 +1177,7 @@ impl DaemonState {
         let mut models = self.config.models.clone();
         ov.apply_models_to(&mut models);
         let keys = tenon_models::ChainKeyStore::new();
+        let caching_enabled = models.caching.enabled;
         let mut map: HashMap<String, Arc<dyn ModelProvider>> = HashMap::new();
         for p in &self.injected_providers {
             map.insert(p.name().to_string(), p.clone());
@@ -1185,7 +1186,9 @@ impl DaemonState {
             if map.contains_key(name) {
                 continue;
             }
-            if let Ok(built) = tenon_models::build_provider(name, pcfg, &keys) {
+            if let Ok(built) =
+                tenon_models::build_provider_with_caching(name, pcfg, &keys, caching_enabled)
+            {
                 map.insert(name.clone(), built);
             }
         }
@@ -1215,6 +1218,7 @@ impl DaemonState {
         let mut models = self.config.models.clone();
         ov.apply_models_to(&mut models);
         let keys = tenon_models::ChainKeyStore::new();
+        let caching_enabled = models.caching.enabled;
         let mut out = Vec::new();
         for entry in entries.into_iter().take(4) {
             let (name, model_override) = match entry.split_once('/') {
@@ -1231,7 +1235,8 @@ impl DaemonState {
                 Some(m) => models.providers.get(name).and_then(|pcfg| {
                     let mut pcfg = pcfg.clone();
                     pcfg.model = Some(m);
-                    tenon_models::build_provider(name, &pcfg, &keys).ok()
+                    tenon_models::build_provider_with_caching(name, &pcfg, &keys, caching_enabled)
+                        .ok()
                 }),
             };
             match built {

@@ -18,6 +18,9 @@ pub struct AnthropicProvider {
     /// 流式专用：总超时会剪断长生成（reqwest 的 timeout 覆盖到响应体读完），
     /// 改为连接 + 空闲读超时
     stream_client: reqwest::Client,
+    /// v1.173 §11 Prompt caching：请求体打 `cache_control: ephemeral` 断点
+    /// （system + 最后一条消息）；命中量经 `cache_read_input_tokens` 记账。
+    prompt_caching: bool,
 }
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -180,7 +183,14 @@ impl AnthropicProvider {
                 .read_timeout(std::time::Duration::from_secs(180))
                 .build()
                 .expect("reqwest stream client"),
+            prompt_caching: true,
         }
+    }
+
+    /// v1.173：关闭 Anthropic prompt caching（`[models.caching].enabled=false`）。
+    pub fn with_prompt_caching(mut self, enabled: bool) -> Self {
+        self.prompt_caching = enabled;
+        self
     }
 
     fn to_api_messages(messages: &[ChatMessage]) -> (String, Vec<serde_json::Value>) {
@@ -228,6 +238,33 @@ impl AnthropicProvider {
         }
         (system, out)
     }
+
+    /// v1.173 §11 Prompt caching：system 块与最后一条消息打 `cache_control:
+    /// ephemeral` 断点。system 从纯串改 blocks 数组（缓存工具定义 + 系统提示
+    /// 前缀）；最后一条消息的最后一个内容块追加断点——增量式会话前缀缓存，
+    /// 断点随回合前移、下回合命中（2 个断点，Anthropic 上限 4 之内）。
+    fn apply_cache_control(&self, body: &mut serde_json::Value) {
+        if !self.prompt_caching {
+            return;
+        }
+        if let Some(system) = body.get_mut("system") {
+            let text = system.as_str().unwrap_or_default().to_string();
+            *system = serde_json::json!([{
+                "type": "text",
+                "text": text,
+                "cache_control": { "type": "ephemeral" },
+            }]);
+        }
+        if let Some(msgs) = body.get_mut("messages").and_then(|m| m.as_array_mut()) {
+            if let Some(last) = msgs.last_mut() {
+                if let Some(blocks) = last.get_mut("content").and_then(|c| c.as_array_mut()) {
+                    if let Some(last_block) = blocks.last_mut() {
+                        last_block["cache_control"] = serde_json::json!({ "type": "ephemeral" });
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -273,6 +310,7 @@ impl ModelProvider for AnthropicProvider {
         }
 
         let url = format!("{}/v1/messages", self.base_url);
+        self.apply_cache_control(&mut body);
         let mut request = self
             .client
             .post(&url)
@@ -400,6 +438,7 @@ impl ModelProvider for AnthropicProvider {
         }
 
         let url = format!("{}/v1/messages", self.base_url);
+        self.apply_cache_control(&mut body);
         // 流式走 stream_client（无总超时；连接 30s + 空闲读 180s）
         let mut request = self
             .stream_client
