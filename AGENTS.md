@@ -14,7 +14,8 @@
 
 版本号与协作注意：
 
-- **并行 agent 会话共用此工作树**：design.md 版本号会被并行会话占用，加版本前必须先查工作树里的最新版本；禁用 `git stash`；提交时按 hunk 只提自己的改动；功能勿依赖他人未提交的设施；禁用脚本盲改共享在途文件；
+- **并行 agent 会话共用此工作树**：design.md 版本号会被并行会话占用，加版本前必须在文档锁内查 changelog 表尾的最新版本（见下条）；禁用 `git stash`；提交时按 hunk 只提自己的改动；功能勿依赖他人未提交的设施；禁用脚本盲改共享在途文件；
+- **共享设计文档锁**：docs/design.md、docs/design-changelog.md、AGENTS.md 为并行会话共同必改文件——改动前 `scripts/design-lock.sh acquire "<本次版本号>"`，锁内完成「读 changelog 表尾定版本 → 追加演进行 → 同步 design.md 头部元数据」，改完立即 `release`；锁只覆盖文档编辑窗口，不跨构建 / 测试；持锁超 15 分钟未续期视为陈旧可被接管，长编辑用 `refresh` 续期（详见脚本头部说明）；
 - README 不维护版本更新记录（版本明细由 git 历史与 `docs/design-changelog.md` 演进表承载），勿向 README 追加版本条目；
 - 方向性 UI/UX 改动先给双参考方案（如 Codex 形态 vs ZCode 形态）供用户选择，再实现。
 
