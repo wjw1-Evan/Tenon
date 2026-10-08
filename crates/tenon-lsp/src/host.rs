@@ -324,7 +324,7 @@ fn handle_server_request(host: &Arc<LspHost>, msg: RpcMessage) {
                     host.edit_applier.as_ref(),
                     crate::writedit::parse_workspace_edit(&host.root, &edit),
                 ) {
-                    (Some(applier), Ok(edits)) => match applier(edits) {
+                    (Some(applier), Ok(edits)) => match applier(host.root.clone(), edits) {
                         Ok(files) => RpcMessage::response(
                             id,
                             serde_json::json!({"applied": true, "files": files}),

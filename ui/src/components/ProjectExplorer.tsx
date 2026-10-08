@@ -248,7 +248,7 @@ async function pickDirectory(): Promise<string | null> {
     | undefined;
   if (!internals) return null;
   const picked = (await internals.invoke("plugin:dialog|open", {
-    options: { directory: true, multiple: false, title: "Tenon" },
+    options: { directory: true, multiple: false, title: "Tenon Harness" },
   })) as unknown;
   return typeof picked === "string" && picked ? picked : null;
 }

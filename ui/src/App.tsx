@@ -1,7 +1,7 @@
 // 主工作区（设计方案 §7.2 v1.139）：项目侧栏（「源码」钮上下拆分：上=项目任务流，
 // 下=active 项目文件树）| 代理线程主区（恒为任务对话，满宽）；点文件弹编辑器浮层
 // （v1.110 形态）；底部 时间轴/轨迹/评估。
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ResizeHandle } from "./components/ResizeHandle";
 import { TenonApi } from "./lib/api";
 import type { ProjectSummary } from "./lib/api";
@@ -43,7 +43,9 @@ import {
 import { ThreePaneMerge, type DirtyConflict } from "./components/ThreePaneMerge";
 import { AgentTracePanel } from "./components/AgentTracePanel";
 import { EvalsPanel } from "./components/EvalsPanel";
-import { TerminalPanel } from "./components/TerminalPanel";
+const TerminalPanel = React.lazy(() =>
+  import("./components/TerminalPanel").then((m) => ({ default: m.TerminalPanel })),
+);
 import { LanguagePackWizard } from "./components/LanguagePackWizard";
 import { unionLines } from "./lib/aiLines";
 import { createAutoSaver, type AutoSaver } from "./lib/autosave";
@@ -1645,7 +1647,9 @@ export default function App({
           )}
           {bottomTab === "evals" && <EvalsPanel api={api} t={t} />}
           {bottomTab === "terminal" && (
-            <TerminalPanel api={api} t={t} projectId={projectId} />
+            <Suspense fallback={<div className="terminal-panel" data-testid="terminal-loading" />}>
+              <TerminalPanel api={api} t={t} projectId={projectId} />
+            </Suspense>
           )}
         </footer>
       )}

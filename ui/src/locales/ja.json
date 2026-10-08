@@ -314,6 +314,7 @@
   "thread.unrollback": "直前のロールバックを取り消しました",
   "thread.model_fallback": "モデルをフォールバックしました",
   "thread.model_retry": "モデルの一時エラー、自動リトライ中（{attempt}/10 回目、{delay}秒後）· {error}",
+  "thread.retry": "再試行",
   "thread.compaction": "コンテキストを圧縮しました",
   "thread.memory_saved": "メモリを更新しました",
   "thread.readonly_more": "読み取り専用ステップの詳細は下部「トレース」パネルを参照",

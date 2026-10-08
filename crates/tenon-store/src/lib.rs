@@ -353,6 +353,12 @@ PRAGMA foreign_keys = ON;
 -- 多实例（壳 --no-lock 双开 / CLI 与 daemon 并存）并发写时，无 busy handler
 -- 会立即返回 SQLITE_BUSY 而非等待——迁移路径出错会让第二个 daemon 直接启动失败
 PRAGMA busy_timeout = 5000;
+-- WAL + NORMAL 是持久性与吞吐的标准搭配（v1.207 §14.2 性能）：
+-- 崩溃不丢事务（WAL 同步于 checkpoint），仅掉电可能丢最后一个 checkpoint 前
+-- 的少量写入——交换一致性换取事件溯源写入吞吐（每回合多次 append_event）
+PRAGMA synchronous = NORMAL;
+-- 页缓存 8MB（默认 2MB）：事件 / l4_chunks 热页常驻，读放大显著下降
+PRAGMA cache_size = -8000;
 
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
@@ -1870,8 +1876,12 @@ impl Store {
         query: &[f32],
         top_k: usize,
     ) -> Result<Vec<L4SearchHit>> {
+        // v1.208 性能（§10.1）：两段式检索——评分阶段不取 text（text 是
+        // l4_chunks 最大的列，全表搬运是大仓库检索的主要开销）；top_k 确定
+        // 后仅按 id 回取 top_k 条正文。部分排序 select_nth_unstable_by
+        // O(n) 取前 k（原先全排 O(n log n)）。
         let mut stmt = self.conn.prepare(
-            "SELECT id, path, COALESCE(symbol,''), start_line, end_line, text, embedding
+            "SELECT id, path, COALESCE(symbol,''), start_line, end_line, embedding
              FROM l4_chunks
              WHERE project_id = ?1 AND embedding IS NOT NULL",
         )?;
@@ -1882,32 +1892,55 @@ impl Store {
                 r.get::<_, String>(2)?,
                 r.get::<_, i64>(3)? as usize,
                 r.get::<_, i64>(4)? as usize,
-                r.get::<_, String>(5)?,
-                r.get::<_, Vec<u8>>(6)?,
+                r.get::<_, Vec<u8>>(5)?,
             ))
         })?;
-        let mut scored = Vec::new();
+        let mut scored: Vec<(L4SearchHit, f32)> = Vec::new();
         for row in rows {
-            let (id, path, symbol, start_line, end_line, text, blob) = row?;
+            let (id, path, symbol, start_line, end_line, blob) = row?;
             let v = blob_to_f32_slice(&blob);
             let score = cosine(query, &v);
-            scored.push(L4SearchHit {
-                id,
-                path,
-                symbol,
-                start_line,
-                end_line,
-                text,
+            scored.push((
+                L4SearchHit {
+                    id,
+                    path,
+                    symbol,
+                    start_line,
+                    end_line,
+                    text: String::new(),
+                    score,
+                },
                 score,
-            });
+            ));
         }
-        scored.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        scored.truncate(top_k);
-        Ok(scored)
+        let k = top_k.min(scored.len());
+        if k > 0 {
+            if k >= scored.len() {
+                scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            } else {
+                scored.select_nth_unstable_by(k, |a, b| {
+                    b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
+        }
+        scored.truncate(k);
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // 回取 top_k 正文（单条主键查询，k ≤ top_k）
+        let mut hits = Vec::with_capacity(scored.len());
+        {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT text FROM l4_chunks WHERE id = ?1")?;
+            for (hit, _) in &scored {
+                let text: String = stmt.query_row([hit.id], |r| r.get(0)).unwrap_or_default();
+                hits.push(L4SearchHit {
+                    text,
+                    ..hit.clone()
+                });
+            }
+        }
+        Ok(hits)
     }
 
     // ---------- 冷归档（§14.2 增长治理） ----------
