@@ -587,6 +587,16 @@ export function AgentPanel({
     }
   }
 
+  /// v1.204 错误回合一键重试：重发该回合原始任务文本（正常发送链；运行态经队列入队）。
+  async function retryTask(task: string) {
+    if (!sessionId) return;
+    try {
+      await api.sendMessage(sessionId, task);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   // v1.59：运行态下发送按钮变「停止」——协作暂停在下一工具调用检查点生效。
   // stop 受理即禁用，防状态轮询间隙连点向控制队列残留多条 Stop（回到空闲态解锁）。
   useEffect(() => {
@@ -925,6 +935,11 @@ export function AgentPanel({
                       onApprovePlan={
                         sessionId && ev.type === "plan_submitted"
                           ? () => void approvePlan()
+                          : undefined
+                      }
+                      onRetry={
+                        sessionId && ev.type === "error" && turn.task
+                          ? () => void retryTask(turn.task as string)
                           : undefined
                       }
                     />
@@ -1530,12 +1545,15 @@ function EventNode({
   subtasksLatest,
   retryLatest,
   onApprovePlan,
+  onRetry,
 }: {
   ev: EventItem;
   t: Translate;
   subtasksLatest: boolean;
   retryLatest: boolean;
   onApprovePlan?: (() => void) | undefined;
+  /** v1.204 错误回合一键重试：非空 = 该回合任务文本（error 事件行内渲染重试钮）。 */
+  onRetry?: (() => void) | undefined;
 }) {
   switch (ev.type) {
     case "plan_submitted": {
@@ -1608,6 +1626,17 @@ function EventNode({
       return (
         <div className="turn-error">
           ⚠ {String((ev.payload as { error?: string }).error ?? t("agent.error_fallback"))}
+          {/* v1.204 一键重试：重发该回合原始任务文本（运行态经队列入队） */}
+          {onRetry && (
+            <button
+              type="button"
+              className="turn-action"
+              data-testid="turn-error-retry"
+              onClick={onRetry}
+            >
+              ↻ {t("thread.retry")}
+            </button>
+          )}
         </div>
       );
     }
