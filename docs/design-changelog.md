@@ -221,3 +221,5 @@
 | v1.205 | 测试补强（§9.5 / §18——spawn_subagents 全链路 HTTP 集成、evals 计划批准续跑回归） |
 
 | v1.206 | UI 主包瘦身——TerminalPanel/xterm 改 React.lazy 按需加载（主 chunk 3.93→3.61MB，-320KB） |
+
+| v1.207 | store 性能——SQLite synchronous=NORMAL（WAL 标准搭配）+ cache_size 8MB |

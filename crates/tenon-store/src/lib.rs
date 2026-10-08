@@ -353,6 +353,12 @@ PRAGMA foreign_keys = ON;
 -- 多实例（壳 --no-lock 双开 / CLI 与 daemon 并存）并发写时，无 busy handler
 -- 会立即返回 SQLITE_BUSY 而非等待——迁移路径出错会让第二个 daemon 直接启动失败
 PRAGMA busy_timeout = 5000;
+-- WAL + NORMAL 是持久性与吞吐的标准搭配（v1.207 §14.2 性能）：
+-- 崩溃不丢事务（WAL 同步于 checkpoint），仅掉电可能丢最后一个 checkpoint 前
+-- 的少量写入——交换一致性换取事件溯源写入吞吐（每回合多次 append_event）
+PRAGMA synchronous = NORMAL;
+-- 页缓存 8MB（默认 2MB）：事件 / l4_chunks 热页常驻，读放大显著下降
+PRAGMA cache_size = -8000;
 
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL

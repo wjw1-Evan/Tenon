@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | **v1.206** |
+| 版本 | **v1.207** |
 | 日期 | 2026-10-08 |
 | 状态 | 定稿，M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
@@ -957,6 +957,8 @@ signature: "<sig>"
 事件类型枚举：`user_input / sensing / decision / model_delta / patch_applied / command_run / direct_action / diagnostics / checkpoint / compaction / rollback / unrollback / model_fallback / model_retry / decider_call / error / session_title / memory_saved / subtasks`（direct_action 是 v1.89 C/D 直执审计：工具 / 级别 / 关键参数；rollback / unrollback 对应 §10.3 回滚与撤销回滚；model_fallback 为模型切换（payload `origin` 区分手动 `/model` 与 §9.1 自动恢复）；model_retry 为 v1.171 §9.1 自动恢复的瞬时重试（payload `{provider, model, attempt, delay_ms, error}`）；plan_submitted 为 v1.179 计划模式计划提交（§9.2，payload `{items:[string]}`，会话随即转 PAUSED 待批准）；hook_run 为 v1.180 用户 hooks 回调记录（§13.6，payload `{event, command, exit_code, duration_ms, action}`，不含参数原文）；model_delta 为 §9.6 合并后的模型增量（Final 的 usage / tool calls 仍只按权威 Final 入账）；decider_call 为 §9.8 Laya 本地判定：类型 / 结果 / 耗时，不含输入原文（v1.124 起 `origin` 标记来源：缺省 = daemon 自动集成点，`agent_tool` = 模型经 `laya_decide` 工具主动调用）；session_title 为 v1.59 对话标题生成完成（payload `{title}`，UI 据此即时刷新对话列表）；memory_saved 为 v1.104 L5 记忆提取入库完成（payload `{count, ids}`，不含记忆原文）；subtasks 为 v1.146 子任务清单状态（§9.2，payload `{items:[{title,status}]}` 全量快照，UI 每回合以最新一次为准渲染）；均入 Trace 可审计）。旧库中的 `approval_request / approval_decision / approval_timeout` 只读回放兼容，新运行不再产生。
 
 **增长治理**（v1.93 接线）：events / tool_calls 冷热分层——热数据留 SQLite，关闭超 `archive.events_days`（默认 90 天，daemon 每日定时执行）的会话压缩归档至 `~/.tenon/archive/`（仍全本地、可检索回载）；model_usage 明细随会话归档，项目 / 会话聚合经 `project_usage_totals` / `session_usage_totals` 即时查询（按月 / 按日聚合表无消费方，已删）；approvals 表仅作 v1.89 前旧库兼容。**手动归档（v1.103）**：`sessions.archived_at` 非空即在侧栏隐藏、可随时还原，数据不出库；自动压缩归档扫描含已手动归档会话（老归档按 `events_days` 最终压缩出库）；手动删除为事务级联硬删（events / tool_calls / checkpoints / model_usage / approvals / session 行），shadow 快照不随删（gc 老化）。
+
+**连接与 pragma（v1.207 性能）**：每连接 WAL + synchronous=NORMAL（崩溃不丢事务，仅掉电可能丢最后一次 checkpoint 前写入——事件源源每回合多次 append_event 的吞吐标准搭配）+ cache_size 8MB（事件 / l4_chunks 热页常驻）；
 
 **输出与 payload 上限 + 空闲页回收（v1.172 存储治理）**：① **工具输出统一截断**——run_tests / run_build / install_deps / git_push / create_pr 的 stdout+stderr 合并内容截 20k 字符（与 http_fetch / MCP 既有口径一致），尾注写明丢弃量、模型需全文时改用更窄命令重取（§9.2 同步）；② **events.payload 单条硬上限 256KB**——超限整体替换为 `{payload_truncated:true, original_bytes, note}` 标记（append_event 层最后防线；事件链 seq 完整性与回滚不受影响——回滚依赖 checkpoint tree + 文件集，不依赖 payload 原文；UI 呈现降级为标记），executor 层截断后的常规事件不触达；③ **归档扫描覆盖全部状态**——`updated_at` 超期的非终态会话（崩溃残留的 running / 长期搁置的 paused）一并压缩归档（活跃会话 updated_at 随活动刷新永不命中），消灭僵尸会话永久占库；④ **归档后空闲页回收**——归档定时任务内 `freelist > 10% 总页数且 >64 页` 时执行 VACUUM（SQLite 删行不缩文件；节流随归档每日一次，避免热路径独占写）。model_delta 逐块行放大随会话归档整体移出；活跃会话的流式增量不合并（事件链重放语义优先）。
 
