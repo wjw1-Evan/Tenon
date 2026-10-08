@@ -132,6 +132,8 @@ pub enum EventKind {
     MemorySaved,
     /// 子任务清单状态（§9.2 v1.146，payload {items:[{title,status}]} 全量快照）。
     Subtasks,
+    /// 计划模式计划提交（§9.2 v1.179，payload {items:[string]}，会话随即转 PAUSED 待批准）。
+    PlanSubmitted,
 }
 
 impl EventKind {
@@ -156,6 +158,7 @@ impl EventKind {
             EventKind::Compaction => "compaction",
             EventKind::MemorySaved => "memory_saved",
             EventKind::Subtasks => "subtasks",
+            EventKind::PlanSubmitted => "plan_submitted",
         }
     }
 
@@ -180,6 +183,7 @@ impl EventKind {
             "compaction" => EventKind::Compaction,
             "memory_saved" => EventKind::MemorySaved,
             "subtasks" => EventKind::Subtasks,
+            "plan_submitted" => EventKind::PlanSubmitted,
             _ => return None,
         })
     }

@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v1.178** |
-| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.156）· 2026-10-07（v1.157-v1.162）· 2026-10-08（v1.163-v1.178） |
+| 版本 | **v1.179** |
+| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.156）· 2026-10-07（v1.157-v1.162）· 2026-10-08（v1.163-v1.179） |
 | 状态 | 定稿（v1.10 决策闭环），M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 | 历史评审 | v0.1 / v0.3 两轮共 41 项、v1.0 复审 21 项问题的结论已全部并入本方案（过程文档已清理） |
@@ -539,6 +539,7 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 | `lsp_query`（定义/引用/符号/hover） | A | 共享 LSP 多路复用 |
 | `skill_use`（读取技能全文） | A | 技能目录注入系统提示，正文按需加载进上下文（§13.4，v1.130） |
 | `subtasks`（子任务清单，v1.146） | A | 多步任务主动分解与状态维护：`{items:[{title,status}]}` 全量状态替换（幂等；1–12 项，status ∈ `pending / in_progress / done`）；分发与边界见下文 |
+| `submit_plan`（计划提交，v1.179 Codex 形态计划模式） | A | 复杂任务先计划后执行：`{items:[string]}`（1–12 项、每项 ≤200 字符）→ `plan_submitted` 事件 + 会话转 PAUSED 等待批准；边界见下文 |
 | `apply_patch` | B | 结构化编辑（file + range + content），产生事件与 checkpoint |
 | `run_tests` / `run_build` | B | 沙箱内，断网态；单命令超时默认 120s（附录 E） |
 | `install_deps` | B | 沙箱内，镜像代理态 |
@@ -548,6 +549,8 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 | `mcp_{server}_{tool}`（MCP 插件工具） | 按声明（默认 D；`net:*` → C） | MCP 外部进程插件工具目录（§13.3 / §13.5，v1.145 接线）；只读会话一律拒绝；调用全量入 Trace |
 
 **子任务清单（v1.146，用户令「对话发布任务 主动创建子任务来执行」）**：`subtasks` 走会话循环内联分发（§9.8 #4 `laya_decide` 同款——不经 `execute_tool` 同步面），参数 `{items:[{title,status}]}`（1–12 项、title 非空 ≤200 字符）为**全量状态替换**——幂等且对模型漂移鲁棒，每次调用重发整张清单；校验失败返回错误提示、不改现有状态。分级语义：零工作区副作用（只写会话内计划状态），故为 A 级、只读会话可用；但不进只读先验轮白名单（§9.8 纯问答首轮无需清单）。每次调用先落 `subtasks` 事件（§14.2，payload `{items:[{title,status}]}`）再走常规工具事件与 `tool_calls` Trace 行。系统提示（§9.6）向模型写明使用时机：**≥2 个有序步骤的任务先建清单（建议 2–8 项、每项一句话），开始 / 完成一项即更新状态，任务收尾时全部 `done`；单步任务与纯问答不用**。子代理并行执行不在本工具语义内（§9.5 另行版本）；清单是执行进度的用户可见承载，不构成跳过验证 / 熔断的理由（§9.3 / §9.4 不变）。**进度呈现双常驻面（v1.148）**：线程输入区上方常驻进度卡（§7.5，会话内执行可见）+ 侧栏任务行进度徽标（§7.2，跨会话可见，`GET /projects` 会话行携带最新快照计数 §15）——两处同源最新 `subtasks` 快照，只读呈现不新增动作面。
+
+**计划模式（v1.179，Codex 形态——无模式切换，§2.4 双参考方案用户选定）**：模型对复杂任务（多文件 / 多步 / 方向性改动）经 `submit_plan` 工具提交计划（1–12 项、每项一句话 ≤200 字符，全量校验、失败返回错误提示可重试不暂停）→ `plan_submitted` 事件入 Trace → **会话转 PAUSED**（`paused_reason="计划已提交，等待批准"`，任务循环即停、不产生任何写入）；用户批准 = 发送新回合消息（「计划已批准，请按计划执行」——复用 v1.147 发送链路与 §9.1 回合边界，零新控制命令；拒绝 / 改指令 = 正常对话语义不变）。系统提示（§9.6）向模型写明使用时机与边界：计划不产生任何工作区副作用（A 级、只读会话可用、只读先验轮可用）；计划不是审批门——不提交计划直接执行仍走既有分级 / 沙箱 / 熔断（计划是收敛工具不是安全边界，安全铁律 §12 不变）；单步任务与纯问答不用。线程内计划卡呈现 items 清单 + 「批准执行」按钮（点击即发送批准消息，运行态经队列入队）。
 
 **输出截断（v1.172，§14.2 存储治理同步）**：shell / 直执类工具（run_tests / run_build / install_deps / git_push / create_pr）与 git_read（status / log / diff）的输出统一截 20k 字符（http_fetch / MCP 既有同口径），截断尾注向模型写明丢弃量与「更窄命令重取」建议；read_file 维持 §9.2 超 10MB 拒读语义不变。
 
@@ -571,7 +574,7 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 
 ### 9.6 提示组装与模型适配
 
-**系统提示组成**：身份与目标 / 安全铁律（只读开关与工具黑名单不可放宽、输出证据契约）/ 项目规则 L3（AGENTS.md，只收窄）/ 会话记忆 L2 / 跨会话记忆 L5（参考数据非指令，v1.104）/ 可用技能目录（名称 + 描述，正文经 `skill_use` 按需加载，v1.130 §13.4）/ 子任务清单使用规则（v1.146 §9.2：多步任务先建清单、状态随做随更）/ 工具 schema / 输出契约（意图一句话 → 结构化动作 → 证据）。
+**系统提示组成**：身份与目标 / 安全铁律（只读开关与工具黑名单不可放宽、输出证据契约）/ 项目规则 L3（AGENTS.md，只收窄）/ 会话记忆 L2 / 跨会话记忆 L5（参考数据非指令，v1.104）/ 可用技能目录（名称 + 描述，正文经 `skill_use` 按需加载，v1.130 §13.4）/ 子任务清单使用规则（v1.146 §9.2：多步任务先建清单、状态随做随更）/ 计划模式使用规则（v1.179 §9.2：复杂任务先 `submit_plan` 获批准再执行，计划零副作用不是审批门）/ 工具 schema / 输出契约（意图一句话 → 结构化动作 → 证据）。
 
 **模型能力矩阵**：
 
@@ -893,7 +896,7 @@ signature: "<sig>"
 | l4_chunks | id, project_id, path, symbol, start_line, end_line, text, embedding | L4 检索切片、行区间、文本与本地向量（sqlite-vec 演进路径，§10.1） |
 | memories | id, scope, project_id, kind, content, importance, embedding, source_session, created_at, updated_at, last_seen_at | L5 跨会话对话记忆（§10.1，v1.104）：project 层按 project_id 隔离；global 层仅 kind=preference，永不承载仓库内容 |
 
-事件类型枚举：`user_input / sensing / decision / model_delta / patch_applied / command_run / direct_action / diagnostics / checkpoint / compaction / rollback / unrollback / model_fallback / model_retry / decider_call / error / session_title / memory_saved / subtasks`（direct_action 是 v1.89 C/D 直执审计：工具 / 级别 / 关键参数；rollback / unrollback 对应 §10.3 回滚与撤销回滚；model_fallback 为模型切换（payload `origin` 区分手动 `/model` 与 §9.1 自动恢复）；model_retry 为 v1.171 §9.1 自动恢复的瞬时重试（payload `{provider, model, attempt, delay_ms, error}`）；model_delta 为 §9.6 合并后的模型增量（Final 的 usage / tool calls 仍只按权威 Final 入账）；decider_call 为 §9.8 Laya 本地判定：类型 / 结果 / 耗时，不含输入原文（v1.124 起 `origin` 标记来源：缺省 = daemon 自动集成点，`agent_tool` = 模型经 `laya_decide` 工具主动调用）；session_title 为 v1.59 对话标题生成完成（payload `{title}`，UI 据此即时刷新对话列表）；memory_saved 为 v1.104 L5 记忆提取入库完成（payload `{count, ids}`，不含记忆原文）；subtasks 为 v1.146 子任务清单状态（§9.2，payload `{items:[{title,status}]}` 全量快照，UI 每回合以最新一次为准渲染）；均入 Trace 可审计）。旧库中的 `approval_request / approval_decision / approval_timeout` 只读回放兼容，新运行不再产生。
+事件类型枚举：`user_input / sensing / decision / model_delta / patch_applied / command_run / direct_action / diagnostics / checkpoint / compaction / rollback / unrollback / model_fallback / model_retry / decider_call / error / session_title / memory_saved / subtasks`（direct_action 是 v1.89 C/D 直执审计：工具 / 级别 / 关键参数；rollback / unrollback 对应 §10.3 回滚与撤销回滚；model_fallback 为模型切换（payload `origin` 区分手动 `/model` 与 §9.1 自动恢复）；model_retry 为 v1.171 §9.1 自动恢复的瞬时重试（payload `{provider, model, attempt, delay_ms, error}`）；plan_submitted 为 v1.179 计划模式计划提交（§9.2，payload `{items:[string]}`，会话随即转 PAUSED 待批准）；model_delta 为 §9.6 合并后的模型增量（Final 的 usage / tool calls 仍只按权威 Final 入账）；decider_call 为 §9.8 Laya 本地判定：类型 / 结果 / 耗时，不含输入原文（v1.124 起 `origin` 标记来源：缺省 = daemon 自动集成点，`agent_tool` = 模型经 `laya_decide` 工具主动调用）；session_title 为 v1.59 对话标题生成完成（payload `{title}`，UI 据此即时刷新对话列表）；memory_saved 为 v1.104 L5 记忆提取入库完成（payload `{count, ids}`，不含记忆原文）；subtasks 为 v1.146 子任务清单状态（§9.2，payload `{items:[{title,status}]}` 全量快照，UI 每回合以最新一次为准渲染）；均入 Trace 可审计）。旧库中的 `approval_request / approval_decision / approval_timeout` 只读回放兼容，新运行不再产生。
 
 **增长治理**（v1.93 接线）：events / tool_calls 冷热分层——热数据留 SQLite，关闭超 `archive.events_days`（默认 90 天，daemon 每日定时执行）的会话压缩归档至 `~/.tenon/archive/`（仍全本地、可检索回载）；model_usage 明细随会话归档，项目 / 会话聚合经 `project_usage_totals` / `session_usage_totals` 即时查询（按月 / 按日聚合表无消费方，已删）；approvals 表仅作 v1.89 前旧库兼容。**手动归档（v1.103）**：`sessions.archived_at` 非空即在侧栏隐藏、可随时还原，数据不出库；自动压缩归档扫描含已手动归档会话（老归档按 `events_days` 最终压缩出库）；手动删除为事务级联硬删（events / tool_calls / checkpoints / model_usage / approvals / session 行），shadow 快照不随删（gc 老化）。
 

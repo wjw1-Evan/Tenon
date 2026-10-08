@@ -55,6 +55,10 @@ pub const SUBTASK_RULES: &str = "\
 任务收尾前清单所有项必须为 done。单步任务与纯问答不使用该工具；\
 清单只是执行进度呈现，不改变安全铁律与验证 / 收敛要求。";
 
+/// 计划模式使用规则（§9.2 v1.179，Codex 形态）：复杂任务先计划后执行；
+/// 计划零副作用、不是审批门——直接执行仍走分级 / 沙箱 / 熔断（安全铁律不变）。
+pub const PLAN_RULES: &str = "收到复杂任务（多文件 / 多步 / 方向性改动）时，先调用 submit_plan 工具提交执行计划（1–12 项，每项一句话说明改什么、为什么、怎么验证），随后暂停等待用户批准；用户批准后再开始执行。单步任务、纯问答与简单改动不使用该工具——计划是收敛工具而不是审批门：不提交计划直接执行仍按动作分级 / 沙箱 / 熔断处理；计划本身零工作区副作用，只读会话同样可用。";
+
 /// 工具 schema 摘要（进提示词的工具目录）。
 pub fn tool_catalog() -> String {
     let entries = [
@@ -70,6 +74,10 @@ pub fn tool_catalog() -> String {
         (
             Tool::Subtasks,
             "子任务清单：多步任务先分解为清单并随做随更状态（规则见「子任务清单」节）",
+        ),
+        (
+            Tool::SubmitPlan,
+            "提交执行计划并暂停等待用户批准（复杂任务先计划后执行，规则见「计划模式」节）",
         ),
         (Tool::ApplyPatch, "结构化编辑：file + range + content"),
         (Tool::RunTests, "沙箱内运行测试（断网）"),
@@ -165,6 +173,9 @@ pub fn build_system_prompt(
     p.push_str("\n\n## 子任务清单\n");
     p.push_str(SUBTASK_RULES);
 
+    p.push_str("\n\n## 计划模式\n");
+    p.push_str(PLAN_RULES);
+
     p.push('\n');
     p.push_str(&tool_catalog());
 
@@ -190,6 +201,9 @@ mod tests {
         assert!(p.contains("输出契约"));
         assert!(p.contains("read_file"), "工具目录进提示");
         assert!(p.contains("git_push"), "D 级工具在目录中明示审计");
+        // §9.2 v1.179 计划模式：使用规则节 + 工具目录条目
+        assert!(p.contains("计划模式"), "计划模式节进提示");
+        assert!(p.contains("submit_plan"), "计划工具进目录");
     }
 
     #[test]

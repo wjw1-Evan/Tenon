@@ -275,6 +275,18 @@ fn tool_specs() -> Vec<ToolSpec> {
             },
             "required": ["items"]
         })),
+        ("submit_plan", "提交执行计划并暂停等待用户批准（§9.2 计划模式，Codex 形态；复杂任务先计划后执行，规则见系统提示「计划模式」节）：items 为 1-12 项的一句话计划（说明改什么、为什么、怎么验证）；提交后任务暂停，用户批准后再继续执行；单步任务、纯问答与简单改动不用", serde_json::json!({
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "maxItems": 12
+                }
+            },
+            "required": ["items"]
+        })),
         ("list_dir", "列出目录", serde_json::json!({
             "type": "object", "properties": {"path": {"type": "string"}}
         })),
@@ -339,13 +351,20 @@ fn tool_specs() -> Vec<ToolSpec> {
 }
 
 /// 只读工具目录（意图预判为只读/问答时的首轮收窄；§9.8 预筛语义）。
+/// submit_plan 零工作区副作用（§9.2 v1.179），只读先验轮同样可用。
 fn tool_specs_read_only() -> Vec<ToolSpec> {
     tool_specs()
         .into_iter()
         .filter(|t| {
             matches!(
                 t.name.as_str(),
-                "read_file" | "list_dir" | "grep" | "git_read" | "laya_decide" | "skill_use"
+                "read_file"
+                    | "list_dir"
+                    | "grep"
+                    | "git_read"
+                    | "laya_decide"
+                    | "skill_use"
+                    | "submit_plan"
             )
         })
         .collect()
@@ -1337,6 +1356,8 @@ impl AgentSession {
 
         let mut paused_reason: Option<String> = None;
         let mut error_msg: Option<String> = None;
+        // §9.2 v1.179 计划模式：本回合提交过计划（工具循环结束后暂停待批准）
+        let mut plan_pause = false;
         // §9.1 v1.53：截断续跑——截断的中间输出不是回答，连续多次才按模型失败处理
         let mut consecutive_truncations = 0u32;
         // 上一回合 provider 权威输入 token（§10.2 v1.105 压缩触发信号之一）
@@ -1800,10 +1821,18 @@ impl AgentSession {
                 // exec_laya_decide 内同轨检查。
                 // §9.2（v1.146）：subtasks 子任务清单同走内联分发（会话内计划
                 // 状态，零工作区副作用），边界与 Trace 在 exec_subtasks 内同轨。
+                // §9.2（v1.179）：submit_plan 计划提交同轨（零副作用），提交过
+                // 即暂停待批准（plan_pause 在本回合工具循环结束后生效）。
                 let mut output = if call.name == "laya_decide" {
                     self.exec_laya_decide(&call.arguments).await
                 } else if call.name == "subtasks" {
                     self.exec_subtasks(&call.arguments).await
+                } else if call.name == "submit_plan" {
+                    let out = self.exec_submit_plan(&call.arguments).await;
+                    if out.ok {
+                        plan_pause = true;
+                    }
+                    out
                 } else {
                     execute_tool(&self.tool_ctx, &call.name, &call.arguments)
                 };
@@ -1915,6 +1944,17 @@ impl AgentSession {
             if !tool_messages.is_empty() {
                 messages.push(assistant);
                 messages.extend(tool_messages);
+            }
+
+            // §9.2 v1.179 计划模式：计划提交成功 → 会话转 PAUSED 等待用户批准
+            // （批准 = 发送新回合「按计划执行」，复用 v1.147 发送链路零新控制命令）。
+            // 在工具结果入上下文后暂停——批准后的新回合带完整计划上下文续跑。
+            if plan_pause {
+                self.force_state(State::Paused).await;
+                self.set_status(SessionStatus::Paused).await;
+                paused_reason =
+                    Some("计划已提交，等待批准（批准 = 发送消息「按计划执行」）".into());
+                break 'rounds;
             }
         }
 
@@ -2077,6 +2117,47 @@ impl AgentSession {
     /// 返回错误提示、不改现有状态。每次调用先落 `subtasks` 事件（payload
     /// `{items}` 全量快照），再由常规路径落 command_run 与 tool_calls Trace；
     /// 团队策略黑名单与全工具目录同轨检查。
+    /// §9.2（v1.179 计划模式）：submit_plan——A 级零工作区副作用。全量校验
+    /// （1–12 项、每项 trim 非空 ≤200 字符，失败返回错误提示、模型可重试不
+    /// 暂停）；校验过发 `plan_submitted` 事件，调用方置 plan_pause 在工具循环
+    /// 结束后转 PAUSED。团队策略 denied_tools 与全目录同轨。
+    async fn exec_submit_plan(&self, args: &serde_json::Value) -> ToolOutput {
+        if self
+            .tool_ctx
+            .team_denied_tools
+            .iter()
+            .any(|t| t == "submit_plan")
+        {
+            return ToolOutput::err("团队策略禁用工具: submit_plan（只收窄，§19/§12.2）");
+        }
+        let Some(items) = args.get("items").and_then(|v| v.as_array()) else {
+            return ToolOutput::err("缺少 items 参数（字符串数组，1-12 项）");
+        };
+        if items.is_empty() || items.len() > 12 {
+            return ToolOutput::err("items 须为 1-12 项");
+        }
+        let mut plan: Vec<String> = Vec::with_capacity(items.len());
+        for item in items {
+            let Some(s) = item.as_str() else {
+                return ToolOutput::err("items 元素须为字符串");
+            };
+            let s = s.trim();
+            if s.is_empty() || s.chars().count() > 200 {
+                return ToolOutput::err("每项计划须非空且 ≤200 字符");
+            }
+            plan.push(s.to_string());
+        }
+        self.emit(
+            EventKind::PlanSubmitted,
+            &serde_json::json!({ "items": plan }),
+        )
+        .await;
+        ToolOutput::ok(format!(
+            "计划已提交（{} 项），已暂停等待用户批准；批准后按计划执行",
+            plan.len()
+        ))
+    }
+
     async fn exec_subtasks(&self, args: &serde_json::Value) -> ToolOutput {
         if self
             .tool_ctx

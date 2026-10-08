@@ -1364,3 +1364,86 @@ async fn session_run_task_list_dir_tool() {
     let outcome = session.run_task("list files").await;
     assert!(matches!(outcome, TaskOutcome::Done(_)));
 }
+
+/// §9.2 v1.179 计划模式：submit_plan → PlanSubmitted 事件 + PAUSED 待批准；
+/// 批准 = 新回合（daemon sendMessage → run_task）按计划续跑到 Done。
+#[tokio::test]
+async fn plan_submission_pauses_and_approval_resumes() {
+    let script = vec![
+        ScriptedReply::Mixed {
+            text: "这是方向性改动，先提交计划".into(),
+            tool: (
+                "submit_plan".to_string(),
+                serde_json::json!({"items": ["改 A 文件支持 X", "补测试并跑通"]}),
+            ),
+        },
+        ScriptedReply::Text("计划已执行完成".into()),
+    ];
+    let (_d, session, store, _p) = setup(script).await;
+    let outcome = session.run_task("复杂任务").await;
+    match outcome {
+        TaskOutcome::Paused { reason, .. } => {
+            assert!(
+                reason.contains("计划"),
+                "暂停原因应指明计划待批准: {reason}"
+            )
+        }
+        other => panic!("提交计划后应暂停待批准: {other:?}"),
+    }
+    let mut st = store.lock().await;
+    let events = st.events(&session.session_id).unwrap();
+    let plans: Vec<_> = events
+        .iter()
+        .filter(|e| e.kind == EventKind::PlanSubmitted)
+        .collect();
+    assert_eq!(plans.len(), 1);
+    let items = plans[0].payload["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0], "改 A 文件支持 X");
+    // 校验失败（items 空数组）不得入库事件
+    assert!(!events.iter().any(|e| e.kind == EventKind::Error));
+}
+
+#[tokio::test]
+async fn plan_approval_message_resumes_to_done() {
+    let script = vec![
+        ScriptedReply::Mixed {
+            text: "提交计划".into(),
+            tool: (
+                "submit_plan".to_string(),
+                serde_json::json!({"items": ["步骤一"]}),
+            ),
+        },
+        ScriptedReply::Text("按计划完成，全部验证通过".into()),
+    ];
+    let (_d, session, _store, _p) = setup(script).await;
+    let first = session.run_task("复杂任务").await;
+    assert!(matches!(first, TaskOutcome::Paused { .. }));
+    // 批准 = 新回合（同一会话继续；脚本 loop_last 重复末条 Text）
+    let second = session.run_task("计划已批准，请按计划执行").await;
+    match second {
+        TaskOutcome::Done(card) => assert_eq!(card.answer, "按计划完成，全部验证通过"),
+        other => panic!("批准后应续跑至完成: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn invalid_plan_args_fail_without_pause() {
+    // items 空数组 → 校验失败返回错误提示（模型可重试），不暂停、无 PlanSubmitted。
+    let script = vec![
+        ScriptedReply::Mixed {
+            text: "尝试提交空计划".into(),
+            tool: ("submit_plan".to_string(), serde_json::json!({"items": []})),
+        },
+        ScriptedReply::Text("好的，直接执行完成".into()),
+    ];
+    let (_d, session, store, _p) = setup(script).await;
+    let outcome = session.run_task("任务").await;
+    assert!(
+        matches!(outcome, TaskOutcome::Done(_)),
+        "校验失败不暂停: {outcome:?}"
+    );
+    let mut st = store.lock().await;
+    let events = st.events(&session.session_id).unwrap();
+    assert!(!events.iter().any(|e| e.kind == EventKind::PlanSubmitted));
+}

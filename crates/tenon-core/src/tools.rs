@@ -24,6 +24,9 @@ pub enum Tool {
     SkillUse,
     /// 子任务清单（§9.2，v1.146）：会话内计划状态全量替换，零工作区副作用。
     Subtasks,
+    /// 计划提交（§9.2，v1.179 Codex 形态计划模式）：复杂任务先计划后执行，
+    /// 零工作区副作用；提交即暂停待用户批准。
+    SubmitPlan,
     ApplyPatch,
     RunTests,
     RunBuild,
@@ -47,6 +50,7 @@ impl Tool {
             Tool::LayaDecide => "laya_decide",
             Tool::SkillUse => "skill_use",
             Tool::Subtasks => "subtasks",
+            Tool::SubmitPlan => "submit_plan",
             Tool::ApplyPatch => "apply_patch",
             Tool::RunTests => "run_tests",
             Tool::RunBuild => "run_build",
@@ -70,7 +74,8 @@ impl Tool {
             | Tool::LspQuery
             | Tool::LayaDecide
             | Tool::SkillUse
-            | Tool::Subtasks => Level::A,
+            | Tool::Subtasks
+            | Tool::SubmitPlan => Level::A,
             Tool::ApplyPatch | Tool::RunTests | Tool::RunBuild | Tool::InstallDeps => Level::B,
             Tool::HttpFetch => Level::C,
             Tool::GitCommit | Tool::GitPush => Level::D,
@@ -89,6 +94,7 @@ impl Tool {
             "laya_decide" => Tool::LayaDecide,
             "skill_use" => Tool::SkillUse,
             "subtasks" => Tool::Subtasks,
+            "submit_plan" => Tool::SubmitPlan,
             "apply_patch" => Tool::ApplyPatch,
             "run_tests" => Tool::RunTests,
             "run_build" => Tool::RunBuild,

@@ -1714,6 +1714,24 @@ button:disabled { opacity: 0.45; cursor: default; }
 .turn-verify strong {
   color: var(--fg-strong);
 }
+
+/* §9.2 v1.179 计划模式：计划卡（items 清单 + 批准执行按钮） */
+.turn-plan {
+  border-left: 2px solid var(--accent, #4a7dff);
+  padding: 1px 0 1px 9px;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.turn-plan strong {
+  color: var(--fg-strong);
+}
+.turn-plan ol {
+  margin: 4px 0;
+  padding-left: 18px;
+}
+.turn-plan .turn-action {
+  margin-top: 2px;
+}
 .turn-verify pre {
   margin: 6px 0 0;
   font-size: 11px;

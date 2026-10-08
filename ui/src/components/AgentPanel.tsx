@@ -534,6 +534,16 @@ export function AgentPanel({
     await sendText(inputValue.trim());
   }
 
+  /// v1.179 计划模式：批准计划 = 发送批准文本（新回合按计划执行；运行态经 v1.147 队列入队）。
+  async function approvePlan() {
+    if (!sessionId) return;
+    try {
+      await api.sendMessage(sessionId, t("thread.plan_approve_text"));
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   // v1.59：运行态下发送按钮变「停止」——协作暂停在下一工具调用检查点生效。
   // stop 受理即禁用，防状态轮询间隙连点向控制队列残留多条 Stop（回到空闲态解锁）。
   useEffect(() => {
@@ -864,6 +874,11 @@ export function AgentPanel({
                       ev={ev}
                       t={t}
                       subtasksLatest={ev.id === latestSubtasksId}
+                      onApprovePlan={
+                        sessionId && ev.type === "plan_submitted"
+                          ? () => void approvePlan()
+                          : undefined
+                      }
                     />
                   ));
                 })()}
@@ -1424,12 +1439,38 @@ function EventNode({
   ev,
   t,
   subtasksLatest,
+  onApprovePlan,
 }: {
   ev: EventItem;
   t: Translate;
   subtasksLatest: boolean;
+  onApprovePlan?: (() => void) | undefined;
 }) {
   switch (ev.type) {
+    case "plan_submitted": {
+      // §9.2 v1.179 计划模式：计划卡（items 清单 + 批准执行——发送批准文本新回合续跑）
+      const items = Array.isArray(ev.payload.items) ? ev.payload.items : [];
+      return (
+        <div className="turn-plan" data-testid="turn-plan">
+          <strong>{t("thread.plan_title")}</strong>
+          <ol>
+            {items.map((item, i) => (
+              <li key={i}>{String(item)}</li>
+            ))}
+          </ol>
+          {onApprovePlan && (
+            <button
+              type="button"
+              className="turn-action"
+              data-testid="plan-approve"
+              onClick={onApprovePlan}
+            >
+              {t("thread.plan_approve")}
+            </button>
+          )}
+        </div>
+      );
+    }
     case "decision":
       // first_edit 由活跃回合底部 spinner 行承接；普通决策为回合 markdown 正文段。
       if (ev.payload.first_edit === true) return null;
