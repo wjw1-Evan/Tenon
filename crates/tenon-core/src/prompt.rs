@@ -135,7 +135,7 @@ pub fn tool_catalog() -> String {
         (Tool::HttpFetch, "抓取 URL（C 级：直执并审计目标）"),
         (
             Tool::WebSearch,
-            "网络搜索（免密钥 DuckDuckGo）：返回标题 / 链接 / 摘要列表；需要时效性信息（新版本、新闻、文档现状）时先用",
+            "网络搜索（免密钥 Bing/DDG 多后端）：返回标题 / 链接 / 摘要列表；需要时效性信息（新版本、新闻、文档现状）时先用",
         ),
         (Tool::GitCommit, "git 提交（D 级：直执并审计）"),
         (Tool::GitPush, "git 推送（D 级：直执并审计）"),

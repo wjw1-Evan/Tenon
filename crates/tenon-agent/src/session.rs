@@ -321,7 +321,7 @@ fn tool_specs() -> Vec<ToolSpec> {
         ("http_fetch", "抓取 URL（C 级直执并审计）", serde_json::json!({
             "type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]
         })),
-        ("web_search", "网络搜索（C 级直执并审计，免密钥 DuckDuckGo）：返回标题/URL/摘要 JSON 列表；需要时效性信息（新版本、新闻、文档现状）时先用", serde_json::json!({
+        ("web_search", "网络搜索（C 级直执并审计，免密钥 Bing/DDG 多后端）：返回标题/URL/摘要 JSON 列表；需要时效性信息（新版本、新闻、文档现状）时先用", serde_json::json!({
             "type": "object",
             "properties": {
                 "query": {"type": "string"},

@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v1.188** |
-| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.156）· 2026-10-07（v1.157-v1.162）· 2026-10-08（v1.163-v1.188） |
+| 版本 | **v1.189** |
+| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.156）· 2026-10-07（v1.157-v1.162）· 2026-10-08（v1.163-v1.189） |
 | 状态 | 定稿（v1.10 决策闭环），M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 | 历史评审 | v0.1 / v0.3 两轮共 41 项、v1.0 复审 21 项问题的结论已全部并入本方案（过程文档已清理） |
@@ -568,7 +568,7 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 | `run_tests` / `run_build` | B | 沙箱内，断网态；单命令超时默认 120s（附录 E） |
 | `install_deps` | B | 沙箱内，镜像代理态 |
 | `http_fetch` | C | 直接执行；目标域名写入审计事件 |
-| `web_search`（v1.182） | C | 网络搜索（DuckDuckGo Lite 免密钥后端）：`{query, max_results?}` → 标题 / 链接 / 摘要 JSON；SSRF 守卫与 `http_fetch` 同轨（见下文） |
+| `web_search`（v1.182；v1.189 多后端） | C | 网络搜索（Bing HTML 主 + DuckDuckGo Lite 兜底，免密钥）：`{query, max_results?}` → 标题 / 链接 / 摘要 JSON；SSRF 守卫与 `http_fetch` 同轨（见下文） |
 | `git_commit` / `git_push` | D | 直接执行；命令与结果全量入 Trace |
 | `create_pr` | C+D | 直接执行；目标平台与 PR 元数据全量入 Trace；经本机 `gh` CLI 凭据执行（v1.79） |
 | `mcp_{server}_{tool}`（MCP 插件工具） | 按声明（默认 D；`net:*` → C） | MCP 外部进程插件工具目录（§13.3 / §13.5，v1.145 接线）；只读会话一律拒绝；调用全量入 Trace |
@@ -579,7 +579,7 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 
 **输出截断（v1.172，§14.2 存储治理同步）**：shell / 直执类工具（run_tests / run_build / install_deps / git_push / create_pr）与 git_read（status / log / diff）的输出统一截 20k 字符（http_fetch / MCP 既有同口径），截断尾注向模型写明丢弃量与「更窄命令重取」建议；read_file 维持 §9.2 超 10MB 拒读语义不变。
 
-**web_search 与 SSRF 守卫（v1.182，§12.1 注入外溢面收敛）**：`web_search`（C 级——出网同 `http_fetch`：只读会话禁用、denied_tools 同轨、目标域名入审计）为模型提供免密钥网络搜索：`{query（trim 非空 ≤400 字符）, max_results（1–10，缺省 5）}`，后端固定 `lite.duckduckgo.com` Lite 版 HTML（免 API key；10s 总超时、512KB 下载帽），解析为 `[{title, url, snippet}]` JSON（title ≤200 / snippet ≤300 字符截断；实体解码、`/l/?uddg=` 跳转链接还原、标签剥离）；后端不可达 / 被拒 / 零结果返回错误或空结果提示，模型可改写查询重试，不暂停。两工具的出网拉取统一经 **SSRF 守卫**（`http_fetch` 由无守卫原始 client 同版升级——此前 reqwest 默认跟随重定向、无下载上限、loopback / 私网 / 云元数据地址全可达）：scheme 仅 http(s)；主机字面 IP 直判、域名解析后**全部**地址须公网（拒 loopback / 私网 / 链路本地 / CGNAT 100.64/10 / 基准测试 198.18/15 / 测试网与保留段 / 组播 / 未指定；IPv6 ULA fc00::/7、链路本地 fe80::/10、v4 映射地址按 v4 语义递归判定——任一非公网即整体拒绝，不给部分通过）；连接钉扎首个已验证地址（防解析-连接 TOCTOU 的 DNS rebinding）；自动重定向关闭、手动 ≤3 跳逐跳完整复验；响应体限长（`http_fetch` 1MB 下载帽 + 既有 20k 字符输出截断与 redact 不变）。守卫在 daemon 工具面执行（C 级直执语义与审计不变，§12.2），不经命令沙箱。
+**web_search 与 SSRF 守卫（v1.182；v1.189 多后端链，§12.1 注入外溢面收敛）**：`web_search`（C 级——出网同 `http_fetch`：只读会话禁用、denied_tools 同轨、目标域名入审计）为模型提供免密钥网络搜索：`{query（trim 非空 ≤400 字符）, max_results（1–10，缺省 5）}`。**多后端链（v1.189）**：按序尝试 Bing HTML（`www.bing.com/search`，中国大陆 302 至 cn.bing.com 守卫逐跳复验放行；解析 `li.b_algo` 的 h2 锚 + b_caption 摘要）→ DuckDuckGo Lite（`lite.duckduckgo.com`；解析 result-link / result-snippet）——首个非空结果集生效，后端错误或空结果即落下一个，全部错误返回末次错误、全部空结果返回提示，模型可改写查询重试不暂停。顺序依据可达性实测（2026-10-08）：DDG 整域在部分地区不可达（连接超时），v1.182 单后端形态在该环境恒失败。出网统一带浏览器形 UA（无 UA 的默认头被部分站点拒绝）。两后端均免 API key、10s 总超时、512KB 下载帽，统一输出 `[{title, url, snippet}]` JSON（title ≤200 / snippet ≤300 字符截断；实体解码、跳转链接还原、标签剥离）。两工具的出网拉取统一经 **SSRF 守卫**（`http_fetch` 由无守卫原始 client 于 v1.182 升级——此前 reqwest 默认跟随重定向、无下载上限、loopback / 私网 / 云元数据地址全可达）：scheme 仅 http(s)；主机字面 IP 直判、域名解析后**全部**地址须公网（拒 loopback / 私网 / 链路本地 / CGNAT 100.64/10 / 基准测试 198.18/15 / 测试网与保留段 / 组播 / 未指定；IPv6 ULA fc00::/7、链路本地 fe80::/10、v4 映射地址按 v4 语义递归判定——任一非公网即整体拒绝，不给部分通过）；连接钉扎首个已验证地址（防解析-连接 TOCTOU 的 DNS rebinding）；自动重定向关闭、手动 ≤3 跳逐跳完整复验；响应体限长（`http_fetch` 1MB 下载帽 + 既有 20k 字符输出截断与 redact 不变）。守卫在 daemon 工具面执行（C 级直执语义与审计不变，§12.2），不经命令沙箱。
 
 ### 9.3 事中防护
 

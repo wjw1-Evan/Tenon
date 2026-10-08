@@ -10,8 +10,16 @@ use std::time::Duration;
 
 use futures::StreamExt;
 
-/// 搜索后端（免密钥，§9.2 v1.182）：DuckDuckGo Lite HTML 版。
+/// 搜索后端（免密钥，§9.2 v1.189 多后端链）：Bing HTML 主后端 + DuckDuckGo
+/// Lite 兜底——按序尝试、首个成功者生效。顺序依据可达性实测（2026-10-08）：
+/// DDG 在部分地区整域不可达（连接超时），Bing 全球可达（中国大陆 302 至
+/// cn.bing.com，HTML 结构同构可解析）。
+const SEARCH_ENDPOINT_BING: &str = "https://www.bing.com/search";
 const SEARCH_ENDPOINT: &str = "https://lite.duckduckgo.com/lite/";
+
+/// 浏览器形 UA：无 UA 的 reqwest 默认头会被部分搜索 / 内容站点拒绝。
+const USER_AGENT: &str =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36";
 
 /// query 长度上限（字符）。
 const QUERY_MAX_CHARS: usize = 400;
@@ -122,6 +130,7 @@ pub async fn fetch_public_text(
             let host = url.host_str().ok_or("URL 缺少主机")?.to_string();
             let client = reqwest::Client::builder()
                 .no_proxy()
+                .user_agent(USER_AGENT)
                 .redirect(reqwest::redirect::Policy::none())
                 // 钉扎已验证地址：连接层不再查 DNS，解析-连接窗口关闭
                 .resolve(host.as_str(), pin)
@@ -190,22 +199,63 @@ pub fn validate_search_args(
     Ok((q.to_string(), max))
 }
 
-/// web_search 生产入口（§9.2 v1.182）：守卫抓取 Lite 版结果页并解析为
-/// `[{title, url, snippet}]` JSON；零结果返回提示（模型可改写关键词重试）。
+/// 搜索后端顺序（§9.2 v1.189）：首个非空结果集生效。
+#[derive(Debug, Clone, Copy)]
+enum SearchBackend {
+    Bing,
+    DuckDuckGo,
+}
+
+/// web_search 生产入口（§9.2 v1.189 多后端链）：按序尝试 Bing → DuckDuckGo
+/// Lite，首个非空结果集生效；某后端错误或空结果即落下一个，全部错误返回
+/// 末次错误、全部空结果返回提示（模型可改写关键词重试，不暂停）。
 pub async fn web_search(query: String, max_results: usize) -> Result<String, String> {
-    let url = format!("{SEARCH_ENDPOINT}?q={}", urlencode(&query));
+    let mut last_err: Option<String> = None;
+    for backend in [SearchBackend::Bing, SearchBackend::DuckDuckGo] {
+        let attempted = match backend {
+            SearchBackend::Bing => search_bing(&query, max_results).await,
+            SearchBackend::DuckDuckGo => search_duckduckgo(&query, max_results).await,
+        };
+        match attempted {
+            Ok(results) if !results.is_empty() => {
+                let items: Vec<serde_json::Value> = results
+                    .into_iter()
+                    .map(|r| serde_json::json!({"title": r.title, "url": r.url, "snippet": r.snippet}))
+                    .collect();
+                return serde_json::to_string(&items).map_err(|e| format!("结果序列化失败: {e}"));
+            }
+            Ok(_) => continue,
+            Err(e) => last_err = Some(e),
+        }
+    }
+    match last_err {
+        Some(e) => Err(e),
+        None => Ok("无搜索结果，可改写关键词重试".into()),
+    }
+}
+
+/// Bing HTML 后端：`/search?q=` 经 302 落 cn.bing.com（守卫逐跳复验放行），
+/// 结果块 `li.b_algo`（h2 锚 + 摘要 p）。
+async fn search_bing(query: &str, max_results: usize) -> Result<Vec<LiteResult>, String> {
+    let url = format!(
+        "{SEARCH_ENDPOINT_BING}?q={}&count={max_results}",
+        urlencode(query)
+    );
     let (status, html) = fetch_public_text(&url, SEARCH_BODY_CAP, SEARCH_TIMEOUT).await?;
     if status != 200 {
-        return Err(format!("搜索后端返回 HTTP {status}"));
+        return Err(format!("搜索后端 bing 返回 HTTP {status}"));
     }
-    let items: Vec<serde_json::Value> = parse_lite(&html, max_results)
-        .into_iter()
-        .map(|r| serde_json::json!({"title": r.title, "url": r.url, "snippet": r.snippet}))
-        .collect();
-    if items.is_empty() {
-        return Ok("无搜索结果，可改写关键词重试".into());
+    Ok(parse_bing(&html, max_results))
+}
+
+/// DuckDuckGo Lite 后端（兜底）。
+async fn search_duckduckgo(query: &str, max_results: usize) -> Result<Vec<LiteResult>, String> {
+    let url = format!("{SEARCH_ENDPOINT}?q={}", urlencode(query));
+    let (status, html) = fetch_public_text(&url, SEARCH_BODY_CAP, SEARCH_TIMEOUT).await?;
+    if status != 200 {
+        return Err(format!("搜索后端 duckduckgo 返回 HTTP {status}"));
     }
-    serde_json::to_string(&items).map_err(|e| format!("结果序列化失败: {e}"))
+    Ok(parse_lite(&html, max_results))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -240,6 +290,71 @@ pub fn parse_lite(html: &str, max: usize) -> Vec<LiteResult> {
         });
     }
     out
+}
+
+/// 解析 Bing 结果页（best-effort）：顺序取 `b_algo` 结果块——块内首个 h2 锚
+/// 的 href + 锚文本为标题，块内首个 `<p>` 为摘要；最多 `max` 条。
+pub fn parse_bing(html: &str, max: usize) -> Vec<LiteResult> {
+    let mut out = Vec::new();
+    let mut from = 0usize;
+    while out.len() < max {
+        let Some(rel) = html[from..].find("class=\"b_algo\"") else {
+            break;
+        };
+        // 结果块容器起点（标记前最近的 <li）
+        let Some(li_rel) = html[..from + rel].rfind("<li") else {
+            break;
+        };
+        let block_start = li_rel;
+        let Some(block_end_rel) = html[block_start..].find("</li>") else {
+            break;
+        };
+        let block = &html[block_start..block_start + block_end_rel];
+        if let Some(result) = extract_bing_item(block) {
+            out.push(LiteResult {
+                title: clip(
+                    &normalize_ws(&decode_entities(&strip_tags(&result.1))),
+                    TITLE_MAX_CHARS,
+                ),
+                url: result.0,
+                snippet: clip(
+                    &normalize_ws(&decode_entities(&strip_tags(&result.2))),
+                    SNIPPET_MAX_CHARS,
+                ),
+            });
+        }
+        from = block_start + block_end_rel + 5;
+    }
+    out
+}
+
+/// 从单个 b_algo 块提取 (url, 标题原文, 摘要原文)：首个 h2 锚 + 首个 p。
+fn extract_bing_item(block: &str) -> Option<(String, String, String)> {
+    let h2_rel = block.find("<h2")?;
+    let a_rel = block[h2_rel..].find("<a ")?;
+    let a_start = h2_rel + a_rel;
+    let gt_rel = block[a_start..].find('>')?;
+    let tag = &block[a_start..a_start + gt_rel + 1];
+    let href = tag_attr(tag, "href")?;
+    let close_rel = block[a_start + gt_rel..].find("</a>")?;
+    let title_start = a_start + gt_rel + 1;
+    // close_rel 相对 '>' 起算，标题终点 = '>' + close_rel（而非 title_start + close_rel）
+    let title = &block[title_start..a_start + gt_rel + close_rel];
+    // 摘要：块内 h2 之后的第一个 <p>
+    let snippet = block[title_start..]
+        .find("<p")
+        .and_then(|p_rel| {
+            let p_start = title_start + p_rel;
+            let gt = block[p_start..].find('>')?;
+            let end = block[p_start + gt..].find("</p>")?;
+            Some(&block[p_start + gt + 1..p_start + gt + end])
+        })
+        .unwrap_or("");
+    Some((
+        resolve_result_url(&href),
+        title.to_string(),
+        snippet.to_string(),
+    ))
 }
 
 /// 顺序提取 (href, 标题文本) 对。
@@ -571,5 +686,47 @@ mod tests {
         assert_eq!(percent_decode("plain"), "plain");
         // 非法序列原样保留
         assert_eq!(percent_decode("100%zz"), "100%zz");
+    }
+
+    /// 夹具取自 cn.bing.com 生产页真实结构（v1.189 实测：h2 锚带重复属性与
+    /// h="ID=SERP" 跟踪参数、标题内嵌 <strong>、摘要在 b_caption p 且含实体）。
+    const BING_FIXTURE: &str = r#"<html><body><ol id="b_results">
+<li class="b_algo" data-id iid=SERP.5333><link rel="stylesheet" href="/rp/x.css" type="text/css"/><h2 class=""><a target="_blank" target="_blank" href="https://www.tenon.com.cn/" h="ID=SERP,5128.2"><strong>TENON</strong> Flexible Spacer IG Line|Auxiliary Machine</a></h2><div class="b_caption"><p class="b_lineclamp2" data-rslinkclamp-iid="">TENON is a manufacturer of insulating glass machinery &amp; equipment&#8230;</p></div></li>
+<li class="b_algo" data-id iid=SERP.5334><h2 class=""><a target="_blank" href="https://dictionary.example.org/tenon" h="ID=SERP,5129.1">tenon</a></h2><div class="b_caption"><p class="b_lineclamp2">A projection on each member, tenon &amp; mortise joints.</p></div></li>
+</ol></body></html>"#;
+
+    #[test]
+    fn parse_bing_extracts_real_structure() {
+        let r = parse_bing(BING_FIXTURE, 10);
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0].url, "https://www.tenon.com.cn/");
+        assert_eq!(
+            r[0].title,
+            "TENON Flexible Spacer IG Line|Auxiliary Machine"
+        );
+        assert_eq!(
+            r[0].snippet,
+            "TENON is a manufacturer of insulating glass machinery & equipment…"
+        );
+        assert_eq!(r[1].url, "https://dictionary.example.org/tenon");
+        assert_eq!(r[1].title, "tenon");
+        assert_eq!(
+            r[1].snippet,
+            "A projection on each member, tenon & mortise joints."
+        );
+        assert_eq!(parse_bing(BING_FIXTURE, 1).len(), 1);
+        assert!(parse_bing("<html><body><p>no results</p></body></html>", 5).is_empty());
+    }
+
+    /// 生产联调（`cargo test -p tenon-agent -- --ignored websearch_live` 手动跑）：
+    /// 验证两后端真实可达性与解析（后端顺序 = 可达性兜底链的生产行为验证）。
+    #[tokio::test]
+    #[ignore = "真实网络联调，手动执行"]
+    async fn websearch_live_backends() {
+        let results = search_bing("rust programming language", 5)
+            .await
+            .expect("bing 后端应可达且可解析");
+        assert!(!results.is_empty(), "bing 应有结果");
+        assert!(results[0].url.starts_with("https://"));
     }
 }
