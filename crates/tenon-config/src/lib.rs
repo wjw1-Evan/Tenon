@@ -244,6 +244,8 @@ pub struct ProviderConfig {
     pub price_in_per_mtok: Option<f64>,
     /// 美元 / 百万输出 token
     pub price_out_per_mtok: Option<f64>,
+    /// 美元 / 百万缓存命中输入 token（v1.196 §11；缺省 = 缓存部分按输入价计）
+    pub price_cached_per_mtok: Option<f64>,
 }
 
 /// Laya 本地决策模型（§9.8）。

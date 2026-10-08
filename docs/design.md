@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | **v1.197** |
+| 版本 | **v1.198** |
 | 日期 | 2026-10-08 |
 | 状态 | 定稿，M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
@@ -730,9 +730,8 @@ L4 按包隔离、语言服务器按需启动；子代理限定单包；检索�
 - **免费模型引导（v1.163，v1.170 首选换档）**：智谱官方免费档（均 0 元、128K 上下文、不限总量）作为开箱引导预设——**首选 glm-4.5-flash**（限流稳定；免费档约 1 并发、响应较慢十至数十秒），回退 glm-4.7-flash（新一代 30B/A3B、代码与智能体能力更强，但实测频繁整档限流 429「1305 访问量过大」）；`kind="openai"`、`base_url=https://open.bigmodel.cn/api/paas/v4`；首启合并视图无任何 provider 且用户未跳过时自动弹出三步引导向导（§7.1）：向导内贴 Key 经 `POST /models/verify` 按上述顺序试连验证 → `PUT /settings` 一并写入 api_key 与 provider 覆盖即热生效（v1.165 简化：密钥直存 settings.json 0600，§11 密钥存储双轨）；GLM 推理模型思考默认开启且计入 `max_tokens`，OpenAI 兼容路径对 GLM 目标（base_url 含 bigmodel.cn 或 model 名 glm 前缀）将 `reasoning_effort=low/minimal/none` 翻译为 `thinking:{"type":"disabled"}`（与 Anthropic 路径既有做法同规），避免小预算请求（如标题生成 max_tokens=128）被思考耗尽返回空 content；GLM 校验 temperature 最多两位小数（错误码 1210）——f32 经 serde_json 拓宽 f64 暴露二进制长尾（0.2f32 → 0.20000000298023224），provider 层统一两位取整后以 f64 写入（v1.175，OpenAI 兼容与 Anthropic 路径同规）；**v1.195 向导备用链预设**：完成写入时把另一免费档以 `glm/<模型>` 形式并入 `models.fallback` 备用模型链（v1.171 韧性链）——主模型限流 / 故障时自动切换到另一免费档；用户已配置链则保留不覆盖（向导只补空缺）；完成步注明备用链配置（五语言 `onboarding.fallback_chain`）；
 - **本地决策模型（Laya）**：产品自管小型分类模型，承接代理循环结构化判定（用途 / 分发 / 边界见 §9.8）；启动自动下载并启用（静态 registry + 签名 + 版本锁定，无确认卡，v1.71）、本地 CPU 推理零 token 成本；不可用即整体回退，不阻塞任何功能；
 - **路由**：v1 显式（`/model` 与设置面板）+ 轻量启发式（纯读任务提示轻模型）；auto 路由实验特性默认关（置信度展示、一键改派、可反馈）；
-- **成本**（v1.93 接线）：价格表来源 = provider 配置可选 `price_in_per_mtok` / `price_out_per_mtok`（美元 / 百万 token，缺省 0 = 未知模型不计、宁少报不虚报）；daemon 按默认模型构建价格表注入会话，每回合计价累计入 `model_usage.cost_usd` 并作为熔断预算输入（§9.3）；本地模型（含 Laya）显示「本地 · 0 成本」，token 单独统计；任务级 / 会话级 / 项目级归因；**缓存与速度观测（v1.129）**：usage 增缓存命中输入 token 采集（OpenAI 兼容 = `prompt_tokens_details.cached_tokens`，Anthropic = `cache_read_input_tokens`，未报告 / 本地模型 = 0），命中率 = cached / input——OpenAI 系 cached ⊆ prompt_tokens 口径自洽，Anthropic 系不打 `cache_control` 断点则缓存不启用、恒 0 不虚报；每回合模型流耗时（provider 流建立 → 权威 Final 到达）记入 `model_usage.duration_ms`，输出速度 = output / duration 为权威实测（区别于 UI 轮询差值的流中近似）；
+- **成本**（v1.93 接线）：价格表来源 = provider 配置可选 `price_in_per_mtok` / `price_out_per_mtok`（美元 / 百万 token，缺省 0 = 未知模型不计、宁少报不虚报）；daemon 按默认模型构建价格表注入会话，每回合计价累计入 `model_usage.cost_usd` 并作为熔断预算输入（§9.3）；**缓存计价（v1.196）**：provider 配置可选 `price_cached_per_mtok`（美元 / 百万缓存命中输入 token，缺省缺 = 缓存部分按输入价计维持 v1.93 行为）——计价拆分 `cached = min(cached_input_tokens, input_tokens)`（越界钳制防负数），`(input − cached) × price_in + cached × price_cached + output × price_out`，缓存命中部分不再按全价高报成本、熔断预算不再被虚增提前触发；本地模型（含 Laya）显示「本地 · 0 成本」，token 单独统计；任务级 / 会话级 / 项目级归因；**缓存与速度观测（v1.129）**：usage 增缓存命中输入 token 采集（OpenAI 兼容 = `prompt_tokens_details.cached_tokens`，Anthropic = `cache_read_input_tokens`，未报告 / 本地模型 = 0），命中率 = cached / input——OpenAI 系 cached ⊆ prompt_tokens 口径自洽，Anthropic 系不打 `cache_control` 断点则缓存不启用、恒 0 不虚报；每回合模型流耗时（provider 流建立 → 权威 Final 到达）记入 `model_usage.duration_ms`，输出速度 = output / duration 为权威实测（区别于 UI 轮询差值的流中近似）；
 - **生成参数（v1.174）**：`[models.generation] max_tokens`（默认 16384）/ `temperature`（默认 0.2）——会话模型回合的输出上限与采样温度；settings.json `models.generation` 可覆盖（PUT 校验 max_tokens 256-65536 / temperature 0.0-2.0，新会话生效），设置面板 Models 分区可编辑；provider 级差异经多 provider 配置承载，不设 per-provider 覆盖（避免参数组合爆炸）；
-- **多模态图片输入（v1.191–v1.193）**：`ChatMessage` 增可选 `images: Vec<ImagePart>`（仅 user 消息；base64 内联，历史重发由供应商缓存吸收——v1.173）——选择附加字段而非内容枚举重构，全库既有构造零改动；OpenAI 兼容路径 content 升块数组（text + image_url data URL）、Anthropic 路径 image 块（base64 source）+ text；限制：≤4 张/消息、单张解码 ≤5MB、media_type 白名单（png/jpeg/webp/gif）；附件落盘 `~/.tenon/attachments/<session>/`（审计可查，events 只记数量——配合 payload 上限）；UI 输入区粘贴 / 拖入图片文件→chips→随消息发送；运行态队列不支持附件（409）；非视觉模型（本地小模型等）行为由供应商决定（一般拒绝或忽略图片）；
 - **多模态图片输入（v1.191–v1.193）**：`ChatMessage` 增可选 `images: Vec<ImagePart>`（仅 user 消息；base64 内联，历史重发由供应商缓存吸收——v1.173）——选择附加字段而非内容枚举重构，全库既有构造零改动；OpenAI 兼容路径 content 升块数组（text + image_url data URL）、Anthropic 路径 image 块（base64 source）+ text；限制：≤4 张/消息、单张解码 ≤5MB、media_type 白名单（png/jpeg/webp/gif）；附件落盘 `~/.tenon/attachments/<session>/`（审计可查，events 只记数量——配合 payload 上限）；UI 输入区粘贴 / 拖入图片文件→chips→随消息发送；运行态队列不支持附件（409）；非视觉模型（本地小模型等）行为由供应商决定（一般拒绝或忽略图片）；
 - **Prompt caching（v1.173）**：Anthropic 协议路径打 `cache_control: ephemeral` 断点——system 块（缓存工具定义 + 系统提示前缀）+ 最后一条消息的最后一个内容块（增量式会话前缀缓存：断点随回合前移、下回合命中），长会话重复上下文省约 90% 读取费用；命中量已入成本观测（v1.129 `cached_input_tokens` / 命中率）。OpenAI 兼容端点（OpenAI / DeepSeek / GLM）为供应商侧自动缓存（≥1024 token 前缀自动），无需断点、不改协议，`cached_tokens` 照常记账——此前 Anthropic 路径不打断点缓存整体不启用（恒 0）即本条修正的主因。`[models.caching] enabled`（默认开，config.toml；build_provider 默认开、daemon 按 配置关）整体开关；短提示（<1024 token）供应商侧本就不缓存、无额外写入费；
 - **密钥存储（v1.165 简化为双轨）**：① **直存轨（默认引导路径）**——`models.providers.<name>.api_key` 明文存 `settings.json`（0600，仅当前用户可读）；GET /settings 永不回显该字段，覆盖表整体替换时载荷缺席 `api_key` 即保留既有值（UI 无法重发不可回显字段）；② **引用轨**——`api_key_env` 环境变量引用名先查 daemon 环境变量，缺失时读取操作系统凭据库（macOS Keychain / Linux libsecret / Windows PasswordVault），适合不愿明文落盘的用户。解析优先级：`api_key_env` 有值即走引用轨，否则回退 `api_key` 直存值；`PUT /secrets` 钥匙串写入通道随 v1.165 移除（KeychainStore 写能力保留为库内设施）；
@@ -1296,6 +1295,7 @@ api_key_env = ""                  # 钥匙串引用，不落盘
 model       = ""                  # 该 provider 默认模型（v1.11，可空）
 price_in_per_mtok  = 0.0          # 可选：美元 / 百万输入 token（v1.93；0 = 未定价不计成本）
 price_out_per_mtok = 0.0          # 可选：美元 / 百万输出 token
+price_cached_per_mtok = 0.0       # 可选：美元 / 百万缓存命中输入 token（v1.196；缺省 = 缓存部分按输入价计）
 
 [models.laya]
 enabled       = true              # 本地决策模型总开关（§9.8；false = 各集成点回退现状）
