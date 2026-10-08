@@ -211,6 +211,14 @@ impl ChatRequest {
     }
 }
 
+/// GLM（智谱）要求 temperature 最多两位小数（错误码 1210）——f32 经
+/// serde_json `Number::from_f32` 拓宽为 f64 会暴露二进制长尾
+/// （0.2f32 → 0.20000000298023224；OpenAI / Anthropic 宽容而智谱 400 拒绝）。
+/// 统一两位取整后以 f64 写入请求体：f64 的最短表示即落在两位内。
+pub(crate) fn rounded_temperature(t: f32) -> f64 {
+    ((t as f64) * 100.0).round() / 100.0
+}
+
 /// 流式模型回合中的一个事件。
 #[derive(Debug, Clone)]
 pub enum ChatStreamEvent {

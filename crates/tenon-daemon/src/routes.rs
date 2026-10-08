@@ -3537,7 +3537,9 @@ async fn verify_model(State(_state): State<Arc<DaemonState>>, Json(body): Json<V
         vec![tenon_models::ChatMessage::user("ping")],
     );
     req.max_tokens = 16;
-    req.temperature = 0.0;
+    // 0.7f32 刻意暴露 f32→f64 拓宽路径：rounded_temperature 修复（v1.175）
+    // 由集成测试在 mock 上游捕获原始 body 断言长尾不得出现
+    req.temperature = 0.7;
     req.reasoning_effort = Some("low".into());
     let provider = tenon_models::OpenAiCompatProvider::new("verify", &base_url, &api_key, None)
         .with_timeout(std::time::Duration::from_secs(15));

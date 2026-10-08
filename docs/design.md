@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v1.173** |
-| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.156）· 2026-10-07（v1.157-v1.162）· 2026-10-08（v1.163-v1.173） |
+| 版本 | **v1.175** |
+| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.156）· 2026-10-07（v1.157-v1.162）· 2026-10-08（v1.163-v1.175） |
 | 状态 | 定稿（v1.10 决策闭环），M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 | 历史评审 | v0.1 / v0.3 两轮共 41 项、v1.0 复审 21 项问题的结论已全部并入本方案（过程文档已清理） |
@@ -681,7 +681,7 @@ L4 按包隔离、语言服务器按需启动；子代理限定单包；检索�
 ## 11. 模型层
 
 - **接入**：OpenAI / Anthropic / DeepSeek / Ollama 原生 + **OpenAI 兼容端点通用 provider**（base URL + Key）；设置面板模型分区（v1.40）提供常用提供商预设（OpenAI / Anthropic / DeepSeek / Ollama / 智谱 GLM——后两者经 OpenAI 兼容接入），新增 provider 只填名称 / 协议族 / base_url / 默认模型 / 密钥环境变量引用；
-- **免费模型引导（v1.163，v1.170 首选换档）**：智谱官方免费档（均 0 元、128K 上下文、不限总量）作为开箱引导预设——**首选 glm-4.5-flash**（限流稳定；免费档约 1 并发、响应较慢十至数十秒），回退 glm-4.7-flash（新一代 30B/A3B、代码与智能体能力更强，但实测频繁整档限流 429「1305 访问量过大」）；`kind="openai"`、`base_url=https://open.bigmodel.cn/api/paas/v4`；首启合并视图无任何 provider 且用户未跳过时自动弹出三步引导向导（§7.1）：向导内贴 Key 经 `POST /models/verify` 按上述顺序试连验证 → `PUT /settings` 一并写入 api_key 与 provider 覆盖即热生效（v1.165 简化：密钥直存 settings.json 0600，§11 密钥存储双轨）；GLM 推理模型思考默认开启且计入 `max_tokens`，OpenAI 兼容路径对 GLM 目标（base_url 含 bigmodel.cn 或 model 名 glm 前缀）将 `reasoning_effort=low/minimal/none` 翻译为 `thinking:{"type":"disabled"}`（与 Anthropic 路径既有做法同规），避免小预算请求（如标题生成 max_tokens=128）被思考耗尽返回空 content；
+- **免费模型引导（v1.163，v1.170 首选换档）**：智谱官方免费档（均 0 元、128K 上下文、不限总量）作为开箱引导预设——**首选 glm-4.5-flash**（限流稳定；免费档约 1 并发、响应较慢十至数十秒），回退 glm-4.7-flash（新一代 30B/A3B、代码与智能体能力更强，但实测频繁整档限流 429「1305 访问量过大」）；`kind="openai"`、`base_url=https://open.bigmodel.cn/api/paas/v4`；首启合并视图无任何 provider 且用户未跳过时自动弹出三步引导向导（§7.1）：向导内贴 Key 经 `POST /models/verify` 按上述顺序试连验证 → `PUT /settings` 一并写入 api_key 与 provider 覆盖即热生效（v1.165 简化：密钥直存 settings.json 0600，§11 密钥存储双轨）；GLM 推理模型思考默认开启且计入 `max_tokens`，OpenAI 兼容路径对 GLM 目标（base_url 含 bigmodel.cn 或 model 名 glm 前缀）将 `reasoning_effort=low/minimal/none` 翻译为 `thinking:{"type":"disabled"}`（与 Anthropic 路径既有做法同规），避免小预算请求（如标题生成 max_tokens=128）被思考耗尽返回空 content；GLM 校验 temperature 最多两位小数（错误码 1210）——f32 经 serde_json 拓宽 f64 暴露二进制长尾（0.2f32 → 0.20000000298023224），provider 层统一两位取整后以 f64 写入（v1.175，OpenAI 兼容与 Anthropic 路径同规）；
 - **本地决策模型（Laya）**：产品自管小型分类模型，承接代理循环结构化判定（用途 / 分发 / 边界见 §9.8）；启动自动下载并启用（静态 registry + 签名 + 版本锁定，无确认卡，v1.71）、本地 CPU 推理零 token 成本；不可用即整体回退，不阻塞任何功能；
 - **路由**：v1 显式（`/model` 与设置面板）+ 轻量启发式（纯读任务提示轻模型）；auto 路由实验特性默认关（置信度展示、一键改派、可反馈）；
 - **成本**（v1.93 接线）：价格表来源 = provider 配置可选 `price_in_per_mtok` / `price_out_per_mtok`（美元 / 百万 token，缺省 0 = 未知模型不计、宁少报不虚报）；daemon 按默认模型构建价格表注入会话，每回合计价累计入 `model_usage.cost_usd` 并作为熔断预算输入（§9.3）；本地模型（含 Laya）显示「本地 · 0 成本」，token 单独统计；任务级 / 会话级 / 项目级归因；**缓存与速度观测（v1.129）**：usage 增缓存命中输入 token 采集（OpenAI 兼容 = `prompt_tokens_details.cached_tokens`，Anthropic = `cache_read_input_tokens`，未报告 / 本地模型 = 0），命中率 = cached / input——OpenAI 系 cached ⊆ prompt_tokens 口径自洽，Anthropic 系不打 `cache_control` 断点则缓存不启用、恒 0 不虚报；每回合模型流耗时（provider 流建立 → 权威 Final 到达）记入 `model_usage.duration_ms`，输出速度 = output / duration 为权威实测（区别于 UI 轮询差值的流中近似）；

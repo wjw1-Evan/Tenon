@@ -195,6 +195,14 @@ async fn verify_model_roundtrip_against_mock_upstream() {
     assert_eq!(captured["body"]["thinking"]["type"], "disabled");
     assert!(captured["body"].get("reasoning_effort").is_none());
     assert_eq!(captured["body"]["max_tokens"], 16);
+    // v1.174 回归：verify 用 0.7f32 刻意走 f32→f64 拓宽路径，
+    // 原始 body 序列化必须 ≤2 位小数（智谱 1210）
+    let raw = serde_json::to_string(&captured["body"]).unwrap();
+    assert!(
+        raw.contains(r#""temperature":0.7"#),
+        "temperature 序列化异常: {raw}"
+    );
+    assert!(!raw.contains("999999"), "f32→f64 长尾泄漏: {raw}");
 }
 
 /// 试连参数校验与上游失败路径：非法 base_url / 空 key → 400；

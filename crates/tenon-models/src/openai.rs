@@ -2,8 +2,8 @@
 //! GLM 等兼容端点（§11 通用 provider；config schema 借鉴 codex，§3.1）。
 
 use crate::{
-    ChatMessage, ChatRequest, ChatResponse, ChatStream, ChatStreamEvent, ModelProvider,
-    ProviderError, ProviderResult, Role, ToolCallReq, Usage,
+    rounded_temperature, ChatMessage, ChatRequest, ChatResponse, ChatStream, ChatStreamEvent,
+    ModelProvider, ProviderError, ProviderResult, Role, ToolCallReq, Usage,
 };
 use futures::StreamExt;
 use std::collections::BTreeMap;
@@ -266,7 +266,7 @@ impl ModelProvider for OpenAiCompatProvider {
                 j
             }).collect::<Vec<_>>(),
             "max_tokens": req.max_tokens,
-            "temperature": req.temperature,
+            "temperature": rounded_temperature(req.temperature),
         });
         self.apply_reasoning(&mut body, req);
         if !req.tools.is_empty() {
@@ -416,7 +416,7 @@ impl ModelProvider for OpenAiCompatProvider {
                 j
             }).collect::<Vec<_>>(),
             "max_tokens": req.max_tokens,
-            "temperature": req.temperature,
+            "temperature": rounded_temperature(req.temperature),
             "stream": true,
             "stream_options": { "include_usage": true },
         });
@@ -552,6 +552,30 @@ mod tests {
         p.apply_reasoning(&mut body, &req("glm-4.7-flash", Some("low")));
         assert_eq!(body["thinking"]["type"], "disabled");
         assert!(body.get("reasoning_effort").is_none());
+    }
+
+    /// v1.174 回归：f32 经 serde_json 拓宽 f64 暴露二进制长尾
+    /// （0.2f32 → 0.20000000298023224），智谱 1210「temperature 限制小数点
+    /// 2 位」400——请求体必须 ≤2 位小数。
+    #[test]
+    fn temperature_serializes_with_at_most_two_decimals_glm_1210() {
+        for t in [0.1f32, 0.2, 0.35, 0.7] {
+            let s = serde_json::to_string(&serde_json::json!({
+                "temperature": rounded_temperature(t)
+            }))
+            .unwrap();
+            assert!(
+                !s.contains("99999") && !s.contains("00001"),
+                "二进制长尾泄漏: {s}"
+            );
+            let decimals = s.split('.').nth(1).unwrap().trim_end_matches('}').len();
+            assert!(decimals <= 2, "小数超 2 位: {s}");
+        }
+        assert_eq!(
+            serde_json::to_string(&serde_json::json!({ "t": rounded_temperature(0.2f32) }))
+                .unwrap(),
+            r#"{"t":0.2}"#
+        );
     }
 
     #[test]

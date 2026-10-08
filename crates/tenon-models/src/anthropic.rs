@@ -1,8 +1,8 @@
 //! Anthropic Messages 协议适配器（含 GLM Anthropic 协议端点）。
 
 use crate::{
-    ChatMessage, ChatRequest, ChatResponse, ChatStream, ChatStreamEvent, ModelProvider,
-    ProviderError, ProviderResult, Role, ToolCallReq, Usage,
+    rounded_temperature, ChatMessage, ChatRequest, ChatResponse, ChatStream, ChatStreamEvent,
+    ModelProvider, ProviderError, ProviderResult, Role, ToolCallReq, Usage,
 };
 use futures::StreamExt;
 use std::collections::BTreeMap;
@@ -282,7 +282,7 @@ impl ModelProvider for AnthropicProvider {
         let mut body = serde_json::json!({
             "model": req.model,
             "max_tokens": req.max_tokens,
-            "temperature": req.temperature,
+            "temperature": rounded_temperature(req.temperature),
             "messages": messages,
         });
         // 标题等低档推理调用关闭扩展思考；GLM Anthropic 端点实测在
@@ -410,7 +410,7 @@ impl ModelProvider for AnthropicProvider {
         let mut body = serde_json::json!({
             "model": req.model,
             "max_tokens": req.max_tokens,
-            "temperature": req.temperature,
+            "temperature": rounded_temperature(req.temperature),
             "messages": messages,
             "stream": true,
         });
