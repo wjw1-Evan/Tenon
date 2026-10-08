@@ -18,6 +18,7 @@ import { ModelRoutingPanel } from "./ModelRoutingPanel";
 import { markWorkspaceInputReady } from "../lib/performance";
 import { toast } from "../lib/toast";
 import { loadDrafts, saveDrafts, type DraftStore } from "../lib/drafts";
+import { notifyTaskFinished, shouldNotifyOnTransition } from "../lib/notify";
 
 export interface DirtyConflictView {
   path: string;
@@ -537,6 +538,21 @@ export function AgentPanel({
   // stop 受理即禁用，防状态轮询间隙连点向控制队列残留多条 Stop（回到空闲态解锁）。
   useEffect(() => {
     if (!RUNNING_STATES.has(status)) setStopRequested(false);
+  }, [status]);
+
+  // v1.178 §7.2/§7.5：任务终态 OS 通知——「运行态 → done/error」且窗口失焦才发
+  // （聚焦零打扰、跨项目不推送）；桌面壳走 tauri notification 插件、浏览器走
+  // Web Notification API（权限拒绝 / 失败静默）。
+  const prevStatusRef = useRef<AgentStateName>(status);
+  useEffect(() => {
+    const prev = prevStatusRef.current;
+    prevStatusRef.current = status;
+    if (!shouldNotifyOnTransition(prev, status, document.hidden)) return;
+    void notifyTaskFinished(
+      activeProject?.display_name ?? "Tenon",
+      status === "done" ? t("thread.notify_done") : t("thread.notify_error"),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- t 经 prop 稳定传入；activeProject 跟随轮询
   }, [status]);
 
   async function stop() {

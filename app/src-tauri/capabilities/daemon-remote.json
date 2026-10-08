@@ -11,6 +11,7 @@
     "core:window:allow-toggle-maximize",
     "dialog:allow-open",
     "shell:allow-open",
+    "notification:default",
     "allow-get-handshake",
     "allow-get-update-notes",
     "allow-dismiss-update-notes",

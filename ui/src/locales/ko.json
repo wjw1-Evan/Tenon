@@ -310,6 +310,8 @@
   "thread.compaction": "컨텍스트가 압축되었습니다",
   "thread.memory_saved": "메모리가 업데이트되었습니다",
   "thread.readonly_more": "읽기 전용 단계의 자세한 내용은 하단「트레이스」패널을 참조하세요",
+  "thread.notify_done": "작업 완료",
+  "thread.notify_error": "작업 실패",
   "thread.laya_badge": "Laya 판정",
   "thread.subtasks": "하위 작업",
   "thread.cached": "캐시 히트",

@@ -310,6 +310,8 @@
   "thread.compaction": "上下文已壓縮",
   "thread.memory_saved": "記憶已更新",
   "thread.readonly_more": "唯讀步驟詳情見底部「軌跡」面板",
+  "thread.notify_done": "任務完成",
+  "thread.notify_error": "任務失敗",
   "thread.laya_badge": "Laya 判定",
   "thread.subtasks": "子任務",
   "thread.cached": "快取命中",
