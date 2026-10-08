@@ -205,14 +205,13 @@
 | v1.190 | 子代理并行接线 spawn_subagents |
 | v1.191 | 上下文溢出自动恢复 |
 | v1.192 | 共享设计文档并发编辑锁 |
-| v1.194 | 设计变更记录移交 git——changelog 收缩为「版本号 + 一行标题」索引 |
-| v1.195 | 向导备用链预设（§7.1 / §11） |
-| v1.196 | 移除文档咨询锁——用户裁定机制不佳回归约定：读表尾定版本 + 即时提交 + hunk 提交纪律 |
-
 | **v1.193** | **多模态图片输入（§11 / §15——补 C8 缺口：截图提问 / 设计稿转代码场景入口；选择附加字段而非内容枚举重构——全库既有构造零改动）**：① tenon-models：ImagePart{media_type, data_base64} + ChatMessage.images（可选字段 skip_serializing_if）+ user_with_images 构造 + IMAGE_MAX_BYTES 5MB / IMAGES_PER_MESSAGE_MAX 4 / media_type 白名单；openai 两路径 content 升块数组（text + image_url data URL）、anthropic user 块数组（image base64 source + text）；② session：run_task_with_images 入口（run_task 委托空图零破基础），user 消息携图、user_input 事件只记数量；③ routes send_message：attachments 校验（≤4/≤5MB/白名单/base64 解码）→ 落盘 `~/.tenon/attachments/<session>/` → 透传；运行态队列不支持附件（409 不静默丢图）；④ UI：输入区粘贴/拖入图片→chips（移除按钮）→sendMessage 携 attachments；api.ts 签名扩展；五语言 input.image_{too_large,remove}；草稿持久化仅文本（图片不入 localStorage）。测试：provider_contract 双路请求体断言、agent run_task_with_images 例（mock 收到图片块、事件只记数量）；§11 / §15 同步 ** |
+| v1.194 | 设计变更记录移交 git——changelog 收缩为「版本号 + 一行标题」索引 |
+| **v1.195** | **向导备用链预设（§7.1 / §11——v1.171 韧性链与 v1.163 引导向导闭环：4.7-flash 整档限流是实测常态，向导此前只配主模型、fallback 链留空，限流即 ERROR**：完成写入时把另一免费档以 `glm/<模型>` 形式并入 `models.fallback`（chosen=4.5 → 链 `glm/glm-4.7-flash`，反之对称）；用户已配置链则保留不覆盖（向导只补空缺不改写既有决策）；完成步增备用链配置说明（`onboarding.fallback_chain` 五语言）。测试：onboardingWizard 3 例（chosen=4.5 链写入且完成步可见、已配置链保留、v1.169 回退场景链对称）；§7.1 / §11 同步 ** |
+| v1.196 | 移除文档咨询锁——用户裁定机制不佳回归约定：读表尾定版本 + 即时提交 + hunk 提交纪律 |
 | v1.197 | 清理文档历史累赘——头部日期行只记当日、删历史评审行与历史注记；正文（vN.NNN）导航标注保留 |
 | v1.198 | 缓存 token 计价（§11） |
 | v1.199 | 计价三字段进设置面板（§11 / §15） |
-| v1.200 | LSP 写回通道库层（§8.5 / §12.1） |
-
 | **v1.197** | **集成终端（§7.2 / §7.4——补 C10 最后一项缺口：项目级用户 shell PTY + xterm.js 底部第四 tab，§7.4 预留 Cmd/Ctrl+` 键位落位）** |
+| v1.200 | LSP 写回通道库层（§8.5 / §12.1） |
+| **v1.201** | **路线图索引更新（§17）——终端区随 v1.197 由用户令「全部开发」提前自建落地（§7.2），「对齐 Zed ACP 不自造」收窄为 IDE 开放协议的后续可选演进；另注：v1.197 版本号被两会话并发使用（f2ecb34 头部瘦身 / 87c28d6 集成终端），此后取号自 v1.201 起 |
