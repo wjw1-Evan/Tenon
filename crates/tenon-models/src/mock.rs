@@ -122,6 +122,7 @@ impl ModelProvider for MockProvider {
                 },
                 model: self.model.clone(),
                 finish_reason: Some("stop".into()),
+                reasoning: String::new(),
             });
         }
         // 记忆提取请求（v1.104 §10.1）：固定记忆 JSON 回复，与标题同法——
@@ -145,6 +146,7 @@ impl ModelProvider for MockProvider {
                 },
                 model: self.model.clone(),
                 finish_reason: Some("stop".into()),
+                reasoning: String::new(),
             });
         }
         let prompt_chars: usize = req
@@ -188,6 +190,7 @@ impl ModelProvider for MockProvider {
                 },
                 model: self.model.clone(),
                 finish_reason: Some("stop".into()),
+                reasoning: String::new(),
             },
             ScriptedReply::Tool { name, args } => ChatResponse {
                 content: String::new(),
@@ -203,6 +206,7 @@ impl ModelProvider for MockProvider {
                 },
                 model: self.model.clone(),
                 finish_reason: Some("tool_use".into()),
+                reasoning: String::new(),
             },
             ScriptedReply::Mixed { text, tool } => ChatResponse {
                 content: text,
@@ -218,6 +222,7 @@ impl ModelProvider for MockProvider {
                 },
                 model: self.model.clone(),
                 finish_reason: Some("tool_use".into()),
+                reasoning: String::new(),
             },
             ScriptedReply::Truncated(t) => ChatResponse {
                 content: t,
@@ -229,6 +234,7 @@ impl ModelProvider for MockProvider {
                 },
                 model: self.model.clone(),
                 finish_reason: Some("length".into()),
+                reasoning: String::new(),
             },
             ScriptedReply::Failure(msg) => {
                 return Err(crate::ProviderError::Network(msg));
@@ -326,6 +332,7 @@ mod tests {
         loop {
             match stream.next().await {
                 Some(Ok(ChatStreamEvent::Delta(text))) => deltas.push_str(&text),
+                Some(Ok(ChatStreamEvent::ReasoningDelta(_))) => {}
                 Some(Ok(ChatStreamEvent::Final(resp))) => final_response = Some(resp),
                 Some(Err(error)) => panic!("stream failed: {error}"),
                 None => break,

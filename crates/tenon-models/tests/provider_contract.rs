@@ -525,3 +525,38 @@ async fn multimodal_images_reach_request_bodies() {
     assert_eq!(blocks[0]["source"]["data"], "aGVsbG8=");
     assert_eq!(blocks[1]["type"], "text");
 }
+
+/// §7.2 v1.210 思考过程流：reasoning_content 增量走独立 ReasoningDelta、
+/// 不混入正文 Delta；Final 响应携带完整 reasoning。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reasoning_content_streams_separately_from_content() {
+    // GLM/DeepSeek 形态：delta.reasoning_content 与 delta.content 交替到达
+    let sse = concat!(
+        "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"思考A\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"答案\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"思考B\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let (base, _server) = serve_http("200 OK", "text/event-stream", sse).await;
+    let req = ChatRequest::new("glm-m", vec![ChatMessage::user("hi")]);
+    let mut stream = tenon_models::OpenAiCompatProvider::new("p", &base, "", None)
+        .chat_stream(&req)
+        .await
+        .unwrap();
+    let mut reasoning = String::new();
+    let mut content = String::new();
+    let mut final_response = None;
+    while let Some(event) = stream.next().await {
+        match event.unwrap() {
+            ChatStreamEvent::Delta(text) => content.push_str(&text),
+            ChatStreamEvent::ReasoningDelta(text) => reasoning.push_str(&text),
+            ChatStreamEvent::Final(resp) => final_response = Some(resp),
+        }
+    }
+    assert_eq!(reasoning, "思考A思考B", "思考流独立累计");
+    assert_eq!(content, "答案", "正文不受思考污染");
+    let resp = final_response.expect("final");
+    assert_eq!(resp.reasoning, "思考A思考B");
+    assert_eq!(resp.content, "答案");
+}

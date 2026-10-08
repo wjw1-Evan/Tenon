@@ -37,6 +37,8 @@ struct AnthropicSseState {
     line_buffer: Vec<u8>,
     queue: VecDeque<ChatStreamEvent>,
     content: String,
+    /// v1.210：thinking 增量累计（独立于正文）。
+    reasoning: String,
     tool_blocks: BTreeMap<u64, StreamedToolBlock>,
     usage: Usage,
     model: String,
@@ -51,6 +53,7 @@ impl AnthropicSseState {
             line_buffer: Vec::new(),
             queue: VecDeque::new(),
             content: String::new(),
+            reasoning: String::new(),
             tool_blocks: BTreeMap::new(),
             usage: Usage::default(),
             model,
@@ -108,6 +111,16 @@ impl AnthropicSseState {
                                 .push_back(ChatStreamEvent::Delta(text.to_string()));
                         }
                     }
+                    // v1.210 §7.2：thinking 增量独立流转（不混入正文）
+                    Some("thinking_delta") => {
+                        if let Some(text) = delta.get("thinking").and_then(|t| t.as_str()) {
+                            if !text.is_empty() {
+                                self.reasoning.push_str(text);
+                                self.queue
+                                    .push_back(ChatStreamEvent::ReasoningDelta(text.to_string()));
+                            }
+                        }
+                    }
                     Some("input_json_delta") => {
                         if let Some(text) = delta.get("partial_json").and_then(|t| t.as_str()) {
                             self.tool_blocks
@@ -163,6 +176,7 @@ impl AnthropicSseState {
             usage: self.usage,
             model: self.model.clone(),
             finish_reason: self.finish_reason.clone(),
+            reasoning: self.reasoning.clone(),
         })
     }
 }
@@ -362,10 +376,17 @@ impl ModelProvider for AnthropicProvider {
             serde_json::from_str(&text).map_err(|e| ProviderError::Parse(e.to_string()))?;
 
         let mut content = String::new();
+        let mut reasoning = String::new();
         let mut tool_calls = Vec::new();
         if let Some(blocks) = v.get("content").and_then(|c| c.as_array()) {
             for b in blocks {
                 match b.get("type").and_then(|t| t.as_str()) {
+                    // v1.210 §7.2：thinking 块独立累计（不混入正文）
+                    Some("thinking") => {
+                        if let Some(t) = b.get("thinking").and_then(|t| t.as_str()) {
+                            reasoning.push_str(t);
+                        }
+                    }
                     Some("text") => {
                         if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
                             content.push_str(t);
@@ -392,6 +413,7 @@ impl ModelProvider for AnthropicProvider {
         }
         let usage = v.get("usage").cloned().unwrap_or_default();
         Ok(ChatResponse {
+            reasoning,
             content,
             tool_calls,
             usage: Usage {

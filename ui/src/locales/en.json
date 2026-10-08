@@ -318,6 +318,7 @@
   "thread.compaction": "Context compacted",
   "thread.memory_saved": "Memory updated",
   "thread.readonly_more": "Read-only step details are in the Trace panel below",
+  "thread.thinking": "Thinking",
   "thread.plan_title": "Execution plan",
   "thread.plan_approve": "Approve & run",
   "thread.plan_approve_text": "Plan approved. Please execute it.",

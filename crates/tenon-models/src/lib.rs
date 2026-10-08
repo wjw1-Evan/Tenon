@@ -245,6 +245,10 @@ pub struct ChatResponse {
     pub model: String,
     /// 是否发生了供应商侧降级（reasoning 模型等）。
     pub finish_reason: Option<String>,
+    /// v1.210 §7.2：本回合思考过程全文（reasoning_content / thinking 块；
+    /// 空 = 无思考或非推理模型）。不进正文，仅供会话流折叠卡与 Trace。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reasoning: String,
 }
 
 #[derive(Debug, Clone)]
@@ -285,6 +289,9 @@ pub(crate) fn rounded_temperature(t: f32) -> f64 {
 pub enum ChatStreamEvent {
     /// 已可呈现的增量文本。工具调用参数不向用户流式暴露。
     Delta(String),
+    /// v1.210 §7.2：思考过程增量（reasoning_content / thinking）——
+    /// 独立于正文，UI 以可折叠「思考过程」卡片呈现，不进正文流。
+    ReasoningDelta(String),
     /// 当前回合的权威最终响应；usage / tool calls 只以此为准。
     Final(ChatResponse),
 }

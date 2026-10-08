@@ -169,12 +169,13 @@ impl OpenAiSseState {
                     .push_back(ChatStreamEvent::Delta(text.to_string()));
             }
         }
+        // v1.210 §7.2：推理增量独立流转（不混入正文 Delta）。
         // 部分 OpenAI 兼容推理模型只在 reasoning_content 提供正文。
         if let Some(text) = delta.get("reasoning_content").and_then(|c| c.as_str()) {
             if !text.is_empty() {
                 self.reasoning.push_str(text);
                 self.queue
-                    .push_back(ChatStreamEvent::Delta(text.to_string()));
+                    .push_back(ChatStreamEvent::ReasoningDelta(text.to_string()));
             }
         }
         if let Some(calls) = delta.get("tool_calls").and_then(|t| t.as_array()) {
@@ -227,6 +228,7 @@ impl OpenAiSseState {
             usage: self.usage,
             model: self.model.clone(),
             finish_reason: self.finish_reason.clone(),
+            reasoning: self.reasoning.clone(),
         })
     }
 }
@@ -347,6 +349,12 @@ impl ModelProvider for OpenAiCompatProvider {
                 content = rc.to_string();
             }
         }
+        // v1.210 §7.2：思考原文独立透传
+        let reasoning = message
+            .get("reasoning_content")
+            .and_then(|c| c.as_str())
+            .unwrap_or("")
+            .to_string();
         let tool_calls: Vec<ToolCallReq> = message
             .get("tool_calls")
             .and_then(|t| t.as_array())
@@ -379,6 +387,7 @@ impl ModelProvider for OpenAiCompatProvider {
 
         let usage = v.get("usage").cloned().unwrap_or_default();
         Ok(ChatResponse {
+            reasoning,
             content,
             tool_calls,
             usage: Usage {

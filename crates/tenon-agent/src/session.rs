@@ -1067,6 +1067,8 @@ impl AgentSession {
         let mut pending = String::new();
         let mut last_flush = Instant::now();
         let mut final_response = None;
+        let mut reasoning_pending = String::new();
+        let mut reasoning_flush = Instant::now();
         while let Some(item) = stream.next().await {
             match item? {
                 ChatStreamEvent::Delta(text) => {
@@ -1080,12 +1082,34 @@ impl AgentSession {
                         last_flush = Instant::now();
                     }
                 }
+                // v1.210 §7.2：思考流独立合并推送（不混入正文流）
+                ChatStreamEvent::ReasoningDelta(text) => {
+                    reasoning_pending.push_str(&text);
+                    if reasoning_pending.chars().count() >= 64
+                        || reasoning_flush.elapsed() >= Duration::from_millis(120)
+                    {
+                        self.emit(
+                            EventKind::ReasoningDelta,
+                            &serde_json::json!({"text": reasoning_pending}),
+                        )
+                        .await;
+                        reasoning_pending.clear();
+                        reasoning_flush = Instant::now();
+                    }
+                }
                 ChatStreamEvent::Final(resp) => final_response = Some(resp),
             }
         }
         if !pending.is_empty() {
             self.emit(EventKind::ModelDelta, &serde_json::json!({"text": pending}))
                 .await;
+        }
+        if !reasoning_pending.is_empty() {
+            self.emit(
+                EventKind::ReasoningDelta,
+                &serde_json::json!({"text": reasoning_pending}),
+            )
+            .await;
         }
         final_response
             .map(|resp| (resp, started.elapsed().as_millis() as u64))

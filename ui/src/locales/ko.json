@@ -318,6 +318,7 @@
   "thread.compaction": "컨텍스트가 압축되었습니다",
   "thread.memory_saved": "메모리가 업데이트되었습니다",
   "thread.readonly_more": "읽기 전용 단계의 자세한 내용은 하단「트레이스」패널을 참조하세요",
+  "thread.thinking": "思考 과정",
   "thread.plan_title": "실행 계획",
   "thread.plan_approve": "승인 후 실행",
   "thread.plan_approve_text": "계획이 승인되었습니다. 계획에 따라 실행해 주세요.",

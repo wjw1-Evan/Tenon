@@ -318,6 +318,7 @@
   "thread.compaction": "コンテキストを圧縮しました",
   "thread.memory_saved": "メモリを更新しました",
   "thread.readonly_more": "読み取り専用ステップの詳細は下部「トレース」パネルを参照",
+  "thread.thinking": "思考プロセス",
   "thread.plan_title": "実行計画",
   "thread.plan_approve": "承認して実行",
   "thread.plan_approve_text": "計画が承認されました。計画に従って実行してください。",

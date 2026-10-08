@@ -3237,3 +3237,32 @@ button:disabled { opacity: 0.45; cursor: default; }
   background: #111318;
   overflow: hidden;
 }
+
+
+/* §7.2 v1.210 思考过程折叠卡（Codex 形态：正文开始后收起，可展开回看） */
+.turn-thinking {
+  border-left: 2px solid var(--border);
+  padding: 1px 0 1px 9px;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.turn-thinking-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 0;
+  font-size: 12px;
+}
+.turn-thinking-body {
+  color: var(--fg-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin-top: 4px;
+}
+.turn-thinking.live .turn-thinking-head {
+  color: var(--fg);
+}

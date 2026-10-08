@@ -230,6 +230,10 @@ export function AgentPanel({
 }: Props) {
   const [events, setEvents] = useState<EventItem[]>([]);
   const [streamText, setStreamText] = useState("");
+  // v1.210 §7.2：思考过程（推理模型的 reasoning 流），正文开始后自动收起
+  const [thinkingText, setThinkingText] = useState("");
+  const [thinkingActive, setThinkingActive] = useState(false);
+  const [thinkingCollapsed, setThinkingCollapsed] = useState(false);
   const [status, setStatus] = useState<AgentStateName>("idle");
   const [input, setInput] = useState("");
   // v1.135：撤销截断后整流重载（递增触发轮询 effect 以 after=0 重拉）。
@@ -472,11 +476,24 @@ export function AgentPanel({
           after = r.events[r.events.length - 1].seq;
           setEvents((prev) => [...prev, ...r.events]);
           for (const ev of r.events) {
-            if (ev.type === "user_input") setStreamText("");
+            if (ev.type === "user_input") {
+              setStreamText("");
+              setThinkingText("");
+              setThinkingActive(false);
+            }
             if (ev.type === "model_delta") {
               setStreamText((prev) => prev + String(ev.payload.text ?? ""));
             }
-            if (ev.type === "decision") setStreamText("");
+            // v1.210 §7.2：思考流聚合（独立于正文）
+            if (ev.type === "reasoning_delta") {
+              setThinkingText((prev) => prev + String(ev.payload.text ?? ""));
+              setThinkingActive(true);
+            }
+            if (ev.type === "decision") {
+              setStreamText("");
+              setThinkingActive(false);
+              setThinkingCollapsed(true);
+            }
             // §9.1（v1.186）：瞬时错误自动重试——清掉失败尝试的流式残影
             // （重试从头重流，不清则上一尝试文本与新区块叠字）
             if (ev.type === "model_retry") setStreamText("");
@@ -916,6 +933,7 @@ export function AgentPanel({
               )}
               <div className="turn-body">
                 <ReadOnlySummary items={turn.items} t={t} />
+                <TurnThinking items={turn.items} t={t} />
                 {(() => {
                   // §9.2（v1.146）：回合内最新一次 subtasks 事件才渲染清单卡
                   const latestSubtasksId = [...turn.items]
@@ -945,6 +963,20 @@ export function AgentPanel({
                     />
                   ));
                 })()}
+                {active && thinkingActive && (
+                  <div
+                    className="turn-thinking live"
+                    data-testid="thinking-live"
+                  >
+                    <button type="button" className="turn-thinking-head" aria-live="polite">
+                      <span className="turn-spinner" aria-hidden="true" />
+                      {t("thread.thinking")}
+                    </button>
+                    {thinkingText && (
+                      <div className="turn-thinking-body">{thinkingText}</div>
+                    )}
+                  </div>
+                )}
                 {active && streamText && (
                   <div
                     className="turn-answer"
@@ -1539,6 +1571,37 @@ function SubtasksLive({
 }
 
 /** 事件 → 会话流节点；只渲染面向用户的子集，完整事件表由底部「轨迹」tab 承载。 */
+/// §7.2 v1.210：思考过程折叠卡（Codex 形态）——头部标签 + 展开正文；
+/// 默认收起，点击头部切换。多个 reasoning_delta 在回合内合并由渲染层聚合。
+/// §7.2 v1.210：回合内 reasoning_delta 增量聚合为一张折叠卡（Codex 形态：
+/// 正文开始后默认收起，点击展开）。
+function TurnThinking({ items, t }: { items: EventItem[]; t: Translate }) {
+  const deltas = items.filter((e) => e.type === "reasoning_delta");
+  if (deltas.length === 0) return null;
+  const text = deltas.map((e) => String(e.payload.text ?? "")).join("");
+  if (!text) return null;
+  return <ThinkingCard text={text} t={t} />;
+}
+
+function ThinkingCard({ text, t }: { text: string; t: Translate }) {
+  const [open, setOpen] = useState(false);
+  if (!text) return null;
+  return (
+    <div className="turn-thinking" data-testid="turn-thinking">
+      <button
+        type="button"
+        className="turn-thinking-head"
+        data-testid="thinking-toggle"
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span aria-hidden="true">{open ? "▾" : "▸"}</span>
+        {t("thread.thinking")}
+      </button>
+      {open && <div className="turn-thinking-body">{text}</div>}
+    </div>
+  );
+}
+
 function EventNode({
   ev,
   t,
@@ -1556,6 +1619,10 @@ function EventNode({
   onRetry?: (() => void) | undefined;
 }) {
   switch (ev.type) {
+    case "reasoning_delta":
+      // §7.2 v1.210：思考过程增量在回合尾部由 TurnThinking 聚合渲染——
+      // EventNode 层不逐条渲染（避免 N 张卡）。
+      return null;
     case "plan_submitted": {
       // §9.2 v1.179 计划模式：计划卡（items 清单 + 批准执行——发送批准文本新回合续跑）
       const items = Array.isArray(ev.payload.items) ? ev.payload.items : [];

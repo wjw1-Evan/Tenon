@@ -318,6 +318,7 @@
   "thread.compaction": "上下文已压缩",
   "thread.memory_saved": "记忆已更新",
   "thread.readonly_more": "只读步骤详情见底部「轨迹」面板",
+  "thread.thinking": "思考过程",
   "thread.plan_title": "执行计划",
   "thread.plan_approve": "批准执行",
   "thread.plan_approve_text": "计划已批准，请按计划执行。",

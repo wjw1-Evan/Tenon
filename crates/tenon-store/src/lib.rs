@@ -137,6 +137,9 @@ pub enum EventKind {
     /// 用户 hooks 回调记录（§13.6 v1.180，payload {event, command, exit_code,
     /// duration_ms, action}，不含参数原文）。
     HookRun,
+    /// 思考过程流增量（§7.2 v1.210，payload {text}，与 model_delta 同合并档；
+    /// 不入正文，UI 以折叠「思考过程」卡呈现）。
+    ReasoningDelta,
 }
 
 impl EventKind {
@@ -163,6 +166,7 @@ impl EventKind {
             EventKind::Subtasks => "subtasks",
             EventKind::PlanSubmitted => "plan_submitted",
             EventKind::HookRun => "hook_run",
+            EventKind::ReasoningDelta => "reasoning_delta",
         }
     }
 
@@ -189,6 +193,7 @@ impl EventKind {
             "subtasks" => EventKind::Subtasks,
             "plan_submitted" => EventKind::PlanSubmitted,
             "hook_run" => EventKind::HookRun,
+            "reasoning_delta" => EventKind::ReasoningDelta,
             _ => return None,
         })
     }

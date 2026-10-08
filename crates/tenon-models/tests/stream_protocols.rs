@@ -33,6 +33,7 @@ fn collect(
     for event in events {
         match event {
             ChatStreamEvent::Delta(delta) => text.push_str(&delta),
+            ChatStreamEvent::ReasoningDelta(_) => {}
             ChatStreamEvent::Final(resp) => final_response = Some(resp),
         }
     }
