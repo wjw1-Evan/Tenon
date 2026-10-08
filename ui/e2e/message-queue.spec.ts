@@ -37,13 +37,16 @@ test("运行态发送自动入队，回合自然完成后自动续跑", async ({
   // 首条慢任务：首趟模型调用延迟 6s，撑出确定的运行窗口
   await page.getByTestId("task-input").fill("E2E_SLOW_TURN_MS=6000 慢任务");
   await page.getByTestId("send").click();
-  // 运行态双钮并列：停止出现、发送保留入队语义
+  // v1.184 Codex 单钮形态：运行态空输入仅「停止」单钮，「发送」键入即现（入队语义不变）
   await expect(page.getByTestId("stop")).toBeVisible({ timeout: 10_000 });
-  await expect(page.getByTestId("send")).toBeEnabled();
+  await expect(page.getByTestId("send")).toHaveCount(0);
 
   // 运行态发送 → 排队气泡 + 「已排队」徽标 + spinner 行计数
   await page.getByTestId("task-input").fill("排队消息一");
+  await expect(page.getByTestId("send")).toBeEnabled();
   await page.getByTestId("send").click();
+  // 入队即投递并清空输入 → 发送钮隐藏回落停止单钮（键入即现、清空即隐）
+  await expect(page.getByTestId("send")).toHaveCount(0);
   await expect(page.getByTestId("queue-item-q1")).toBeVisible({ timeout: 10_000 });
   await expect(page.getByTestId("queue-badge")).toHaveText("Queued");
   await expect(page.getByTestId("queue-count")).toHaveText("Queue 1");
