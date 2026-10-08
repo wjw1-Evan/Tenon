@@ -1232,6 +1232,8 @@ pub struct DaemonState {
     pub l4_index_rx: std::sync::Mutex<Option<tokio::sync::mpsc::Receiver<L4IndexRequest>>>,
     /// 最近 L4 worker 状态（内存态；重启后从 queued 重新建立）。
     pub l4_status: std::sync::Mutex<HashMap<String, L4IndexStatus>>,
+    /// 项目终端（§7.2 v1.197）：project_id → PTY 会话（单实例；项目运行时关闭回收）。
+    pub terminals: crate::terminal::TerminalManager,
 }
 
 /// L4 索引请求。
@@ -1421,6 +1423,7 @@ impl DaemonState {
             l4_index_tx,
             l4_index_rx: std::sync::Mutex::new(Some(l4_index_rx)),
             l4_status: std::sync::Mutex::new(HashMap::new()),
+            terminals: crate::terminal::TerminalManager::default(),
         };
         // provider 表统一入口：基础 config + 设置覆盖（settings.json）合并构建（v1.40）
         state.rebuild_providers();
@@ -1617,6 +1620,8 @@ impl DaemonState {
         let runtime = self.open_projects.lock().await.remove(project_id)?;
         runtime.stop().await;
         self.dirty_buffers.lock().await.remove(project_id);
+        // §7.2 v1.197：项目终端随运行时关闭回收（用户 shell 进程不留孤儿）
+        self.terminals.kill_project(project_id).await;
         Some(runtime)
     }
 

@@ -126,7 +126,7 @@ export interface ProjectUiState {
   bottomHeight?: number;
   sidebarOpen?: boolean;
   timelineOpen?: boolean;
-  bottomTab?: "source" | "timeline" | "trace" | "evals";
+  bottomTab?: "source" | "timeline" | "trace" | "evals" | "terminal";
 }
 
 export interface OpenedProject {
@@ -916,6 +916,51 @@ export class TenonApi {
   }
 
   /** 换取一次性 WS 票据（§12.6）。 */
+  /** v1.197 §7.2：项目终端——取既有或新开（项目级单实例）。 */
+  async openTerminal(projectId: string): Promise<{ shell: string }> {
+    return this.request<{ shell: string }>(`/projects/${projectId}/terminal`, {
+      method: "POST",
+    });
+  }
+
+  /** v1.197：关闭项目终端（回收用户 shell 进程）。 */
+  async closeTerminal(projectId: string): Promise<void> {
+    await this.request(`/projects/${projectId}/terminal`, { method: "DELETE" });
+  }
+
+  /** v1.197：终端 WS（票据首帧鉴权同 connectEvents）。 */
+  async connectTerminal(
+    projectId: string,
+    onOutput: (data: string | Uint8Array) => void,
+    onClose: () => void
+  ): Promise<WebSocket> {
+    const ticket = await this.wsTicket();
+    const ws = new WebSocket(
+      `ws://${new URL(this.base).host}/projects/${projectId}/terminal/ws`
+    );
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      ws.onopen = () => ws.send(ticket);
+      ws.onerror = () => {
+        if (settled) return;
+        settled = true;
+        reject(new Error("terminal ws connect failed"));
+      };
+      ws.onclose = () => {
+        if (settled) return;
+        settled = true;
+        reject(new Error("terminal ws closed before auth"));
+      };
+    });
+    ws.binaryType = "arraybuffer";
+    ws.onmessage = (ev) => {
+      if (typeof ev.data === "string") onOutput(ev.data);
+      else onOutput(new Uint8Array(ev.data));
+    };
+    ws.onclose = () => onClose();
+    return ws;
+  }
+
   async wsTicket(): Promise<string> {
     const r = await this.request<{ ticket: string; expires_in_s: number }>(
       "/ws-ticket",

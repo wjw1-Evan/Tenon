@@ -414,6 +414,7 @@
   "palette.readonly_off": "唯讀模式：關（允許寫入操作）",
   "panel.trace": "AgentTrace",
   "panel.evals": "AI Evals",
+  "panel.terminal": "終端",
   "inline.enabled_note": "AI 行內補全已開啟（實驗）",
   "inline.disabled_note": "AI 行內補全已關閉",
   "evals.title": "AI Evals 報告（本機產生）",

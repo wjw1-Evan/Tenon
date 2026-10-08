@@ -414,6 +414,7 @@
   "palette.readonly_off": "読み取り専用モード：オフ（書き込み許可）",
   "panel.trace": "AgentTrace",
   "panel.evals": "AI Evals",
+  "panel.terminal": "ターミナル",
   "inline.enabled_note": "AI インライン補完を有効にしました（実験的）",
   "inline.disabled_note": "AI インライン補完を無効にしました",
   "evals.title": "AI Evals レポート（ローカル生成）",

@@ -414,6 +414,7 @@
   "palette.readonly_off": "只读模式：关（允许写操作）",
   "panel.trace": "AgentTrace",
   "panel.evals": "AI Evals",
+  "panel.terminal": "终端",
   "inline.enabled_note": "AI 行内补全已开启（实验）",
   "inline.disabled_note": "AI 行内补全已关闭",
   "evals.title": "AI Evals 报告（本地生成）",

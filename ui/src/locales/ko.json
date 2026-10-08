@@ -414,6 +414,7 @@
   "palette.readonly_off": "읽기 전용 모드: 끔 (쓰기 허용)",
   "panel.trace": "AgentTrace",
   "panel.evals": "AI Evals",
+  "panel.terminal": "터미널",
   "inline.enabled_note": "AI 인라인 완성이 켜졌습니다 (실험적)",
   "inline.disabled_note": "AI 인라인 완성이 꺼졌습니다",
   "evals.title": "AI Evals 보고서 (로컬 생성)",

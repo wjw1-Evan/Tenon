@@ -43,6 +43,7 @@ import {
 import { ThreePaneMerge, type DirtyConflict } from "./components/ThreePaneMerge";
 import { AgentTracePanel } from "./components/AgentTracePanel";
 import { EvalsPanel } from "./components/EvalsPanel";
+import { TerminalPanel } from "./components/TerminalPanel";
 import { LanguagePackWizard } from "./components/LanguagePackWizard";
 import { unionLines } from "./lib/aiLines";
 import { createAutoSaver, type AutoSaver } from "./lib/autosave";
@@ -382,7 +383,7 @@ export default function App({
   const [agentState, setAgentState] = useState<AgentStateName>("idle");
   const [routeNote, setRouteNote] = useState<string | null>(null);
   // 底部面板 tab（v1.107 移除「源码」——Git 视图迁右区源码树）：枚举收敛为三项。
-  const [bottomTab, setBottomTab] = useState<"timeline" | "trace" | "evals">(
+  const [bottomTab, setBottomTab] = useState<"timeline" | "trace" | "evals" | "terminal">(
     "timeline"
   );
   // 可调布局（§7.2：两区可折叠可调宽；localStorage 记忆；v1.110 移除右栏；v1.115 默认宽收窄 220→180）
@@ -472,7 +473,8 @@ export default function App({
       if (
         saved.bottomTab === "timeline" ||
         saved.bottomTab === "trace" ||
-        saved.bottomTab === "evals"
+        saved.bottomTab === "evals" ||
+        saved.bottomTab === "terminal"
       ) {
         setBottomTab(saved.bottomTab);
       }
@@ -770,7 +772,7 @@ export default function App({
 
   /** 循环底部面板 tab（§7.5 v1.167 Cmd/Ctrl+Alt+J）：timeline→trace→evals；收起态先展开。 */
   const cycleBottomTab = useCallback(() => {
-    const order = ["timeline", "trace", "evals"] as const;
+    const order = ["timeline", "trace", "evals", "terminal"] as const;
     setBottomTab((cur) => order[(order.indexOf(cur) + 1) % order.length]);
     setTimelineOpen(true);
   }, []);
@@ -1063,6 +1065,7 @@ export default function App({
     timeline: t("panel.timeline"),
     trace: t("panel.trace"),
     evals: t("panel.evals"),
+    terminal: t("panel.terminal"),
   };
 
   // M0：挂载即自动打开项目并建会话（M1 换项目选择页 + TOFU 卡）
@@ -1601,6 +1604,13 @@ export default function App({
               >
                 {bottomTabTitles.evals}
               </button>
+              <button
+                className={bottomTab === "terminal" ? "active" : ""}
+                onClick={() => setBottomTab("terminal")}
+                data-testid="tab-terminal"
+              >
+                {bottomTabTitles.terminal}
+              </button>
             </div>
             <button
               type="button"
@@ -1634,6 +1644,9 @@ export default function App({
             <AgentTracePanel api={api} sessionId={sessionId} t={t} />
           )}
           {bottomTab === "evals" && <EvalsPanel api={api} t={t} />}
+          {bottomTab === "terminal" && (
+            <TerminalPanel api={api} t={t} projectId={projectId} />
+          )}
         </footer>
       )}
       <InlineInstruction

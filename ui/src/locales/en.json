@@ -414,6 +414,7 @@
   "palette.readonly_off": "Read-only mode: off (writes allowed)",
   "panel.trace": "AgentTrace",
   "panel.evals": "AI Evals",
+  "panel.terminal": "Terminal",
   "inline.enabled_note": "AI inline completion enabled (experimental)",
   "inline.disabled_note": "AI inline completion disabled",
   "evals.title": "AI Evals report (generated locally)",

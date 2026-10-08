@@ -37,6 +37,11 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
     Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/ws-ticket", post(ws_ticket))
+        .route(
+            "/projects/{id}/terminal",
+            post(open_terminal).delete(close_terminal),
+        )
+        .route("/projects/{id}/terminal/ws", get(terminal_ws_upgrade))
         .route("/ws", get(ws_upgrade))
         // ---------- 会话与回滚（§15） ----------
         .route("/session", post(create_session))
@@ -3691,6 +3696,61 @@ async fn verify_model(State(_state): State<Arc<DaemonState>>, Json(body): Json<V
                 .into_response()
         }
     }
+}
+
+// ---------- 项目终端（§7.2 v1.197：用户自有 shell，项目级单实例） ----------
+
+async fn open_terminal(State(state): State<Arc<DaemonState>>, Path(id): Path<String>) -> Response {
+    let Some(root) = state.project_root(&id).await else {
+        return api_err(StatusCode::NOT_FOUND, "project not found");
+    };
+    match state.terminals.get_or_spawn(&id, root).await {
+        Ok(session) => Json(json!({"shell": session.shell})).into_response(),
+        Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+async fn close_terminal(State(state): State<Arc<DaemonState>>, Path(id): Path<String>) -> Response {
+    state.terminals.kill_project(&id).await;
+    Json(json!({"ok": true})).into_response()
+}
+
+async fn terminal_ws_upgrade(
+    State(state): State<Arc<DaemonState>>,
+    Path(id): Path<String>,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    upgrade.on_upgrade(move |socket| terminal_ws_first_frame_auth(state, id, socket))
+}
+
+/// 终端 WS 鉴权：与既有 WS 同款一次性票据首帧。
+async fn terminal_ws_first_frame_auth(
+    state: Arc<DaemonState>,
+    project_id: String,
+    mut socket: WebSocket,
+) {
+    let first = tokio::time::timeout(std::time::Duration::from_secs(5), socket.recv()).await;
+    let ticket = match first {
+        Ok(Some(Ok(Message::Text(t)))) => t,
+        _ => {
+            let _ = socket.close().await;
+            return;
+        }
+    };
+    if !state.tickets.consume(ticket.trim()) {
+        let _ = socket.send(Message::text("auth failed".to_string())).await;
+        let _ = socket.close().await;
+        return;
+    }
+    let Some(root) = state.project_root(&project_id).await else {
+        let _ = socket.close().await;
+        return;
+    };
+    let Ok(session) = state.terminals.get_or_spawn(&project_id, root).await else {
+        let _ = socket.close().await;
+        return;
+    };
+    crate::terminal::pump_terminal_ws(session, socket).await;
 }
 
 // ---------- WS（ADR-10） ----------

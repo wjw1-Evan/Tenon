@@ -12,6 +12,7 @@ mod pairing;
 mod routes;
 mod state;
 pub mod subagents;
+pub mod terminal;
 pub mod updates;
 
 pub use pairing::PairingStore;
