@@ -223,3 +223,5 @@
 | v1.206 | UI 主包瘦身——TerminalPanel/xterm 改 React.lazy 按需加载（主 chunk 3.93→3.61MB，-320KB） |
 
 | v1.207 | store 性能——SQLite synchronous=NORMAL（WAL 标准搭配）+ cache_size 8MB |
+
+| v1.208 | L4 检索性能——两段式查询（评分不取 text、top_k 后按 id 回取）+ select_nth 部分排序 |
