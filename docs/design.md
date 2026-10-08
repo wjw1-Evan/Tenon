@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v1.179** |
-| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.156）· 2026-10-07（v1.157-v1.162）· 2026-10-08（v1.163-v1.179） |
+| 版本 | **v1.180** |
+| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.156）· 2026-10-07（v1.157-v1.162）· 2026-10-08（v1.163-v1.180） |
 | 状态 | 定稿（v1.10 决策闭环），M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 | 历史评审 | v0.1 / v0.3 两轮共 41 项、v1.0 复审 21 项问题的结论已全部并入本方案（过程文档已清理） |
@@ -856,6 +856,20 @@ signature: "<sig>"
 
 **UI（§7.5 设置面板）**：Skills 与 Plugins 分类共用「市场」子视图——市场源管理（添加 / 移除 `owner/repo`）、条目列表（kind 徽标 / 描述 / 版本 / 已装·更新·安装态）、MCP 条目安装前展示命令行面；Plugins 分类重构为 MCP 插件管理——已装列表（读 settings `mcp.servers`：启停 / 删除 / 来源徽标）+ 手动添加表单（command 校验同市场条目）；v1.84 的 registry 搜索框移除。全部文案五语言。
 
+### 13.6 用户 hooks（v1.180）
+
+配置驱动的生命周期回调（参考 Claude Code hooks 形态）：用户在 settings.json `[hooks]` 数组声明外部命令，daemon 在代理循环固定点同步调用，承接 lint-on-edit、自定义审计、外部通知等自动化工作流（本版 UI 不设编辑器——hooks 是 power-user 特性，配置文件 / PUT API 即原生形态）：
+
+| 字段 | 说明 |
+|---|---|
+| `event` | `pre_tool` / `post_tool` / `pre_turn` / `post_turn`：pre_tool = 工具执行前（含内联 A 级工具 subtasks / submit_plan / laya_decide）；post_tool = 工具执行后；pre_turn = 任务开始前；post_turn = 任务终态（Done / Paused / Error）前 |
+| `command` | 外部命令（直接 exec 不经 shell 切分，工作目录 = 会话工作根；用户配置 = 用户信任，不过沙箱） |
+| `timeout_ms` | 100–30000（缺省 5000），超时 kill 按失败计 |
+| `on_fail` | `continue`（缺省）/ `block`（仅 pre_tool 有效：非 0 退出拒绝该工具调用，stderr 截 500 字符作为拒绝理由回给模型） |
+| `tools` | 可选 glob 过滤（`run_*` 形态，`≤16` 条；缺省全部工具） |
+
+环境变量：`TENON_HOOK_EVENT` / `TENON_TOOL` / `TENON_ARGS`（工具参数 JSON，截 32k）/ `TENON_SESSION` / `TENON_OUTPUT`（仅 post_tool，工具输出截 2k）。每次调用发 `hook_run` 事件入 Trace（`{event, command, exit_code, duration_ms, action: pass|block|error}`，不含参数原文）；配置校验随 `PUT /settings` 原子提交（数组整体替换、≤16 条、新会话生效）。
+
 ---
 
 ## 14. 数据与存储设计
@@ -896,7 +910,7 @@ signature: "<sig>"
 | l4_chunks | id, project_id, path, symbol, start_line, end_line, text, embedding | L4 检索切片、行区间、文本与本地向量（sqlite-vec 演进路径，§10.1） |
 | memories | id, scope, project_id, kind, content, importance, embedding, source_session, created_at, updated_at, last_seen_at | L5 跨会话对话记忆（§10.1，v1.104）：project 层按 project_id 隔离；global 层仅 kind=preference，永不承载仓库内容 |
 
-事件类型枚举：`user_input / sensing / decision / model_delta / patch_applied / command_run / direct_action / diagnostics / checkpoint / compaction / rollback / unrollback / model_fallback / model_retry / decider_call / error / session_title / memory_saved / subtasks`（direct_action 是 v1.89 C/D 直执审计：工具 / 级别 / 关键参数；rollback / unrollback 对应 §10.3 回滚与撤销回滚；model_fallback 为模型切换（payload `origin` 区分手动 `/model` 与 §9.1 自动恢复）；model_retry 为 v1.171 §9.1 自动恢复的瞬时重试（payload `{provider, model, attempt, delay_ms, error}`）；plan_submitted 为 v1.179 计划模式计划提交（§9.2，payload `{items:[string]}`，会话随即转 PAUSED 待批准）；model_delta 为 §9.6 合并后的模型增量（Final 的 usage / tool calls 仍只按权威 Final 入账）；decider_call 为 §9.8 Laya 本地判定：类型 / 结果 / 耗时，不含输入原文（v1.124 起 `origin` 标记来源：缺省 = daemon 自动集成点，`agent_tool` = 模型经 `laya_decide` 工具主动调用）；session_title 为 v1.59 对话标题生成完成（payload `{title}`，UI 据此即时刷新对话列表）；memory_saved 为 v1.104 L5 记忆提取入库完成（payload `{count, ids}`，不含记忆原文）；subtasks 为 v1.146 子任务清单状态（§9.2，payload `{items:[{title,status}]}` 全量快照，UI 每回合以最新一次为准渲染）；均入 Trace 可审计）。旧库中的 `approval_request / approval_decision / approval_timeout` 只读回放兼容，新运行不再产生。
+事件类型枚举：`user_input / sensing / decision / model_delta / patch_applied / command_run / direct_action / diagnostics / checkpoint / compaction / rollback / unrollback / model_fallback / model_retry / decider_call / error / session_title / memory_saved / subtasks`（direct_action 是 v1.89 C/D 直执审计：工具 / 级别 / 关键参数；rollback / unrollback 对应 §10.3 回滚与撤销回滚；model_fallback 为模型切换（payload `origin` 区分手动 `/model` 与 §9.1 自动恢复）；model_retry 为 v1.171 §9.1 自动恢复的瞬时重试（payload `{provider, model, attempt, delay_ms, error}`）；plan_submitted 为 v1.179 计划模式计划提交（§9.2，payload `{items:[string]}`，会话随即转 PAUSED 待批准）；hook_run 为 v1.180 用户 hooks 回调记录（§13.6，payload `{event, command, exit_code, duration_ms, action}`，不含参数原文）；model_delta 为 §9.6 合并后的模型增量（Final 的 usage / tool calls 仍只按权威 Final 入账）；decider_call 为 §9.8 Laya 本地判定：类型 / 结果 / 耗时，不含输入原文（v1.124 起 `origin` 标记来源：缺省 = daemon 自动集成点，`agent_tool` = 模型经 `laya_decide` 工具主动调用）；session_title 为 v1.59 对话标题生成完成（payload `{title}`，UI 据此即时刷新对话列表）；memory_saved 为 v1.104 L5 记忆提取入库完成（payload `{count, ids}`，不含记忆原文）；subtasks 为 v1.146 子任务清单状态（§9.2，payload `{items:[{title,status}]}` 全量快照，UI 每回合以最新一次为准渲染）；均入 Trace 可审计）。旧库中的 `approval_request / approval_decision / approval_timeout` 只读回放兼容，新运行不再产生。
 
 **增长治理**（v1.93 接线）：events / tool_calls 冷热分层——热数据留 SQLite，关闭超 `archive.events_days`（默认 90 天，daemon 每日定时执行）的会话压缩归档至 `~/.tenon/archive/`（仍全本地、可检索回载）；model_usage 明细随会话归档，项目 / 会话聚合经 `project_usage_totals` / `session_usage_totals` 即时查询（按月 / 按日聚合表无消费方，已删）；approvals 表仅作 v1.89 前旧库兼容。**手动归档（v1.103）**：`sessions.archived_at` 非空即在侧栏隐藏、可随时还原，数据不出库；自动压缩归档扫描含已手动归档会话（老归档按 `events_days` 最终压缩出库）；手动删除为事务级联硬删（events / tool_calls / checkpoints / model_usage / approvals / session 行），shadow 快照不随删（gc 老化）。
 

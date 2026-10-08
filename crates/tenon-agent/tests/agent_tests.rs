@@ -48,6 +48,43 @@ async fn setup(
     (dir, session, store, provider)
 }
 
+/// v1.180 §13.6：可注入 AgentConfig 调整（hooks 等测试钩子）。
+async fn setup_with_config(
+    script: Vec<ScriptedReply>,
+    configure: impl FnOnce(&mut AgentConfig),
+) -> (
+    tempfile::TempDir,
+    Arc<AgentSession>,
+    Arc<Mutex<Store>>,
+    Arc<MockProvider>,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let store: Arc<Mutex<Store>> = Arc::new(Mutex::new(Store::open_in_memory().unwrap()));
+    let project_id = {
+        let mut st = store.lock().await;
+        st.upsert_project(dir.path().to_str().unwrap()).unwrap().id
+    };
+    let snapshots_root = dir.path().join(".tenon-snapshots");
+    let snapshots =
+        Arc::new(SnapshotStore::open(&snapshots_root, &project_id, dir.path(), 2).unwrap());
+    let provider = Arc::new(MockProvider::new("mock", "mock-1", script));
+    let mut config = AgentConfig::for_project(dir.path().to_path_buf(), &project_id);
+    config.first_edit_buffer_ms = 20; // 测试加速
+    configure(&mut config);
+    let rules = ProjectRules::default();
+    let session = AgentSession::create(
+        store.clone(),
+        snapshots,
+        provider.clone(),
+        config,
+        ProjectWriteLock::new(),
+        rules,
+    )
+    .await
+    .unwrap();
+    (dir, session, store, provider)
+}
+
 #[tokio::test]
 async fn answer_only_task_completes_without_changes() {
     let (_d, session, store, _p) =
@@ -1446,4 +1483,70 @@ async fn invalid_plan_args_fail_without_pause() {
     let mut st = store.lock().await;
     let events = st.events(&session.session_id).unwrap();
     assert!(!events.iter().any(|e| e.kind == EventKind::PlanSubmitted));
+}
+
+/// §13.6 v1.180 用户 hooks：pre_tool block 拒绝写入并记 Trace。
+#[tokio::test]
+async fn pre_tool_hook_blocks_write_and_records_trace() {
+    let script = vec![
+        ScriptedReply::Mixed {
+            text: "尝试写文件".into(),
+            tool: (
+                "apply_patch".to_string(),
+                serde_json::json!({"file": "f.txt", "content": "AI"}),
+            ),
+        },
+        ScriptedReply::Text("写入被拒，已停止".into()),
+    ];
+    let (_d, session, store, _p) = setup_with_config(script, |cfg| {
+        cfg.hooks = vec![tenon_agent::hooks::HookConfig {
+            event: tenon_agent::hooks::HookEvent::PreTool,
+            command: "sh -c 'echo no-writes'".into(),
+            timeout_ms: 5000,
+            on_fail: tenon_agent::hooks::HookOnFail::Block,
+            tools: vec!["apply_patch".into()],
+        }];
+    })
+    .await;
+    let outcome = session.run_task("改文件").await;
+    assert!(
+        matches!(outcome, TaskOutcome::Done(_)),
+        "工具被拒后模型走文本收尾: {outcome:?}"
+    );
+    let mut st = store.lock().await;
+    let events = st.events(&session.session_id).unwrap();
+    let hook_runs: Vec<_> = events
+        .iter()
+        .filter(|e| e.kind == EventKind::HookRun)
+        .collect();
+    assert!(!hook_runs.is_empty(), "hook_run 事件入 Trace");
+    assert_eq!(hook_runs[0].payload["action"], "block");
+    assert_eq!(hook_runs[0].payload["event"], "pre_tool");
+    assert_eq!(hook_runs[0].payload["command"], "sh -c 'echo no-writes'");
+}
+
+/// §13.6 v1.180：turn 钩子（pre_turn / post_turn）记 Trace。
+#[tokio::test]
+async fn turn_hooks_record_trace_events() {
+    let script = vec![ScriptedReply::Text("纯回答".into())];
+    let (_d, session, store, _p) = setup_with_config(script, |cfg| {
+        cfg.hooks = vec![tenon_agent::hooks::HookConfig {
+            event: tenon_agent::hooks::HookEvent::PreTurn,
+            command: "/usr/bin/env".into(),
+            timeout_ms: 5000,
+            on_fail: tenon_agent::hooks::HookOnFail::Continue,
+            tools: vec![],
+        }];
+    })
+    .await;
+    let outcome = session.run_task("解释").await;
+    assert!(matches!(outcome, TaskOutcome::Done(_)));
+    let mut st = store.lock().await;
+    let events = st.events(&session.session_id).unwrap();
+    let pre: Vec<_> = events
+        .iter()
+        .filter(|e| e.kind == EventKind::HookRun && e.payload["event"] == "pre_turn")
+        .collect();
+    assert_eq!(pre.len(), 1, "pre_turn 恰一次");
+    assert_eq!(pre[0].payload["action"], "pass");
 }

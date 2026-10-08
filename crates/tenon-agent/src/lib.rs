@@ -9,6 +9,7 @@
 
 pub mod evals;
 pub mod executor;
+pub mod hooks;
 pub mod recovery;
 pub mod session;
 pub mod subagents;

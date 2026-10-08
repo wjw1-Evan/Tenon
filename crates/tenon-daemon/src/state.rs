@@ -155,6 +155,8 @@ pub struct SettingsOverrides {
     /// v1.174 生成参数（§11）：None = 用 config `[models.generation]` 默认。
     pub models_generation_max_tokens: Option<u32>,
     pub models_generation_temperature: Option<f32>,
+    /// v1.180 用户 hooks（§13.6）：数组整体替换，新会话生效。
+    pub hooks: Option<Vec<tenon_agent::hooks::HookConfig>>,
 }
 
 /// mcp.servers 单条校验（§13.5 安装期硬约束；settings PUT 与市场安装共用）。
@@ -378,6 +380,12 @@ impl SettingsOverrides {
                 self.market_sources = Some(sources);
             }
         }
+        if let Some(hooks) = body.get("hooks") {
+            // v1.180 §13.6：用户 hooks 数组整体替换（校验见 tenon_agent::hooks）
+            let configs = tenon_agent::hooks::validate_hook_configs(hooks)
+                .map_err(|e| format!("hooks: {e}"))?;
+            self.hooks = Some(configs);
+        }
         if let Some(mcp) = body.get("mcp") {
             if let Some(v) = mcp.get("servers") {
                 // 整体替换（§13.5 v1.145）：逐条校验后整体落表（新会话生效）
@@ -447,6 +455,14 @@ impl SettingsOverrides {
         let mcp = serde_json::json!({
             "servers": self.mcp_servers.clone().unwrap_or_default(),
         });
+        let hooks = serde_json::Value::Array(
+            self.hooks
+                .clone()
+                .unwrap_or_default()
+                .iter()
+                .map(|h| serde_json::to_value(h).unwrap_or_default())
+                .collect(),
+        );
         serde_json::json!({
             "session": session,
             "exec": exec,
@@ -454,6 +470,7 @@ impl SettingsOverrides {
             "skills": skills,
             "market": market,
             "mcp": mcp,
+            "hooks": hooks,
         })
     }
 
@@ -733,6 +750,42 @@ mod models_settings_tests {
         assert!(err.contains("0.0-2.0"), "{err}");
         // 校验失败不落半截状态（原子提交）
         assert_eq!(ov.models_generation_max_tokens, None);
+    }
+
+    #[test]
+    fn hooks_validate_roundtrip_and_echo() {
+        // v1.180 §13.6：hooks 数组校验 / 回显 / 注入会话配置
+        let mut ov = SettingsOverrides::default();
+        ov.merge_json(&serde_json::json!({
+            "hooks": [
+                {"event": "pre_tool", "command": "sh -c 'echo block'", "on_fail": "block", "tools": ["apply_patch", "run_*"]},
+                {"event": "post_turn", "command": "/usr/bin/env"}
+            ]
+        }))
+        .unwrap();
+        let hooks = ov.hooks.as_ref().unwrap();
+        assert_eq!(hooks.len(), 2);
+        assert_eq!(hooks[0].event.as_str(), "pre_tool");
+        assert_eq!(hooks[0].on_fail, tenon_agent::hooks::HookOnFail::Block);
+        assert_eq!(
+            hooks[0].tools,
+            vec!["apply_patch".to_string(), "run_*".to_string()]
+        );
+        assert_eq!(hooks[1].timeout_ms, 5000, "缺省超时");
+
+        // GET 回显
+        let echo = ov.to_json()["hooks"].clone();
+        assert_eq!(echo.as_array().unwrap().len(), 2);
+        assert_eq!(echo[0]["event"], "pre_tool");
+
+        // 非法条目拒绝且不落半截状态
+        let mut ov2 = SettingsOverrides::default();
+        assert!(ov2
+            .merge_json(&serde_json::json!({
+                "hooks": [{"event": "pre_tool", "command": "x", "timeout_ms": 10}]
+            }))
+            .is_err());
+        assert!(ov2.hooks.is_none());
     }
 
     #[test]

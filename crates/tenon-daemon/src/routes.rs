@@ -222,6 +222,14 @@ async fn create_agent_session(
     let effective = state.effective_models();
     agent_cfg.generation_max_tokens = effective.generation.max_tokens;
     agent_cfg.generation_temperature = effective.generation.temperature;
+    // §13.6 v1.180：用户 hooks（settings `[hooks]` 快照，新会话生效）。
+    agent_cfg.hooks = state
+        .settings_overrides
+        .lock()
+        .unwrap()
+        .hooks
+        .clone()
+        .unwrap_or_default();
     // §10.1 v1.104 接线：L5 跨会话记忆开关（[memories].enabled，默认开）。
     agent_cfg.memories_enabled = state.config.memories.enabled;
     // §13.4 v1.130 接线：技能全局目录 + 停用名单（settings 快照，新会话生效）。

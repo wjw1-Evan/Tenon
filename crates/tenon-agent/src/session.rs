@@ -87,6 +87,9 @@ pub struct AgentConfig {
     /// （settings `models.generation` 覆盖，新会话生效；默认 16384 / 0.2）。
     pub generation_max_tokens: u32,
     pub generation_temperature: f32,
+    /// 用户 hooks（§13.6 v1.180）：daemon 按 settings `[hooks]` 快照注入，
+    /// 新会话生效；空 = 无回调。
+    pub hooks: Vec<crate::hooks::HookConfig>,
 }
 
 impl std::fmt::Debug for AgentConfig {
@@ -136,6 +139,7 @@ impl AgentConfig {
             fallback_providers: Vec::new(),
             generation_max_tokens: 16_384,
             generation_temperature: 0.2,
+            hooks: Vec::new(),
         }
     }
 }
@@ -1363,6 +1367,9 @@ impl AgentSession {
         // 上一回合 provider 权威输入 token（§10.2 v1.105 压缩触发信号之一）
         let mut last_input_tokens: u64 = 0;
 
+        // §13.6 v1.180 pre_turn hooks（任务开始前；失败仅记 Trace）
+        self.run_turn_hooks(crate::hooks::HookEvent::PreTurn).await;
+
         // ---- 模型回合循环（SENSING / DECIDING / EXECUTING 在回合内展开）----
         'rounds: for _round in 0..self.config.max_tool_rounds {
             self.force_state(State::Deciding).await;
@@ -1510,6 +1517,7 @@ impl AgentSession {
 
             if resp.tool_calls.is_empty() && changed_files.is_empty() {
                 // ---- 纯回答（无需改动）：ANSWERING → SUMMARIZING → DONE ----
+                self.run_turn_hooks(crate::hooks::HookEvent::PostTurn).await;
                 self.force_state(State::Summarizing).await;
                 self.set_status(SessionStatus::Done).await;
                 self.force_state(State::Done).await;
@@ -1819,6 +1827,33 @@ impl AgentSession {
                 // §9.8 #4（v1.124）：laya_decide 走会话循环内联分发（LayaRuntime
                 // 异步推理），不经 execute_tool 同步面；团队策略黑名单在
                 // exec_laya_decide 内同轨检查。
+                // §13.6 v1.180 pre_tool hooks：block 即拒绝（stderr 回模型），
+                // 不执行不记 CommandRun（hook_run 事件已记 block）。
+                if !self.config.hooks.is_empty() {
+                    let hook_outcome = crate::hooks::run_hooks(
+                        &self.config.hooks,
+                        crate::hooks::HookEvent::PreTool,
+                        &crate::hooks::HookContext {
+                            session_id: &self.session_id,
+                            root: &self.tool_ctx.root,
+                            tool: Some(&call.name),
+                            tool_args: Some(&call.arguments.to_string()),
+                            tool_output: None,
+                        },
+                    )
+                    .await;
+                    self.emit_hook_run(&hook_outcome).await;
+                    if hook_outcome.blocked {
+                        tool_messages.push(ChatMessage::tool_result(
+                            call.id.clone(),
+                            format!(
+                                "被 pre_tool hook 阻断: {}",
+                                hook_outcome.block_reason.unwrap_or_default()
+                            ),
+                        ));
+                        continue;
+                    }
+                }
                 // §9.2（v1.146）：subtasks 子任务清单同走内联分发（会话内计划
                 // 状态，零工作区副作用），边界与 Trace 在 exec_subtasks 内同轨。
                 // §9.2（v1.179）：submit_plan 计划提交同轨（零副作用），提交过
@@ -1851,6 +1886,22 @@ impl AgentSession {
                         &serde_json::json!({"tool": call.name, "output": output_json}),
                     )
                     .await;
+                // §13.6 v1.180 post_tool hooks（工具执行后；失败仅记 Trace）
+                if !self.config.hooks.is_empty() {
+                    let hook_outcome = crate::hooks::run_hooks(
+                        &self.config.hooks,
+                        crate::hooks::HookEvent::PostTool,
+                        &crate::hooks::HookContext {
+                            session_id: &self.session_id,
+                            root: &self.tool_ctx.root,
+                            tool: Some(&call.name),
+                            tool_args: None,
+                            tool_output: Some(&output.content),
+                        },
+                    )
+                    .await;
+                    self.emit_hook_run(&hook_outcome).await;
+                }
                 // 人机共编冲突（§8.6）：三栏预览事件（你的改动 / 代理改动 / base）
                 if let Some(view) = &output.dirty_conflict {
                     self.emit(
@@ -1990,12 +2041,14 @@ impl AgentSession {
         }
 
         // ---- 收尾 ----
+        self.run_turn_hooks(crate::hooks::HookEvent::PostTurn).await;
         if let Some(reason) = paused_reason {
             return TaskOutcome::Paused {
                 state: self.current_state().await.to_string(),
                 reason,
             };
         }
+        self.run_turn_hooks(crate::hooks::HookEvent::PostTurn).await;
         if let Some(mut err) = error_msg {
             // 失败语义：回滚到最近写前快照（§10.3 崩溃恢复：EXECUTING 中失败不保留半成品）
             if let Some(pre) = last_pre_tree {
@@ -2035,6 +2088,7 @@ impl AgentSession {
             &serde_json::json!({"tree": last_tree, "files": changed_files}),
         )
         .await;
+        self.run_turn_hooks(crate::hooks::HookEvent::PostTurn).await;
         self.force_state(State::Summarizing).await;
         self.force_state(State::Done).await;
         self.set_status(SessionStatus::Done).await;
@@ -2121,6 +2175,37 @@ impl AgentSession {
     /// （1–12 项、每项 trim 非空 ≤200 字符，失败返回错误提示、模型可重试不
     /// 暂停）；校验过发 `plan_submitted` 事件，调用方置 plan_pause 在工具循环
     /// 结束后转 PAUSED。团队策略 denied_tools 与全目录同轨。
+    /// §13.6 v1.180：turn 级 hook（pre/post_turn）执行并记 Trace。
+    async fn run_turn_hooks(&self, event: crate::hooks::HookEvent) {
+        if self.config.hooks.is_empty() {
+            return;
+        }
+        let outcome = crate::hooks::run_hooks(
+            &self.config.hooks,
+            event,
+            &crate::hooks::HookContext {
+                session_id: &self.session_id,
+                root: &self.tool_ctx.root,
+                tool: None,
+                tool_args: None,
+                tool_output: None,
+            },
+        )
+        .await;
+        self.emit_hook_run(&outcome).await;
+    }
+
+    /// §13.6 v1.180：hook_run 事件入 Trace（结果序列化，不含参数原文）。
+    async fn emit_hook_run(&self, outcome: &crate::hooks::HookOutcome) {
+        for r in &outcome.results {
+            self.emit(
+                EventKind::HookRun,
+                &serde_json::to_value(r).unwrap_or_default(),
+            )
+            .await;
+        }
+    }
+
     async fn exec_submit_plan(&self, args: &serde_json::Value) -> ToolOutput {
         if self
             .tool_ctx
