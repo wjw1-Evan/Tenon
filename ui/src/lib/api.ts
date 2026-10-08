@@ -182,6 +182,10 @@ export interface ProviderSettings {
   wire_api?: string;
   model?: string;
   api_key_env?: string;
+  /** v1.199 §11 计价：美元 / 百万 token（缺省 = 保留配置值；0 = 显式关闭）。 */
+  price_in_per_mtok?: number;
+  price_out_per_mtok?: number;
+  price_cached_per_mtok?: number;
   /** 该 provider 在设置覆盖表中（可从设置删除；纯配置文件条目只能编辑）。 */
   overridden?: boolean;
   [k: string]: unknown;

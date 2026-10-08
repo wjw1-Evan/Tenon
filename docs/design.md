@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | **v1.198** |
+| 版本 | **v1.199** |
 | 日期 | 2026-10-08 |
 | 状态 | 定稿，M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
@@ -338,7 +338,7 @@ GlobalScheduler（全局并发 / 成本 / 通知）
 | 直执风险事件 | C/D 级动作 | 级别、动作详情、目标域名 / 参数、执行结果；不等待确认 |
 | Checkpoint 时间轴 | 侧栏 | 事件流 + 快照点，任意回滚 / 撤销回滚（unrevert） |
 | 语言包安装向导 | 检测到语言缺包 | 一键安装、运行时检测与官方指引 |
-| 设置 | 全局（Cmd/Ctrl+, 或命令面板） | **v1.121 起为 Codex 式模态框：左侧分类导航，右侧只渲染当前分类**；General 承载编辑器保存方式（v1.75）与代理参数（首改缓冲 / 命令超时）；Models / Permissions / Plugins / Skills 分别承载模型（v1.40；v1.174 增备用模型链 `models.fallback` 与生成参数 `models.generation` 编辑）、权限策略（v1.85：工具黑名单、单任务成本上限；强制交互档随 v1.89 审批移除而删除）、MCP 插件管理（v1.84 设立，v1.145 重构为 GitHub 市场获取 + 已装管理，§13.5）、技能管理（v1.130，§13.4；v1.145 增市场获取子视图）；Updates 分类（v1.83：更新通道 manual \| auto；v1.92 收敛遥测开关）随更新固定自动整体移除（v1.154）；外观档与语言仅保留顶栏入口（v1.92 去重） |
+| 设置 | 全局（Cmd/Ctrl+, 或命令面板） | **v1.121 起为 Codex 式模态框：左侧分类导航，右侧只渲染当前分类**；General 承载编辑器保存方式（v1.75）与代理参数（首改缓冲 / 命令超时）；Models / Permissions / Plugins / Skills 分别承载模型（v1.40；v1.174 增备用模型链 `models.fallback` 与生成参数 `models.generation` 编辑；v1.199 provider 行内增计价三字段 `price_in / price_out / price_cached` 编辑——空 = 保留配置值，0 = 显式关闭，非法负数保存前报错不发请求）、权限策略（v1.85：工具黑名单、单任务成本上限；强制交互档随 v1.89 审批移除而删除）、MCP 插件管理（v1.84 设立，v1.145 重构为 GitHub 市场获取 + 已装管理，§13.5）、技能管理（v1.130，§13.4；v1.145 增市场获取子视图）；Updates 分类（v1.83：更新通道 manual \| auto；v1.92 收敛遥测开关）随更新固定自动整体移除（v1.154）；外观档与语言仅保留顶栏入口（v1.92 去重） |
 | **接入免费模型向导** | 首启无 provider 自动弹出；模型选择器空态 / 设置 Models 可重开 | **v1.163**：三步向导（免费模型介绍 → 智谱开放平台注册拿 Key → 验证并一键写入配置，预设 glm / glm-4.5-flash 免费档，§11）；可跳过，跳过经 ui-prefs 记忆不再自动弹；v1.165 简化：密钥与 provider 经 `PUT /settings` 一次写入本机配置文件 settings.json（0600）并热生效，不再经系统钥匙串（§15）；v1.169 免费档自动回退 + fetch 层失败友好文案；v1.170 首选换档：验证按 **glm-4.5-flash（稳定优先）→ glm-4.7-flash（能力更强但频繁限流）** 顺序尝试，完成步标注实际选用模型；v1.194 备用链预设：完成写入时把另一免费档以 `glm/<模型>` 形式并入 `models.fallback` 备用模型链（§11 v1.171）——主模型限流 / 故障时自动切换，用户已配置链则保留不覆盖，完成步注明链配置 |
 | 命令面板 | Cmd+Shift+P | 全部命令可达（无障碍要求） |
 | Evals 报告 | M3 | 五指标 + 对比版本 |
@@ -1027,7 +1027,7 @@ signature: "<sig>"
 | GET | `/market/{owner}/{repo}` | 拉取市场清单原文（镜像链：jsDelivr → raw.githubusercontent；10s 超时，进程内 5 分钟缓存，§13.5） |
 | POST | `/market/install` | 安装市场条目 `{source, kind: skill\|mcp, name}`——技能落 `~/.tenon/skills/`（重名 409，同 source+path 更新）；MCP 校验白名单后写 `mcp.servers` 新会话生效 |
 | POST | `/market/uninstall` | 卸载市场条目 `{kind, name}`——技能删目录（仅市场 sidecar 条目）、MCP 删 `mcp.servers` 条目 |
-| GET / PUT | `/settings` | 全局设置。GET 返回合并后的生效值；PUT 接受已知键子集（`session.first_edit_buffer_ms` / `exec.command_timeout_s`；v1.40 增 `models.default` / `models.providers.<name>.{kind,base_url,wire_api,model,api_key_env}`），校验后写入 `~/.tenon/settings.json`（0600）并即时生效——**新会话**按新值构建（既有会话保持各自配置）；`session.mode` 与 `privacy.*` 键已随 v1.92 移除（无行为消费方，不设无效开关）；v1.130 增 `skills.disabled`（技能名称数组，整体替换——停用条目不进技能目录、`skill_use` 拒绝，新会话生效，§13.4）。v1.145 增 `market.sources`（市场源 owner/repo 数组，整体替换，默认空，§13.5）与 `mcp.servers`（MCP 服务器表 `{name: {command, args, env?, enabled, permissions?, source?}}`：command 启动器白名单、args 无控制字符、env 值仅 `env:VAR` 引用、整体替换、新会话生效，§13.5）。models 校验（v1.40）：provider 名 `^[a-z][a-z0-9_-]{0,63}$`、kind ∈ openai / anthropic / openai_responses、base_url 须 http(s)、`models.default` 须指向已配置 provider；`models.providers` 整体替换覆盖表（UI 每次保存发全量，支持删除；同名单条目按字段合并，未覆盖字段保留配置文件值）；GET 合并视图 provider 条目带 `overridden` 标记（纯配置文件条目不可经设置删除，只能编辑生成覆盖），`models.default=""` 清除覆盖回退配置值；v1.165 起 `models.providers.<name>.api_key` 允许明文直存（用户裁定简化：settings.json 0600 仅当前用户可读；GET 永不回显该字段；覆盖表整体替换时载荷缺席 `api_key` 即保留既有值——UI 无法重发不可回显字段），PUT 成功即重建 provider 表（解析优先级见 §11 密钥存储双轨） |
+| GET / PUT | `/settings` | 全局设置。GET 返回合并后的生效值；PUT 接受已知键子集（`session.first_edit_buffer_ms` / `exec.command_timeout_s`；v1.40 增 `models.default` / `models.providers.<name>.{kind,base_url,wire_api,model,api_key_env}`），校验后写入 `~/.tenon/settings.json`（0600）并即时生效——**新会话**按新值构建（既有会话保持各自配置）；`session.mode` 与 `privacy.*` 键已随 v1.92 移除（无行为消费方，不设无效开关）；v1.130 增 `skills.disabled`（技能名称数组，整体替换——停用条目不进技能目录、`skill_use` 拒绝，新会话生效，§13.4）。v1.145 增 `market.sources`（市场源 owner/repo 数组，整体替换，默认空，§13.5）与 `mcp.servers`（MCP 服务器表 `{name: {command, args, env?, enabled, permissions?, source?}}`：command 启动器白名单、args 无控制字符、env 值仅 `env:VAR` 引用、整体替换、新会话生效，§13.5）。models 校验（v1.40）：provider 名 `^[a-z][a-z0-9_-]{0,63}$`、kind ∈ openai / anthropic / openai_responses、base_url 须 http(s)、`models.default` 须指向已配置 provider；`models.providers` 整体替换覆盖表（UI 每次保存发全量，支持删除；同名单条目按字段合并，未覆盖字段保留配置文件值）；GET 合并视图 provider 条目带 `overridden` 标记（纯配置文件条目不可经设置删除，只能编辑生成覆盖），`models.default=""` 清除覆盖回退配置值；v1.165 起 `models.providers.<name>.api_key` 允许明文直存（用户裁定简化：settings.json 0600 仅当前用户可读；GET 永不回显该字段；覆盖表整体替换时载荷缺席 `api_key` 即保留既有值——UI 无法重发不可回显字段），PUT 成功即重建 provider 表（解析优先级见 §11 密钥存储双轨）；v1.199 增 `models.providers.<name>.{price_in_per_mtok,price_out_per_mtok,price_cached_per_mtok}`（非负有限数字校验，字段缺席 = 保留配置文件值，GET 合并视图回显——§11 缓存计价） |
 | GET | `/models` | 模型清单与 Laya 状态（版本 / 已下载 / 加载 / 设备，§9.8）；设置面板模型分区（v1.40）消费它渲染默认模型下拉与 Laya 状态卡 |
 | POST | `/models/verify` | 引导向导试连验证（v1.163）：`{kind?, base_url, model, api_key}`，daemon 以 35s 超时构建临时 provider 发一次极小测试请求（max_tokens=16、GLM 目标 thinking disabled；v1.176 自 15s 上调——glm-4.5-flash 免费档实测响应 14-25s，超时单独文案「上游响应超时」），返回 `{ok:true, model, latency_ms}` 或 4xx `{ok:false, error}`；base_url 须 http(s)；请求体不打日志 |
 | GET | `/costs` | 成本归因（会话级；`?session=` 必带，v1.92 收敛——月度聚合无消费方）；返回体含 `cached_tokens` / `duration_ms`（v1.129，命中率与均速由消费方派生） |

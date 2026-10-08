@@ -203,6 +203,75 @@ describe("SettingsDialog", () => {
     expect(payload.models.generation).toEqual({ max_tokens: 8192, temperature: 0.7 });
   });
 
+  it("模型分区：计价三字段回填并进保存载荷（v1.199 §11）", async () => {
+    const put = vi.fn().mockResolvedValue(settings);
+    const withPrices: SettingsData = {
+      ...settings,
+      models: {
+        default: "",
+        providers: {
+          glm: {
+            kind: "openai",
+            base_url: "https://open.bigmodel.cn/api/paas/v4",
+            price_in_per_mtok: 0.6,
+            price_out_per_mtok: 2.2,
+            price_cached_per_mtok: 0.11,
+          },
+        },
+      },
+    };
+    render(
+      <SettingsDialog api={makeApi(put)} t={t} settings={withPrices} saveMode="auto" onSaveModeChange={() => {}} onClose={() => {}} onSaved={() => {}} />
+    );
+    openSection("models");
+    // 回填：三字段来自 GET 合并视图
+    expect(
+      (screen.getByLabelText("settings.models.price_in · glm") as HTMLInputElement).value
+    ).toBe("0.6");
+    expect(
+      (screen.getByLabelText("settings.models.price_cached · glm") as HTMLInputElement).value
+    ).toBe("0.11");
+    // 修改 price_in、清空 price_cached（= 保留配置值，不携带）
+    fireEvent.change(screen.getByLabelText("settings.models.price_in · glm"), {
+      target: { value: "0.9" },
+    });
+    fireEvent.change(screen.getByLabelText("settings.models.price_cached · glm"), {
+      target: { value: "" },
+    });
+    fireEvent.click(screen.getByTestId("settings-save"));
+    await waitFor(() => expect(put).toHaveBeenCalled());
+    const payload = put.mock.calls[0][0];
+    const glm = payload.models.providers.glm;
+    expect(glm.price_in_per_mtok).toBe(0.9);
+    expect(glm.price_out_per_mtok).toBe(2.2);
+    expect(glm.price_cached_per_mtok).toBeUndefined();
+  });
+
+  it("模型分区：计价负数保存报错且不发请求（v1.199）", async () => {
+    const put = vi.fn().mockResolvedValue(settings);
+    const withPrices: SettingsData = {
+      ...settings,
+      models: {
+        default: "",
+        providers: {
+          glm: { kind: "openai", base_url: "https://x" },
+        },
+      },
+    };
+    render(
+      <SettingsDialog api={makeApi(put)} t={t} settings={withPrices} saveMode="auto" onSaveModeChange={() => {}} onClose={() => {}} onSaved={() => {}} />
+    );
+    openSection("models");
+    fireEvent.change(screen.getByLabelText("settings.models.price_in · glm"), {
+      target: { value: "-1" },
+    });
+    fireEvent.click(screen.getByTestId("settings-save"));
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toContain("price_invalid")
+    );
+    expect(put).not.toHaveBeenCalled();
+  });
+
   it("模型分区：生成参数越界保存报错且不发请求（v1.174）", async () => {
     const put = vi.fn();
     render(

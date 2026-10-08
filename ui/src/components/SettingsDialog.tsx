@@ -30,6 +30,10 @@ interface ProviderRow {
   base_url: string;
   model: string;
   api_key_env: string;
+  /** v1.199 §11 计价三字段（空串 = 未配置 / 保留配置值）。 */
+  priceIn: string;
+  priceOut: string;
+  priceCached: string;
   /** 在设置覆盖表中：可删除（纯配置文件条目只能编辑，删除即恢复配置文件值）。 */
   overridden: boolean;
 }
@@ -52,6 +56,10 @@ function rowsFromSettings(settings: SettingsData | null): ProviderRow[] {
     base_url: String(p.base_url ?? ""),
     model: String(p.model ?? ""),
     api_key_env: String(p.api_key_env ?? ""),
+    /** v1.199 §11 计价三字段回显（缺省 null = 保留配置值）。 */
+    priceIn: p.price_in_per_mtok == null ? "" : String(p.price_in_per_mtok),
+    priceOut: p.price_out_per_mtok == null ? "" : String(p.price_out_per_mtok),
+    priceCached: p.price_cached_per_mtok == null ? "" : String(p.price_cached_per_mtok),
     overridden: Boolean(p.overridden),
   }));
 }
@@ -197,7 +205,17 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, p
     while (names.has(name)) name = `${preset}-${i++}`;
     setProviders([
       ...providers,
-      { name, kind: base.kind, base_url: base.base_url, model: "", api_key_env: "", overridden: true },
+      {
+        name,
+        kind: base.kind,
+        base_url: base.base_url,
+        model: "",
+        api_key_env: "",
+        priceIn: "",
+        priceOut: "",
+        priceCached: "",
+        overridden: true,
+      },
     ]);
   }
 
@@ -232,6 +250,20 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, p
         const entry: ProviderSettings = { kind: p.kind || "openai", base_url: p.base_url.trim() };
         if (p.model.trim()) entry.model = p.model.trim();
         if (p.api_key_env.trim()) entry.api_key_env = p.api_key_env.trim();
+        // v1.199 §11 计价三字段：空 = 保留配置值（不携带）；显式 0 = 关闭该项计费；
+        // 非法（负数 / 非有限数字）保存前报错不发请求。
+        for (const [key, raw] of [
+          ["price_in_per_mtok", p.priceIn ?? ""],
+          ["price_out_per_mtok", p.priceOut ?? ""],
+          ["price_cached_per_mtok", p.priceCached ?? ""],
+        ] as const) {
+          if (!raw.trim()) continue;
+          const v = Number(raw);
+          if (!Number.isFinite(v) || v < 0) {
+            throw new Error(t("settings.models.price_invalid"));
+          }
+          entry[key] = v;
+        }
         providerPayload[p.name] = entry;
       }
       // v1.174 §11：备用链（逗号/空分隔，去空去重）与生成参数（有效数字才携带）
@@ -505,6 +537,34 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, p
                         placeholder="OPENAI_API_KEY"
                         value={p.api_key_env}
                         onChange={(e) => updateProvider(p.name, { api_key_env: e.target.value })}
+                      />
+                      {/* v1.199 §11 计价三字段：空 = 保留配置值；显式 0 = 关闭该项计费 */}
+                      <input
+                        aria-label={`${t("settings.models.price_in")} · ${p.name}`}
+                        placeholder={t("settings.models.price_in")}
+                        type="number"
+                        min={0}
+                        step={0.01}
+                        value={p.priceIn}
+                        onChange={(e) => updateProvider(p.name, { priceIn: e.target.value })}
+                      />
+                      <input
+                        aria-label={`${t("settings.models.price_out")} · ${p.name}`}
+                        placeholder={t("settings.models.price_out")}
+                        type="number"
+                        min={0}
+                        step={0.01}
+                        value={p.priceOut}
+                        onChange={(e) => updateProvider(p.name, { priceOut: e.target.value })}
+                      />
+                      <input
+                        aria-label={`${t("settings.models.price_cached")} · ${p.name}`}
+                        placeholder={t("settings.models.price_cached")}
+                        type="number"
+                        min={0}
+                        step={0.01}
+                        value={p.priceCached}
+                        onChange={(e) => updateProvider(p.name, { priceCached: e.target.value })}
                       />
                       {p.overridden && (
                         <button

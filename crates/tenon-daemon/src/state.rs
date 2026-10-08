@@ -51,6 +51,12 @@ pub struct ProviderOverride {
     pub api_key_env: Option<String>,
     /// v1.165 直存密钥（settings.json 0600；不入 GET 回显）。
     pub api_key: Option<String>,
+    /// v1.199 §11 计价：美元 / 百万输入 token（缺省 = 保留配置文件值）。
+    pub price_in_per_mtok: Option<f64>,
+    /// 美元 / 百万输出 token
+    pub price_out_per_mtok: Option<f64>,
+    /// 美元 / 百万缓存命中输入 token（缺省 = 缓存部分按输入价计）
+    pub price_cached_per_mtok: Option<f64>,
 }
 
 impl ProviderOverride {
@@ -92,6 +98,22 @@ impl ProviderOverride {
             }
             self.model = Some(m.to_string());
         }
+        // v1.199 §11 计价三字段：非负有限数字；字段缺席 = 保留配置文件值
+        for (key, slot) in [
+            ("price_in_per_mtok", &mut self.price_in_per_mtok),
+            ("price_out_per_mtok", &mut self.price_out_per_mtok),
+            ("price_cached_per_mtok", &mut self.price_cached_per_mtok),
+        ] {
+            if let Some(p) = v.get(key) {
+                let p = p
+                    .as_f64()
+                    .ok_or(format!("models.providers.{key} 须为数字"))?;
+                if !p.is_finite() || p < 0.0 {
+                    return Err(format!("models.providers.{key} 须为非负数字"));
+                }
+                *slot = Some(p);
+            }
+        }
         if let Some(e) = v.get("api_key_env") {
             let e = e
                 .as_str()
@@ -129,6 +151,16 @@ impl ProviderOverride {
         }
         if let Some(k) = &self.api_key {
             o.insert("api_key".into(), serde_json::Value::String(k.clone()));
+        }
+        // v1.199 §11 计价三字段（settings.json 持久化 + GET 合并视图回显）
+        if let Some(p) = &self.price_in_per_mtok {
+            o.insert("price_in_per_mtok".into(), serde_json::json!(p));
+        }
+        if let Some(p) = &self.price_out_per_mtok {
+            o.insert("price_out_per_mtok".into(), serde_json::json!(p));
+        }
+        if let Some(p) = &self.price_cached_per_mtok {
+            o.insert("price_cached_per_mtok".into(), serde_json::json!(p));
         }
         serde_json::Value::Object(o)
     }
@@ -506,6 +538,16 @@ impl SettingsOverrides {
             if let Some(k) = &ov.api_key {
                 entry.api_key = Some(k.clone());
             }
+            // v1.199 §11 计价三字段（缺席 = 保留配置文件值）
+            if let Some(p) = ov.price_in_per_mtok {
+                entry.price_in_per_mtok = Some(p);
+            }
+            if let Some(p) = ov.price_out_per_mtok {
+                entry.price_out_per_mtok = Some(p);
+            }
+            if let Some(p) = ov.price_cached_per_mtok {
+                entry.price_cached_per_mtok = Some(p);
+            }
         }
     }
 
@@ -698,6 +740,77 @@ pub struct SessionEntry {
 #[cfg(test)]
 mod models_settings_tests {
     use super::*;
+
+    #[test]
+    fn price_fields_validate_roundtrip_and_merge() {
+        // v1.199 §11：计价三字段校验 / 回显 / apply_models_to 合并（缺席保留配置值）
+        let mut ov = SettingsOverrides::default();
+        ov.merge_json(&serde_json::json!({
+            "models": {
+                "providers": {
+                    "glm": { "price_in_per_mtok": 0.6, "price_out_per_mtok": 2.2, "price_cached_per_mtok": 0.11 }
+                }
+            }
+        }))
+        .unwrap();
+        let glm = ov.models_providers.get("glm").unwrap();
+        assert_eq!(glm.price_in_per_mtok, Some(0.6));
+        assert_eq!(glm.price_out_per_mtok, Some(2.2));
+        assert_eq!(glm.price_cached_per_mtok, Some(0.11));
+
+        // GET 回显（settings.json 持久化同构）
+        let echo = ov.to_json()["models"]["providers"]["glm"].clone();
+        assert!((echo["price_in_per_mtok"].as_f64().unwrap() - 0.6).abs() < 1e-9);
+        assert!((echo["price_cached_per_mtok"].as_f64().unwrap() - 0.11).abs() < 1e-9);
+
+        // 合并进 config：覆盖生效；未触达字段保留
+        let mut models = tenon_config::ModelsConfig::default();
+        ov.apply_models_to(&mut models);
+        let entry = models.providers.get("glm").unwrap();
+        assert_eq!(entry.price_in_per_mtok, Some(0.6));
+        assert_eq!(entry.price_cached_per_mtok, Some(0.11));
+
+        // 缺席字段保留配置值：仅回写 price_in 不动其余
+        let mut ov2 = SettingsOverrides::default();
+        ov2.merge_json(&serde_json::json!({
+            "models": { "providers": { "glm": { "price_in_per_mtok": 0.9 } } }
+        }))
+        .unwrap();
+        ov2.apply_models_to(&mut models);
+        let entry = models.providers.get("glm").unwrap();
+        assert_eq!(entry.price_in_per_mtok, Some(0.9));
+        assert_eq!(entry.price_out_per_mtok, Some(2.2), "缺席字段保留原值");
+        assert_eq!(entry.price_cached_per_mtok, Some(0.11), "缺席字段保留原值");
+    }
+
+    #[test]
+    fn price_fields_reject_negative_and_non_numeric() {
+        let mut ov = SettingsOverrides::default();
+        let err = ov
+            .merge_json(&serde_json::json!({
+                "models": { "providers": { "glm": { "price_in_per_mtok": -1.0 } } }
+            }))
+            .unwrap_err();
+        assert!(err.contains("非负"), "{err}");
+        let err = ov
+            .merge_json(&serde_json::json!({
+                "models": { "providers": { "glm": { "price_out_per_mtok": "贵" } } }
+            }))
+            .unwrap_err();
+        assert!(err.contains("须为数字"), "{err}");
+        // 显式 0 合法（= 关闭该项计费）
+        ov.merge_json(&serde_json::json!({
+            "models": { "providers": { "glm": { "price_cached_per_mtok": 0.0 } } }
+        }))
+        .unwrap();
+        assert_eq!(
+            ov.models_providers
+                .get("glm")
+                .unwrap()
+                .price_cached_per_mtok,
+            Some(0.0)
+        );
+    }
 
     #[test]
     fn generation_and_fallback_validate_roundtrip_and_merge() {
