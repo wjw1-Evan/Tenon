@@ -202,11 +202,13 @@ pub(crate) async fn create_agent_session(
         let cfg = state.config.models.providers.get(&provider_name);
         let price_in = cfg.and_then(|c| c.price_in_per_mtok);
         let price_out = cfg.and_then(|c| c.price_out_per_mtok);
+        let price_cached = cfg.and_then(|c| c.price_cached_per_mtok);
         if matches!((price_in, price_out), (Some(i), Some(o)) if i > 0.0 || o > 0.0) {
-            agent_cfg.price_table = tenon_models::PriceTable::new().with_rate(
+            agent_cfg.price_table = tenon_models::PriceTable::new().with_cached_rate(
                 &provider.default_model(),
                 price_in.unwrap_or(0.0),
                 price_out.unwrap_or(0.0),
+                price_cached,
             );
         }
     }
@@ -680,6 +682,70 @@ async fn create_session(
 #[derive(Deserialize)]
 struct MessageBody {
     text: String,
+    /// v1.191 §11 多模态：随消息内联的图片（base64；≤4 张、单张解码 ≤5MB、
+    /// 白名单 media_type）。运行态随队列入队不支持附件（409，v1 裁定）。
+    #[serde(default)]
+    attachments: Vec<MessageAttachment>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct MessageAttachment {
+    media_type: String,
+    data_base64: String,
+}
+
+/// v1.191 §11：附件校验 + 落盘（`~/.tenon/attachments/<session>/`）。
+/// 返回供 run_task_with_images 的 ImagePart 列表与落盘路径。
+fn validate_and_store_attachments(
+    session_id: &str,
+    attachments: &[MessageAttachment],
+) -> Result<(Vec<tenon_models::ImagePart>, Vec<String>), String> {
+    use base64::Engine as _;
+    if attachments.len() > tenon_models::IMAGES_PER_MESSAGE_MAX {
+        return Err(format!(
+            "图片最多 {} 张",
+            tenon_models::IMAGES_PER_MESSAGE_MAX
+        ));
+    }
+    let dir = tenon_config::Config::data_dir()
+        .join("attachments")
+        .join(session_id);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("附件目录创建失败: {e}"))?;
+    let mut parts = Vec::with_capacity(attachments.len());
+    let mut paths = Vec::with_capacity(attachments.len());
+    for (i, a) in attachments.iter().enumerate() {
+        if !tenon_models::IMAGE_MEDIA_TYPES.contains(&a.media_type.as_str()) {
+            return Err(format!(
+                "attachments[{i}].media_type 仅支持 {:?}",
+                tenon_models::IMAGE_MEDIA_TYPES
+            ));
+        }
+        use std::fmt::Write as _;
+        if a.data_base64.is_empty() || a.data_base64.len() > tenon_models::IMAGE_MAX_BYTES * 2 {
+            return Err(format!("attachments[{i}] 大小超限（单张解码后 ≤5MB）"));
+        }
+        let data = base64::engine::general_purpose::STANDARD
+            .decode(a.data_base64.as_bytes())
+            .map_err(|e| format!("attachments[{i}] base64 解码失败: {e}"))?;
+        if data.len() > tenon_models::IMAGE_MAX_BYTES {
+            return Err(format!(
+                "attachments[{i}] 大小超限（{}字节 > 5MB）",
+                data.len()
+            ));
+        }
+        let ext = a.media_type.strip_prefix("image/").unwrap_or("bin");
+        let name = format!("{i}.{ext}");
+        let path = dir.join(&name);
+        std::fs::write(&path, &data).map_err(|e| format!("附件落盘失败: {e}"))?;
+        let mut shown = String::new();
+        let _ = write!(shown, "attachments/{}/{name}", session_id);
+        paths.push(shown);
+        parts.push(tenon_models::ImagePart {
+            media_type: a.media_type.clone(),
+            data_base64: a.data_base64.clone(),
+        });
+    }
+    Ok((parts, paths))
 }
 
 async fn send_message(
@@ -697,6 +763,14 @@ async fn send_message(
             None => return api_err(StatusCode::NOT_FOUND, "session not found"),
         };
         if entry.busy.load(Ordering::SeqCst) || entry.session.is_running() {
+            // v1.191 §11：队列仅承载文本（MessageQueue 无附件位）——带附件
+            // 的运行态发送显式 409（不静默丢图）
+            if !body.attachments.is_empty() {
+                return api_err(
+                    StatusCode::CONFLICT,
+                    "运行态发送暂不支持随队列入队附件——请稍后重发（含图片）",
+                );
+            }
             return match entry.queue.lock().await.enqueue(body.text) {
                 Ok((_, position)) => (
                     StatusCode::ACCEPTED,
@@ -725,6 +799,17 @@ async fn send_message(
             .unwrap_or(false);
         (untitled, first_message)
     };
+    // v1.191 §11：附件校验 + 落盘（在 spawn 前——校验失败同步 400）
+    let (task_images, attachment_paths) =
+        match validate_and_store_attachments(&id, &body.attachments) {
+            Ok(pair) => pair,
+            Err(e) => return api_err(StatusCode::BAD_REQUEST, e),
+        };
+
+    if !attachment_paths.is_empty() {
+        tracing::info!("消息附件已落盘：{:?}", attachment_paths);
+    }
+
     // 后台执行任务；状态经 GET /session/{id} 轮询
     let state2 = state.clone();
     let sid = id.clone();
@@ -740,8 +825,18 @@ async fn send_message(
             .await
             .map_err(|e| eprintln!("execution permit: {e}"));
         let mut text = text;
+        let mut images = task_images;
+        let mut first_run = true;
         loop {
-            let outcome = run_session.run_task(&text).await;
+            let outcome = if first_run {
+                first_run = false;
+                run_session
+                    .run_task_with_images(&text, std::mem::take(&mut images))
+                    .await
+            } else {
+                // 队列续跑的后续消息均为纯文本（附件不随队列）
+                run_session.run_task(&text).await
+            };
             let completed = matches!(outcome, TaskOutcome::Done(_));
             {
                 let mut sessions = state2.sessions.lock().await;

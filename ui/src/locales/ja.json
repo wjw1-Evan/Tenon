@@ -67,6 +67,8 @@
   "state.done": "完了",
   "state.rolled_back": "ロールバック済み",
   "message.placeholder": "タスクを入力…（Cmd/Ctrl+Enter で送信）",
+  "input.image_too_large": "画像が5MB上限を超えています",
+  "input.image_remove": "画像を削除",
   "message.send": "送信",
   "message.stop": "タスクを停止",
   "message.stop_short": "停止",

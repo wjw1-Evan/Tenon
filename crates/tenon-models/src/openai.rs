@@ -249,9 +249,22 @@ impl ModelProvider for OpenAiCompatProvider {
         let mut body = serde_json::json!({
             "model": req.model,
             "messages": req.messages.iter().map(|m| {
+                // v1.191 §11 多模态：带图消息 content 升为块数组（text + image_url data URL）
                 let mut j = serde_json::json!({
                     "role": Self::map_role(m.role),
-                    "content": m.content,
+                    "content": if m.images.is_empty() {
+                        serde_json::Value::String(m.content.clone())
+                    } else {
+                        // v1.191 §11：text + image_url（data URL）块数组
+                        let mut blocks = vec![serde_json::json!({"type": "text", "text": m.content})];
+                        for img in &m.images {
+                            blocks.push(serde_json::json!({
+                                "type": "image_url",
+                                "image_url": { "url": format!("data:{};base64,{}", img.media_type, img.data_base64) }
+                            }));
+                        }
+                        serde_json::Value::Array(blocks)
+                    },
                 });
                 if m.role == Role::Assistant && !m.tool_calls.is_empty() {
                     j["tool_calls"] = serde_json::json!(m.tool_calls.iter().map(|tc| serde_json::json!({
@@ -399,9 +412,22 @@ impl ModelProvider for OpenAiCompatProvider {
         let mut body = serde_json::json!({
             "model": req.model,
             "messages": req.messages.iter().map(|m| {
+                // v1.191 §11 多模态：带图消息 content 升为块数组（text + image_url data URL）
                 let mut j = serde_json::json!({
                     "role": Self::map_role(m.role),
-                    "content": m.content,
+                    "content": if m.images.is_empty() {
+                        serde_json::Value::String(m.content.clone())
+                    } else {
+                        // v1.191 §11：text + image_url（data URL）块数组
+                        let mut blocks = vec![serde_json::json!({"type": "text", "text": m.content})];
+                        for img in &m.images {
+                            blocks.push(serde_json::json!({
+                                "type": "image_url",
+                                "image_url": { "url": format!("data:{};base64,{}", img.media_type, img.data_base64) }
+                            }));
+                        }
+                        serde_json::Value::Array(blocks)
+                    },
                 });
                 if m.role == Role::Assistant && !m.tool_calls.is_empty() {
                     j["tool_calls"] = serde_json::json!(m.tool_calls.iter().map(|tc| serde_json::json!({

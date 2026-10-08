@@ -1554,3 +1554,89 @@ async fn turn_hooks_record_trace_events() {
     assert_eq!(pre.len(), 1, "pre_turn 恰一次");
     assert_eq!(pre[0].payload["action"], "pass");
 }
+
+/// §9.5 v1.190：spawn_subagents——委托编排器（mock）并回传结果摘要；
+/// 校验（>3 项）拒绝；未注入编排器报「未接入」。
+#[tokio::test]
+async fn spawn_subagents_dispatches_to_orchestrator() {
+    struct MockOrchestrator;
+    #[async_trait::async_trait]
+    impl tenon_agent::subagents::SubagentOrchestrator for MockOrchestrator {
+        async fn run_batch(
+            &self,
+            parent_session_id: &str,
+            tasks: Vec<tenon_agent::subagents::SubagentSpawn>,
+        ) -> Result<Vec<tenon_agent::subagents::SubagentResult>, String> {
+            assert!(
+                !parent_session_id.is_empty(),
+                "父会话 id 透传: {parent_session_id}"
+            );
+            assert_eq!(tasks.len(), 2);
+            let mk = |i: usize| tenon_agent::subagents::SubagentResult {
+                task_id: format!("sub-{i}"),
+                session_id: format!("child-{i}"),
+                status: "done".into(),
+                answer: format!("子任务 {i} 完成"),
+                worktree: format!("/wt/{i}"),
+            };
+            Ok(vec![mk(0), mk(1)])
+        }
+    }
+    let script = vec![
+        ScriptedReply::Mixed {
+            text: "两文件并行改造".into(),
+            tool: (
+                "spawn_subagents".to_string(),
+                serde_json::json!({"tasks": [
+                    {"instruction": "改 a.rs", "files": ["a.rs"]},
+                    {"instruction": "改 b.rs", "files": ["b.rs"]}
+                ]}),
+            ),
+        },
+        ScriptedReply::Text("子代理批次已完成".into()),
+    ];
+    let (_d, session, store, _p) = setup_with_config(script, |cfg| {
+        cfg.subagents = Some(std::sync::Arc::new(MockOrchestrator));
+    })
+    .await;
+    let outcome = session.run_task("并行任务").await;
+    assert!(matches!(outcome, TaskOutcome::Done(_)));
+    let mut st = store.lock().await;
+    let events = st.events(&session.session_id).unwrap();
+    let run = events
+        .iter()
+        .find(|e| e.kind == EventKind::CommandRun)
+        .expect("spawn_subagents 走 CommandRun 管道");
+    assert_eq!(run.payload["tool"], "spawn_subagents");
+    assert!(run.payload["output"]["content"]
+        .as_str()
+        .unwrap()
+        .contains("child-0"));
+    assert!(run.payload["output"]["content"]
+        .as_str()
+        .unwrap()
+        .contains("worktree"));
+}
+
+#[tokio::test]
+async fn spawn_subagents_rejects_over_batch_limit() {
+    let script = vec![
+        ScriptedReply::Mixed {
+            text: "四项超限".into(),
+            tool: (
+                "spawn_subagents".to_string(),
+                serde_json::json!({"tasks": [
+                    {"instruction": "a", "files": ["a"]},
+                    {"instruction": "b", "files": ["b"]},
+                    {"instruction": "c", "files": ["c"]},
+                    {"instruction": "d", "files": ["d"]}
+                ]}),
+            ),
+        },
+        ScriptedReply::Text("改用其他方案".into()),
+    ];
+    let (_d, session, _store, _p) = setup_with_config(script, |_| {}).await;
+    let outcome = session.run_task("并行任务").await;
+    assert!(matches!(outcome, TaskOutcome::Done(_)));
+    // 校验失败输出错误提示（模型收尾走文本）
+}

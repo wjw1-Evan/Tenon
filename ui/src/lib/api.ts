@@ -443,12 +443,17 @@ export class TenonApi {
   }
 
   /** v1.147（§9.1）：运行态发送转排队——queued=true 时消息已入会话级 FIFO，回合自然完成后自动出队。 */
-  sendMessage(sessionId: string, text: string) {
+  sendMessage(
+    sessionId: string,
+    text: string,
+    /** v1.191 §11 多模态：随消息内联的图片（≤4 张、单张 ≤5MB）。 */
+    attachments?: Array<{ media_type: string; data_base64: string }>,
+  ) {
     return this.request<{ accepted: boolean; queued?: boolean; position?: number }>(
       `/session/${sessionId}/message`,
       {
         method: "POST",
-        json: { text },
+        json: attachments && attachments.length > 0 ? { text, attachments } : { text },
       },
     );
   }

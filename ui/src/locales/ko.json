@@ -67,6 +67,8 @@
   "state.done": "완료",
   "state.rolled_back": "롤백됨",
   "message.placeholder": "작업을 설명하세요… (Cmd/Ctrl+Enter로 전송)",
+  "input.image_too_large": "이미지가 5MB 한도를 초과합니다",
+  "input.image_remove": "이미지 제거",
   "message.send": "보내기",
   "message.stop": "작업 중지",
   "message.stop_short": "중지",

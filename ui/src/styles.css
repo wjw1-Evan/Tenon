@@ -3197,3 +3197,33 @@ button:disabled { opacity: 0.45; cursor: default; }
   border-radius: var(--radius-s, 4px);
   padding: 2px 7px;
 }
+
+
+/* §11 v1.191 多模态：输入区待发送图片 chips */
+.chat-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 8px 0;
+}
+.chat-image-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1px 6px;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-image-chip button {
+  border: none;
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 0 1px;
+}

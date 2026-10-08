@@ -67,6 +67,8 @@
   "state.done": "Done",
   "state.rolled_back": "Rolled back",
   "message.placeholder": "Describe a task… (Cmd/Ctrl+Enter to send)",
+  "input.image_too_large": "Image exceeds 5MB limit",
+  "input.image_remove": "Remove image",
   "message.send": "Send",
   "message.stop": "Stop task",
   "message.stop_short": "Stop",

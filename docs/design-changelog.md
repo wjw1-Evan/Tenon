@@ -208,3 +208,5 @@
 | v1.194 | 设计变更记录移交 git——changelog 收缩为「版本号 + 一行标题」索引 |
 | v1.195 | 向导备用链预设（§7.1 / §11） |
 | v1.196 | 移除文档咨询锁——用户裁定机制不佳回归约定：读表尾定版本 + 即时提交 + hunk 提交纪律 |
+
+| **v1.193** | **多模态图片输入（§11 / §15——补 C8 缺口：截图提问 / 设计稿转代码场景入口；选择附加字段而非内容枚举重构——全库既有构造零改动）**：① tenon-models：ImagePart{media_type, data_base64} + ChatMessage.images（可选字段 skip_serializing_if）+ user_with_images 构造 + IMAGE_MAX_BYTES 5MB / IMAGES_PER_MESSAGE_MAX 4 / media_type 白名单；openai 两路径 content 升块数组（text + image_url data URL）、anthropic user 块数组（image base64 source + text）；② session：run_task_with_images 入口（run_task 委托空图零破基础），user 消息携图、user_input 事件只记数量；③ routes send_message：attachments 校验（≤4/≤5MB/白名单/base64 解码）→ 落盘 `~/.tenon/attachments/<session>/` → 透传；运行态队列不支持附件（409 不静默丢图）；④ UI：输入区粘贴/拖入图片→chips（移除按钮）→sendMessage 携 attachments；api.ts 签名扩展；五语言 input.image_{too_large,remove}；草稿持久化仅文本（图片不入 localStorage）。测试：provider_contract 双路请求体断言、agent run_task_with_images 例（mock 收到图片块、事件只记数量）；§11 / §15 同步 ** |

@@ -290,3 +290,44 @@ async fn retry_budget_exhausted_after_ten_enters_error() {
         .count();
     assert_eq!(retries, 10, "model_retry 事件恰 ×10");
 }
+
+/// §11 v1.191 多模态：run_task_with_images——user 消息携带图片块、
+/// user_input 事件只记数量不记数据。
+#[tokio::test]
+async fn task_with_images_reaches_provider_and_event() {
+    let (_d, session, store, provider) = setup_with_config(
+        vec![ScriptedReply::Text("已看到图片".into())],
+        vec![],
+        |_| {},
+    )
+    .await;
+    let outcome = session
+        .run_task_with_images(
+            "看这张图",
+            vec![tenon_models::ImagePart {
+                media_type: "image/png".into(),
+                data_base64: "aGVsbG8=".into(),
+            }],
+        )
+        .await;
+    assert!(matches!(outcome, TaskOutcome::Done(_)));
+    let calls = provider.calls();
+    let user_msg = calls[0]
+        .messages
+        .iter()
+        .find(|m| m.role == tenon_models::Role::User)
+        .expect("user 消息");
+    assert_eq!(user_msg.images.len(), 1);
+    assert_eq!(user_msg.images[0].media_type, "image/png");
+    let mut st = store.lock().await;
+    let events = st.events(&session.session_id).unwrap();
+    let user_input = events
+        .iter()
+        .find(|e| e.kind == EventKind::UserInput)
+        .expect("user_input 事件");
+    assert_eq!(user_input.payload["images"], 1);
+    assert!(
+        user_input.payload["data_base64"].is_null(),
+        "事件不携带图片数据"
+    );
+}

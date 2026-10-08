@@ -245,6 +245,10 @@ export function AgentPanel({
   );
   // 文件拖入对话框（v1.110）：dragover 高亮 + 落下插入 @path 引用。
   const [inputDrop, setInputDrop] = useState(false);
+  // v1.191 §11 多模态：待发送图片（粘贴 / 拖入图片文件；base64 内联随消息发送）。
+  const [pendingImages, setPendingImages] = useState<
+    Array<{ media_type: string; data_base64: string; name: string }>
+  >([]);
   // v1.159 输入内 @ 文件引用补全（§7.5）：mention = 触发 token（start=输入文本中 @ 下标，
   // query=@ 后过滤词）；命中列表随 fuzzy 防抖刷新，键盘 ↑↓/Enter/Tab/Esc 全可达。
   const [mention, setMention] = useState<{ start: number; query: string } | null>(null);
@@ -298,6 +302,31 @@ export function AgentPanel({
     if (isDraft) setDraftInputs((prev) => ({ ...prev, [draftKey]: v }));
     else setInput(v);
   };
+  // v1.191 §11：图片文件 → base64（≤4 张、单张 ≤5MB；超限 toast 并丢弃）。
+  const addImageFiles = (files: Array<File | undefined>) => {
+    const imageFiles = files
+      .filter((f): f is File => Boolean(f) && (f as File).type.startsWith("image/"))
+      .slice(0, 4 - pendingImages.length);
+    for (const file of imageFiles) {
+      if (file.size > 5 * 1024 * 1024) {
+        toast.error(t("input.image_too_large"));
+        continue;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = String(reader.result ?? "");
+        const comma = dataUrl.indexOf(",");
+        if (comma < 0) return;
+        const media_type = file.type;
+        const data_base64 = dataUrl.slice(comma + 1);
+        setPendingImages((prev) =>
+          prev.length >= 4 ? prev : [...prev, { media_type, data_base64, name: file.name }],
+        );
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
   const activeProject = projects?.find((p) => p.id === projectId);
   const showContext = Boolean(projectId && projects && projects.length > 0 && (isDraft || sessionId));
 
@@ -527,7 +556,17 @@ export function AgentPanel({
     }
     setBusy(true);
     try {
-      await api.sendMessage(sessionId, text);
+      if (pendingImages.length > 0) {
+        // v1.191 §11：随消息内联发送图片
+        const images = pendingImages.map(({ media_type, data_base64 }) => ({
+          media_type,
+          data_base64,
+        }));
+        await api.sendMessage(sessionId, text, images);
+        setPendingImages([]);
+      } else {
+        await api.sendMessage(sessionId, text);
+      }
       setInput("");
     } finally {
       setBusy(false);
@@ -983,6 +1022,17 @@ export function AgentPanel({
         }}
         onDrop={(e) => {
           const path = e.dataTransfer.getData("application/x-tenon-path");
+          // v1.191 §11：图片文件拖入 → 待发送附件 chips
+          // （files 可能缺位于测试桩 / 私有 MIME 拖拽——容错空集）
+          const imageFiles = Array.from(e.dataTransfer.files ?? []).filter((f) =>
+            f.type.startsWith("image/"),
+          );
+          if (imageFiles.length > 0) {
+            e.preventDefault();
+            setInputDrop(false);
+            addImageFiles(imageFiles);
+            return;
+          }
           setInputDrop(false);
           if (!path) return;
           e.preventDefault();
@@ -1045,9 +1095,36 @@ export function AgentPanel({
             )}
           </div>
         )}
+        {pendingImages.length > 0 && (
+          <div className="chat-images" data-testid="chat-images">
+            {pendingImages.map((img, i) => (
+              <span className="chat-image-chip" key={`${img.name}-${i}`} title={img.name}>
+                🖼 {img.name}
+                <button
+                  type="button"
+                  aria-label={t("input.image_remove")}
+                  data-testid={`image-remove-${i}`}
+                  onClick={() => setPendingImages((prev) => prev.filter((_, j) => j !== i))}
+                >
+                  ✕
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <textarea
           ref={inputRef}
           value={inputValue}
+          onPaste={(e) => {
+            // v1.191 §11：剪贴板图片粘贴 → 待发送附件 chips
+            const files = Array.from(e.clipboardData?.files ?? []).filter((f) =>
+              f.type.startsWith("image/"),
+            );
+            if (files.length > 0) {
+              e.preventDefault();
+              addImageFiles(files);
+            }
+          }}
           placeholder={t("message.placeholder")}
           onChange={(e) => {
             setInputValue(e.target.value);

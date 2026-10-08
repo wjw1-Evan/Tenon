@@ -5060,6 +5060,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64 0.22.1",
  "chrono",
  "ed25519-dalek",
  "futures",
@@ -5091,6 +5092,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "windows-sys 0.52.0",
 ]
 

@@ -67,6 +67,8 @@
   "state.done": "完成",
   "state.rolled_back": "已還原",
   "message.placeholder": "描述一個任務…（Cmd/Ctrl+Enter 傳送）",
+  "input.image_too_large": "圖片超過 5MB 上限",
+  "input.image_remove": "移除圖片",
   "message.send": "傳送",
   "message.stop": "停止任務",
   "message.stop_short": "停止",

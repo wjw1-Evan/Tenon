@@ -128,6 +128,7 @@ fn protocol_request() -> ChatRequest {
             arguments: serde_json::json!({"path": "src/main.rs"}),
         }],
         tool_call_id: None,
+        images: vec![],
     };
     ChatRequest::new(
         "model-a",
@@ -466,4 +467,61 @@ async fn authoritative_stream_final_rejects_corrupt_tool_arguments() {
         stream.next().await,
         Some(Err(ProviderError::Parse(message))) if message.contains("tool block")
     ));
+}
+
+/// §11 v1.191 多模态：带图 user 消息的请求体——openai image_url data URL、
+/// anthropic base64 source。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn multimodal_images_reach_request_bodies() {
+    use tenon_models::ImagePart;
+    let images = vec![ImagePart {
+        media_type: "image/png".into(),
+        data_base64: "aGVsbG8=".into(),
+    }];
+    let mut req = ChatRequest::new(
+        "model-m",
+        vec![ChatMessage::user_with_images("看这张图", images)],
+    );
+    req.messages[0].role = Role::User;
+
+    // OpenAI 兼容：content 块数组（text + image_url data URL）
+    let (openai_base, openai_server) = serve_http(
+        "200 OK",
+        "application/json",
+        &serde_json::json!({"model":"m","choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}).to_string(),
+    )
+    .await;
+    tenon_models::OpenAiCompatProvider::new("openai", &openai_base, "", None)
+        .chat(&req)
+        .await
+        .unwrap();
+    let sent: serde_json::Value = serde_json::from_str(&openai_server.await.unwrap().body).unwrap();
+    let content = &sent["messages"][0]["content"];
+    assert!(content.is_array(), "带图消息 content 须为块数组: {content}");
+    assert_eq!(content[0]["type"], "text");
+    assert_eq!(content[1]["type"], "image_url");
+    assert_eq!(
+        content[1]["image_url"]["url"],
+        "data:image/png;base64,aGVsbG8="
+    );
+
+    // Anthropic：image 块（base64 source）+ text 块
+    let (anthropic_base, anthropic_server) = serve_http(
+        "200 OK",
+        "application/json",
+        &serde_json::json!({"model":"m","stop_reason":"end_turn","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}).to_string(),
+    )
+    .await;
+    tenon_models::AnthropicProvider::new("anthropic", &anthropic_base, "", None)
+        .chat(&req)
+        .await
+        .unwrap();
+    let sent: serde_json::Value =
+        serde_json::from_str(&anthropic_server.await.unwrap().body).unwrap();
+    let blocks = &sent["messages"][0]["content"];
+    assert_eq!(blocks[0]["type"], "image");
+    assert_eq!(blocks[0]["source"]["type"], "base64");
+    assert_eq!(blocks[0]["source"]["media_type"], "image/png");
+    assert_eq!(blocks[0]["source"]["data"], "aGVsbG8=");
+    assert_eq!(blocks[1]["type"], "text");
 }

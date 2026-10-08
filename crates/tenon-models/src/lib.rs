@@ -128,6 +128,21 @@ pub enum Role {
     Tool,
 }
 
+/// v1.191 §11 多模态：图片输入块（仅 user 消息携带；base64 内联）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ImagePart {
+    /// image/png | image/jpeg | image/webp | image/gif
+    pub media_type: String,
+    pub data_base64: String,
+}
+
+/// 单图 base64 解码后大小上限（§11 v1.191；请求体字符数约 ×4/3）。
+pub const IMAGE_MAX_BYTES: usize = 5 * 1024 * 1024;
+/// 单条消息图片数上限。
+pub const IMAGES_PER_MESSAGE_MAX: usize = 4;
+/// 允许的 media_type 白名单。
+pub const IMAGE_MEDIA_TYPES: [&str; 4] = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: Role,
@@ -138,6 +153,9 @@ pub struct ChatMessage {
     /// role=tool 时的调用 id。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// v1.191：图片输入（仅 user；空 = 纯文本消息，全库既有构造零改动）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImagePart>,
 }
 
 impl ChatMessage {
@@ -147,6 +165,7 @@ impl ChatMessage {
             content: content.into(),
             tool_calls: vec![],
             tool_call_id: None,
+            images: vec![],
         }
     }
     pub fn user(content: impl Into<String>) -> Self {
@@ -155,6 +174,17 @@ impl ChatMessage {
             content: content.into(),
             tool_calls: vec![],
             tool_call_id: None,
+            images: vec![],
+        }
+    }
+    /// v1.191：带图片的 user 消息（多模态输入）。
+    pub fn user_with_images(content: impl Into<String>, images: Vec<ImagePart>) -> Self {
+        Self {
+            role: Role::User,
+            content: content.into(),
+            tool_calls: vec![],
+            tool_call_id: None,
+            images,
         }
     }
     pub fn assistant(content: impl Into<String>) -> Self {
@@ -163,6 +193,7 @@ impl ChatMessage {
             content: content.into(),
             tool_calls: vec![],
             tool_call_id: None,
+            images: vec![],
         }
     }
     pub fn tool_result(call_id: impl Into<String>, content: impl Into<String>) -> Self {
@@ -171,6 +202,7 @@ impl ChatMessage {
             content: content.into(),
             tool_calls: vec![],
             tool_call_id: Some(call_id.into()),
+            images: vec![],
         }
     }
 }
@@ -466,6 +498,7 @@ mod tests {
                 model: Some("glm-4.6".into()),
                 price_in_per_mtok: None,
                 price_out_per_mtok: None,
+                price_cached_per_mtok: None,
             },
         );
         let cfg = tenon_config::ModelsConfig {

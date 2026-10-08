@@ -1027,11 +1027,13 @@ impl AgentSession {
         let model = provider.default_model();
         // §11 v1.93：按 provider 配置单价折算（未定价模型计 0，宁少报不虚报），
         // 并作为熔断预算输入（§9.3）——超 token / 超预算在下一工具步检查点熔断。
+        // v1.196 §11：缓存命中部分按缓存价计（未配置缓存价 = 输入价，行为不变）。
         let cost = tenon_models::compute_cost(
             &self.config.price_table,
             &model,
             usage.input_tokens,
             usage.output_tokens,
+            usage.cached_input_tokens,
         );
         let _status = self
             .circuit
@@ -1259,13 +1261,32 @@ impl AgentSession {
     /// 执行一个任务（完整 §9.1 循环）。
     /// 任务入口（v1.93 并发守卫）：进行中（含挂起等待恢复）拒绝重入——
     /// 此前 Executing 中再发消息会并发跑两个任务循环，竞态改写会话消息历史。
+    /// 兼容入口：无图片任务（全库既有调用零改动）。
     pub async fn run_task(&self, user_text: &str) -> TaskOutcome {
+        self.run_task_guarded(user_text, Vec::new()).await
+    }
+
+    /// v1.191 §11 多模态任务入口：user 消息携带图片（base64 内联，
+    /// 历史重发由供应商侧 prompt caching 吸收——v1.173）。
+    pub async fn run_task_with_images(
+        &self,
+        user_text: &str,
+        images: Vec<tenon_models::ImagePart>,
+    ) -> TaskOutcome {
+        self.run_task_guarded(user_text, images).await
+    }
+
+    async fn run_task_guarded(
+        &self,
+        user_text: &str,
+        task_images: Vec<tenon_models::ImagePart>,
+    ) -> TaskOutcome {
         if self.running.swap(true, Ordering::SeqCst) {
             return TaskOutcome::Error(
                 "任务进行中（暂停 = 挂起待恢复）：请先停止或等待完成".into(),
             );
         }
-        let outcome = self.run_task_inner(user_text).await;
+        let outcome = self.run_task_inner(user_text, task_images).await;
         // 任务收尾后排空残留控制命令（v1.166）：Stop/Pause 发出时任务可能恰好
         // 在最后一段无检查点的流式回答/验证中收尾，命令滞留通道会让下一个任务
         // 的首个检查点误暂停/误停（SetReadonly 延一拍生效同理）——它们指向的是
@@ -1290,7 +1311,11 @@ impl AgentSession {
         self.running.load(Ordering::SeqCst)
     }
 
-    async fn run_task_inner(&self, user_text: &str) -> TaskOutcome {
+    async fn run_task_inner(
+        &self,
+        user_text: &str,
+        task_images: Vec<tenon_models::ImagePart>,
+    ) -> TaskOutcome {
         // §9.7 v1.87 并行写锁：按 (project_id, worktree_scope) 计——主根会话互斥，
         // 不同受管 worktree 会话可与主根及彼此并行；全局配额由 daemon 控制。
         let scope_lock = self.write_lock.lock_for(&self.write_scope).await;
@@ -1309,7 +1334,7 @@ impl AgentSession {
         // ---- IDLE → SENSING ----
         self.emit(
             EventKind::UserInput,
-            &serde_json::json!({"text": user_text}),
+            &serde_json::json!({"text": user_text, "images": task_images.len()}),
         )
         .await;
         self.force_state(State::Sensing).await;
@@ -1432,7 +1457,7 @@ impl AgentSession {
                 &memory_items,
                 &skill_entries,
             )),
-            ChatMessage::user(user_message),
+            ChatMessage::user_with_images(user_message, task_images.clone()),
         ];
 
         let mut changed_files: Vec<String> = Vec::new();

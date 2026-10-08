@@ -204,10 +204,25 @@ impl AnthropicProvider {
                     }
                     system.push_str(&m.content);
                 }
-                Role::User => out.push(serde_json::json!({
-                    "role": "user",
-                    "content": [{ "type": "text", "text": m.content }],
-                })),
+                Role::User => {
+                    // v1.191 §11：带图消息先 image 块（base64 source）后 text 块
+                    let mut blocks: Vec<serde_json::Value> = m
+                        .images
+                        .iter()
+                        .map(|img| {
+                            serde_json::json!({
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": img.media_type,
+                                    "data": img.data_base64,
+                                }
+                            })
+                        })
+                        .collect();
+                    blocks.push(serde_json::json!({ "type": "text", "text": m.content }));
+                    out.push(serde_json::json!({ "role": "user", "content": blocks }))
+                }
                 Role::Assistant => {
                     let mut blocks = Vec::new();
                     if !m.content.is_empty() {
