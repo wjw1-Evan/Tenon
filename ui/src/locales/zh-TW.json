@@ -473,5 +473,6 @@
   "shortcuts.save": "立即儲存",
   "shortcuts.close_tab": "關閉編輯器分頁",
   "onboarding.fallback_note": "首選免費模型限流中，已自動改用 {model}（同為官方免費檔）。",
+  "onboarding.fallback_chain": "已設定備用模型鏈：{model}（主模型限流 / 故障時自動切換）。",
   "onboarding.daemon_unreachable": "無法連線本機 Tenon 服務（可能正在重啟），請稍候再試。"
 }

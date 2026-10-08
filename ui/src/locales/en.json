@@ -473,5 +473,6 @@
   "shortcuts.save": "Save now",
   "shortcuts.close_tab": "Close editor tab",
   "onboarding.fallback_note": "The primary free model is rate-limited right now — switched to {model} (also an official free model).",
+  "onboarding.fallback_chain": "Fallback chain configured: {model} (auto-switch on rate limits / failures).",
   "onboarding.daemon_unreachable": "Cannot reach the local Tenon service (it may be restarting) — please retry in a moment."
 }

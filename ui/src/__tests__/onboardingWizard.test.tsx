@@ -92,11 +92,55 @@ describe("OnboardingWizard", () => {
     await waitFor(() => expect(onDone).toHaveBeenCalled());
     const payload = (api.putSettings as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(payload.models.providers.glm.model).toBe("glm-4.7-flash");
+    // v1.194：备用链对称写入（chosen=4.7 → 链含 4.5）
+    expect(payload.models.fallback).toEqual(["glm/glm-4.5-flash"]);
     // 两次调用：先首选后后备
     expect((api.verifyModel as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0].model)).toEqual([
       "glm-4.5-flash",
       "glm-4.7-flash",
     ]);
+  });
+
+  it("v1.194 完成写入备用模型链：另一免费档自动入链且完成步可见", async () => {
+    const api = makeApi();
+    const onDone = vi.fn();
+    render(
+      <OnboardingWizard api={api} t={t} settings={{ session: {} }} onDone={onDone} onSkip={() => {}} />
+    );
+    fireEvent.click(screen.getByTestId("onboarding-next"));
+    fireEvent.change(screen.getByTestId("onboarding-key-input"), {
+      target: { value: "sk-chain" },
+    });
+    fireEvent.click(screen.getByTestId("onboarding-verify"));
+    await screen.findByTestId("onboarding-step-done");
+    // 完成步链说明可见
+    expect(screen.getByTestId("onboarding-fallback-chain")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("onboarding-finish"));
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    const payload = (api.putSettings as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    // chosen=4.5 → 备用链含 4.7（glm/<模型> 形式，§11 v1.171）
+    expect(payload.models.fallback).toEqual(["glm/glm-4.7-flash"]);
+  });
+
+  it("v1.194 用户已配置备用链则保留不覆盖（向导只补空缺）", async () => {
+    const api = makeApi();
+    const existing: SettingsData = {
+      session: {},
+      models: { providers: {}, fallback: ["foo/bar"] },
+    };
+    render(
+      <OnboardingWizard api={api} t={t} settings={existing} onDone={() => {}} onSkip={() => {}} />
+    );
+    fireEvent.click(screen.getByTestId("onboarding-next"));
+    fireEvent.change(screen.getByTestId("onboarding-key-input"), {
+      target: { value: "sk-keep-chain" },
+    });
+    fireEvent.click(screen.getByTestId("onboarding-verify"));
+    await screen.findByTestId("onboarding-step-done");
+    fireEvent.click(screen.getByTestId("onboarding-finish"));
+    await waitFor(() => expect(api.putSettings).toHaveBeenCalled());
+    const payload = (api.putSettings as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(payload.models.fallback).toEqual(["foo/bar"]);
   });
 
   it("v1.169 fetch 层失败映射友好文案（不再裸 TypeError）", async () => {

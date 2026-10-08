@@ -473,5 +473,6 @@
   "shortcuts.save": "지금 저장",
   "shortcuts.close_tab": "편집기 탭 닫기",
   "onboarding.fallback_note": "기본 무료 모델이 rate limit 중이라 {model}(역시 공식 무료 모델)로 자동 전환했습니다.",
+  "onboarding.fallback_chain": "폴백 체인 구성됨: {model}(속도 제한·장애 시 자동 전환).",
   "onboarding.daemon_unreachable": "로컬 Tenon 서비스에 연결할 수 없습니다(재시작 중일 수 있음). 잠시 후 다시 시도하세요."
 }

@@ -1,4 +1,4 @@
-// 接入免费模型向导（§7.1 / §11 / §15 v1.163，v1.165 简化，v1.169 回退）：
+// 接入免费模型向导（§7.1 / §11 / §15 v1.163，v1.165 简化，v1.169 回退，v1.194 备用链）：
 // 智谱官方免费档开箱引导——三步（介绍 → 注册拿 Key → 验证并一键写入配置）。
 // 首启合并视图无 provider 且未跳过时自动弹出（App 接线）；模型空态与设置
 // Models 可重开。验证按免费档顺序自动回退（glm-4.7-flash 限流 → glm-4.5-flash，
@@ -119,8 +119,16 @@ export function OnboardingWizard({ api, t, settings, onDone, onSkip }: Props) {
     setFinishError(null);
     try {
       // provider 覆盖表整体替换（§15）：合并既有条目避免误删用户配置；
-      // api_key 直存 settings.json（0600，GET 不回显）
+      // api_key 直存 settings.json（0600，GET 不回显）。
+      // v1.194：把另一免费档写入备用模型链（§11 v1.171 fallback）——主模型
+      // 限流 / 故障时自动切换；用户已配置链则保留不覆盖（向导只补空缺）。
       const existing = settings?.models?.providers ?? {};
+      const otherModel = GLM_FREE_MODELS.find((m) => m !== chosenModel) ?? "";
+      const existingFallback = settings?.models?.fallback;
+      const fallback =
+        Array.isArray(existingFallback) && existingFallback.length > 0
+          ? existingFallback
+          : [`glm/${otherModel}`];
       const next = await api.putSettings({
         models: {
           default: GLM_PRESET.name,
@@ -133,6 +141,7 @@ export function OnboardingWizard({ api, t, settings, onDone, onSkip }: Props) {
               api_key: apiKey.trim(),
             },
           },
+          fallback,
         },
       });
       onDone(next);
@@ -277,6 +286,11 @@ export function OnboardingWizard({ api, t, settings, onDone, onSkip }: Props) {
                 {t("onboarding.fallback_note", { model: fallbackModel })}
               </p>
             )}
+            <p className="muted" data-testid="onboarding-fallback-chain">
+              {t("onboarding.fallback_chain", {
+                model: GLM_FREE_MODELS.find((m) => m !== chosenModel) ?? "",
+              })}
+            </p>
             <p className="muted">{t("onboarding.done_intro")}</p>
             {finishError && (
               <div className="onboarding-error" role="alert" data-testid="onboarding-finish-error">
