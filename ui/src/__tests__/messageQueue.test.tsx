@@ -51,13 +51,14 @@ describe("AgentPanel 发送消息队列（v1.147）", () => {
     expect(screen.getByTestId("queue-count")).toBeTruthy();
   });
 
-  it("运行态输入区发送/停止双钮并列；点击发送走入队路径", async () => {
+  it("运行态空输入仅停止单钮；键入后发送钮补出、点击走入队路径", async () => {
     const api = mockApi([], "executing", []);
     render(<AgentPanel api={api} t={t} sessionId="s1" />);
     await waitFor(() => expect(screen.getByTestId("stop")).toBeTruthy());
-    const send = screen.getByTestId("send");
-    expect(send).toBeTruthy();
+    // v1.184 Codex 单钮形态：空输入运行态无「发送」钮
+    expect(screen.queryByTestId("send")).toBeNull();
     fireEvent.change(screen.getByTestId("task-input"), { target: { value: "排队消息二" } });
+    const send = await screen.findByTestId("send");
     fireEvent.click(send);
     await waitFor(() =>
       expect((api.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([
@@ -65,10 +66,9 @@ describe("AgentPanel 发送消息队列（v1.147）", () => {
         "排队消息二",
       ]),
     );
-    // 输入随发送清空（入队亦是投递）
-    await waitFor(() =>
-      expect((screen.getByTestId("task-input") as HTMLTextAreaElement).value).toBe(""),
-    );
+    // 输入随发送清空（入队亦是投递），发送钮随之隐藏回落单钮
+    await waitFor(() => expect(screen.queryByTestId("send")).toBeNull());
+    expect((screen.getByTestId("task-input") as HTMLTextAreaElement).value).toBe("");
   });
 
   it("点击移除钮调用 DELETE 队列端点", async () => {

@@ -1164,8 +1164,9 @@ export function AgentPanel({
             onSwitched={onModelSwitched}
             onOpenOnboarding={onOpenOnboarding}
           />
-          {/* v1.147（§9.1）：运行态「发送」保留入队语义、与「停止」双钮并列——
-              此前运行态唯一按钮变停止，消息无法发送（v1.59 形态）；暂停仍单钮恢复。 */}
+          {/* v1.147（§9.1）：运行态「发送」保留入队语义；v1.184 Codex 单钮形态——
+              运行态「发送」仅在输入框有草稿文字时随「停止」并列补出（键入即现、
+              发送清空后即隐），空输入仅「停止」单钮；键盘入队路径不受影响。暂停仍单钮恢复。 */}
           {paused ? (
             <button
               className="agent-send"
@@ -1177,14 +1178,16 @@ export function AgentPanel({
             </button>
           ) : (
             <>
-              <button
-                className="agent-send"
-                onClick={send}
-                disabled={(!sessionId && !(draft && onDraftSend)) || busy}
-                data-testid="send"
-              >
-                {t("message.send")}
-              </button>
+              {(!running || inputValue.trim() !== "") && (
+                <button
+                  className="agent-send"
+                  onClick={send}
+                  disabled={(!sessionId && !(draft && onDraftSend)) || busy}
+                  data-testid="send"
+                >
+                  {t("message.send")}
+                </button>
+              )}
               {running && (
                 <button
                   className="agent-send agent-send-stop"
