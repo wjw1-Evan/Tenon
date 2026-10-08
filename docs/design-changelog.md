@@ -2,7 +2,7 @@
 
 > 本表是设计方案（[design.md](./design.md)）的版本演进**索引**：每版一行「版本号 + 一行标题」。
 > 变更详情（动机 / 方案 / 测试 / 门禁）由 git 提交信息唯一承载——`git log --grep "^v<版本>"` 定位对应提交，本表不复述提交信息。
-> v1.132 自 design.md 头部外移；v1.194 起收缩为索引——有唯一对应提交的行已收缩；git 前历史行、一版多行 / 一版多提交的历史重复占用行逐字保留。每次设计变更在表尾追加一行（递增版本号 + 一行标题），并同步 design.md 头部「版本」元数据。
+> 每次设计变更在表尾追加一行（递增版本号 + 一行标题），并同步 design.md 头部「版本」元数据；git 前历史行与一版多行 / 一版多提交行是唯一逐版记录，逐字保留勿收缩。
 
 | 版本 | 标题 |
 |---|---|
@@ -210,3 +210,4 @@
 | v1.196 | 移除文档咨询锁——用户裁定机制不佳回归约定：读表尾定版本 + 即时提交 + hunk 提交纪律 |
 
 | **v1.193** | **多模态图片输入（§11 / §15——补 C8 缺口：截图提问 / 设计稿转代码场景入口；选择附加字段而非内容枚举重构——全库既有构造零改动）**：① tenon-models：ImagePart{media_type, data_base64} + ChatMessage.images（可选字段 skip_serializing_if）+ user_with_images 构造 + IMAGE_MAX_BYTES 5MB / IMAGES_PER_MESSAGE_MAX 4 / media_type 白名单；openai 两路径 content 升块数组（text + image_url data URL）、anthropic user 块数组（image base64 source + text）；② session：run_task_with_images 入口（run_task 委托空图零破基础），user 消息携图、user_input 事件只记数量；③ routes send_message：attachments 校验（≤4/≤5MB/白名单/base64 解码）→ 落盘 `~/.tenon/attachments/<session>/` → 透传；运行态队列不支持附件（409 不静默丢图）；④ UI：输入区粘贴/拖入图片→chips（移除按钮）→sendMessage 携 attachments；api.ts 签名扩展；五语言 input.image_{too_large,remove}；草稿持久化仅文本（图片不入 localStorage）。测试：provider_contract 双路请求体断言、agent run_task_with_images 例（mock 收到图片块、事件只记数量）；§11 / §15 同步 ** |
+| v1.197 | 清理文档历史累赘——头部日期行只记当日、删历史评审行与历史注记；正文（vN.NNN）导航标注保留 |
