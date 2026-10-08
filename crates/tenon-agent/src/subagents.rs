@@ -147,6 +147,40 @@ impl WorktreePool {
     }
 }
 
+/// v1.190 §9.5：子代理任务入参（模型经 spawn_subagents 工具提交）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubagentSpawn {
+    pub instruction: String,
+    /// 计划触碰的文件集（不相交调度依据；§9.5）
+    pub files: Vec<String>,
+}
+
+/// v1.190 §9.5：单个子代理运行结果（子会话已登记，worktree 留待用户合并/丢弃）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubagentResult {
+    pub task_id: String,
+    pub session_id: String,
+    /// done | paused | error
+    pub status: String,
+    /// 收尾回答摘要（截断由调用方定）
+    pub answer: String,
+    /// 受管 worktree 路径（合并 / 丢弃走子会话既有收尾端点）
+    pub worktree: String,
+}
+
+/// v1.190 §9.5：子代理编排器——daemon 侧实现（worktree 池 + 子会话登记 +
+/// 并发运行）；session 工具面经此委托，不直接触碰 daemon 状态。
+#[async_trait::async_trait]
+pub trait SubagentOrchestrator: Send + Sync {
+    /// 运行一批子代理：不相交调度（≤3 并发）、独立受管 worktree、
+    /// 子会话登记并可合并；实现不得在返回前清理 worktree。
+    async fn run_batch(
+        &self,
+        parent_session_id: &str,
+        tasks: Vec<SubagentSpawn>,
+    ) -> std::result::Result<Vec<SubagentResult>, String>;
+}
+
 /// 批量任务提交摘要：逐条列明，用于共享日志展示。
 pub fn composite_commit_summary(messages: &[String]) -> String {
     // 计数只替换头部占位符：全局 replace 会把 commit message 里的「N」一并改写

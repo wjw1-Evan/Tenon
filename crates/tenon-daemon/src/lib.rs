@@ -11,6 +11,7 @@ mod lsp_edit;
 mod pairing;
 mod routes;
 mod state;
+pub mod subagents;
 pub mod updates;
 
 pub use pairing::PairingStore;

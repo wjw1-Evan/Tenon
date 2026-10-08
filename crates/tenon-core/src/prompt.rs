@@ -128,6 +128,10 @@ pub fn tool_catalog() -> String {
             Tool::McpMeta,
             "MCP 资源与提示（mcp_meta_resources_list/read · mcp_meta_prompts_list/get）：跨服务器枚举或读取 MCP resources / prompts 文本",
         ),
+        (
+            Tool::SpawnSubagents,
+            "并行分发独立子任务（worktree 隔离子代理，1-3 项、文件集不相交）：返回各子代理摘要，合并 / 丢弃在子会话行处置",
+        ),
         (Tool::ApplyPatch, "结构化编辑：定向替换用 file + search + replace（search 全文唯一）；整段改写用 file + range + content"),
         (Tool::RunTests, "沙箱内运行测试（断网）"),
         (Tool::RunBuild, "沙箱内构建（断网）"),

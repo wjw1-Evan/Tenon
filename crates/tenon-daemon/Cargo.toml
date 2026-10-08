@@ -10,6 +10,8 @@ name = "tenon-daemon"
 path = "src/main.rs"
 
 [dependencies]
+async-trait = { workspace = true }
+uuid = { workspace = true }
 tenon-config = { workspace = true }
 tenon-core = { workspace = true }
 tenon-store = { workspace = true }

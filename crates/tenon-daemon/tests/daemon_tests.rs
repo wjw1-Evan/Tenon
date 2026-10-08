@@ -3,7 +3,8 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tenon_daemon::{serve, DaemonOptions};
+use tenon_agent::subagents::SubagentOrchestrator;
+use tenon_daemon::{serve, DaemonOptions, DaemonState};
 use tenon_models::{MockProvider, ModelProvider, ScriptedReply};
 
 fn base(port: u16) -> String {
@@ -6883,4 +6884,114 @@ async fn projects_session_rows_carry_subtasks_progress() {
         Some((1, 2)),
         "会话行应携带最新快照计数 1/2（未完成→徽标渲染）"
     );
+}
+
+/// §9.5 v1.190：真实编排器端到端——临时 git 仓库 + 注入 mock provider，
+/// 直接驱动 DaemonSubagents::run_batch：两个不相交子任务各自获得独立
+/// 受管 worktree、子会话登记进 state.sessions、结果回传；worktree 保留
+/// 待用户合并 / 丢弃。
+#[tokio::test]
+async fn subagent_orchestrator_runs_children_in_worktrees() {
+    let dir = tempfile::tempdir().unwrap();
+    // 临时 git 仓库（worktree 隔离要求 git）
+    std::process::Command::new("git")
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    std::fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
+    std::fs::write(dir.path().join("b.rs"), "fn b() {}\n").unwrap();
+    for f in ["a.rs", "b.rs"] {
+        std::process::Command::new("git")
+            .args(["-C", dir.path().to_str().unwrap(), "add", f])
+            .output()
+            .unwrap();
+    }
+    std::process::Command::new("git")
+        .args([
+            "-C",
+            dir.path().to_str().unwrap(),
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-m",
+            "init",
+        ])
+        .output()
+        .unwrap();
+
+    let mut options = DaemonOptions::in_memory();
+    options.project = Some(dir.path().to_str().unwrap().to_string());
+    // 子代理脚本：单子任务确定性消费（并发双子的脚本竞态由调度单测覆盖）
+    options.providers = vec![std::sync::Arc::new(tenon_models::MockProvider::new(
+        "mock",
+        "mock-1",
+        vec![
+            tenon_models::ScriptedReply::Mixed {
+                text: "改 a.rs".into(),
+                tool: (
+                    "apply_patch".to_string(),
+                    serde_json::json!({"file": "a.rs", "search": "fn a() {}", "replace": "fn a() { /* CHILD-A */ }"}),
+                ),
+            },
+            tenon_models::ScriptedReply::Text("a 完成".into()),
+        ],
+    ))];
+    options.default_provider = "mock".into();
+    let state = std::sync::Arc::new(DaemonState::new(options).await);
+    let project_path = dir.path().to_str().unwrap().to_string();
+    let project = {
+        let canonical = std::fs::canonicalize(&project_path).unwrap();
+        let mut st = state.store.lock().await;
+        st.upsert_project(&canonical.to_string_lossy()).unwrap()
+    };
+    let provider = state.provider_or_default("mock").await.unwrap();
+
+    let orchestrator = tenon_daemon::subagents::DaemonSubagents {
+        state: state.clone(),
+        project: project.clone(),
+        provider,
+    };
+    let results = orchestrator
+        .run_batch(
+            "ses-parent-test",
+            vec![
+                tenon_agent::subagents::SubagentSpawn {
+                    instruction: "改 a.rs 加注释".into(),
+                    files: vec!["a.rs".into()],
+                },
+                // 与任务 0 文件集相交 → §9.5 调度拒绝（不运行）
+                tenon_agent::subagents::SubagentSpawn {
+                    instruction: "再改 a.rs".into(),
+                    files: vec!["a.rs".into()],
+                },
+            ],
+        )
+        .await
+        .unwrap();
+    assert_eq!(results.len(), 2, "{results:?}");
+    let done = results
+        .iter()
+        .find(|r| r.status == "done")
+        .expect("一个子任务应完成");
+    let rejected = results
+        .iter()
+        .find(|r| r.status == "rejected")
+        .expect("相交任务应被拒绝");
+    assert!(rejected.session_id.is_empty(), "被拒任务不创建子会话");
+    assert!(done.session_id.len() >= 20, "子会话 id: {done:?}");
+    // 子会话已登记进 state.sessions（合并 / 丢弃端点由此可达）
+    {
+        let sessions = state.sessions.lock().await;
+        let entry = sessions.get(&done.session_id).expect("子会话已登记");
+        assert!(entry.managed_worktree.is_some());
+    }
+    // 子改动落在 worktree（主根不动）
+    let a_body =
+        std::fs::read_to_string(std::path::Path::new(&done.worktree).join("a.rs")).unwrap();
+    assert!(a_body.contains("CHILD-A"), "{a_body}");
+    let root_a = std::fs::read_to_string(dir.path().join("a.rs")).unwrap();
+    assert!(!root_a.contains("CHILD-A"), "主根不受子代理影响");
 }

@@ -30,6 +30,9 @@ pub enum Tool {
     /// MCP 元工具（§13.3，v1.187）：跨服务器 resources / prompts 枚举与读取，
     /// 零工作区副作用（外部进程只读调用）。
     McpMeta,
+    /// 并行子代理（§9.5，v1.190）：worktree 隔离的子任务分发——子代理在其
+    /// 受管 worktree 内做 B 级写，本工具面按 B 级闸门。
+    SpawnSubagents,
     /// 网络搜索（§9.2，v1.182）：DuckDuckGo Lite 免密钥后端，C 级出网并审计，
     /// SSRF 守卫与 http_fetch 同轨（tenon-agent webfetch）。
     WebSearch,
@@ -58,6 +61,7 @@ impl Tool {
             Tool::Subtasks => "subtasks",
             Tool::SubmitPlan => "submit_plan",
             Tool::McpMeta => "mcp_meta_*",
+            Tool::SpawnSubagents => "spawn_subagents",
             Tool::WebSearch => "web_search",
             Tool::ApplyPatch => "apply_patch",
             Tool::RunTests => "run_tests",
@@ -85,7 +89,11 @@ impl Tool {
             | Tool::Subtasks
             | Tool::SubmitPlan
             | Tool::McpMeta => Level::A,
-            Tool::ApplyPatch | Tool::RunTests | Tool::RunBuild | Tool::InstallDeps => Level::B,
+            Tool::ApplyPatch
+            | Tool::RunTests
+            | Tool::RunBuild
+            | Tool::InstallDeps
+            | Tool::SpawnSubagents => Level::B,
             Tool::HttpFetch | Tool::WebSearch => Level::C,
             Tool::GitCommit | Tool::GitPush => Level::D,
             Tool::CreatePr => Level::Composite,

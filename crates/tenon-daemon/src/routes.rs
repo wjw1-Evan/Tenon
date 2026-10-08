@@ -222,6 +222,13 @@ pub(crate) async fn create_agent_session(
     let effective = state.effective_models();
     agent_cfg.generation_max_tokens = effective.generation.max_tokens;
     agent_cfg.generation_temperature = effective.generation.temperature;
+    // §9.5 v1.190：子代理编排器（仅 depth-0 会话注入——子会话不再可 spawn，
+    // 递归深度恒为 1；测试注入 provider 的内存态同样可用）。
+    agent_cfg.subagents = Some(std::sync::Arc::new(crate::subagents::DaemonSubagents {
+        state: state.clone(),
+        project: project.clone(),
+        provider: provider.clone(),
+    }));
     // §13.6 v1.180：用户 hooks（settings `[hooks]` 快照，新会话生效）。
     agent_cfg.hooks = state
         .settings_overrides

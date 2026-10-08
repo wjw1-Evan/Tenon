@@ -90,6 +90,9 @@ pub struct AgentConfig {
     /// 用户 hooks（§13.6 v1.180）：daemon 按 settings `[hooks]` 快照注入，
     /// 新会话生效；空 = 无回调。
     pub hooks: Vec<crate::hooks::HookConfig>,
+    /// 子代理编排器（§9.5 v1.190）：daemon 实现注入（worktree 池 + 子会话
+    /// 登记 + 批内并发）；None = 工具返回未接入。新会话生效。
+    pub subagents: Option<std::sync::Arc<dyn crate::subagents::SubagentOrchestrator>>,
 }
 
 impl std::fmt::Debug for AgentConfig {
@@ -140,6 +143,7 @@ impl AgentConfig {
             generation_max_tokens: 16_384,
             generation_temperature: 0.2,
             hooks: Vec::new(),
+            subagents: None,
         }
     }
 }
@@ -278,6 +282,25 @@ fn tool_specs() -> Vec<ToolSpec> {
                 }
             },
             "required": ["items"]
+        })),
+        ("spawn_subagents", "并行分发独立子任务（§9.5：worktree 隔离的子代理，B 级）：tasks 为 1-3 项 {instruction, files}——instruction 一句话完整自洽的子任务指令，files 为该任务计划触碰的文件集（相对路径；各任务文件集不得相交，相交者被拒绝）；每个子代理在独立受管 worktree 内运行并登记为独立会话，完成后返回各自摘要，合并 / 丢弃在子会话行处置；需要多文件并行改造且各文件归属清晰时使用", serde_json::json!({
+            "type": "object",
+            "properties": {
+                "tasks": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "instruction": {"type": "string"},
+                            "files": {"type": "array", "items": {"type": "string"}}
+                        },
+                        "required": ["instruction", "files"]
+                    },
+                    "minItems": 1,
+                    "maxItems": 3
+                }
+            },
+            "required": ["tasks"]
         })),
         ("submit_plan", "提交执行计划并暂停等待用户批准（§9.2 计划模式，Codex 形态；复杂任务先计划后执行，规则见系统提示「计划模式」节）：items 为 1-12 项的一句话计划（说明改什么、为什么、怎么验证）；提交后任务暂停，用户批准后再继续执行；单步任务、纯问答与简单改动不用", serde_json::json!({
             "type": "object",
@@ -1929,6 +1952,8 @@ impl AgentSession {
                         plan_pause = true;
                     }
                     out
+                } else if call.name == "spawn_subagents" {
+                    self.exec_spawn_subagents(&call.arguments).await
                 } else {
                     execute_tool(&self.tool_ctx, &call.name, &call.arguments)
                 };
@@ -2264,6 +2289,87 @@ impl AgentSession {
                 &serde_json::to_value(r).unwrap_or_default(),
             )
             .await;
+        }
+    }
+
+    /// §9.5（v1.190）：spawn_subagents——并行子代理分发。校验（1-3 项、
+    /// instruction 1-4000 字符、files 1-8 条相对路径）→ 委托编排器
+    /// （daemon 实现：worktree 池 + 子会话登记 + 批内并发）。B 级：只读
+    /// 会话在级别闸门已拒；denied_tools 与全目录同轨（tools.rs 注册）。
+    async fn exec_spawn_subagents(&self, args: &serde_json::Value) -> ToolOutput {
+        let Some(orchestrator) = &self.config.subagents else {
+            return ToolOutput::err("子代理编排未接入（daemon 未注入）");
+        };
+        let Some(tasks) = args.get("tasks").and_then(|v| v.as_array()) else {
+            return ToolOutput::err("缺少 tasks 参数（数组，1-3 项）");
+        };
+        if tasks.is_empty() || tasks.len() > 3 {
+            return ToolOutput::err("tasks 须为 1-3 项（§9.5 并发 ≤3）");
+        }
+        let mut spawns: Vec<crate::subagents::SubagentSpawn> = Vec::with_capacity(tasks.len());
+        for (i, t) in tasks.iter().enumerate() {
+            let Some(instruction) = t.get("instruction").and_then(|v| v.as_str()) else {
+                return ToolOutput::err(format!("tasks[{i}].instruction 缺失"));
+            };
+            let instruction = instruction.trim();
+            if instruction.is_empty() || instruction.chars().count() > 4000 {
+                return ToolOutput::err(format!("tasks[{i}].instruction 须为 1-4000 字符"));
+            }
+            let Some(files) = t.get("files").and_then(|v| v.as_array()) else {
+                return ToolOutput::err(format!("tasks[{i}].files 缺失（计划触碰文件集）"));
+            };
+            if files.is_empty() || files.len() > 8 {
+                return ToolOutput::err(format!("tasks[{i}].files 须为 1-8 条"));
+            }
+            let mut set = Vec::with_capacity(files.len());
+            for f in files {
+                let Some(f) = f.as_str() else {
+                    return ToolOutput::err(format!("tasks[{i}].files 元素须为字符串"));
+                };
+                let f = f.trim();
+                if f.is_empty() || f.chars().count() > 256 {
+                    return ToolOutput::err(format!(
+                        "tasks[{i}].files 元素须为 1-256 字符相对路径"
+                    ));
+                }
+                set.push(f.to_string());
+            }
+            spawns.push(crate::subagents::SubagentSpawn {
+                instruction: instruction.to_string(),
+                files: set,
+            });
+        }
+        let results = match orchestrator.run_batch(&self.session_id, spawns).await {
+            Ok(r) => r,
+            Err(e) => return ToolOutput::err(format!("子代理编排失败: {e}")),
+        };
+        if results.is_empty() {
+            return ToolOutput::err("所有子任务因文件集相交被拒绝——请合并任务或缩小文件集");
+        }
+        let mut lines = Vec::with_capacity(results.len() + 1);
+        for r in &results {
+            let excerpt: String = r.answer.chars().take(400).collect();
+            lines.push(format!(
+                "[{}] {} {}\n  worktree: {}\n  {}",
+                r.status, r.task_id, r.session_id, r.worktree, excerpt
+            ));
+        }
+        lines.push(
+            "子代理各自运行于独立受管 worktree 并已登记为独立会话——合并 / 丢弃在子会话行处置。"
+                .to_string(),
+        );
+        ToolOutput {
+            ok: true,
+            content: format!(
+                "子代理批次完成（{} 项）\n{}",
+                results.len(),
+                lines.join("\n")
+            ),
+            changed_files: vec![],
+            lines_changed: None,
+            exit_code: None,
+            dirty_conflict: None,
+            dirty_merged: None,
         }
     }
 

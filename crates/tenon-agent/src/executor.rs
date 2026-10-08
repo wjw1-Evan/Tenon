@@ -100,10 +100,7 @@ fn search_replace_span(before: &str, search: &str) -> Result<(usize, usize), Str
     }
     let mut hits: Vec<usize> = Vec::new();
     for start in 0..=(hay.len() - needle.len()) {
-        let window: Vec<Option<String>> = hay[start..start + needle.len()]
-            .iter()
-            .map(|l| l.clone())
-            .collect();
+        let window = &hay[start..start + needle.len()];
         let matched = window
             .iter()
             .zip(needle.iter())
