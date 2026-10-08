@@ -18,6 +18,15 @@
 - README 不维护版本更新记录（版本明细由 git 历史与 `docs/design-changelog.md` 演进表承载），勿向 README 追加版本条目；
 - 方向性 UI/UX 改动先给双参考方案（如 Codex 形态 vs ZCode 形态）供用户选择，再实现。
 
+## 主动性要求
+
+不等待指派：**主动开发功能、主动完善功能、主动发挥创意**。
+
+- 主动认领 design.md 中已定稿但未实现的功能与路线图缺口，按设计驱动流程推进（先同步 design.md，再实现）；
+- 主动巡检既有功能：发现缺陷、体验粗糙点、性能与一致性问题，直接修复并补测试，不等用户指派；
+- 小而有价值的改进（交互优化、工具能力、开发效率）可自主提案并落地；方向性 UI/UX 大改仍先给双参考方案供用户选择；
+- 主动性不豁免门禁与流程：设计变更仍走 design.md + changelog，提交前跑齐检查（fmt / clippy / test / ui:build），并行会话协作规则照旧。
+
 ## 代码结构（monorepo，ADR-13）
 
 ```text
@@ -33,10 +42,12 @@ crates/
 ├── tenon-laya        # 本地决策模型：choice/score/bool 三原语
 ├── tenon-agent       # Agent 循环：感知→判断→执行→验证 + 审批 + Evals 运行器
 ├── tenon-registry / tenon-mcp   # 静态 registry 客户端 / MCP 外部插件
+├── tenon-evals       # Evals CLI：附录 D 10 任务基准运行器
 └── tenon-daemon      # 本地 HTTP+WS API：token / WS 票据 / 配对 / 团队策略
 ui/                   # React + TS + Monaco 四区工作区 + i18n（中英）+ vitest + Playwright
 app/src-tauri/        # Tauri 桌面壳：daemon sidecar + 握手注入
 scripts/              # dev.sh / dev-daemon.sh（热重载）；install-windows.ps1
+spikes/               # 一次性技术验证脚本（如 Roslyn LSP spike），非产品代码
 evals/                # GLM 基线（baseline-glm.json）
 ```
 
@@ -48,6 +59,7 @@ evals/                # GLM 基线（baseline-glm.json）
 pnpm dev            # 一键：dev daemon + vite HMR。dev daemon 固定 127.0.0.1:9876 + token "dev"，
                     # HOME 隔离到 .tenon-dev/，crates/**.rs 改动自动重建重启；浏览器开 http://localhost:5173
 pnpm dev:daemon     # 仅 dev daemon（配合 pnpm ui）
+pnpm web            # ui:build 后由 daemon 以 --web 伺服构建产物（部署 / 无 vite 场景）
 ```
 
 dev 会话退出（INT/TERM/HUP/正常退出）自动清理 `target/debug/incremental` 纯缓存（deps/ 不动，防 target 无 GC 膨胀）；`TENON_DEV_NOCLEAN=1` 跳过，检测到并行 cargo/rustc 进程自动让路。
