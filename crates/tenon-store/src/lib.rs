@@ -118,6 +118,9 @@ pub enum EventKind {
     Rollback,
     Unrollback,
     ModelFallback,
+    /// 模型瞬时错误自动重试（v1.171 §9.1 自动恢复，payload {provider, model,
+    /// attempt, delay_ms, error}）。
+    ModelRetry,
     DeciderCall,
     Error,
     /// 对话标题生成完成（v1.58，payload {title}）。
@@ -146,6 +149,7 @@ impl EventKind {
             EventKind::Rollback => "rollback",
             EventKind::Unrollback => "unrollback",
             EventKind::ModelFallback => "model_fallback",
+            EventKind::ModelRetry => "model_retry",
             EventKind::DeciderCall => "decider_call",
             EventKind::Error => "error",
             EventKind::SessionTitle => "session_title",
@@ -169,6 +173,7 @@ impl EventKind {
             "rollback" => EventKind::Rollback,
             "unrollback" => EventKind::Unrollback,
             "model_fallback" => EventKind::ModelFallback,
+            "model_retry" => EventKind::ModelRetry,
             "decider_call" => EventKind::DeciderCall,
             "error" => EventKind::Error,
             "session_title" => EventKind::SessionTitle,

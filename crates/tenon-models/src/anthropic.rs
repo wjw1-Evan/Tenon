@@ -286,12 +286,24 @@ impl ModelProvider for AnthropicProvider {
             .await
             .map_err(|e| ProviderError::Network(e.to_string()))?;
         let status = resp.status().as_u16();
+        // 429 在消费 body 前先取 Retry-After 头（v1.171 §9.1 自动恢复退避依据）
+        let retry_after = if status == 429 {
+            ProviderError::retry_after_from_headers(resp.headers())
+        } else {
+            None
+        };
         let text = resp
             .text()
             .await
             .map_err(|e| ProviderError::Network(e.to_string()))?;
         if status >= 400 {
-            return Err(ProviderError::Http { status, body: text });
+            return Err(match status {
+                429 => ProviderError::RateLimited {
+                    body: text,
+                    retry_after,
+                },
+                _ => ProviderError::Http { status, body: text },
+            });
         }
         let v: serde_json::Value =
             serde_json::from_str(&text).map_err(|e| ProviderError::Parse(e.to_string()))?;
@@ -403,13 +415,23 @@ impl ModelProvider for AnthropicProvider {
             .map_err(|e| ProviderError::Network(e.to_string()))?;
         let status = response.status();
         if status.is_client_error() || status.is_server_error() {
+            // 429 在消费 body 前先取 Retry-After 头（v1.171 §9.1 自动恢复退避依据）
+            let retry_after = if status.as_u16() == 429 {
+                ProviderError::retry_after_from_headers(response.headers())
+            } else {
+                None
+            };
             let body = response
                 .text()
                 .await
                 .map_err(|e| ProviderError::Network(e.to_string()))?;
-            return Err(ProviderError::Http {
-                status: status.as_u16(),
-                body,
+            return Err(if status.as_u16() == 429 {
+                ProviderError::RateLimited { body, retry_after }
+            } else {
+                ProviderError::Http {
+                    status: status.as_u16(),
+                    body,
+                }
             });
         }
 

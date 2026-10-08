@@ -38,7 +38,7 @@ const MAX_MEMORIES_PER_PROJECT: usize = 200;
 /// L5 记忆去重余弦阈值（§10.1 v1.104）。
 const MEMORY_DEDUPE_THRESHOLD: f32 = 0.90;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AgentConfig {
     pub project_root: PathBuf,
     pub snapshots_root: PathBuf,
@@ -79,9 +79,32 @@ pub struct AgentConfig {
     pub mcp: Option<Arc<tenon_mcp::McpHost>>,
     /// 价格表（§11 v1.93）：daemon 按 provider 配置构建；未定价模型计 0。
     pub price_table: PriceTable,
+    /// 自动 fallback 备用链（§11 v1.171）：主 provider 瞬时错误重试穷尽后按序
+    /// 自动切换（上下文随迁）；daemon 按 settings `models.fallback` 快照构建注入，
+    /// 新会话生效。空 = 不自动 fallback（主 provider 穷尽即 ERROR，行为同 v1.170 前）。
+    pub fallback_providers: Vec<StdArc<dyn ModelProvider>>,
+}
+
+impl std::fmt::Debug for AgentConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.debug_fields(f)
+    }
 }
 
 impl AgentConfig {
+    /// 手写 Debug（v1.171）：`fallback_providers` 是 trait object 无 Debug，
+    /// 以条目数代替，其余字段照常。
+    fn debug_fields(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentConfig")
+            .field("project_id", &self.project_id)
+            .field("project_root", &self.project_root)
+            .field("fix_rounds", &self.fix_rounds)
+            .field("max_tool_rounds", &self.max_tool_rounds)
+            .field("memories_enabled", &self.memories_enabled)
+            .field("fallback_providers", &self.fallback_providers.len())
+            .finish_non_exhaustive()
+    }
+
     pub fn for_project(project_root: PathBuf, project_id: &str) -> Self {
         Self {
             snapshots_root: tenon_config::Config::data_dir().join("snapshots"),
@@ -106,6 +129,7 @@ impl AgentConfig {
             skills_disabled: Vec::new(),
             mcp: None,
             price_table: PriceTable::new(),
+            fallback_providers: Vec::new(),
         }
     }
 }
@@ -127,6 +151,14 @@ pub enum TaskOutcome {
     Done(EvidenceCard),
     Paused { state: String, reason: String },
     Error(String),
+}
+
+/// v1.171 模型回合自动恢复结果（§9.1）：穷尽落 ERROR，退避中被打断按暂停落地。
+enum ModelTurnError {
+    /// 自动恢复全链穷尽（重试 ≤2 + fallback 链），携带末次错误。
+    Exhausted(tenon_models::ProviderError),
+    /// 退避等待期间收到 interrupt（Esc / 停止）——短路退出，按暂停语义处理。
+    Interrupted,
 }
 
 /// 控制命令（§15 `/session/:id/control`）。
@@ -597,6 +629,15 @@ impl AgentSession {
     /// 切换会话模型（§11 显式路由 / 降级：上下文随迁——消息流不动，
     /// 仅替换 provider，下一回合生效；model_fallback 事件入 Trace）。
     pub async fn switch_provider(&self, new_provider: std::sync::Arc<dyn ModelProvider>) {
+        self.switch_provider_origin(new_provider, "manual").await;
+    }
+
+    /// v1.171：origin 区分手动切换（/model 端点）与自动 fallback 链（§9.1 自动恢复）。
+    async fn switch_provider_origin(
+        &self,
+        new_provider: std::sync::Arc<dyn ModelProvider>,
+        origin: &str,
+    ) {
         let old = self.provider.read().await.default_model();
         {
             let mut guard = self.provider.write().await;
@@ -609,6 +650,7 @@ impl AgentSession {
                 "from": old,
                 "to": new_model,
                 "context_migrated": true,
+                "origin": origin,
             }),
         )
         .await;
@@ -644,8 +686,7 @@ impl AgentSession {
         );
         request.max_tokens = 256;
         request.temperature = 0.1;
-        let response = provider
-            .chat(&request)
+        let response = Self::aux_chat_resilient(&provider, &request)
             .await
             .map_err(|e| AgentError::Model(e.to_string()))?;
         // 非流式辅助调用（补全 / 标题 / 记忆）不计时：duration_ms = 0 = 未观测。
@@ -694,8 +735,7 @@ impl AgentSession {
         request.max_tokens = 128;
         request.temperature = 0.2;
         request.reasoning_effort = Some("low".into());
-        let response = provider
-            .chat(&request)
+        let response = Self::aux_chat_resilient(&provider, &request)
             .await
             .map_err(|e| AgentError::Model(e.to_string()))?;
         self.record_usage(response.usage, 0).await;
@@ -761,7 +801,9 @@ impl AgentSession {
         );
         request.max_tokens = 512;
         request.temperature = 0.2;
-        let response = provider.chat(&request).await.map_err(|e| e.to_string())?;
+        let response = Self::aux_chat_resilient(&provider, &request)
+            .await
+            .map_err(|e| e.to_string())?;
         self.record_usage(response.usage, 0).await;
 
         let parsed: serde_json::Value =
@@ -909,21 +951,19 @@ impl AgentSession {
     /// 流式调用当前模型；权威 usage / tool calls 只取流末尾 Final。
     /// 小增量按 64 字符 / 120ms 合并，避免 SQLite 事件溯源被 token 级写入淹没。
     /// 返回 (响应, 回合耗时毫秒)——耗时自流建立计至权威 Final（v1.129 §11 观测）。
+    /// 错误携带 ProviderError 类型（v1.171：瞬时性判定与 Retry-After 供自动恢复）。
     async fn stream_model_turn(
         &self,
         provider: &StdArc<dyn ModelProvider>,
         request: &ChatRequest,
-    ) -> Result<(tenon_models::ChatResponse, u64), String> {
+    ) -> Result<(tenon_models::ChatResponse, u64), tenon_models::ProviderError> {
         let started = Instant::now();
-        let mut stream = provider
-            .chat_stream(request)
-            .await
-            .map_err(|e| e.to_string())?;
+        let mut stream = provider.chat_stream(request).await?;
         let mut pending = String::new();
         let mut last_flush = Instant::now();
         let mut final_response = None;
         while let Some(item) = stream.next().await {
-            match item.map_err(|e| e.to_string())? {
+            match item? {
                 ChatStreamEvent::Delta(text) => {
                     pending.push_str(&text);
                     if pending.chars().count() >= 64
@@ -944,7 +984,107 @@ impl AgentSession {
         }
         final_response
             .map(|resp| (resp, started.elapsed().as_millis() as u64))
-            .ok_or_else(|| "模型流缺少最终响应".to_string())
+            .ok_or_else(|| tenon_models::ProviderError::Parse("模型流缺少最终响应".into()))
+    }
+
+    /// v1.171 韧性模型调用（§9.1 自动恢复 / §11 fallback 链）：瞬时错误
+    /// （429 / 408 / 5xx / 网络）同 provider 自动重试 ≤2（退避 2s→8s，429 的
+    /// Retry-After 优先、上限 60s），非瞬时错误不重试；主 provider 穷尽后按
+    /// `config.fallback_providers` 顺序自动切换（上下文随迁、后续回合固定备用，
+    /// `model_fallback` origin="auto"），每个备用 ≤1 次瞬时重试；全链穷尽返回
+    /// `Exhausted`（调用方维持 ERROR 侧向出口语义）。退避等待可被 interrupt 打断
+    /// （Esc / 停止）——返回 `Interrupted`，由调用方按暂停落地，不误报模型失败。
+    /// 自动恢复期间不进 ERROR 态（停在当前工作状态）；每次重试发 `model_retry` 事件。
+    async fn call_model_resilient(
+        &self,
+        primary: &StdArc<dyn ModelProvider>,
+        mut request: ChatRequest,
+    ) -> Result<(tenon_models::ChatResponse, u64, ChatRequest), ModelTurnError> {
+        // (provider, 瞬时重试余量)：主 provider ≤2，每个备用 ≤1
+        let mut chain: Vec<(StdArc<dyn ModelProvider>, u32)> = vec![(primary.clone(), 2)];
+        for fallback in &self.config.fallback_providers {
+            chain.push((fallback.clone(), 1));
+        }
+        let mut last_err: Option<tenon_models::ProviderError> = None;
+        for (chain_idx, (provider, retries)) in chain.into_iter().enumerate() {
+            if chain_idx > 0 {
+                tracing::info!(
+                    "模型自动 fallback（§9.1）：{} → {}",
+                    last_err.as_ref().map(|e| e.to_string()).unwrap_or_default(),
+                    provider.default_model()
+                );
+                self.switch_provider_origin(provider.clone(), "auto").await;
+            }
+            request.model = provider.default_model();
+            let mut attempt: u32 = 0;
+            loop {
+                match self.stream_model_turn(&provider, &request).await {
+                    Ok((resp, ms)) => return Ok((resp, ms, request)),
+                    Err(e) => {
+                        attempt += 1;
+                        if !e.is_transient() || attempt > retries {
+                            last_err = Some(e);
+                            break; // 换下一个 provider（或穷尽）
+                        }
+                        let delay = Self::backoff_delay(&e, attempt);
+                        self.emit(
+                            EventKind::ModelRetry,
+                            &serde_json::json!({
+                                "provider": provider.name(),
+                                "model": request.model,
+                                "attempt": attempt,
+                                "delay_ms": delay.as_millis() as u64,
+                                "error": e.to_string(),
+                            }),
+                        )
+                        .await;
+                        if self.interruptible_sleep(delay).await {
+                            return Err(ModelTurnError::Interrupted);
+                        }
+                    }
+                }
+            }
+        }
+        Err(ModelTurnError::Exhausted(last_err.unwrap_or_else(|| {
+            tenon_models::ProviderError::Config("无可用模型（fallback 链为空）".into())
+        })))
+    }
+
+    /// 退避时长（§9.1 v1.171）：429 Retry-After 优先（上限 60s），否则 2s → 8s。
+    fn backoff_delay(err: &tenon_models::ProviderError, attempt: u32) -> Duration {
+        const CAP: Duration = Duration::from_secs(60);
+        let base = if attempt <= 1 {
+            Duration::from_secs(2)
+        } else {
+            Duration::from_secs(8)
+        };
+        err.retry_after().map_or(base, |d| d.min(CAP)).min(CAP)
+    }
+
+    /// 可打断退避：true = 期间收到 interrupt（Esc / 停止）。
+    async fn interruptible_sleep(&self, delay: Duration) -> bool {
+        tokio::select! {
+            _ = tokio::time::sleep(delay) => false,
+            _ = self.interrupt.notified() => true,
+        }
+    }
+
+    /// v1.171 辅助单轮调用韧性（§11）：瞬时错误重试 ≤1（2s 退避，429 尊重
+    /// Retry-After 上限 60s），仍失败返回末次错误——调用方维持既有静默回退
+    /// 语义（标题回退本地截断 / 提取静默跳过 / 补全 UI 静默）。
+    async fn aux_chat_resilient(
+        provider: &StdArc<dyn ModelProvider>,
+        request: &ChatRequest,
+    ) -> Result<tenon_models::ChatResponse, tenon_models::ProviderError> {
+        match provider.chat(request).await {
+            Ok(resp) => Ok(resp),
+            Err(e) if e.is_transient() => {
+                let delay = Self::backoff_delay(&e, 1);
+                tokio::time::sleep(delay).await;
+                provider.chat(request).await
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// 执行一个任务（完整 §9.1 循环）。
@@ -1262,21 +1402,33 @@ impl AgentSession {
                 temperature: 0.2,
                 reasoning_effort: None,
             };
-            let (resp, turn_duration_ms) = match self.stream_model_turn(&provider, &request).await {
-                Ok((r, ms)) => (r, ms),
-                Err(e) => {
-                    // 侧向出口：模型失败 → ERROR（重试语义由 daemon 的 model_fallback 承接）
-                    self.force_state(State::Error).await;
-                    self.set_status(SessionStatus::Error).await;
-                    self.emit(
-                        EventKind::Error,
-                        &serde_json::json!({"error": e.to_string()}),
-                    )
-                    .await;
-                    error_msg = Some(format!("模型调用失败: {e}"));
-                    break 'rounds;
-                }
-            };
+            // v1.171 §9.1 自动恢复：瞬时重试 + 自动 fallback 链在 call_model_resilient
+            // 内完成（不进 ERROR 态）；穷尽才落 ERROR 侧向出口（用户重试 / 切模型 /
+            // 中止语义不变）。返回的 request 已按实际生效 provider 校正 model，
+            // 决策卡如实标注（v1.131 语义）。
+            let (resp, turn_duration_ms, request) =
+                match self.call_model_resilient(&provider, request).await {
+                    Ok((r, ms, req)) => (r, ms, req),
+                    Err(ModelTurnError::Exhausted(e)) => {
+                        // 侧向出口：自动恢复穷尽 → ERROR
+                        self.force_state(State::Error).await;
+                        self.set_status(SessionStatus::Error).await;
+                        self.emit(
+                            EventKind::Error,
+                            &serde_json::json!({"error": e.to_string()}),
+                        )
+                        .await;
+                        error_msg = Some(format!("模型调用失败: {e}"));
+                        break 'rounds;
+                    }
+                    Err(ModelTurnError::Interrupted) => {
+                        // 退避等待被打断（Esc / 停止）：按暂停落地，不误报模型失败
+                        self.force_state(State::Paused).await;
+                        self.set_status(SessionStatus::Paused).await;
+                        paused_reason = Some("模型重试等待被打断（Esc / 停止）".into());
+                        break 'rounds;
+                    }
+                };
             last_input_tokens = resp.usage.input_tokens;
             self.record_usage(resp.usage, turn_duration_ms).await;
             steps += 1;

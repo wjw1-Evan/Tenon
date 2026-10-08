@@ -27,11 +27,22 @@ async fn serve_http(
     content_type: &str,
     body: &str,
 ) -> (String, tokio::task::JoinHandle<CapturedRequest>) {
+    serve_http_with_headers(status, content_type, "", body).await
+}
+
+/// v1.171：extra_headers 形如 "retry-after: 7\r\n"（含行尾 CRLF，可为空）。
+async fn serve_http_with_headers(
+    status: &str,
+    content_type: &str,
+    extra_headers: &str,
+    body: &str,
+) -> (String, tokio::task::JoinHandle<CapturedRequest>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let body = body.to_string();
     let status = status.to_string();
     let content_type = content_type.to_string();
+    let extra_headers = extra_headers.to_string();
     let task = tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.unwrap();
         let mut raw = Vec::new();
@@ -74,7 +85,7 @@ async fn serve_http(
         };
 
         let response = format!(
-            "HTTP/1.1 {status}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            "HTTP/1.1 {status}\r\ncontent-type: {content_type}\r\n{extra_headers}content-length: {}\r\nconnection: close\r\n\r\n{body}",
             body.len()
         );
         socket.write_all(response.as_bytes()).await.unwrap();
@@ -276,11 +287,45 @@ async fn provider_http_errors_map_to_status_and_body() {
         };
         server.await.unwrap();
 
-        let Err(ProviderError::Http { status, body }) = result else {
-            panic!("{provider} HTTP 错误必须映射为 ProviderError::Http");
+        // v1.171 §9.1：429 从 Http 分离为 RateLimited（携带 Retry-After）；
+        // 本服务端不带该头 → retry_after = None（自动恢复退避回退默认 2s）。
+        let Err(ProviderError::RateLimited { body, retry_after }) = result else {
+            panic!("{provider} 429 必须映射为 ProviderError::RateLimited");
         };
-        assert_eq!(status, 429);
         assert_eq!(body, "rate limited");
+        assert_eq!(retry_after, None);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rate_limited_parses_retry_after_header() {
+    for provider in ["openai", "anthropic"] {
+        let (base, server) = serve_http_with_headers(
+            "429 Too Many Requests",
+            "application/json",
+            "retry-after: 7\r\n",
+            "slow down",
+        )
+        .await;
+        let req = ChatRequest::new("model-x", vec![ChatMessage::user("hi")]);
+        let result = if provider == "openai" {
+            tenon_models::OpenAiCompatProvider::new(provider, &base, "", None)
+                .chat(&req)
+                .await
+        } else {
+            tenon_models::AnthropicProvider::new(provider, &base, "", None)
+                .chat(&req)
+                .await
+        };
+        server.await.unwrap();
+        let Err(ProviderError::RateLimited { retry_after, .. }) = result else {
+            panic!("{provider} 429 必须映射为 ProviderError::RateLimited");
+        };
+        assert_eq!(
+            retry_after,
+            Some(std::time::Duration::from_secs(7)),
+            "Retry-After 头必须透传给自动恢复退避"
+        );
     }
 }
 

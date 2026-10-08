@@ -24,6 +24,11 @@ pub enum ScriptedReply {
     Truncated(String),
     /// 模拟供应商故障（触发 ERROR / model_fallback 路径测试）。
     Failure(String),
+    /// 模拟上游限流 429（v1.171 §9.1 自动恢复：瞬时错误，retry_after_ms 模拟
+    /// Retry-After 头——测试用毫秒级退避把用例压进亚秒）。
+    RateLimited { retry_after_ms: Option<u64> },
+    /// 模拟非瞬时故障（401 认证失败等，v1.171：不重试直接 fallback 链）。
+    NonTransient(String),
 }
 
 pub struct MockProvider {
@@ -37,6 +42,8 @@ pub struct MockProvider {
     title_calls: std::sync::Mutex<Vec<ChatRequest>>,
     /// 记忆提取请求（MEMORY_MARKER，v1.104）单独记录，不进 calls / 脚本队列。
     memory_calls: std::sync::Mutex<Vec<ChatRequest>>,
+    /// v1.171 测试钩子：前 N 次标题调用返回 RateLimited（辅助调用重试断言）。
+    title_fail_first: std::sync::Mutex<usize>,
 }
 
 impl MockProvider {
@@ -49,7 +56,13 @@ impl MockProvider {
             calls: std::sync::Mutex::new(Vec::new()),
             title_calls: std::sync::Mutex::new(Vec::new()),
             memory_calls: std::sync::Mutex::new(Vec::new()),
+            title_fail_first: std::sync::Mutex::new(0),
         }
+    }
+
+    /// v1.171 测试钩子：让前 n 次标题生成调用返回瞬时限流（验证辅助调用重试）。
+    pub fn fail_first_title_calls(&self, n: usize) {
+        *self.title_fail_first.lock().expect("title fail lock") = n;
     }
 
     pub fn calls(&self) -> Vec<ChatRequest> {
@@ -83,6 +96,16 @@ impl ModelProvider for MockProvider {
             .iter()
             .any(|m| m.content.contains(crate::TITLE_MARKER))
         {
+            // v1.171 测试钩子：前 N 次瞬时限流（辅助调用重试路径）
+            let mut fail_first = self.title_fail_first.lock().expect("title fail lock");
+            if *fail_first > 0 {
+                *fail_first -= 1;
+                return Err(crate::ProviderError::RateLimited {
+                    body: "mock 标题调用限流".into(),
+                    retry_after: Some(std::time::Duration::from_millis(10)),
+                });
+            }
+            drop(fail_first);
             self.title_calls
                 .lock()
                 .expect("title calls lock")
@@ -207,6 +230,18 @@ impl ModelProvider for MockProvider {
             },
             ScriptedReply::Failure(msg) => {
                 return Err(crate::ProviderError::Network(msg));
+            }
+            ScriptedReply::RateLimited { retry_after_ms } => {
+                return Err(crate::ProviderError::RateLimited {
+                    body: "mock 上游限流".into(),
+                    retry_after: retry_after_ms.map(std::time::Duration::from_millis),
+                });
+            }
+            ScriptedReply::NonTransient(msg) => {
+                return Err(crate::ProviderError::Http {
+                    status: 401,
+                    body: msg,
+                });
             }
         };
         Ok(resp)

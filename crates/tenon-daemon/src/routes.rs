@@ -215,6 +215,9 @@ async fn create_agent_session(
     if state.config.models.laya.enabled {
         agent_cfg.laya = Some(state.laya.clone());
     }
+    // §11 v1.171：自动 fallback 备用链（settings models.fallback 快照，新会话生效）。
+    agent_cfg.fallback_providers =
+        state.build_fallback_chain(provider.name(), &provider.default_model());
     // §10.1 v1.104 接线：L5 跨会话记忆开关（[memories].enabled，默认开）。
     agent_cfg.memories_enabled = state.config.memories.enabled;
     // §13.4 v1.130 接线：技能全局目录 + 停用名单（settings 快照，新会话生效）。

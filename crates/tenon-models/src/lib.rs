@@ -38,6 +38,14 @@ use serde::{Deserialize, Serialize};
 pub enum ProviderError {
     #[error("HTTP 错误 {status}: {body}")]
     Http { status: u16, body: String },
+    /// 上游限流（429，v1.171 §9.1 自动恢复）：从 Http 分离以便携带
+    /// Retry-After 与瞬时性判定；重试退避优先取该值。
+    #[error("上游限流（429）: {body}")]
+    RateLimited {
+        body: String,
+        /// Retry-After 头解析值（仅秒数形态；HTTP 日期或缺失 = None）。
+        retry_after: Option<std::time::Duration>,
+    },
     #[error("网络错误: {0}")]
     Network(String),
     #[error("响应解析失败: {0}")]
@@ -46,6 +54,38 @@ pub enum ProviderError {
     MissingKey(String),
     #[error("配置错误: {0}")]
     Config(String),
+}
+
+impl ProviderError {
+    /// 瞬时性判定（v1.171 §9.1 自动恢复）：限流 / 408 / 5xx / 网络错误可自动
+    /// 重试；认证 / 参数 / 解析 / 配置类错误重试无意义，直接走 fallback 链。
+    pub fn is_transient(&self) -> bool {
+        match self {
+            ProviderError::RateLimited { .. } => true,
+            ProviderError::Http { status, .. } => *status == 408 || (500..=599).contains(status),
+            ProviderError::Network(_) => true,
+            ProviderError::Parse(_) | ProviderError::MissingKey(_) | ProviderError::Config(_) => {
+                false
+            }
+        }
+    }
+
+    /// Retry-After 退避值（仅 RateLimited 携带）。
+    pub fn retry_after(&self) -> Option<std::time::Duration> {
+        match self {
+            ProviderError::RateLimited { retry_after, .. } => *retry_after,
+            _ => None,
+        }
+    }
+
+    /// 从响应头解析 Retry-After（v1.171）：仅秒数形态；HTTP 日期或非法值 = None。
+    fn retry_after_from_headers(
+        headers: &reqwest::header::HeaderMap,
+    ) -> Option<std::time::Duration> {
+        let value = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
+        let secs: u64 = value.trim().parse().ok()?;
+        Some(std::time::Duration::from_secs(secs))
+    }
 }
 
 pub type ProviderResult<T> = std::result::Result<T, ProviderError>;
@@ -249,6 +289,92 @@ pub fn build_provider(
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn transient_classification() {
+        // v1.171 §9.1 自动恢复：瞬时 vs 非瞬时
+        assert!(ProviderError::RateLimited {
+            body: "429".into(),
+            retry_after: Some(std::time::Duration::from_secs(3)),
+        }
+        .is_transient());
+        assert!(ProviderError::Http {
+            status: 408,
+            body: "timeout".into()
+        }
+        .is_transient());
+        assert!(ProviderError::Http {
+            status: 503,
+            body: "unavailable".into()
+        }
+        .is_transient());
+        assert!(ProviderError::Network("conn reset".into()).is_transient());
+        assert!(!ProviderError::Http {
+            status: 401,
+            body: "unauthorized".into()
+        }
+        .is_transient());
+        assert!(!ProviderError::Http {
+            status: 400,
+            body: "bad request".into()
+        }
+        .is_transient());
+        assert!(!ProviderError::Parse("bad json".into()).is_transient());
+        assert!(!ProviderError::MissingKey("glm".into()).is_transient());
+        assert!(!ProviderError::Config("no provider".into()).is_transient());
+    }
+
+    #[test]
+    fn retry_after_only_on_rate_limited() {
+        assert_eq!(
+            ProviderError::RateLimited {
+                body: "429".into(),
+                retry_after: Some(std::time::Duration::from_secs(7)),
+            }
+            .retry_after(),
+            Some(std::time::Duration::from_secs(7))
+        );
+        assert_eq!(
+            ProviderError::RateLimited {
+                body: "429".into(),
+                retry_after: None,
+            }
+            .retry_after(),
+            None
+        );
+        assert_eq!(ProviderError::Network("x".into()).retry_after(), None);
+        assert_eq!(
+            ProviderError::Http {
+                status: 429,
+                body: "legacy shape".into()
+            }
+            .retry_after(),
+            None
+        );
+    }
+
+    #[test]
+    fn retry_after_header_parsing_seconds_only() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        assert_eq!(ProviderError::retry_after_from_headers(&headers), None);
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            "12".parse().expect("header value"),
+        );
+        assert_eq!(
+            ProviderError::retry_after_from_headers(&headers),
+            Some(std::time::Duration::from_secs(12))
+        );
+        // HTTP 日期形态不支持（宁可不退避等待也不误等长间隔）
+        let mut date_headers = reqwest::header::HeaderMap::new();
+        date_headers.insert(
+            reqwest::header::RETRY_AFTER,
+            "Wed, 21 Oct 2026 07:28:00 GMT"
+                .parse()
+                .expect("header value"),
+        );
+        assert_eq!(ProviderError::retry_after_from_headers(&date_headers), None);
+    }
 
     #[test]
     fn build_provider_from_config_kinds() {

@@ -149,6 +149,9 @@ pub struct SettingsOverrides {
     pub market_sources: Option<Vec<String>>,
     /// v1.145 MCP 分区：服务器表（§13.5，整体替换；新会话生效）。
     pub mcp_servers: Option<std::collections::BTreeMap<String, tenon_mcp::McpServerConfig>>,
+    /// v1.171 自动 fallback 链（§11）：`provider` 或 `provider/model` 形态的有序
+    /// 备用名单（≤4 条，整体替换；新会话生效）。None = 不自动 fallback。
+    pub models_fallback: Option<Vec<String>>,
 }
 
 /// mcp.servers 单条校验（§13.5 安装期硬约束；settings PUT 与市场安装共用）。
@@ -242,6 +245,7 @@ impl SettingsOverrides {
             // models 块原子提交：校验全部通过才落（避免 400 时部分覆盖生效）
             let mut next_default = self.models_default.clone();
             let mut next_providers = self.models_providers.clone();
+            let mut next_fallback = self.models_fallback.clone();
             if let Some(d) = models.get("default") {
                 let d = d.as_str().ok_or("models.default 须为字符串")?;
                 if d.is_empty() {
@@ -277,8 +281,41 @@ impl SettingsOverrides {
                 // 整体替换覆盖表（UI 每次保存发全量，支持删除）；基础 config 条目不受影响
                 next_providers = built;
             }
+            if let Some(f) = models.get("fallback") {
+                // v1.171 §11：有序备用模型链，`provider` 或 `provider/model` 形态，
+                // ≤4 条整体替换；空数组 = 清除（回退不自动 fallback）
+                let arr = f.as_array().ok_or("models.fallback 须为字符串数组")?;
+                if arr.len() > 4 {
+                    return Err("models.fallback 最多 4 条".into());
+                }
+                let mut built = Vec::with_capacity(arr.len());
+                for item in arr {
+                    let s = item.as_str().ok_or("models.fallback 须为字符串数组")?;
+                    let s = s.trim();
+                    if s.is_empty() || s.len() > 192 {
+                        return Err("models.fallback 元素须为 1-192 字符".into());
+                    }
+                    let (name, model) = match s.split_once('/') {
+                        Some((n, m)) => (n, Some(m)),
+                        None => (s, None),
+                    };
+                    if !is_valid_provider_name(name) {
+                        return Err(format!("models.fallback provider 名非法: {name}"));
+                    }
+                    if let Some(m) = model {
+                        if m.is_empty() || m.len() > 128 {
+                            return Err(format!("models.fallback 模型名非法: {s}"));
+                        }
+                    }
+                    if !built.contains(&s.to_string()) {
+                        built.push(s.to_string());
+                    }
+                }
+                next_fallback = Some(built);
+            }
             self.models_default = next_default;
             self.models_providers = next_providers;
+            self.models_fallback = next_fallback;
         }
         if let Some(skills) = body.get("skills") {
             if let Some(v) = skills.get("disabled") {
@@ -351,6 +388,16 @@ impl SettingsOverrides {
                 .map(|(k, v)| (k.clone(), v.to_json()))
                 .collect();
             models.insert("providers".into(), serde_json::Value::Object(providers));
+        }
+        if let Some(f) = &self.models_fallback {
+            models.insert(
+                "fallback".into(),
+                serde_json::Value::Array(
+                    f.iter()
+                        .map(|s| serde_json::Value::String(s.clone()))
+                        .collect(),
+                ),
+            );
         }
         let skills = serde_json::json!({
             "disabled": self.skills_disabled.clone().unwrap_or_default(),
@@ -1148,6 +1195,51 @@ impl DaemonState {
             .unwrap_or_else(|| models.default.clone());
         *self.providers.write().unwrap() = map;
         *self.default_provider.write().unwrap() = default;
+    }
+
+    /// v1.171 §11：按 settings `models.fallback` 快照构建会话备用 provider 链
+    /// （新会话生效）。跳过与主 provider 同名同模型的条目；`provider/model`
+    /// 形态按该模型重建；构建失败的条目跳过（宁缺毋滥，不阻塞会话创建）。
+    pub fn build_fallback_chain(
+        &self,
+        primary_provider: &str,
+        primary_model: &str,
+    ) -> Vec<Arc<dyn ModelProvider>> {
+        let ov = self.settings_overrides.lock().unwrap().clone();
+        let Some(entries) = ov.models_fallback.clone() else {
+            return Vec::new();
+        };
+        if entries.is_empty() {
+            return Vec::new();
+        }
+        let mut models = self.config.models.clone();
+        ov.apply_models_to(&mut models);
+        let keys = tenon_models::ChainKeyStore::new();
+        let mut out = Vec::new();
+        for entry in entries.into_iter().take(4) {
+            let (name, model_override) = match entry.split_once('/') {
+                Some((n, m)) => (n, Some(m.to_string())),
+                None => (entry.as_str(), None),
+            };
+            let same_target = name == primary_provider
+                && model_override.as_deref().is_none_or(|m| m == primary_model);
+            if same_target {
+                continue;
+            }
+            let built: Option<Arc<dyn ModelProvider>> = match model_override {
+                None => self.providers.read().unwrap().get(name).cloned(),
+                Some(m) => models.providers.get(name).and_then(|pcfg| {
+                    let mut pcfg = pcfg.clone();
+                    pcfg.model = Some(m);
+                    tenon_models::build_provider(name, &pcfg, &keys).ok()
+                }),
+            };
+            match built {
+                Some(p) => out.push(p),
+                None => tracing::warn!("models.fallback 条目不可用，跳过：{entry}"),
+            }
+        }
+        out
     }
 
     /// 查询项目 canonical root：打开表优先，随后持久登记。
