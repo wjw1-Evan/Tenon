@@ -440,6 +440,9 @@ pub struct DaemonOptions {
     pub db_path: Option<std::path::PathBuf>,
     /// 局域网绑定（§12.6 M3：显式开启；默认仅 127.0.0.1）。
     pub lan_bind: bool,
+    /// 测试钩子：鉴权中间件按局域网对端处理一切请求（v1.166 回环判定改
+    /// 真实对端地址后，集成测试的 LAN 门禁 / 配对流注入通道）。
+    pub force_lan_peer: bool,
     /// 全局配置。
     pub config: Config,
     /// 注入的 provider（测试 / 自定义接入）；否则按 config.models.providers 构建。
@@ -484,6 +487,7 @@ impl DaemonOptions {
         Self {
             db_path: None,
             lan_bind: false,
+            force_lan_peer: false,
             // 测试基座不出网（§9.8）：Laya 自动下载默认关，
             // 需要时显式打开并注入 laya_registry_url 指向本地 registry
             config: {
@@ -845,6 +849,8 @@ pub struct DaemonState {
     pub lan_pairing: Arc<PairingStore>,
     /// `--lan` 绑定 0.0.0.0（v1.157 §12.6：桌面壳 spawn 即传入）；启动即自动启用配对。
     pub lan_bind: bool,
+    /// 测试钩子（auth::AuthState 同名注释）：按局域网对端处理一切请求。
+    pub force_lan_peer: bool,
     /// daemon 监听端口（/pairing 自发现回传给 UI）。
     pub port: std::sync::atomic::AtomicU16,
     /// 权限高级策略（v1.85：只收窄；运行时热更新，仅新会话生效）。
@@ -1048,6 +1054,7 @@ impl DaemonState {
             lsp: Arc::new(LspManager::new()),
             lan_pairing,
             lan_bind: options.lan_bind,
+            force_lan_peer: options.force_lan_peer,
             port: std::sync::atomic::AtomicU16::new(0),
             team_policy: std::sync::RwLock::new(team_policy),
             dirty_buffers: Mutex::new(HashMap::new()),

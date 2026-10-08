@@ -113,17 +113,18 @@ impl CircuitBreaker {
         self.cost_used
     }
 
-    /// 记录一次补丁规模；先检查后提交，超限即熔断（改动不落库）。
+    /// 记录一次补丁规模；与 [`Self::record_usage`] 同规（v1.166）：超限同样
+    /// 记账——调用方在记账前已把补丁写入工作树，拒绝记账只会让熔断计数
+    /// 与实际改动脱节：恢复后行预算从旧值重计，反复暂停/恢复可无限超刷。
     pub fn record_patch(&mut self, fp: PatchFootprint) -> CircuitStatus {
-        if fp.total_files_touched > self.limits.max_files {
+        self.touched_files = fp.total_files_touched;
+        self.changed_lines += fp.lines_changed;
+        if self.touched_files > self.limits.max_files {
             return CircuitStatus::Tripped(TripReason::TooManyFiles);
         }
-        let new_lines = self.changed_lines + fp.lines_changed;
-        if new_lines > self.limits.max_lines {
+        if self.changed_lines > self.limits.max_lines {
             return CircuitStatus::Tripped(TripReason::TooManyLines);
         }
-        self.touched_files = fp.total_files_touched;
-        self.changed_lines = new_lines;
         CircuitStatus::Open
     }
 
@@ -209,8 +210,10 @@ mod tests {
             }),
             CircuitStatus::Tripped(TripReason::TooManyLines)
         );
-        // 熔断后不提交计数
-        assert_eq!(b.changed_lines(), 60);
+        // 超限同样记账（v1.166，与 record_usage 同规）：调用方落盘在前，
+        // status() 与恢复后的预算必须看到一致累计值
+        assert_eq!(b.changed_lines(), 101);
+        assert_eq!(b.status(), CircuitStatus::Tripped(TripReason::TooManyLines));
     }
 
     #[test]

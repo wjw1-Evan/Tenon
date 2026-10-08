@@ -2,7 +2,7 @@
 
 use crate::guard::{GuardDecision, LspGuard, LspGuardConfig};
 use crate::transport::{FrameRead, FrameWrite};
-use crate::{RpcMessage, METHOD_NOT_FOUND, REQUEST_DENIED};
+use crate::{RpcError, RpcMessage, METHOD_NOT_FOUND, REQUEST_DENIED};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
@@ -154,10 +154,18 @@ impl LspHost {
         let mut params = serde_json::json!({
             "processId": std::process::id(),
             // 完整 percent-encode（路径含空格 / 非 ASCII 时裸拼是非法 URI，
-            // 严格的服务器（pyright）会工作区匹配失败）
+            // 严格的服务器（pyright）会工作区匹配失败）；root 同步 canonicalize，
+            // 与 didOpen 等文档 URI 同基——符号链接根（/tmp → /private/tmp）不同
+            // 前缀会被服务器工作区前缀匹配判成项目外
             "rootUri": format!(
                 "file://{}",
-                crate::pack::percent_encode_path(&self.root.to_string_lossy())
+                crate::pack::percent_encode_path(
+                    &self
+                        .root
+                        .canonicalize()
+                        .unwrap_or_else(|_| self.root.clone())
+                        .to_string_lossy()
+                )
             ),
             "capabilities": {
                 "textDocument": {
@@ -247,6 +255,26 @@ fn reader_loop(mut reader: Box<dyn FrameRead>, host: Arc<LspHost>) {
 }
 
 fn handle_server_request(host: &Arc<LspHost>, msg: RpcMessage) {
+    // 数字 id 走正常分发；字符串等其它类型 id 无法经数字路由表回程，
+    // 但规范要求必须应答——统一回 METHOD_NOT_FOUND，服务器才不会挂起干等
+    let foreign_id_response = match msg.id.clone() {
+        Some(serde_json::Value::Number(_)) | None => None,
+        Some(other) => Some(RpcMessage {
+            jsonrpc: Some("2.0".into()),
+            id: Some(other),
+            method: None,
+            params: None,
+            result: None,
+            error: Some(RpcError {
+                code: METHOD_NOT_FOUND,
+                message: "宿主不支持该服务器请求（非数字 id）".into(),
+            }),
+        }),
+    };
+    if let Some(err) = foreign_id_response {
+        send_response(host, &err);
+        return;
+    }
     let id = match msg.id {
         Some(serde_json::Value::Number(n)) => n.as_i64().unwrap_or(-1),
         _ => return,
@@ -270,8 +298,10 @@ fn handle_server_request(host: &Arc<LspHost>, msg: RpcMessage) {
             .guard
             .check_workspace_edit(&params.get("edit").cloned().unwrap_or_default())
         {
+            // 宿主不代写服务器发起的编辑（写盘统一走 daemon 写守卫链路）：
+            // 如实回 applied:false 交服务器走用户确认/重试，不得谎报已落盘
             GuardDecision::Allowed => {
-                RpcMessage::response(id, serde_json::json!({"applied": true}))
+                RpcMessage::response(id, serde_json::json!({"applied": false}))
             }
             GuardDecision::Denied => RpcMessage::error_response(
                 id,
@@ -282,8 +312,9 @@ fn handle_server_request(host: &Arc<LspHost>, msg: RpcMessage) {
         "window/showDocument" => {
             let uri = params.get("uri").and_then(|u| u.as_str()).unwrap_or("");
             match host.guard.check_show_document(uri) {
+                // 同 applyEdit：宿主不执行展示动作，如实回 success:false
                 GuardDecision::Allowed => {
-                    RpcMessage::response(id, serde_json::json!({"success": true}))
+                    RpcMessage::response(id, serde_json::json!({"success": false}))
                 }
                 GuardDecision::Denied => {
                     RpcMessage::error_response(id, REQUEST_DENIED, "铁律七：showDocument 越界拒绝")
@@ -314,17 +345,21 @@ fn handle_server_request(host: &Arc<LspHost>, msg: RpcMessage) {
         _ => RpcMessage::error_response(id, METHOD_NOT_FOUND, "宿主不支持该服务器请求"),
     };
 
+    send_response(host, &response);
+}
+
+fn send_response(host: &Arc<LspHost>, response: &RpcMessage) {
     if std::env::var("TENON_LSP_DEBUG").is_ok() {
         eprintln!(
             "[lsp-out-resp] {}",
-            serde_json::to_string(&response)
+            serde_json::to_string(response)
                 .unwrap_or_default()
                 .chars()
                 .take(200)
                 .collect::<String>()
         );
     }
-    if let Ok(body) = serde_json::to_string(&response) {
+    if let Ok(body) = serde_json::to_string(response) {
         let mut w = host.writer.lock().expect("writer lock");
         let _ = w.write_frame(&body);
     }

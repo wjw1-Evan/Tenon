@@ -67,23 +67,36 @@ export function mergeThreeWay(base: string, ours: string, theirs: string): strin
     const o = oursHunks[oi];
     const t = theirsHunks[ti];
     if (!o && !t) break;
-    const useOurs = o && (!t || o.baseStart <= t.baseStart);
-    const hunk = useOurs ? o! : t!;
-    const other = useOurs ? t : o;
-    const overlaps =
-      other &&
-      ((hunk.baseStart < other.baseEnd && other.baseStart < hunk.baseEnd) ||
-        (hunk.baseStart === other.baseStart && hunk.baseEnd === other.baseEnd));
-    if (overlaps) {
+    // 同起点时零宽插入先消费（插入逻辑上位于替换区之前）：否则替换块
+    // 先把 pos 推过插入点，补行循环直接跳过、插入静默丢弃（与内核同规）
+    let useOurs: boolean;
+    if (o && t) {
+      useOurs =
+        o.baseStart === t.baseStart
+          ? o.baseStart === o.baseEnd || t.baseStart !== t.baseEnd
+          : o.baseStart < t.baseStart;
+    } else {
+      useOurs = !!o;
+    }
+    const hunk = (useOurs ? o : t)!;
+    // 与另一侧任一未消费 hunk 判重叠：只看对侧当前指针会漏判
+    // 「对侧后续 hunk 落入本 hunk 已应用区间」——既不报冲突又静默复活
+    // 已删除行、产出损坏内容（回归见内核 merge.rs 同名测试）
+    const rest = useOurs ? theirsHunks.slice(ti) : oursHunks.slice(oi);
+    if (rest.some((other) => hunksOverlap(hunk, other))) {
+      const a = oursHunks[oi]!;
+      const b = theirsHunks[ti]!;
       if (
-        o!.replacement === t!.replacement &&
-        o!.baseStart === t!.baseStart
+        a.replacement === b.replacement &&
+        a.baseStart === b.baseStart &&
+        a.baseEnd === b.baseEnd
       ) {
-        for (let i = pos; i < hunk.baseStart && i < baseLines.length; i++) {
+        // 两侧相同改动：取一次
+        for (let i = pos; i < a.baseStart && i < baseLines.length; i++) {
           result += baseLines[i];
         }
-        result += o!.replacement;
-        pos = hunk.baseEnd;
+        result += a.replacement;
+        pos = a.baseEnd;
         oi += 1;
         ti += 1;
         continue;
@@ -102,4 +115,19 @@ export function mergeThreeWay(base: string, ours: string, theirs: string): strin
     result += baseLines[i];
   }
   return result;
+}
+
+function hunksOverlap(a: Hunk, b: Hunk): boolean {
+  // 区间相交（端点相接不算冲突：相邻行各自改动可干净合并）
+  if (a.baseStart < b.baseEnd && b.baseStart < a.baseEnd) return true;
+  // 等区间：同位置插入对插入、同范围替换对替换
+  if (a.baseStart === b.baseStart && a.baseEnd === b.baseEnd) return true;
+  // 零宽插入严格落在对方替换区间内部：锚定行已被对方删除，位置语义无法保全
+  if (a.baseStart === a.baseEnd) {
+    return b.baseStart < a.baseStart && a.baseStart < b.baseEnd;
+  }
+  if (b.baseStart === b.baseEnd) {
+    return a.baseStart < b.baseStart && b.baseStart < a.baseEnd;
+  }
+  return false;
 }

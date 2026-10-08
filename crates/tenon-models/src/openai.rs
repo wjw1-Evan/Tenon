@@ -329,19 +329,28 @@ impl ModelProvider for OpenAiCompatProvider {
                 arr.iter()
                     .filter_map(|tc| {
                         let func = tc.get("function")?;
-                        Some(ToolCallReq {
-                            id: tc.get("id")?.as_str()?.to_string(),
-                            name: func.get("name")?.as_str()?.to_string(),
-                            arguments: func
-                                .get("arguments")
-                                .and_then(|a| a.as_str())
-                                .and_then(|s| serde_json::from_str(s).ok())
-                                .unwrap_or(serde_json::Value::Object(Default::default())),
-                        })
+                        let raw = func.get("arguments").and_then(|a| a.as_str()).unwrap_or("");
+                        // 缺省/空串按无参处理；非空但解析失败是协议错误，
+                        // 不得静默替换为空参执行（与流式路径同规）
+                        let arguments = if raw.trim().is_empty() {
+                            Ok(serde_json::Value::Object(Default::default()))
+                        } else {
+                            serde_json::from_str(raw).map_err(|e| {
+                                ProviderError::Parse(format!("tool_call arguments 非 JSON: {e}"))
+                            })
+                        };
+                        match arguments {
+                            Ok(arguments) => Some(Ok(ToolCallReq {
+                                id: tc.get("id")?.as_str()?.to_string(),
+                                name: func.get("name")?.as_str()?.to_string(),
+                                arguments,
+                            })),
+                            Err(e) => Some(Err(e)),
+                        }
                     })
-                    .collect()
+                    .collect::<Result<Vec<_>, _>>()
             })
-            .unwrap_or_default();
+            .unwrap_or_else(|| Ok(Vec::new()))?;
 
         let usage = v.get("usage").cloned().unwrap_or_default();
         Ok(ChatResponse {

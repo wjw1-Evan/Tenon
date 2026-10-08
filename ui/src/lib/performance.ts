@@ -59,7 +59,8 @@ function readSamples(): ColdStartSample[] {
 export function percentile(samples: number[], ratio: number): number | undefined {
   const values = samples.filter(Number.isFinite).sort((a, b) => a - b);
   if (!values.length) return undefined;
-  const index = Math.min(values.length - 1, Math.ceil(values.length * ratio) - 1);
+  // floor：偶数个样本时落在上半区间（n=4 → index 2 = 上中位）
+  const index = Math.min(values.length - 1, Math.floor(values.length * ratio));
   return values[Math.max(0, index)];
 }
 

@@ -1020,37 +1020,66 @@ impl Store {
     ) -> Result<Event> {
         let now = Self::now();
         let project_id = self.project_id_for_session(session_id);
-        let seq: i64 = self.conn.query_row(
-            "SELECT COALESCE(MAX(seq), 0) + 1 FROM events WHERE session_id = ?1",
-            [session_id],
-            |r| r.get(0),
-        )?;
-        self.conn.execute(
-            "INSERT INTO events (session_id, project_id, seq, type, payload, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                session_id,
+        // seq 分配 + 插入包进 BEGIN IMMEDIATE：多实例并存（壳 --no-lock 双开 /
+        // CLI 与 daemon 并存，本文件 DDL 注释明示支持）时，SELECT MAX 与 INSERT
+        // 间的空窗会让两个进程算出同一 seq，败者撞 UNIQUE(session_id, seq)
+        // 直接丢事件。IMMEDIATE 在事务起点即取写锁，读-写空窗不复存在。
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> Result<Event> {
+            let seq: i64 = self.conn.query_row(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM events WHERE session_id = ?1",
+                [session_id],
+                |r| r.get(0),
+            )?;
+            self.conn.execute(
+                "INSERT INTO events (session_id, project_id, seq, type, payload, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    session_id,
+                    project_id,
+                    seq,
+                    kind.as_str(),
+                    payload.to_string(),
+                    now
+                ],
+            )?;
+            Ok(Event {
+                id: self.conn.last_insert_rowid(),
+                session_id: session_id.to_string(),
                 project_id,
                 seq,
-                kind.as_str(),
-                payload.to_string(),
-                now
-            ],
-        )?;
-        Ok(Event {
-            id: self.conn.last_insert_rowid(),
-            session_id: session_id.to_string(),
-            project_id,
-            seq,
-            kind,
-            payload: payload.clone(),
-            created_at: now,
-        })
+                kind,
+                payload: payload.clone(),
+                created_at: now,
+            })
+        })();
+        match result {
+            Ok(event) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(event)
+            }
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
     }
 
     /// 全量事件（按会话内 seq 升序）。
     pub fn events(&mut self, session_id: &str) -> Result<Vec<Event>> {
         self.events_since(session_id, 0)
+    }
+
+    /// 原始事件链（含截断水位内的隐藏行，私有）：冷归档专用——归档必须
+    /// 是完整 append-only 链，截断只是对 UI/Trace 隐藏（行留库可审计），
+    /// 用带过滤的 [`Self::events`] 归档会让冷存储出现永久空洞。
+    fn events_raw(&mut self, session_id: &str) -> Result<Vec<Event>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, session_id, project_id, seq, type, payload, created_at
+             FROM events WHERE session_id = ?1 ORDER BY seq ASC",
+        )?;
+        let rows = stmt.query_map(params![session_id], row_to_event)?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
     /// 断线续传：返回 seq > after_seq 的事件（§15）。
@@ -1121,6 +1150,13 @@ impl Store {
         )?;
         let rows = stmt.query_map(params![after_global_id, limit], row_to_event)?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// 当前最大全局事件 id：WS 新连接从实时尾部起步，不重放历史。
+    pub fn max_event_id(&mut self) -> i64 {
+        self.conn
+            .query_row("SELECT COALESCE(MAX(id), 0) FROM events", [], |r| r.get(0))
+            .unwrap_or(0)
     }
 
     pub fn latest_seq(&mut self, session_id: &str) -> Result<i64> {
@@ -1350,37 +1386,34 @@ impl Store {
         query: Option<&str>,
         limit: usize,
     ) -> Result<Vec<Memory>> {
-        let mut stmt = self.conn.prepare(
+        let has_query = matches!(query, Some(q) if !q.is_empty());
+        // 子串过滤必须发生在 LIMIT 之前（SQLite lower() 只做 ASCII，
+        // Unicode 大小写归一留在 Rust 侧）：先 LIMIT 会把排序靠后但命中的
+        // 行截掉，搜索命中却返回空
+        let sql = format!(
             "SELECT id, scope, project_id, kind, content, importance,
                     source_session, created_at, updated_at, last_seen_at
              FROM memories
              WHERE (scope = 'project' AND project_id = ?1)
                 OR (scope = 'global' AND kind = 'preference')
              ORDER BY importance DESC, last_seen_at DESC
-             LIMIT ?2",
-        )?;
-        let rows = stmt
-            .query_map(params![project_id, limit as i64], |r| {
-                Ok(Memory {
-                    id: r.get(0)?,
-                    scope: r.get(1)?,
-                    project_id: r.get(2)?,
-                    kind: r.get(3)?,
-                    content: r.get(4)?,
-                    importance: r.get(5)?,
-                    source_session: r.get(6)?,
-                    created_at: r.get(7)?,
-                    updated_at: r.get(8)?,
-                    last_seen_at: r.get(9)?,
-                })
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+             {}",
+            if has_query { "" } else { "LIMIT ?2" }
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = if has_query {
+            stmt.query_map(params![project_id], map_memory_row)?
+        } else {
+            stmt.query_map(params![project_id, limit as i64], map_memory_row)?
+        }
+        .collect::<std::result::Result<Vec<_>, _>>()?;
         match query {
             Some(q) if !q.is_empty() => {
                 let q = q.to_lowercase();
                 Ok(rows
                     .into_iter()
                     .filter(|m| m.content.to_lowercase().contains(&q))
+                    .take(limit)
                     .collect())
             }
             _ => Ok(rows),
@@ -1863,7 +1896,8 @@ impl Store {
         for sid in &stale {
             // 已归档过（上次 DELETE events 后崩溃的重跑）：events 为空时
             // 直接跳过——用零事件覆盖先前完好的归档会把事件溯源链永久截断
-            let events = self.events(sid)?;
+            // （events_raw：含截断隐藏行，归档链必须完整）
+            let events = self.events_raw(sid)?;
             if events.is_empty() {
                 continue;
             }
@@ -1910,6 +1944,21 @@ impl Store {
 }
 
 // ---------- row mappers ----------
+
+fn map_memory_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Memory> {
+    Ok(Memory {
+        id: r.get(0)?,
+        scope: r.get(1)?,
+        project_id: r.get(2)?,
+        kind: r.get(3)?,
+        content: r.get(4)?,
+        importance: r.get(5)?,
+        source_session: r.get(6)?,
+        created_at: r.get(7)?,
+        updated_at: r.get(8)?,
+        last_seen_at: r.get(9)?,
+    })
+}
 
 fn row_to_project(r: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
     Ok(Project {

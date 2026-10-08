@@ -59,10 +59,23 @@ pub async fn recover_stale_sessions(
         let mut errors: Vec<(String, String)> = Vec::new();
         let (project_path, files_rolled) = {
             let mut st = store.lock().await;
-            let Some(project) = st.project(&project_id)? else {
-                continue;
+            // 尽力恢复语义：单会话查库失败只记错跳过，不得让整个恢复报告
+            // （含已回滚会话清单）随 `?` 一起丢弃
+            let project = match st.project(&project_id) {
+                Ok(Some(p)) => p,
+                Ok(None) => continue,
+                Err(e) => {
+                    errors.push((session_id.clone(), e.to_string()));
+                    continue;
+                }
             };
-            let cps = st.checkpoints(&session_id)?;
+            let cps = match st.checkpoints(&session_id) {
+                Ok(cps) => cps,
+                Err(e) => {
+                    errors.push((session_id.clone(), e.to_string()));
+                    continue;
+                }
+            };
             // 最近恢复点：最后一个带文件集的快照（含「先快照后写入」的写前行，
             // EXECUTING 中崩溃正是要回到它）
             let target = cps.iter().rev().find(|c| !c.files.is_empty()).cloned();

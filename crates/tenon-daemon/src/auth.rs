@@ -18,10 +18,12 @@ pub struct TicketStore {
 impl TicketStore {
     pub fn issue(&self) -> String {
         let ticket = crate::generate_token();
-        self.tickets
-            .lock()
-            .expect("tickets lock")
-            .insert((ticket.clone(), Instant::now() + Duration::from_secs(60)));
+        let mut tickets = self.tickets.lock().expect("tickets lock");
+        // 发放时同步清理过期项：/pairing 免鉴权可无限刷 issue，
+        // 只在 consume 里清会让票据集合无界增长
+        let now = Instant::now();
+        tickets.retain(|(_, exp)| *exp > now);
+        tickets.insert((ticket.clone(), now + Duration::from_secs(60)));
         ticket
     }
 
@@ -78,40 +80,91 @@ fn same_host_origin(origin: &str, host_header: Option<&str>) -> bool {
         .unwrap_or(origin);
     let origin_host = authority_host(origin_authority);
     let req_host = authority_host(host);
-    origin_host == req_host && req_host.parse::<std::net::IpAddr>().is_ok()
+    // IPv6 字面量带方括号（authority_host 保留），IpAddr 解析须先剥括号
+    let req_ip = req_host.trim_start_matches('[').trim_end_matches(']');
+    origin_host == req_host && req_ip.parse::<std::net::IpAddr>().is_ok()
 }
 
+/// 鉴权中间件共享状态：主 token + 局域网配对存储 + 测试钩子。
+#[derive(Clone)]
+pub struct AuthState {
+    pub master: String,
+    pub pairing: std::sync::Arc<PairingStore>,
+    /// 测试钩子（v1.166）：回环判定改为真实连接对端地址后，集成测试经
+    /// loopback socket 无法模拟非回环对端——置位后一律按局域网对端处理，
+    /// LAN 门禁 / 配对流仍走完整真实链路（进程内显式注入，不读环境变量，
+    /// 避免并行测试串扰）。
+    pub force_lan_peer: bool,
+}
+
+/// 主 token 专属端点（§15 标注「主 token」）：已配对设备令牌不得调用——
+/// /lan/status 会回当前配对码，设备令牌可自建新配对实现「吊销后仍存活」。
+const MASTER_ONLY_ROUTES: [&str; 3] = ["/lan/enable", "/lan/status", "/lan/revoke"];
+
 /// HTTP 鉴权 + Origin/Host 校验 + CORS 响应头中间件。
-/// state = (主 token, 局域网配对存储)：配对设备令牌经 PairingStore 校验。
 pub async fn auth_middleware(
-    state: axum::extract::State<(String, std::sync::Arc<PairingStore>)>,
+    state: axum::extract::State<AuthState>,
     headers: HeaderMap,
     request: Request<Body>,
     next: Next,
 ) -> Response {
-    let token = &state.0;
-    let pairing = &state.1;
+    let token = &state.master;
+    let pairing = &state.pairing;
     // Host 校验（§12.6）：回环 = 本机访问；局域网地址 = 显式开启 + 已配对令牌
     //（/lan/pair 以一次性配对码自证免令牌；/ws 靠首帧一次性票据——浏览器
     // WebSocket 无法自定义请求头，配对令牌带不上）
+    //
+    // 域名形态 Host 一律拒绝（DNS rebinding 面 §12.6）：合法访问形态只有
+    // 回环名（本机）与 IP 直访（局域网已配对设备）；域名 Host 必为伪造——
+    // 浏览器经攻击域名解析到 127.0.0.1 时对端恰是回环，Host 是唯一破绽。
     let path = request.uri().path();
     let host_header = headers.get(header::HOST).and_then(|h| h.to_str().ok());
-    let mut lan_request = false;
     if let Some(host) = host_header {
         let host_part = authority_host(host);
-        if host_part != "127.0.0.1" && host_part != "localhost" && host_part != "[::1]" {
-            lan_request = true;
+        let host_is_ip = host_part
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<std::net::IpAddr>()
+            .is_ok();
+        if host_part != "localhost" && !host_is_ip {
+            return (StatusCode::FORBIDDEN, "host rejected").into_response();
         }
     }
+    // 回环判定以真实连接对端地址为准（v1.166）：Host 头由客户端完全控制，
+    // 局域网客户端伪造 `Host: 127.0.0.1`（或不带 Host）即可伪装成本机请求，
+    // 把免令牌的 /pairing 主 token 披露向全网开放（未配对设备即可读取）。
+    // 对端地址判局域网后，/pairing 与其他 API 同受下方配对门禁约束——
+    // 未配对 403；已配对设备按 v1.157 流程领主 token + lan_url（设计语义）。
+    let lan_request = state.force_lan_peer
+        || match request
+            .extensions()
+            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+            .map(|c| c.0)
+        {
+            Some(peer) => !peer.ip().is_loopback(),
+            None => {
+                let host_is_loopback = host_header
+                    .map(|host| {
+                        let host_part = authority_host(host);
+                        host_part == "127.0.0.1" || host_part == "localhost" || host_part == "[::1]"
+                    })
+                    // HTTP/1.0 可无 Host：按本机请求处理（与既有行为一致）
+                    .unwrap_or(true);
+                !host_is_loopback
+            }
+        };
     if lan_request && path != "/lan/pair" && path != "/ws" {
         // 局域网访问（--lan 绑定后）：须持已配对设备令牌（X-Tenon-Paired，
-        // 经 PairingStore 校验；吊销即失效，§12.6 可吊销）
+        // 经 PairingStore 校验；吊销即失效，§12.6 可吊销）。主 token 同样
+        // 放行——持有者本就是全权，不因来源是局域网而收窄；/pairing 的
+        // 主 token 披露仍限回环（见上）。
+        let master = headers.get("X-Tenon-Token").and_then(|t| t.to_str().ok());
         let paired = headers
             .get("X-Tenon-Paired")
             .and_then(|t| t.to_str().ok())
             .map(|t| pairing.verify_token(t))
             .unwrap_or(false);
-        if !paired {
+        if !paired && master != Some(token.as_str()) {
             return (
                 StatusCode::FORBIDDEN,
                 "lan access requires paired device token",
@@ -156,7 +209,8 @@ pub async fn auth_middleware(
         return StatusCode::OK.into_response();
     }
     // Token 校验（/health、/pairing、/lan/pair 免鉴权；/ws 用一次性票据首帧鉴权 ADR-10）。
-    // 主 token（X-Tenon-Token）或已配对设备令牌（X-Tenon-Paired，PairingStore 校验）均可。
+    // 主 token（X-Tenon-Token）或已配对设备令牌（X-Tenon-Paired，PairingStore 校验）均可；
+    // 主 token 专属端点（§15）只认主 token——设备令牌不得借道提升权限。
     let auth_exempt =
         path == "/health" || path == "/ws" || path == "/pairing" || path == "/lan/pair";
     if !auth_exempt {
@@ -166,9 +220,16 @@ pub async fn auth_middleware(
             .and_then(|t| t.to_str().ok())
             .map(|t| pairing.verify_token(t))
             .unwrap_or(false);
-        let ok = master == Some(token.0.as_str()) || paired;
-        if !ok {
+        let master_ok = master == Some(token.as_str());
+        if !master_ok && !paired {
             return (StatusCode::UNAUTHORIZED, "missing or invalid token").into_response();
+        }
+        if !master_ok && MASTER_ONLY_ROUTES.contains(&path) {
+            return (
+                StatusCode::FORBIDDEN,
+                "this endpoint requires the master token",
+            )
+                .into_response();
         }
     }
     let mut response = next.run(request).await;
@@ -219,10 +280,11 @@ mod tests {
     /// 且不要求 token（浏览器预检不携带自定义头）；非白名单源仍 403。
     #[tokio::test]
     async fn preflight_options_allowed_without_token_and_rejects_foreign_origin() {
-        let state = (
-            String::from("tok"),
-            std::sync::Arc::new(PairingStore::default()),
-        );
+        let state = AuthState {
+            master: String::from("tok"),
+            pairing: std::sync::Arc::new(PairingStore::default()),
+            force_lan_peer: false,
+        };
         let app = axum::Router::new()
             .route("/projects/open", axum::routing::post(|| async { "ok" }))
             .layer(axum::middleware::from_fn_with_state(
@@ -274,6 +336,117 @@ mod tests {
     }
 
     #[test]
+    fn same_host_origin_accepts_ipv6_literal() {
+        // v1.166：方括号形式须剥括号后按 IpAddr 解析，此前永远 403
+        assert!(same_host_origin("http://[::1]:41234", Some("[::1]:41234")));
+    }
+
+    /// v1.166 回归：回环判定不得依赖客户端可控的 Host 头——局域网对端
+    /// （注入非回环 ConnectInfo）伪造 `Host: 127.0.0.1` 不得经免鉴权
+    /// /pairing 拿到主 token；真实回环连接不受影响。
+    #[tokio::test]
+    async fn lan_peer_cannot_spoof_loopback_via_host_header() {
+        let pairing = std::sync::Arc::new(PairingStore::default());
+        let state = AuthState {
+            master: String::from("master-tok"),
+            pairing,
+            force_lan_peer: false,
+        };
+        let app = axum::Router::new()
+            .route(
+                "/pairing",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({ "token": "master-tok" }))
+                }),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                auth_middleware,
+            ));
+        let lan = axum::extract::ConnectInfo(std::net::SocketAddr::new(
+            std::net::IpAddr::from([192, 168, 1, 9]),
+            51000,
+        ));
+        let local = axum::extract::ConnectInfo(std::net::SocketAddr::new(
+            std::net::IpAddr::from([127, 0, 0, 1]),
+            51001,
+        ));
+
+        let mut req = Request::builder()
+            .uri("http://127.0.0.1/pairing")
+            .header(header::HOST, "127.0.0.1")
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut().insert(lan);
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::FORBIDDEN,
+            "伪造 Host 的局域网请求不得读主 token"
+        );
+
+        let mut req = Request::builder()
+            .uri("http://127.0.0.1/pairing")
+            .header(header::HOST, "127.0.0.1")
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut().insert(local);
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "真实回环连接仍放行");
+    }
+
+    /// v1.166 回归：主 token 专属端点（/lan/status 等）不接受设备令牌——
+    /// 否则被吊销设备可借 /lan/status 回吐的配对码自建新配对续命。
+    #[tokio::test]
+    async fn paired_device_token_cannot_call_master_only_routes() {
+        let pairing = std::sync::Arc::new(PairingStore::new());
+        let code = pairing.enable();
+        let device_token = pairing.pair("phone", &code).expect("配对成功");
+        let state = AuthState {
+            master: String::from("tok"),
+            pairing,
+            force_lan_peer: false,
+        };
+        let app = axum::Router::new()
+            .route("/lan/status", axum::routing::get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                auth_middleware,
+            ));
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("http://127.0.0.1/lan/status")
+                    .header(header::HOST, "127.0.0.1")
+                    .header("X-Tenon-Token", "tok")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "主 token 放行");
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("http://127.0.0.1/lan/status")
+                    .header(header::HOST, "127.0.0.1")
+                    .header("X-Tenon-Paired", &device_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::FORBIDDEN,
+            "设备令牌不得调主 token 专属端点"
+        );
+    }
+
+    #[test]
     fn same_host_origin_requires_ip_literal_host() {
         // 局域网 IP 直访同源 → 放行
         assert!(same_host_origin(
@@ -305,7 +478,11 @@ mod tests {
         let pairing = std::sync::Arc::new(PairingStore::new());
         let code = pairing.enable();
         let device_token = pairing.pair("phone", &code).expect("配对成功");
-        let state = (String::from("tok"), pairing);
+        let state = AuthState {
+            master: String::from("tok"),
+            pairing,
+            force_lan_peer: false,
+        };
         let app = axum::Router::new()
             .route("/projects/open", axum::routing::post(|| async { "ok" }))
             .route("/ws", axum::routing::get(|| async { "ws" }))

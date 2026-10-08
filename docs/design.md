@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v1.165** |
-| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.156）· 2026-10-07（v1.157-v1.162）· 2026-10-08（v1.163-v1.165） |
+| 版本 | **v1.166** |
+| 日期 | 2026-10-03（v1.11/v1.12）· 2026-10-04（v1.13-v1.85）· 2026-10-05（v1.86-v1.131）· 2026-10-06（v1.132-v1.156）· 2026-10-07（v1.157-v1.162）· 2026-10-08（v1.163-v1.166） |
 | 状态 | 定稿（v1.10 决策闭环），M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 | 历史评审 | v0.1 / v0.3 两轮共 41 项、v1.0 复审 21 项问题的结论已全部并入本方案（过程文档已清理） |
@@ -569,7 +569,7 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 ### 9.7 项目内多会话与跨项目并发
 
 - **并行写锁（v1.87，参考 codex 多线程 managed worktree 隔离）**：写锁键为 `(project_id, worktree_scope)`——绑定项目主根的会话仍互斥（同一时刻仅一个 EXECUTING，其余会话限 SENSING / 只读，或排队等待写锁）；绑定不同受管 worktree 的会话可与主根会话及彼此并行 EXECUTING；写锁只约束代理会话——用户编辑不受限，与代理的并发冲突仍走 §8.6 脏缓冲协调；全局 `max_concurrent_agent_tasks`（默认 2）约束全部 EXECUTING 会话，跨项目并行与同项目 worktree 并行共用同一配额；
-- **会话级受管 worktree（v1.87）**：创建会话时可选「独立 worktree 运行」——daemon 在 `~/.tenon/worktrees/<project_id>/<session_id>/` 创建内核托管 worktree（创建机制与 §9.5 子代理同款，对 `.git` 的元数据写入计 B 级项目内写）；写边界 / 沙箱 profile / 快照分片均按该 worktree 隔离（§12.3 / §10.3），L4 索引、脏缓冲与事件仍按 `project_id` 归属；任务完成后两条收尾路径——**合并**：先对项目根 checkpoint，再按会话改动文件集三方合入（冲突出 §8.6 合并预览，不静默覆盖；B 级、可回滚），**丢弃**：显式确认后删除受管 worktree 与其快照分片（不动用户根）；未收尾的 worktree 会话常驻会话列表并计入项目行徽标，daemon 不自动合并 / 自动删除；
+- **会话级受管 worktree（v1.87）**：创建会话时可选「独立 worktree 运行」——daemon 在 `~/.tenon/worktrees/<project_id>/<session_id>/` 创建内核托管 worktree（创建机制与 §9.5 子代理同款，对 `.git` 的元数据写入计 B 级项目内写）；写边界 / 沙箱 profile / 快照分片均按该 worktree 隔离（§12.3 / §10.3），L4 索引、脏缓冲与事件仍按 `project_id` 归属；任务完成后两条收尾路径——**合并**：先对项目根 checkpoint，再按会话改动文件集三方合入（冲突出 §8.6 合并预览，不静默覆盖；B 级、可回滚），**丢弃**：显式确认后删除受管 worktree 与其快照分片（不动用户根）；**v1.166 合并即收尾**：全量干净合并（无冲突且无脏缓冲跳过）后同步删除 worktree 目录与快照分片（与丢弃同法；有脏缓冲跳过则保留待重合并——被跳过的改动只存在于 worktree，删目录即丢失），收尾后归档 / 删除守卫放行；未收尾的 worktree 会话常驻会话列表并计入项目行徽标，daemon 不自动合并 / 自动删除；
 - **checkpoint 隔离**：快照库按项目 × worktree 隔离（`~/.tenon/snapshots/`，§10.3），不写用户仓库；快照点归属会话（checkpoints 表，§14.2），会话只能回滚自己链上的快照；
 - **回滚冲突检测**：回滚前检查工作区是否含其他会话或用户的未合并改动，有则先出三方合并预览（§8.6），不静默覆盖；
 - 共享 LSP 实例跨会话多路复用，请求按会话路由与限流（§8.5）。
@@ -904,7 +904,7 @@ signature: "<sig>"
 | GET | `/session/:id` | 会话状态（state 等运行时摘要，UI 轮询权威）；响应含发送消息队列 `queue: [{id, text}]`（v1.147，多窗口一致，随既有轮询刷新） |
 | DELETE | `/session/:id/queue/:msg_id` | 移除一条排队消息（v1.147 §9.1；编辑 = 移除后重新发送） |
 | POST | `/session/:id/control` | pause（挂起任务）/ resume（继续原任务，v1.93 实装）/ stop / rollback（快捷回滚至最近 checkpoint，等价于 `/checkpoint/:id/rollback` 最近点，勿单独实现第二条路径）/ unrollback（撤销最近回滚，§10.3）/ set_readonly（v1.93 实装，工具步间即时生效）/ compact（v1.161，手动压缩——下一模型回合跳过 24k 阈值强制省略陈旧工具输出，§10.2） |
-| POST | `/session/:id/worktree/merge` | 受管 worktree 会话收尾·合并（v1.87）：先 checkpoint 项目根，再按会话改动文件集三方合入；冲突返回 §8.6 合并预览，不静默覆盖（B 级，可回滚） |
+| POST | `/session/:id/worktree/merge` | 受管 worktree 会话收尾·合并（v1.87）：先 checkpoint 项目根，再按会话改动文件集三方合入；冲突返回 §8.6 合并预览，不静默覆盖（B 级，可回滚）；v1.166 全量干净合入（无冲突且无脏缓冲跳过）即删除 worktree 目录与快照分片（§9.7 合并即收尾） |
 | POST | `/session/:id/worktree/discard` | 受管 worktree 会话收尾·丢弃（v1.87）：显式确认后删除受管 worktree 与其快照分片，不动用户根 |
 | POST | `/session/:id/archive` | 归档会话（v1.103）：侧栏默认隐藏、可还原；运行中或 runtime 存活 409，受管 worktree 未收尾 409 |
 | POST | `/session/:id/unarchive` | 取消归档（v1.103）：恢复侧栏列表 |

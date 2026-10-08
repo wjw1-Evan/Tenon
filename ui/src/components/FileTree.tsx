@@ -415,6 +415,14 @@ export function FileTree({
               id="tree-prompt-input"
               value={prompt.value}
               autoFocus
+              onKeyDown={(event) => {
+                // 契约（hooks.ts）：弹层消费 Esc 必须 preventDefault，
+                // 否则穿透到全局 handler 会误暂停运行中的代理任务
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  setPrompt(null);
+                }
+              }}
               onChange={(event) => setPrompt({ ...prompt, value: event.target.value })}
             />
             <div className="tree-prompt-actions">

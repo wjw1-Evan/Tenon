@@ -86,8 +86,22 @@ impl ProjectRules {
                             let v = v.trim().trim_matches('"');
                             match k {
                                 "readonly" => rules.readonly = Some(v == "true"),
-                                "deny_tools" => rules.denied_tools = parse_quoted_list(v),
-                                "deny_commands" => rules.denied_commands = parse_quoted_list(v),
+                                // 同文件多块/同块重复键按并集收窄：整体替换会让
+                                // 先前块的 deny 静默消失（只收窄不放宽，§9.6）
+                                "deny_tools" => {
+                                    for t in parse_quoted_list(v) {
+                                        if !rules.denied_tools.contains(&t) {
+                                            rules.denied_tools.push(t);
+                                        }
+                                    }
+                                }
+                                "deny_commands" => {
+                                    for c in parse_quoted_list(v) {
+                                        if !rules.denied_commands.contains(&c) {
+                                            rules.denied_commands.push(c);
+                                        }
+                                    }
+                                }
                                 _ => {}
                             }
                         }

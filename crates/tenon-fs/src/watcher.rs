@@ -56,7 +56,7 @@ impl FileWatcher {
                                  canonical_root: PathBuf| {
             move |res: notify::Result<notify::Event>| {
                 if let Ok(event) = res {
-                    for path in event.paths {
+                    for (idx, path) in event.paths.iter().enumerate() {
                         let rel = path
                             .strip_prefix(&root_owned)
                             .or_else(|_| path.strip_prefix(&canonical_root))
@@ -66,15 +66,8 @@ impl FileWatcher {
                         if should_ignore(&rel) {
                             continue;
                         }
-                        let kind = if event.kind.is_create() {
-                            ChangeKind::Created
-                        } else if event.kind.is_remove() {
-                            ChangeKind::Removed
-                        } else if event.kind.is_modify() {
-                            ChangeKind::Modified
-                        } else {
-                            continue;
-                        };
+                        let kind = classify_kind(&event, idx);
+                        let Some(kind) = kind else { continue };
                         let _ = tx.send(ChangeEvent { path: rel, kind });
                     }
                 }
@@ -129,7 +122,7 @@ impl FileWatcher {
                                  canonical_root: PathBuf| {
             move |res: notify::Result<notify::Event>| {
                 if let Ok(event) = res {
-                    for path in event.paths {
+                    for (idx, path) in event.paths.iter().enumerate() {
                         let rel = path
                             .strip_prefix(&root_owned)
                             .or_else(|_| path.strip_prefix(&canonical_root))
@@ -142,15 +135,8 @@ impl FileWatcher {
                         if should_ignore(&rel) {
                             continue;
                         }
-                        let kind = if event.kind.is_create() {
-                            ChangeKind::Created
-                        } else if event.kind.is_remove() {
-                            ChangeKind::Removed
-                        } else if event.kind.is_modify() {
-                            ChangeKind::Modified
-                        } else {
-                            continue;
-                        };
+                        let kind = classify_kind(&event, idx);
+                        let Some(kind) = kind else { continue };
                         let _ = tx.send(ChangeEvent { path: rel, kind });
                     }
                 }
@@ -231,6 +217,29 @@ fn should_ignore(rel: &str) -> bool {
     // 与嵌套 dist/**（pnpm monorepo 常态），FSEvents 事件风暴被放大
     const IGNORED_SEGMENTS: [&str; 5] = [".git", "target", "node_modules", "dist", ".tenon"];
     rel.split('/').any(|seg| IGNORED_SEGMENTS.contains(&seg))
+}
+
+/// 单路径事件分类：rename 在原生后端以 Modify(Name(RenameMode)) 报告，
+/// 不映射会把旧路径报成 Modified（已不存在）、新路径也报成 Modified（从未见过）。
+/// 归一化：From=旧路径等价删除，To=新路径等价创建，Both 按下标配对 [旧, 新]，
+/// Any（后端无法区分方向）保守回退 Modified。
+fn classify_kind(event: &notify::Event, path_index: usize) -> Option<ChangeKind> {
+    use notify::event::{ModifyKind, RenameMode};
+    match &event.kind {
+        notify::EventKind::Create(_) => Some(ChangeKind::Created),
+        notify::EventKind::Remove(_) => Some(ChangeKind::Removed),
+        notify::EventKind::Modify(ModifyKind::Name(RenameMode::From)) => Some(ChangeKind::Removed),
+        notify::EventKind::Modify(ModifyKind::Name(RenameMode::To)) => Some(ChangeKind::Created),
+        notify::EventKind::Modify(ModifyKind::Name(RenameMode::Both)) => {
+            if path_index == 0 {
+                Some(ChangeKind::Removed)
+            } else {
+                Some(ChangeKind::Created)
+            }
+        }
+        notify::EventKind::Modify(_) => Some(ChangeKind::Modified),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

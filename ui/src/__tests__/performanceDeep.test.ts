@@ -37,7 +37,8 @@ describe("performance deep", () => {
     expect(percentile([NaN, Infinity], 0.5)).toBeUndefined();
     expect(percentile([10], 0.5)).toBe(10);
     expect(percentile([1, 2, 3, 4, 5], 0.5)).toBe(3);
-    expect(percentile([4, 1, 3, 2], 0.5)).toBe(2);
+    // 偶数样本取上中位（v1.166 对齐函数契约「不因取整而偏乐观」）
+    expect(percentile([4, 1, 3, 2], 0.5)).toBe(3);
   });
 
   it("recordWorkspaceInputReady stores and caps at limit", () => {

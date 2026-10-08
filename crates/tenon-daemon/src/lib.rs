@@ -196,11 +196,17 @@ pub async fn serve(options: DaemonOptions) -> std::io::Result<DaemonHandle> {
     let cleanup_endpoint = manage_endpoint_file;
     tokio::spawn(async move {
         let mut shutdown_rx = shutdown_rx;
-        let _ = axum::serve(listener, app)
-            .with_graceful_shutdown(async move {
-                let _ = shutdown_rx.wait_for(|v| *v).await;
-            })
-            .await;
+        // into_make_service_with_connect_info：中间件取真实连接对端地址做
+        // 回环判定（Host 头客户端可伪造，v1.166 前局域网客户端伪装
+        // `Host: 127.0.0.1` 即可骗过回环判定拿到主 token）
+        let _ = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move {
+            let _ = shutdown_rx.wait_for(|v| *v).await;
+        })
+        .await;
         if cleanup_endpoint {
             let _ = std::fs::remove_file(&endpoint_for_shutdown);
         }
@@ -428,22 +434,44 @@ impl InstanceLock {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        if path.exists() {
-            // 陈旧锁检测：pid 不存活则复用
-            if let Ok(pid) = std::fs::read_to_string(&path) {
-                if let Ok(pid) = pid.trim().parse::<i32>() {
-                    if pid_alive(pid) {
+        // 独占创建（O_EXCL，§6.2）：并发启动时恰好一个成功，不存在
+        // 「双方都见无文件、都写入」的 check-then-write 窗口。文件已存在时
+        // 做陈旧锁检测：pid 不存活才移除并重试一次。
+        for _ in 0..2 {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(mut file) => {
+                    use std::io::Write as _;
+                    file.write_all(std::process::id().to_string().as_bytes())?;
+                    return Ok(Self { path });
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+                    let live = existing
+                        .trim()
+                        .parse::<i32>()
+                        .map(pid_alive)
+                        // 内容不可读 / 非 pid：按陈旧锁复用（原实现同口径）
+                        .unwrap_or(false);
+                    if live {
                         return Err(std::io::Error::new(
                             std::io::ErrorKind::AlreadyExists,
-                            format!("tenon daemon 已在运行（pid {pid}）"),
+                            format!("tenon daemon 已在运行（pid {}）", existing.trim()),
                         ));
                     }
+                    let _ = std::fs::remove_file(&path);
                 }
+                Err(e) => return Err(e),
             }
-            let _ = std::fs::remove_file(&path);
         }
-        std::fs::write(&path, std::process::id().to_string())?;
-        Ok(Self { path })
+        // 陈旧锁移除后仍被抢占（极端竞争）：按已存在处理，不做无限重试
+        Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "tenon daemon 锁竞争失败，请重试",
+        ))
     }
 
     pub fn pid(&self) -> u32 {

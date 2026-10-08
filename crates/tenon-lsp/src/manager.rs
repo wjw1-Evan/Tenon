@@ -17,6 +17,9 @@ use crate::transport::ProcessConnection;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 /// 诊断推送等待窗口。
 const DIAGNOSTICS_WAIT: Duration = Duration::from_secs(15);
+// 已有 full 拉取结果兜底时，等待推送补优的短窗口（防 didOpen 空推竞态即可，
+// 拉不到推送的服务器不值得每调白等 15s）
+const DIAGNOSTICS_PUSH_PREFER: Duration = Duration::from_secs(2);
 
 #[derive(Debug, thiserror::Error)]
 pub enum LspManagerError {
@@ -273,8 +276,15 @@ impl LspManager {
                 if kind == "full" {
                     let items = report.get("items").cloned().unwrap_or_default();
                     // 刚 didOpen 时，部分服务器先回 full 空，再推真实诊断；
-                    // 给推送一个窗口，若得到非空则优先采用。
-                    let pushed = wait_diagnostics(&diag_cache, &uri, DIAGNOSTICS_WAIT)?;
+                    // 给推送一个短窗口（已有完整拉取结果兜底，不值得等满预算），
+                    // 若得到非空则优先采用。等待是同步轮询，必须丢进阻塞线程池。
+                    let cache = diag_cache.clone();
+                    let u = uri.clone();
+                    let pushed = tokio::task::spawn_blocking(move || {
+                        wait_diagnostics(&cache, &u, DIAGNOSTICS_PUSH_PREFER)
+                    })
+                    .await
+                    .map_err(|e| LspManagerError::Request(format!("join 失败: {e}")))??;
                     let pushed_items = pushed.as_array().cloned().unwrap_or_default();
                     if !pushed_items.is_empty() {
                         return Ok(serde_json::json!({ "items": pushed_items }));
@@ -284,12 +294,23 @@ impl LspManager {
                 if kind == "unchanged" {
                     // unchanged = 「上次报告仍有效」：直接回空数组会把已有诊断
                     // 抹成干净（对验证通道是误判）——回退到推送缓存内容
-                    let cached = wait_diagnostics(&diag_cache, &uri, Duration::from_millis(200))
-                        .unwrap_or(serde_json::Value::Array(vec![]));
+                    let cache = diag_cache.clone();
+                    let u = uri.clone();
+                    let cached = tokio::task::spawn_blocking(move || {
+                        wait_diagnostics(&cache, &u, Duration::from_millis(200))
+                    })
+                    .await
+                    .map_err(|e| LspManagerError::Request(format!("join 失败: {e}")))?
+                    .unwrap_or(serde_json::Value::Array(vec![]));
                     return Ok(serde_json::json!({ "items": cached }));
                 }
             }
-            let items = wait_diagnostics(&diag_cache, &uri, DIAGNOSTICS_WAIT)?;
+            let cache = diag_cache.clone();
+            let u = uri.clone();
+            let items =
+                tokio::task::spawn_blocking(move || wait_diagnostics(&cache, &u, DIAGNOSTICS_WAIT))
+                    .await
+                    .map_err(|e| LspManagerError::Request(format!("join 失败: {e}")))??;
             return Ok(serde_json::json!({ "items": items }));
         }
 

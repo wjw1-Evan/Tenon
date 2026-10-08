@@ -29,8 +29,11 @@ use crate::state::{
 };
 
 pub fn build_router(state: Arc<DaemonState>) -> Router {
-    let token = state.token.clone();
-    let auth_state = (token, state.lan_pairing.clone());
+    let auth_state = crate::auth::AuthState {
+        master: state.token.clone(),
+        pairing: state.lan_pairing.clone(),
+        force_lan_peer: state.force_lan_peer,
+    };
     Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/ws-ticket", post(ws_ticket))
@@ -502,6 +505,15 @@ async fn delete_project(State(state): State<Arc<DaemonState>>, Path(id): Path<St
     }
     state.close_project_runtime(&id).await;
     let mut store = state.store.lock().await;
+    // 归档会话同样持有 sessions.project_id 外键（无级联删除）：只查未归档
+    // 会让 remove_project 撞外键以 500 暴毙，须与未归档一并拦截为 409
+    match store.list_archived_sessions(&id) {
+        Ok(sessions) if !sessions.is_empty() => {
+            return api_err(StatusCode::CONFLICT, "项目有归档会话；登记不能删除");
+        }
+        Ok(_) => {}
+        Err(e) => return api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
     match store.list_sessions(&id) {
         Ok(sessions) if !sessions.is_empty() => {
             return api_err(StatusCode::CONFLICT, "项目有历史会话；登记不能删除");
@@ -615,7 +627,19 @@ async fn create_session(
     .await
     {
         Ok(s) => s,
-        Err((status, message)) => return api_err(status, message),
+        Err((status, message)) => {
+            // 会话创建失败：已落盘的受管 worktree 无会话行引用，永不复用，
+            // 必须就地清除（否则成孤儿目录泄漏）。pool.remove 按会话 id 定位。
+            if let Some(sid) = managed_session_id.as_deref() {
+                let pool = tenon_agent::subagents::WorktreePool::new(
+                    state
+                        .worktrees_root
+                        .join(sanitize_worktree_component(&project.id)),
+                );
+                let _ = pool.remove(std::path::Path::new(&project.path), sid);
+            }
+            return api_err(status, message);
+        }
     };
     if let Some(wt) = &managed_worktree {
         let mut st = state.store.lock().await;
@@ -1178,24 +1202,65 @@ async fn merge_session_worktree(
         .collect::<std::collections::BTreeSet<_>>();
     let snapshots_root = state.snapshots_root.clone();
     let max_untracked_mb = state.config.checkpoint.max_untracked_mb;
+    let root_for_merge = project_root.clone();
+    let pid_for_merge = project_id.clone();
+    let wt_for_merge = wt.clone();
     let report = tokio::task::spawn_blocking(move || {
         merge_worktree_into_root(
             &snapshots_root,
-            &project_id,
+            &pid_for_merge,
             max_untracked_mb,
-            &project_root,
-            &wt,
+            &root_for_merge,
+            &wt_for_merge,
             &dirty,
         )
     })
     .await;
     match report {
-        Ok(Ok(report)) if report.conflicts.is_empty() => Json(json!(report)).into_response(),
-        Ok(Ok(report)) => (
+        Ok(Ok(report))
+            if report.conflicts.is_empty()
+                && !report
+                    .skipped
+                    .iter()
+                    .any(|s| s.get("reason").and_then(|r| r.as_str()) == Some("dirty_buffer")) =>
+        {
+            // 全量干净合并即收尾（§9.7 v1.166）：文件已并入主根，worktree 目录
+            // 与快照分片随之清除（与 discard 同法）——目录残留会被 housekeeping
+            // 守卫判成「未收尾」，会话从此永远无法归档/删除。
+            // 收尾条件只排除 dirty_buffer 跳过（被跳过的改动只存在于 worktree，
+            // 删目录即丢失）；already_applied / already_absent 等幂等跳过不阻塞
+            // （重合并在所难免：merged 文件二轮比对恒为 already_applied）。
+            let snapshots_root = state.snapshots_root.clone();
+            let worktrees_root = state
+                .worktrees_root
+                .join(sanitize_worktree_component(&project_id));
+            let pid_for_cleanup = project_id.clone();
+            let wt_for_cleanup = wt.clone();
+            let cleanup = tokio::task::spawn_blocking(move || {
+                let pool = tenon_agent::subagents::WorktreePool::new(worktrees_root);
+                pool.remove(&project_root, &id).map_err(|e| e.to_string())?;
+                SnapshotStore::remove_worktree_shard(
+                    &snapshots_root,
+                    &pid_for_cleanup,
+                    &wt_for_cleanup,
+                )
+                .map_err(|e| e.to_string())?;
+                Ok::<(), String>(())
+            })
+            .await;
+            match cleanup {
+                Ok(Ok(())) => Json(json!(report)).into_response(),
+                Ok(Err(message)) => api_err(StatusCode::CONFLICT, message),
+                Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+            }
+        }
+        Ok(Ok(report)) if !report.conflicts.is_empty() => (
             StatusCode::CONFLICT,
             Json(json!({"error": "MERGE_CONFLICT", "report": report})),
         )
             .into_response(),
+        // 仅跳过（脏缓冲等）无冲突：200 合并未完成，worktree 保留待重合并
+        Ok(Ok(report)) => Json(json!(report)).into_response(),
         Ok(Err(message)) => api_err(StatusCode::CONFLICT, message),
         Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
@@ -2696,6 +2761,11 @@ async fn set_dirty_buffer(
     let Some(project_root) = project_root_by_id(&state, &id).await else {
         return api_err(StatusCode::NOT_FOUND, "project not found");
     };
+    // 路径守卫（§15 项目作用域）：join 遇绝对路径会整体替换根、`..` 段可
+    // 越出项目边界——脏缓冲键必须是项目内相对路径（与 read/write 同规）
+    if body.path.starts_with('/') || body.path.split(['/', '\\']).any(|seg| seg == "..") {
+        return api_err(StatusCode::BAD_REQUEST, "PATH_ESCAPE");
+    }
     let buffers = state.dirty_buffers_for(&id).await;
     let base = std::fs::read_to_string(project_root.join(&body.path)).unwrap_or_default();
     buffers.set(&body.path, &body.dirty, &base);
@@ -3221,6 +3291,22 @@ async fn create_project_memory(
         .and_then(|v| v.as_str())
         .unwrap_or("project")
         .to_string();
+    if scope != "project" && scope != "global" {
+        return api_err(StatusCode::BAD_REQUEST, "scope 须为 project 或 global");
+    }
+    // §10.1：scope=global 仅接受 kind=preference——global 层对全部项目可见，
+    // fact/style 落 global 会污染其他项目的会话记忆
+    if scope == "global"
+        && !matches!(
+            body.get("kind").and_then(|v| v.as_str()),
+            Some("preference")
+        )
+    {
+        return api_err(
+            StatusCode::BAD_REQUEST,
+            "scope=global 仅接受 kind=preference",
+        );
+    }
     let importance = body.get("importance").and_then(|v| v.as_i64()).unwrap_or(4);
     let mut store = state.store.lock().await;
     match store.project(&project_id) {
@@ -3325,13 +3411,17 @@ async fn put_settings(State(state): State<Arc<DaemonState>>, Json(body): Json<Va
     let models_changed = body.get("models").is_some();
     {
         let mut ov = state.settings_overrides.lock().unwrap();
-        if let Err(e) = ov.merge_json(&body) {
+        // 原子提交（v1.166）：在克隆体上合并 + 全量校验，全部通过才回写。
+        // 直接在共享体上 merge_json 会在后续块 400 时留下「内存已部分生效、
+        // 磁盘未落、运行时未重建」的三态分叉，且坏值驻留后续保存全被拒。
+        let mut staged = ov.clone();
+        if let Err(e) = staged.merge_json(&body) {
             return api_err(StatusCode::BAD_REQUEST, e);
         }
         // models.default 须指向合并后已配置的 provider（v1.40）
-        if let Some(d) = &ov.models_default {
+        if let Some(d) = &staged.models_default {
             let mut models = state.config.models.clone();
-            ov.apply_models_to(&mut models);
+            staged.apply_models_to(&mut models);
             if !models.providers.contains_key(d) {
                 return api_err(
                     StatusCode::BAD_REQUEST,
@@ -3339,7 +3429,8 @@ async fn put_settings(State(state): State<Arc<DaemonState>>, Json(body): Json<Va
                 );
             }
         }
-        ov.persist_to(&state.settings_path);
+        staged.persist_to(&state.settings_path);
+        *ov = staged;
     }
     if models_changed {
         state.rebuild_providers();
@@ -3506,9 +3597,15 @@ async fn ws_first_frame_auth(
     let _ = socket.send(Message::text("auth ok".to_string())).await;
     let mut file_events = state.file_events.subscribe();
     let mut l4_status_events = state.l4_status_events.subscribe();
-    // 事件流：轮询 store 推送（M1 换进程内广播）；断线续传按 seq 由 /trace 拉取
+    // 事件流：轮询 store 推送（M1 换进程内广播）；断线续传按 seq 由 /trace 拉取。
+    // last_seen 从当前最大 id 起步：新连接只推实时尾部——从 0 重放会把整张
+    // 事件表按 100/300ms 喂给每个新连接（重连风暴下放大为分钟级回放）。
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(300));
-    let mut last_seen: i64 = 0;
+    let mut last_seen: i64 = {
+        let mut store = state.store.lock().await;
+        store.max_event_id()
+    };
+    interval.reset();
     loop {
         tokio::select! {
             _ = interval.tick() => {
@@ -3518,6 +3615,9 @@ async fn ws_first_frame_auth(
                 };
                 for ev in events {
                     last_seen = last_seen.max(ev.id);
+                    if project_filter.as_ref().is_some_and(|f| *f != ev.project_id) {
+                        continue;
+                    }
                     if socket
                         .send(Message::text(
                             serde_json::to_string(&ev).unwrap_or_default(),

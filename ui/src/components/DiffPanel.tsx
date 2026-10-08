@@ -36,6 +36,13 @@ export function DiffPanel({
   const [scrollTop, setScrollTop] = useState(0);
   const [measuredHeight, setMeasuredHeight] = useState(viewportHeight);
   const lines = useMemo(() => (diff ? parseDiffLines(diff) : []), [diff]);
+  // diff 内容变化（切换回合 / 新 diff 到达）时回到顶部：沿用旧偏移会停在
+  // 与新内容无关的位置（更短的新 diff 还会被夹在尾部）
+  useEffect(() => {
+    setScrollTop(0);
+    const node = bodyRef.current;
+    if (node) node.scrollTop = 0;
+  }, [diff]);
   const height = Math.max(1, measuredHeight || DEFAULT_VIEWPORT_HEIGHT);
   const visibleCount = Math.ceil(height / LINE_HEIGHT);
   const start = Math.max(0, Math.floor(scrollTop / LINE_HEIGHT) - OVERSCAN_LINES);

@@ -68,6 +68,9 @@ export function ModelRoutingPanel({ api, sessionId, t, onSwitched, onOpenOnboard
     setBusy(true);
     try {
       setSuggest(await api.modelSuggest(suggestText.trim()));
+    } catch (e) {
+      // 失败呈现而非静默：建议按钮点不动是「本地模型不可用」需要暴露
+      setError(String(e));
     } finally {
       setBusy(false);
     }

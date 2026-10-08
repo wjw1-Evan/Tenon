@@ -115,6 +115,19 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, p
     setSkillsDisabled(settings.skills?.disabled ?? []);
   }, [settings]);
 
+  // Esc 关面板（hooks.ts 契约：消费了 Esc 必须 preventDefault，否则事件
+  // 穿透到全局 handler 会误暂停运行中的代理任务）；保存/局域网操作进行中不关
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (busy || lanBusy) return;
+      event.preventDefault();
+      onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [busy, lanBusy, onClose]);
+
   // Laya 状态（§15 GET /models）只读展示
   useEffect(() => {
     api

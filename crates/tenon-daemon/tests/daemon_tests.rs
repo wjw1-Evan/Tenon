@@ -1529,6 +1529,8 @@ async fn lan_bind_requires_paired_device_token() {
     options.default_provider = "mock".into();
     options.snapshots_root = Some(dir.path().join("snapshots"));
     options.lan_bind = true; // §12.6 M3：显式开启
+                             // v1.166 回环判定改真实对端地址后，loopback 集成测试经此钩子模拟局域网对端
+    options.force_lan_peer = true;
     let handle = tenon_daemon::serve(options).await.unwrap();
 
     // 局域网源（Host 为 LAN 地址）无配对令牌 → 403
@@ -1540,8 +1542,11 @@ async fn lan_bind_requires_paired_device_token() {
         .unwrap();
     assert_eq!(denied.status(), 403, "LAN 未持令牌应拒绝");
 
-    // 本机回环不受影响
-    let local = reqwest::get(format!("{}/health", base(handle.port)))
+    // 主 token 持有者不受配对门禁限制（v1.166：强制 LAN 下仍全权）
+    let local = reqwest::Client::new()
+        .get(format!("{}/health", base(handle.port)))
+        .header("X-Tenon-Token", &handle.token)
+        .send()
         .await
         .unwrap();
     assert_eq!(local.status(), 200);
@@ -1559,6 +1564,8 @@ async fn lan_pairing_flow_end_to_end() {
     options.default_provider = "mock".into();
     options.snapshots_root = Some(dir.path().join("snapshots"));
     options.lan_bind = true;
+    // v1.166 回环判定改真实对端地址后，loopback 集成测试经此钩子模拟局域网对端
+    options.force_lan_peer = true;
     let handle = tenon_daemon::serve(options).await.unwrap();
     let port = handle.port;
     let token = handle.token.clone();
@@ -2865,32 +2872,8 @@ async fn managed_worktree_session_merge_conflict_and_discard() {
         "冲突不得静默覆盖主根"
     );
 
-    // 主根回到 base 后重合并 → 干净合入（改写 + 新文件）
+    // 主根回到 base；worktree 侧新增 dirty.txt 并登记脏缓冲 → 合并跳过且不收尾
     std::fs::write(root.join("tracked.txt"), "line1\nline2\nline3\n").unwrap();
-    let resp = client
-        .post(format!("{}/session/{sid}/worktree/merge", base(port)))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    let report = resp.json::<serde_json::Value>().await.unwrap();
-    let merged = report["merged"].as_array().unwrap();
-    assert!(merged.contains(&serde_json::json!("tracked.txt")));
-    assert!(merged.contains(&serde_json::json!("new_file.txt")));
-    assert_eq!(
-        std::fs::read_to_string(root.join("tracked.txt")).unwrap(),
-        "line1\nWT\nline3\n"
-    );
-    assert_eq!(
-        std::fs::read_to_string(root.join("new_file.txt")).unwrap(),
-        "hello wt\n"
-    );
-    assert!(
-        report["snapshot_tree"].as_str().is_some(),
-        "合并前项目根 shadow 快照（§10.3 回滚原语）必须存在"
-    );
-
-    // 脏缓冲跳过：worktree 新增 dirty.txt，主根登记脏缓冲 → 合并跳过且不落盘
     std::fs::write(wt.join("dirty.txt"), "dirty\n").unwrap();
     let resp = client
         .put(format!("{}/project/{pid}/buffers", base(port)))
@@ -2911,23 +2894,80 @@ async fn managed_worktree_session_merge_conflict_and_discard() {
         "脏缓冲文件必须显式跳过（§8.6 不静默覆盖）"
     );
     assert!(!root.join("dirty.txt").exists());
+    // 有跳过 = 合并未完成：worktree 不收尾（删目录会连带丢掉被跳过的改动）
+    assert!(wt.exists(), "存在跳过文件时 worktree 不得收尾");
 
-    // 丢弃：缺 confirm → 400；confirm → 删除 worktree 与快照分片，主根不动
+    // 清除脏缓冲后重合并 → 全量干净合入并收尾（v1.166：无冲突且无跳过即
+    // 删除 worktree 目录与快照分片——目录残留会被归档守卫判成「未收尾」，
+    // 会话从此永远无法归档/删除）
     let resp = client
-        .post(format!("{}/session/{sid}/worktree/discard", base(port)))
+        .delete(format!(
+            "{}/project/{pid}/buffers?path=dirty.txt",
+            base(port)
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let resp = client
+        .post(format!("{}/session/{sid}/worktree/merge", base(port)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let report = resp.json::<serde_json::Value>().await.unwrap();
+    assert!(report["merged"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|f| f == "dirty.txt"));
+    assert_eq!(
+        std::fs::read_to_string(root.join("tracked.txt")).unwrap(),
+        "line1\nWT\nline3\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("new_file.txt")).unwrap(),
+        "hello wt\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("dirty.txt")).unwrap(),
+        "dirty\n"
+    );
+    assert!(
+        report["snapshot_tree"].as_str().is_some(),
+        "合并前项目根 shadow 快照（§10.3 回滚原语）必须存在"
+    );
+    assert!(!wt.exists(), "全量合并完成后 worktree 应收尾删除");
+
+    // 归档解锁回归（v1.166）+ 丢弃（第二条受管会话）：丢弃仍需显式 confirm
+    //（destructive 语义不变：确认后删除 worktree 与快照分片，主根不动）。
+    // sid 的归档断言在 /projects 摘要检查之后（归档行退出未归档列表）。
+    let resp = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({"project_id": pid, "worktree": "managed"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let created = resp.json::<serde_json::Value>().await.unwrap();
+    let sid2 = created["session_id"].as_str().unwrap().to_string();
+    let wt2 = std::path::PathBuf::from(created["worktree_path"].as_str().unwrap().to_string());
+    assert!(wt2.exists(), "第二条受管 worktree 应已创建");
+    let resp = client
+        .post(format!("{}/session/{sid2}/worktree/discard", base(port)))
         .json(&serde_json::json!({"confirm": false}))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 400);
     let resp = client
-        .post(format!("{}/session/{sid}/worktree/discard", base(port)))
+        .post(format!("{}/session/{sid2}/worktree/discard", base(port)))
         .json(&serde_json::json!({"confirm": true}))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
-    assert!(!wt.exists(), "丢弃后 worktree 目录应删除");
+    assert!(!wt2.exists(), "丢弃后 worktree 目录应删除");
     assert_eq!(
         std::fs::read_to_string(root.join("tracked.txt")).unwrap(),
         "line1\nWT\nline3\n",
@@ -2979,6 +3019,15 @@ async fn managed_worktree_session_merge_conflict_and_discard() {
         .find(|s| s["id"] == serde_json::json!(plain_sid))
         .unwrap();
     assert_eq!(plain["worktree_path"], serde_json::json!(""));
+
+    // 归档解锁回归（v1.166）：全量合并收尾后，归档守卫不再被 worktree
+    // 目录残留判成「未收尾」（修复前合并后的会话永远 409 无法归档/删除）
+    let resp = client
+        .post(format!("{}/session/{sid}/archive", base(port)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "全量合并收尾后归档应放行");
 }
 
 #[tokio::test]

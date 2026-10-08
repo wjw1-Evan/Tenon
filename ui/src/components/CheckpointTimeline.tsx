@@ -40,6 +40,8 @@ export function CheckpointTimeline({ api, t, sessionId }: Props) {
     setBusy(true);
     try {
       await api.rollbackCheckpoint(id);
+    } catch {
+      // 失败不挂起：时间轴 1.5s 轮询带回权威状态（回滚未生效则条目仍在）
     } finally {
       setBusy(false);
     }

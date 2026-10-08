@@ -303,14 +303,17 @@ export function AgentPanel({
   // review 注入审查任务文本走常规发送链（含队列 / 草稿首发）；输入随执行清空。
   function chooseSlash(cmd: { name: string } | undefined) {
     if (!cmd) return;
-    setInputValue("");
     setSlashQuery(null);
     if (cmd.name === "compact") {
       if (!sessionId) return;
+      setInputValue("");
       void api.control(sessionId, "compact").catch(() => {});
       return;
     }
     if (cmd.name === "review") {
+      // busy 时 sendText 直接返回：先清输入会白丢草稿，必须先判再清
+      if (busy) return;
+      setInputValue("");
       void sendText(t("slash.review_task").trim());
     }
   }
@@ -400,7 +403,12 @@ export function AgentPanel({
     if (!sessionId) return;
     let alive = true;
     let after = 0;
+    // 500ms 定时器不等待上一轮请求：慢响应会让下一轮读到同一 after、
+    // 重复追加同一批事件（重复 key + 重复流目）
+    let inFlight = false;
     const tick = async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
         const r = await api.trace(sessionId, after);
         if (!alive) return;
@@ -446,6 +454,8 @@ export function AgentPanel({
         onStateChange?.(name);
       } catch {
         // 断线重试
+      } finally {
+        inFlight = false;
       }
     };
     const timer = setInterval(tick, 500);
@@ -507,7 +517,12 @@ export function AgentPanel({
   async function stop() {
     if (!sessionId) return;
     setStopRequested(true);
-    await api.control(sessionId, "stop");
+    try {
+      await api.control(sessionId, "stop");
+    } catch {
+      // 控制命令失败必须解锁重试：否则停止按钮永久禁用而任务仍在运行
+      setStopRequested(false);
+    }
   }
 
   // v1.92：暂停只进不出的修复——paused 时发送钮承担恢复。
@@ -565,8 +580,9 @@ export function AgentPanel({
       // 先出队再发送：否则回合完成后 drain 会重复投递同一条
       await api.deleteQueuedMessage(sessionId, m.id).catch(() => {});
       setQueue((prev) => prev.filter((x) => x.id !== m.id));
-      const r = await api.sendMessage(sessionId, m.text);
-      if (!r.queued) setInput("");
+      await api.sendMessage(sessionId, m.text);
+      // 不清输入框：发送的是队列条目文本，与输入框中用户正在编辑的
+      // 新草稿无关（旧写法会吞掉排队期间键入的内容）
     } catch {
       // 发送失败：文本回填输入框可重试（条目已出队，不重复投递）
       setInputValue(m.text);

@@ -4,7 +4,7 @@
 // 密钥直存（v1.165 §11 双轨）：验证经 POST /models/verify，完成 = 单次
 // PUT /settings 把 api_key 与 provider 一并写入 settings.json（0600）并热生效；
 // GET /settings 永不回显密钥。
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type {
   SettingsData,
   TenonApi,
@@ -49,6 +49,20 @@ export function OnboardingWizard({ api, t, settings, onDone, onSkip }: Props) {
     api.setUiPrefs({ [ONBOARDING_DISMISSED_KEY]: "1" });
     onSkip();
   }
+
+  // Esc = 跳过向导（hooks.ts 契约：弹层消费 Esc 必须 preventDefault，
+  // 否则穿透到全局 handler 会误暂停运行中的代理任务）；请求进行中不响应
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (verifying || finishing) return;
+      event.preventDefault();
+      skip();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [verifying, finishing]);
 
   async function verify() {
     if (!apiKey.trim() || verifying) return;

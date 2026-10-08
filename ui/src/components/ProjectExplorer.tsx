@@ -413,10 +413,11 @@ export function ProjectExplorer({
   };
 
   // v1.103：归档 / 还原 / 删除（§15）。409 守卫（运行中 / 未收尾 worktree）经刷新后的摘要呈现。
-  const archiveSessionRow = async (sessionId: string) => {
+  const archiveSessionRow = async (rowProjectId: string, sessionId: string) => {
     try {
       await api.archiveSession(sessionId);
-      onSessionRemoved?.(projectId ?? "", sessionId);
+      // 必须传行所属项目（非当前激活项目）：App 按此清理对应项目的会话选择
+      onSessionRemoved?.(rowProjectId, sessionId);
       onRefreshProjects?.();
     } catch {}
   };
@@ -453,11 +454,15 @@ export function ProjectExplorer({
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      // 契约（hooks.ts useShortcuts）：弹层消费了 Esc 必须 preventDefault，
+      // 否则事件穿透到全局 handler 会误暂停运行中的代理任务
       if (renaming) {
+        event.preventDefault();
         closeRenameDialog();
         return;
       }
       if (adding && busyId !== "__add__") {
+        event.preventDefault();
         if (pickerOpen) closePicker();
         else closeAddDialog();
       }
@@ -584,7 +589,7 @@ export function ProjectExplorer({
                   className="pe-action"
                   data-testid={`session-archive-${session.id}`}
                   title={t("projects.archive")}
-                  onClick={() => void archiveSessionRow(session.id)}
+                  onClick={() => void archiveSessionRow(project.id, session.id)}
                 >
                   {t("projects.archive")}
                 </button>

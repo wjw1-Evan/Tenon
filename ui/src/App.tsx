@@ -431,6 +431,9 @@ export default function App({
   /** 项目级状态恢复：布局 + tab 路径 + active path + 可复用 session（§7.2/§7.5）。 */
   const activateProject = useCallback(
     async (project: ProjectSummary) => {
+      // 切项目前排空待写盘条目：saver 回调按 projectIdRef（此刻仍是旧项目）
+      // 解析写盘目标——先冲刷才不会把旧项目的编辑写进新项目同名文件
+      await autosaverRef.current?.flushAll();
       setProjectId(project.id);
       projectIdRef.current = project.id;
       const saved = await api.projectUiState(project.id);
@@ -1087,6 +1090,9 @@ export default function App({
       try {
         const file = await api.readFile(projectId, event.path);
         if (!alive) return;
+        // 读取期间用户开始编辑（unsaved 置位）：磁盘内容已过期，
+        // 覆盖会吞掉击键（v1.166：守卫必须在 await 之后复检）
+        if (unsavedRef.current[event.path]) return;
         setTabsByProject((prev) => ({
           ...prev,
           [projectId]: (prev[projectId] ?? []).map((tab) =>
@@ -1149,13 +1155,20 @@ export default function App({
       onSelectionChange={setSelection}
       onSelect={setActivePath}
       onClose={(p) => {
-        void autosaverRef.current?.flush(p);
-        setUnsaved((prev) => {
-          if (!prev[p]) return prev;
-          const next = { ...prev };
-          delete next[p];
-          return next;
-        });
+        // 冲刷待写盘内容后再清未保存圆点：flush 失败保留圆点（save.ts 契约：
+        // 失败保留待重试）；fire-and-forget 的旧写法无论成败都先摘点，写盘
+        // 失败即静默丢改动
+        void autosaverRef.current
+          ?.flush(p)
+          .then(() => {
+            setUnsaved((prev) => {
+              if (!prev[p]) return prev;
+              const next = { ...prev };
+              delete next[p];
+              return next;
+            });
+          })
+          .catch(() => {});
         setTabs((prev) => prev.filter((tab) => tab.path !== p));
         if (activePath === p) {
           setActivePath(tabs.find((tab) => tab.path !== p)?.path ?? null);

@@ -21,6 +21,7 @@ interface Props {
 export function LanguagePackWizard({ api, projectId, t, onInstalled }: Props) {
   const [packs, setPacks] = useState<PackInfo[]>([]);
   const [phase, setPhase] = useState<Record<string, string>>({});
+  const [installError, setInstallError] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!projectId) return;
@@ -28,10 +29,15 @@ export function LanguagePackWizard({ api, projectId, t, onInstalled }: Props) {
   }, [api, projectId]);
 
   async function install(language: string) {
-    const result = await api.installLanguagePack(projectId!, language);
-    if (result.installed) {
-      setPhase((p) => ({ ...p, [language]: "installed" }));
-      onInstalled?.(language);
+    try {
+      const result = await api.installLanguagePack(projectId!, language);
+      if (result.installed) {
+        setPhase((p) => ({ ...p, [language]: "installed" }));
+        onInstalled?.(language);
+      }
+    } catch (e) {
+      // 失败必须可见：未捕获 rejection 会让点击像「没反应」
+      setInstallError((p) => ({ ...p, [language]: String(e) }));
     }
   }
 
@@ -52,6 +58,9 @@ export function LanguagePackWizard({ api, projectId, t, onInstalled }: Props) {
             ) : (
               <span className="lp-missing">
                 <span className="muted">{p.runtime_hint}</span>
+                {installError[p.language] && (
+                  <span className="muted">{installError[p.language]}</span>
+                )}
                 <button
                   data-testid={`lp-install-${p.language}`}
                   onClick={() => install(p.language)}

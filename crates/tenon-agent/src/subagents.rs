@@ -149,11 +149,12 @@ impl WorktreePool {
 
 /// 批量任务提交摘要：逐条列明，用于共享日志展示。
 pub fn composite_commit_summary(messages: &[String]) -> String {
-    let mut s = String::from("批量提交（直执审计，共 N 个 commit）：");
+    // 计数只替换头部占位符：全局 replace 会把 commit message 里的「N」一并改写
+    let mut s = format!("批量提交（直执审计，共 {} 个 commit）：", messages.len());
     for (i, m) in messages.iter().enumerate() {
         s.push_str(&format!("\n  {}. {m}", i + 1));
     }
-    s.replace("N", &messages.len().to_string())
+    s
 }
 
 /// 并行运行结果。

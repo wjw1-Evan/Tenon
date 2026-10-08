@@ -652,15 +652,16 @@ impl AgentSession {
         self.record_usage(response.usage, 0).await;
         let mut text = response.content.trim().to_string();
         if text.starts_with("```") {
-            text = text
-                .trim_start_matches("```")
-                .strip_prefix(language.trim())
-                .unwrap_or(&text)
-                .strip_prefix('\n')
-                .unwrap_or(&text)
-                .trim_end_matches("```")
-                .trim_end()
-                .to_string();
+            // 逐级剥离围栏，失败时保留上一步结果（不能回退到含围栏原文，
+            // 否则无语言标注的 ``` 围栏会整段原样插入光标处）
+            let mut stripped = text.trim_start_matches("```").to_string();
+            if let Some(rest) = stripped.strip_prefix(language.trim()) {
+                stripped = rest.to_string();
+            }
+            if let Some(rest) = stripped.strip_prefix('\n') {
+                stripped = rest.to_string();
+            }
+            text = stripped.trim_end_matches("```").trim_end().to_string();
         }
         if text.is_empty() {
             return Err(AgentError::Model("empty inline completion".into()));
@@ -1012,6 +1013,12 @@ impl AgentSession {
             );
         }
         let outcome = self.run_task_inner(user_text).await;
+        // 任务收尾后排空残留控制命令（v1.166）：Stop/Pause 发出时任务可能恰好
+        // 在最后一段无检查点的流式回答/验证中收尾，命令滞留通道会让下一个任务
+        // 的首个检查点误暂停/误停（SetReadonly 延一拍生效同理）——它们指向的是
+        // 已结束的任务。任务启动前不能排空：空闲期预发的 Pause 要在下一任务
+        // 首个检查点生效（既有语义，测试钉死）。
+        while self.drain_control().await.is_some() {}
         // L5 记忆提取（§10.1 v1.104）：任务成功完成后单轮提取；失败静默回退，
         // 不改变任务结果、不阻塞返回。提取调用照常经 record_usage 入成本归因。
         if let TaskOutcome::Done(card) = &outcome {
@@ -1292,19 +1299,26 @@ impl AgentSession {
             )
             .await;
 
-            // v1.53：截断的回复（finish_reason=length）没有工具调用不等于任务完成——
-            // 推送已输出的部分并要求续写，避免长规划被 max_tokens 剪断后静默 Done。
-            if resp.tool_calls.is_empty() && resp.finish_reason.as_deref() == Some("length") {
+            // v1.53：截断的回复（OpenAI finish_reason=length / Anthropic
+            // stop_reason=max_tokens，各 provider 原样透传）没有工具调用不等于
+            // 任务完成——推送已输出的部分并要求续写，避免长规划被 max_tokens
+            // 剪断后静默 Done。
+            if resp.tool_calls.is_empty()
+                && matches!(
+                    resp.finish_reason.as_deref(),
+                    Some("length") | Some("max_tokens")
+                )
+            {
                 consecutive_truncations += 1;
                 if consecutive_truncations >= 3 {
                     self.force_state(State::Error).await;
                     self.set_status(SessionStatus::Error).await;
                     self.emit(
                         EventKind::Error,
-                        &serde_json::json!({"error": "模型输出连续 3 次被截断（finish_reason=length）"}),
+                        &serde_json::json!({"error": "模型输出连续 3 次被截断（length/max_tokens）"}),
                     )
                     .await;
-                    error_msg = Some("模型输出连续截断（finish_reason=length）".into());
+                    error_msg = Some("模型输出连续截断（length/max_tokens）".into());
                     break 'rounds;
                 }
                 messages.push(ChatMessage::assistant(resp.content.clone()));

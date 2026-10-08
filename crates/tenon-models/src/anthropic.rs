@@ -248,9 +248,13 @@ impl ModelProvider for AnthropicProvider {
             "temperature": req.temperature,
             "messages": messages,
         });
-        // 标题等 low-effort 调用关闭扩展思考；GLM Anthropic 端点实测在
-        // enabled-by-default 下会用 128 token 只产出 thinking。
-        if req.reasoning_effort.as_deref() == Some("low") {
+        // 标题等低档推理调用关闭扩展思考；GLM Anthropic 端点实测在
+        // enabled-by-default 下会用 128 token 只产出 thinking。档位集合与
+        // OpenAI 兼容路径 apply_reasoning 同规（low/minimal/none）。
+        if matches!(
+            req.reasoning_effort.as_deref(),
+            Some("low") | Some("minimal") | Some("none")
+        ) {
             body["thinking"] = serde_json::json!({"type": "disabled"});
         }
         if !system.is_empty() {
@@ -363,8 +367,12 @@ impl ModelProvider for AnthropicProvider {
         if !system.is_empty() {
             body["system"] = serde_json::json!(system);
         }
-        // 与 chat() 同口径：low-effort 调用显式关 thinking，防思考吃光 max_tokens
-        if req.reasoning_effort.as_deref() == Some("low") {
+        // 与 chat() 同口径：低档推理调用显式关 thinking，防思考吃光 max_tokens
+        // （档位集合与 OpenAI 兼容路径 apply_reasoning 同规）
+        if matches!(
+            req.reasoning_effort.as_deref(),
+            Some("low") | Some("minimal") | Some("none")
+        ) {
             body["thinking"] = serde_json::json!({"type": "disabled"});
         }
         if !req.tools.is_empty() {

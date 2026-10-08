@@ -240,6 +240,8 @@ fn spawn_daemon(app: &tauri::AppHandle) -> Result<(Child, Handshake), String> {
         }
     }
     let _ = child.kill();
+    // kill 后必须 wait 收尸，否则 daemon 成为壳进程生命周期内的僵尸
+    let _ = child.wait();
     Err("daemon 握手失败（未读到握手行）".into())
 }
 

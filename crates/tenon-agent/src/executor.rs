@@ -513,12 +513,15 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
             let spec = tenon_sandbox::SandboxSpec::MirrorProxy {
                 project_root: ctx.root.clone(),
             };
-            match exec_command(cmd, &ctx.root, ctx.command_timeout, &spec) {
+            // 与 run_tests/run_build 同口径：在会话 working_dir 执行——
+            // monorepo 会话装错工作区（根 lockfile）比失败更糟
+            match exec_command(cmd, &ctx.command_cwd, ctx.command_timeout, &spec) {
                 Ok(out) => ToolOutput {
                     ok: out.success(),
                     content: format!(
-                        "$ {cmd}\nexit={}\n{}",
+                        "$ {cmd}\nexit={}\n{}\n{}",
                         out.exit_code.unwrap_or(-1),
+                        out.stdout.trim(),
                         out.stderr.trim()
                     ),
                     changed_files: vec![],
@@ -623,27 +626,37 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                 .get("message")
                 .and_then(|m| m.as_str())
                 .unwrap_or("task commit");
-            let out = std::process::Command::new("git")
-                .arg("-C")
-                .arg(&ctx.root)
-                // 排除快照 / 内核托管目录（§9.5 / §10.3：不触碰用户提交内容）
-                .args([
-                    "add",
-                    "-A",
-                    "--",
-                    ":(exclude).tenon-snapshots",
-                    ":(exclude).tenon/**",
-                ])
-                .output()
-                .and_then(|_| {
-                    std::process::Command::new("git")
-                        .arg("-C")
-                        .arg(&ctx.root)
-                        .args(["-c", "user.email=tenon@local", "-c", "user.name=tenon"])
-                        .args(["commit", "-m", msg])
-                        .output()
-                });
-            match out {
+            // add 失败必须显式失败：吞掉会让 commit 拿着旧暂存区内容提交并
+            // 报「已提交」，证据卡与模型都以为目标文件已入库
+            let commit = (|| -> std::result::Result<std::process::Output, String> {
+                let added = std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&ctx.root)
+                    // 排除快照 / 内核托管目录（§9.5 / §10.3：不触碰用户提交内容）
+                    .args([
+                        "add",
+                        "-A",
+                        "--",
+                        ":(exclude).tenon-snapshots",
+                        ":(exclude).tenon/**",
+                    ])
+                    .output()
+                    .map_err(|e| e.to_string())?;
+                if !added.status.success() {
+                    return Err(format!(
+                        "git add 失败: {}",
+                        String::from_utf8_lossy(&added.stderr).trim()
+                    ));
+                }
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&ctx.root)
+                    .args(["-c", "user.email=tenon@local", "-c", "user.name=tenon"])
+                    .args(["commit", "-m", msg])
+                    .output()
+                    .map_err(|e| e.to_string())
+            })();
+            match commit {
                 Ok(o) if o.status.success() => {
                     let sha = String::from_utf8_lossy(&o.stdout).trim().to_string();
                     ToolOutput::ok(format!("已提交: {sha}"))

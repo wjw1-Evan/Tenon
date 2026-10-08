@@ -32,12 +32,16 @@ pub fn seatbelt_profile(
     p.push_str("(allow mach-lookup)\n");
     p.push_str("(allow sysctl-read)\n");
 
-    // 写：项目内 + 显式授予路径
-    p.push_str(&format!("(allow file-write* (subpath \"{root}\"))\n"));
+    // 写：项目内 + 显式授予路径（路径字面量须转义：`"` / `\` 会提前终止
+    // 字符串字面量，产出无法解析的 profile，沙箱整体 fail-closed 拒执行）
+    p.push_str(&format!(
+        "(allow file-write* (subpath \"{}\"))\n",
+        sb_escape(&root)
+    ));
     for path in extra_write_paths {
         p.push_str(&format!(
             "(allow file-write* (subpath \"{}\"))\n",
-            path.to_string_lossy()
+            sb_escape(&path.to_string_lossy())
         ));
     }
     // 临时目录（构建 / 测试需要）
@@ -57,6 +61,12 @@ pub fn seatbelt_profile(
         }
     }
     p
+}
+
+/// Seatbelt profile 字符串字面量转义：`"` 终止字面量、`\` 改写转义序列，
+/// 均会产出无法解析的 profile（沙箱 fail-closed 拒绝一切执行）。
+fn sb_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 #[cfg(test)]

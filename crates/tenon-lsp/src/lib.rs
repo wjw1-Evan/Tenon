@@ -93,9 +93,11 @@ impl RpcMessage {
     }
 
     pub fn is_response(&self) -> bool {
-        self.id.is_some()
-            && self.method.is_none()
-            && (self.result.is_some() || self.error.is_some())
+        // 有 id 且无 method 即为响应。不能以 result/error 出现与否判定：
+        // result 为 null（hover/definition 无结果、shutdown 等的正常应答）
+        // 经 serde 反序列化后与字段缺席不可区分，会整条被丢弃、
+        // 调用方白等满超时。
+        self.id.is_some() && self.method.is_none()
     }
 
     pub fn is_server_request(&self) -> bool {

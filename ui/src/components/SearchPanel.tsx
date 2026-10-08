@@ -1,5 +1,5 @@
 // 全局搜索 / 替换（§8.1）：rg hits、替换前 diff、选定文件应用、行号跳转。
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SearchHit, TenonApi } from "../lib/api";
 import type { Translate } from "../lib/i18n";
 
@@ -46,7 +46,9 @@ export function SearchPanel({ api, t, projectId, onOpenFile, onChanged }: Props)
 
   // 切换项目清空结果：旧项目的 hits/selected 若保留，apply() 会用
   // 新 projectId + 旧 selectedPaths 把替换写进新项目的同名文件
+  const searchSeqRef = useRef(0);
   useEffect(() => {
+    searchSeqRef.current += 1;
     setHits([]);
     setPreviews({});
     setSelected({});
@@ -63,26 +65,32 @@ export function SearchPanel({ api, t, projectId, onOpenFile, onChanged }: Props)
 
   const runSearch = useCallback(async () => {
     if (!projectId || !effectiveQuery) return;
+    // 竞态守卫：切项目 / 连续搜索时，慢响应不得回写（旧项目的 hits 配新
+    // projectId 会在 apply() 把替换写进错误项目的同名文件）
+    const seq = ++searchSeqRef.current;
+    const stale = () => seq !== searchSeqRef.current;
     setLoading(true);
     setError(null);
     setSearched(true);
     try {
       const response = await api.search(projectId, effectiveQuery);
+      if (stale()) return;
       setHits(response.hits ?? []);
       setSelected(
         Object.fromEntries((response.hits ?? []).map((hit) => [hit.path, true as const]))
       );
       if (replacement) {
         const preview = await api.searchPreview(projectId, effectiveQuery, replacement);
+        if (stale()) return;
         setPreviews(Object.fromEntries(preview.previews.map((item) => [item.path, item.diff])));
       } else {
         setPreviews({});
       }
     } catch (e) {
-      setError(String(e));
-  } finally {
-    setLoading(false);
-  }
+      if (!stale()) setError(String(e));
+    } finally {
+      if (!stale()) setLoading(false);
+    }
   }, [api, effectiveQuery, projectId, replacement]);
 
   useEffect(() => {

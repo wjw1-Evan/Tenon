@@ -51,11 +51,24 @@ fn rule_risk_single(seg: &str) -> Option<f32> {
     if c.contains("git reset --hard") || c.contains("git filter-branch") {
         return Some(0.8);
     }
-    // 远程代码执行
+    // 远程代码执行：curl/wget … | sh（管道空白写法任意：`| sh`、`|sh`、
+    // `|  sh` 等价，按段首 token 判定，不依赖字面 `| {sh}` 间距）
     for sh in ["sh", "bash", "zsh", "powershell"] {
-        for fetcher in ["curl", "wget"] {
-            if c.starts_with(fetcher) && c.contains(&format!("| {sh}")) {
-                return Some(0.92);
+        let mut segs = c.split('|').map(str::trim);
+        if let Some(first) = segs.next() {
+            let starts_with_fetcher = first
+                .split_whitespace()
+                .next()
+                .map(|t| t == "curl" || t == "wget")
+                .unwrap_or(false);
+            if starts_with_fetcher {
+                for seg in segs {
+                    if let Some(head) = seg.split_whitespace().next() {
+                        if head == sh {
+                            return Some(0.92);
+                        }
+                    }
+                }
             }
         }
     }

@@ -13,6 +13,8 @@ export interface AutoSaver {
   schedule: (path: string, content: string) => void;
   /** 立即保存该文件（取消去抖）；无待保存内容时为空操作。 */
   flush: (path: string) => Promise<void>;
+  /** 立即保存全部待写条目（项目切换前调用：saver 回调按当前活动项目解析目标）。 */
+  flushAll: () => Promise<void>;
   /** 取消该文件的去抖写盘（文件被删除/重命名后，旧路径的待写会把已删文件「复活」）。 */
   cancel: (path: string) => void;
   /** 该文件是否有待写盘的编辑。 */
@@ -46,6 +48,10 @@ export function createAutoSaver(save: SaveFn, delayMs: number): AutoSaver {
       pending.delete(path);
       window.clearTimeout(entry.timer);
       await save(path, entry.content);
+    },
+    async flushAll() {
+      const paths = [...pending.keys()];
+      await Promise.all(paths.map((p) => this.flush(p)));
     },
     cancel(path) {
       const entry = pending.get(path);

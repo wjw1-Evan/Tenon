@@ -387,6 +387,13 @@ impl MarketClient {
         let text = self.get_text(&[api_url]).await?;
         let value: serde_json::Value =
             serde_json::from_str(&text).map_err(|e| MarketError::BadManifest(e.to_string()))?;
+        // truncated=true 表示递归列举被截断（仓库过大）：静默接受会装出
+        // 缺文件的残缺技能，必须显式报错走下一镜像
+        if value.get("truncated").and_then(|t| t.as_bool()) == Some(true) {
+            return Err(MarketError::BadManifest(
+                "git trees 列举被截断（truncated=true），目录不完整".into(),
+            ));
+        }
         let files = value
             .get("tree")
             .and_then(|t| t.as_array())

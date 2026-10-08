@@ -224,7 +224,8 @@ export function EditorPane({
       onWorkspaceApplied,
       inlineCompletionEnabled,
     };
-  }, [api, projectId, projectRoot, sessionId, onFlushFile, onWorkspaceApplied]);
+    // inlineCompletionEnabled 缺席会让补全 provider 永远读到旧开关
+  }, [api, projectId, projectRoot, sessionId, onFlushFile, onWorkspaceApplied, inlineCompletionEnabled]);
 
   useEffect(() => {
     activePathRef.current = activePath;

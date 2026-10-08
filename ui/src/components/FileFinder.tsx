@@ -95,6 +95,7 @@ export function FileFinder({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const listRef = useRef<HTMLUListElement>(null);
+  const searchSeqRef = useRef(0);
   const symbolMode = query.startsWith("@");
   const parsed = useMemo(
     () => parseQuery(symbolMode ? query.slice(1) : query),
@@ -112,6 +113,9 @@ export function FileFinder({
 
   const search = useCallback(async () => {
     if (!open || !projectId) return;
+    // 竞态守卫：慢响应不得覆盖更新查询的结果（选中项会指向错误文件）
+    const seq = ++searchSeqRef.current;
+    const stale = () => seq !== searchSeqRef.current;
     setLoading(true);
     setError(null);
     try {
@@ -127,22 +131,24 @@ export function FileFinder({
           action: "workspace_symbol",
           extra: parsed.query,
         });
+        if (stale()) return;
         const symbols = parseSymbols(response.result, projectRoot).slice(0, 100);
         setHits(symbols.map((symbol) => ({ type: "symbol" as const, ...symbol })));
         setActiveIndex(0);
         return;
       }
       const response = await api.fuzzyFiles(projectId, parsed.query, 100);
+      if (stale()) return;
       setHits(
         (response.hits ?? []).map((hit) => ({ type: "file" as const, ...hit }))
       );
       setActiveIndex(0);
     } catch (e) {
-      setError(String(e));
+      if (!stale()) setError(String(e));
     } finally {
-      setLoading(false);
+      if (!stale()) setLoading(false);
     }
-  }, [activePath, api, open, parsed.query, projectId, symbolMode, t]);
+  }, [activePath, api, open, parsed.query, projectId, projectRoot, symbolMode, t]);
 
   useEffect(() => {
     if (!open || !projectId) return;

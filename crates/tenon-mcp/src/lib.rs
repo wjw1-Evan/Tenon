@@ -69,6 +69,10 @@ pub struct McpConnection {
     stdout: Mutex<BufReader<ChildStdout>>,
     child: Mutex<Child>,
     next_id: AtomicI64,
+    // 单路 stdout、无按 id 分发器：并发请求会互相读走对方的响应
+    // （双方都拿不到 → 白等满超时 → 看门狗误杀健康服务器）。
+    // 整个 request（发送+读回）持这把锁串行化，同连接排队执行。
+    call_lock: Mutex<()>,
 }
 
 impl McpConnection {
@@ -104,6 +108,7 @@ impl McpConnection {
             stdout: Mutex::new(BufReader::new(stdout)),
             child: Mutex::new(child),
             next_id: AtomicI64::new(1),
+            call_lock: Mutex::new(()),
         })
     }
 
@@ -127,6 +132,9 @@ impl McpConnection {
 
     fn request(&self, method: &str, params: Value) -> Result<Value> {
         const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+        // 串行化整个请求往返：stdout 是单路流且无按 id 分发，
+        // 并发调用会互相吞响应（见 call_lock 注释）
+        let _serial = self.call_lock.lock().expect("call lock");
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let msg = serde_json::json!({
             "jsonrpc": "2.0",

@@ -971,10 +971,23 @@ export class TenonApi {
     const filter = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
     const ws = new WebSocket(`ws://${new URL(this.base).host}/ws${filter}`);
     await new Promise<void>((resolve, reject) => {
+      let settled = false;
       ws.onopen = () => ws.send(ticket);
-      ws.onerror = () => reject(new Error("ws connect failed"));
+      ws.onerror = () => {
+        if (settled) return;
+        settled = true;
+        reject(new Error("ws connect failed"));
+      };
+      // 鉴权完成前对端关闭（daemon 首帧 5s 超时静默 close 等）：
+      // 不 reject 会让本 promise 永不落定、上层重连链路死掉
+      ws.onclose = () => {
+        if (settled) return;
+        settled = true;
+        reject(new Error("ws closed before auth ok"));
+      };
       ws.onmessage = (msg) => {
         if (msg.data === "auth ok") {
+          settled = true;
           ws.onmessage = (event) => {
             try {
               onEvent(JSON.parse(event.data));
@@ -984,6 +997,7 @@ export class TenonApi {
           };
           resolve();
         } else if (msg.data === "auth failed") {
+          settled = true;
           reject(new Error("ws auth failed"));
         }
       };

@@ -220,14 +220,15 @@ pub fn recent_commits(root: &Path, limit: u32) -> Vec<GitCommit> {
             "log",
             &format!("--max-count={limit}"),
             "--date-order",
-            "--pretty=format:%H%x09%h%x09%s%x09%an%x09%ae%x09%ct",
+            // NUL 作字段分隔：summary/作者名可含 tab，%x09 会令字段整体错位
+            "--pretty=format:%H%x00%h%x00%s%x00%an%x00%ae%x00%ct",
         ],
     ) else {
         return Vec::new();
     };
     text.lines()
         .filter_map(|line| {
-            let fields: Vec<&str> = line.split('\t').collect();
+            let fields: Vec<&str> = line.split('\0').collect();
             Some(GitCommit {
                 id: fields.first()?.to_string(),
                 short_id: fields.get(1)?.to_string(),
@@ -311,6 +312,9 @@ pub fn blame_file(root: &Path, path: &str) -> Option<Vec<GitBlameLine>> {
                 .unwrap_or_default(),
             content: String::new(),
         };
+        // 头部格式为 <40位sha> <orig-line> <final-line> [<num>]：
+        // 行号必须取 final（当前文件行），首个数字字段是 orig（被责提交里的旧行号）
+        let _orig_line = fields.next();
         if let Some(final_line) = fields.next().and_then(|value| value.parse().ok()) {
             item.line = final_line;
         }

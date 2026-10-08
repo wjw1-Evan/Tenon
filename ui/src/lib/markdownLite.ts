@@ -45,7 +45,12 @@ export function renderMarkdownLite(md: string): string {
 
   const flushPara = () => {
     if (para.length) {
-      out.push(`<p>${renderInline(para.join("<br/>"))}</p>`);
+      // 行间断点用占位符传递（\u0001 不会被 escapeHtml 改写，行内代码
+      // 占位用的是 \u0000）：转义后再换回 <br/>，直接拼 <br/> 会被
+      // renderInline 的先转义策略转成字面文本
+      out.push(
+        `<p>${renderInline(para.join("\u0001")).replace(/\u0001/g, "<br/>")}</p>`,
+      );
       para = [];
     }
   };
