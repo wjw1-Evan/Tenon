@@ -15,6 +15,9 @@ jobs:
   rust:
     name: Rust (${{ matrix.os }})
     strategy:
+      # fail-fast 关闭：单平台先红不再取消兄弟 job——平台特有病灶（如 linux.rs 门控代码
+      # 的 clippy 错误）不再被另一平台的失败掩盖数轮才暴露（v1.211 三连红 postmortem）
+      fail-fast: false
       matrix:
         os: [macos-latest, ubuntu-latest]
         # windows-latest 随 WSL2 沙箱（M1，§12.3）启用

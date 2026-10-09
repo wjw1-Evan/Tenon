@@ -24,7 +24,7 @@
 
 1. **默认行动，不反向询问**：非破坏性、可回滚、属任务合理延伸的事，直接做完再汇报；仅破坏性操作、方向性 UI/UX 大改、安全与密钥裁定需要先停下来问；
 2. **主动开发 = 空闲自寻任务**：会话没有明确任务时，按优先级自选工作（design.md 已定稿未实现项 → 已知缺陷 → CI/Release 红灯自愈 → 功能巡检），对齐 design.md 后直接开工，不等待指派；
-3. **主动完善 = 完成即全套配套**：任何改动自发包含补测试、同步 design.md 与 changelog、UI 文案双语、跑齐门禁（fmt / clippy / test / ui:build）、提交 commit；**推送后必须监测 CI 到绿才算收工**（`gh run watch` 盯本轮；会话复用时先 `gh run list --limit 5` 复核近几轮）——本地门禁过 ≠ 远端 CI 绿，红灯（含 E2E / Release 流水线）当日定位修复，不带病推进新功能；修 bug 时顺带查同类隐患与根因，不做最小补丁交差；
+3. **主动完善 = 完成即全套配套**：任何改动自发包含补测试、同步 design.md 与 changelog、UI 文案双语、跑齐门禁（`scripts/gate.sh`——fmt / clippy 主机+Linux 交叉双目标 / cargo test / vitest / ui:build；共享工作树场景推送前加 `--head` 验证提交内容本身）、提交 commit；**推送后必须监测 CI 到绿才算收工**（`gh run watch <id> --exit-status` 盯本轮——勿接管道，`| tail` 会吞退出码；会话复用时先 `gh run list --limit 5` 复核近几轮）——本地门禁过 ≠ 远端 CI 绿，红灯（含 E2E / Release 流水线）当日定位修复，不带病推进新功能；修 bug 时顺带查同类隐患与根因，不做最小补丁交差；
 4. **主动创意 = 规模不限，自主落地**：创意不设大小上限——小到交互优化、工具能力，大到全新功能模块，均可自主提案并实现；大功能先在 design.md 立项（动机 / 方案 / 边界）再动工；仅方向性 UI/UX 形态改动走双参考方案征询。
 
 以上一切不豁免既有流程：设计驱动铁律、门禁、并行会话协作规则照旧。
@@ -66,11 +66,16 @@ pnpm web            # ui:build 后由 daemon 以 --web 伺服构建产物（部�
 
 dev 会话退出（INT/TERM/HUP/正常退出）自动清理 `target/debug/incremental` 纯缓存（deps/ 不动，防 target 无 GC 膨胀）；`TENON_DEV_NOCLEAN=1` 跳过，检测到并行 cargo/rustc 进程自动让路。
 
-检查与测试（CI 同款，提交前跑齐）：
+检查与测试（CI 同款，提交前跑齐；一键跑齐用 `scripts/gate.sh`，`--full` 追加 E2E、`--head` 在 HEAD 干净 worktree 验证「提交内容本身」过门禁）：
 
 ```bash
+scripts/gate.sh               # 一键：fmt + clippy（主机 + Linux 交叉白名单）+ cargo test + vitest + ui:build
+scripts/gate.sh --full        # 追加 Playwright 真 daemon E2E
+scripts/gate.sh --head        # HEAD 干净 worktree 跑 cargo 门禁（防「测的是工作树、推的是 HEAD」脱节）
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings   # 0 警告是硬门槛
+cargo clippy -p tenon-sandbox -p tenon-mcp --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
+                              # Linux 门控代码交叉检查（macOS 本地补盲：cfg(linux) 代码主机 clippy 看不见）
 cargo test --workspace        # 无 config.local.toml 时 GLM 真实端点联调测试自动跳过
 pnpm ui:test                  # vitest（ui/ 内）
 pnpm ui:build                 # tsc -b && vite build——UI typecheck 在这里
