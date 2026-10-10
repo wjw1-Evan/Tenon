@@ -36,8 +36,13 @@ pub enum SandboxSpec {
     None,
     /// 断网：测试 / 构建 / 纯分析。
     Offline { project_root: PathBuf },
-    /// 镜像代理：依赖安装（域白名单过滤在代理进程，随 M2 落地；当前放行网络）。
-    MirrorProxy { project_root: PathBuf },
+    /// 镜像代理：依赖安装（v2.0 design-v2.md §4.4——`proxy` = 域过滤代理
+    /// 进程地址：Some 时注入 HTTP(S)_PROXY 环境且 Seatbelt 收紧为仅回环；
+    /// None = fail-closed 全拒网络）。
+    MirrorProxy {
+        project_root: PathBuf,
+        proxy: Option<std::net::SocketAddr>,
+    },
     /// 域名代理：C 级直执审计域名（同上，代理进程随 M2）。
     DomainProxy {
         project_root: PathBuf,
@@ -51,7 +56,13 @@ impl SandboxSpec {
     fn network(&self) -> NetworkState {
         match self {
             SandboxSpec::None | SandboxSpec::Offline { .. } => NetworkState::offline(),
-            SandboxSpec::MirrorProxy { .. } => NetworkState::mirror_default(),
+            SandboxSpec::MirrorProxy { proxy, .. } => NetworkState::MirrorProxy {
+                registries: match NetworkState::mirror_default() {
+                    NetworkState::MirrorProxy { registries, .. } => registries,
+                    _ => unreachable!("mirror_default 恒为 MirrorProxy"),
+                },
+                proxy: *proxy,
+            },
             SandboxSpec::DomainProxy { hosts, .. } => NetworkState::DomainProxy {
                 hosts: hosts.iter().cloned().collect(),
             },
@@ -62,7 +73,7 @@ impl SandboxSpec {
         match self {
             SandboxSpec::None => None,
             SandboxSpec::Offline { project_root }
-            | SandboxSpec::MirrorProxy { project_root }
+            | SandboxSpec::MirrorProxy { project_root, .. }
             | SandboxSpec::DomainProxy { project_root, .. } => Some(project_root),
         }
     }
@@ -113,6 +124,20 @@ pub fn exec_command(
         .cmd
         .env("HOME", std::env::var("HOME").unwrap_or_default());
     built.cmd.env("LANG", "C.UTF-8");
+    // v2.0 域过滤（design-v2.md §4.4）：镜像态注入本地代理环境——沙箱内命令
+    // 唯一出网通路（大小写双写，覆盖 npm / pip / cargo / go / git 等主流客户端）
+    if let SandboxSpec::MirrorProxy {
+        proxy: Some(addr), ..
+    } = sandbox
+    {
+        let proxy_url = format!("http://{addr}");
+        built.cmd.env("HTTP_PROXY", &proxy_url);
+        built.cmd.env("HTTPS_PROXY", &proxy_url);
+        built.cmd.env("http_proxy", &proxy_url);
+        built.cmd.env("https_proxy", &proxy_url);
+        built.cmd.env("NO_PROXY", "localhost,127.0.0.1,::1");
+        built.cmd.env("no_proxy", "localhost,127.0.0.1,::1");
+    }
     built.cmd.stdin(Stdio::null());
     built.cmd.stdout(std::fs::File::create(&out_path)?);
     built.cmd.stderr(std::fs::File::create(&err_path)?);
@@ -544,22 +569,73 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn mirror_proxy_allows_network() {
-        // 镜像代理态：网络可达（域过滤在代理进程，M2；此处断言不误伤）
+    fn mirror_state_denies_direct_and_routes_via_registry_proxy() {
+        // v2.0 域过滤（design-v2.md §4.4）：镜像态收紧——① 非白名单域
+        //（直连被沙箱拒 / 经代理被白名单 403）一律失败；② 沙箱内唯一可达
+        // 出网端点 = 回环白名单代理（curl 显式过代理，代理 403 理由回传——
+        // 同时证明端口放行与白名单强制；真实 registry TLS 端到端属联网
+        // happy path，不入沙箱断言）。
         let proj = tempfile::tempdir().unwrap();
+        let proxy =
+            crate::proxy::RegistryProxy::start(vec!["registry.npmjs.org".to_string()]).unwrap();
         let spec = SandboxSpec::MirrorProxy {
             project_root: proj.path().to_path_buf(),
+            proxy: Some(proxy.addr()),
         };
+        // ① 非白名单域被拒（http_proxy 环境已注入：直连被沙箱挡、代理
+        // CONNECT 被白名单 403，两条路都不通）
         let out = exec_command(
-            "curl -sS --max-time 5 -o /dev/null -w '%{{http_code}}' https://example.com; echo",
+            "curl -sS --max-time 4 https://example.com >/dev/null 2>&1; echo EXIT:$?",
             proj.path(),
-            Duration::from_secs(20),
+            Duration::from_secs(15),
             &spec,
         )
         .unwrap();
         assert!(
-            !out.stdout.contains("Operation not permitted"),
-            "镜像代理态不应误断网络: {:?}",
+            !out.stdout.contains("EXIT:0"),
+            "非白名单域应失败（直连沙箱拒绝 / 代理 403）: {:?}",
+            out.stdout
+        );
+        // ② 沙箱内代理可达且白名单强制：显式经代理请求非白名单域，代理
+        // 以 403 + 拒绝理由应答（curl 对 HTTP 错误码仍退出 0，正文可见）
+        let out2 = exec_command(
+            &format!(
+                "curl -sS --max-time 4 -x http://127.0.0.1:{p} http://example.com/x; echo EXIT:$?",
+                p = proxy.addr().port()
+            ),
+            proj.path(),
+            Duration::from_secs(15),
+            &spec,
+        )
+        .unwrap();
+        assert!(
+            out2.stdout.contains("tenon-registry-proxy") && out2.stdout.contains("EXIT:0"),
+            "代理应可达并以白名单 403 应答: {:?}",
+            out2.stdout
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mirror_state_without_proxy_fails_closed() {
+        // v2.0 fail-closed（design-v2.md §4.4）：代理缺席 = 全拒网络（不静默
+        // 回退全网放行）；executor 层在代理不可用时已先行拒绝，此处验证
+        // profile 纵深防御
+        let proj = tempfile::tempdir().unwrap();
+        let spec = SandboxSpec::MirrorProxy {
+            project_root: proj.path().to_path_buf(),
+            proxy: None,
+        };
+        let out = exec_command(
+            "curl -sS --max-time 4 https://registry.npmjs.org >/dev/null 2>&1; echo EXIT:$?",
+            proj.path(),
+            Duration::from_secs(15),
+            &spec,
+        )
+        .unwrap();
+        assert!(
+            !out.stdout.contains("EXIT:0"),
+            "无代理的镜像态应 fail-closed 全拒: {:?}",
             out.stdout
         );
     }

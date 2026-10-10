@@ -54,8 +54,23 @@ pub fn seatbelt_profile(
         NetworkState::Offline => {
             p.push_str("(deny network*)\n");
         }
-        NetworkState::MirrorProxy { registries }
-        | NetworkState::DomainProxy { hosts: registries } => {
+        NetworkState::MirrorProxy { proxy, .. } => {
+            // v2.0 域过滤（design-v2.md §4.4）：镜像态收紧为「deny network* +
+            // 仅放行回环代理端口」——沙箱内命令唯一出网通路是本地 registry
+            // 白名单代理（域名解析与直连全部被拒，白名单由代理进程强制）；
+            // 代理缺席时 fail-closed 同样全拒（不静默回退全网放行）。
+            // 注：Seatbelt 网络地址格式为 "host:port" 且 host 仅支持 * / localhost
+            //（实测 "127.0.0.1" 与裸 IP 均被 profile 解析器拒绝）。registries
+            // 由代理进程消费。
+            p.push_str("(deny network*)\n");
+            if let Some(addr) = proxy {
+                p.push_str(&format!(
+                    "(allow network-outbound (remote ip \"localhost:{}\"))\n",
+                    addr.port()
+                ));
+            }
+        }
+        NetworkState::DomainProxy { hosts: registries } => {
             p.push_str("(allow network*)\n");
             let _ = registries; // 流量经本地代理进程出网，代理进程侧再按白名单过滤
         }
@@ -89,9 +104,25 @@ mod tests {
 
     #[test]
     fn mirror_proxy_allows_network_via_proxy_filtering() {
+        // v2.0 域过滤（design-v2.md §4.4）：镜像态收紧——代理缺席 fail-closed
+        // 全拒；代理在场仅放行回环（deny network* 之上叠加 loopback 例外）
         let p = seatbelt_profile(Path::new("/tmp/proj"), &NetworkState::mirror_default(), &[]);
-        assert!(p.contains("(allow network*)"));
-        assert!(!p.contains("(deny network*)"));
+        assert!(p.contains("(deny network*)"), "镜像态应拒绝默认网络");
+        assert!(!p.contains("(allow network*)"), "不应再全网放行");
+        assert!(
+            !p.contains("(allow network-outbound"),
+            "代理缺席不应有回环例外"
+        );
+        let with_proxy = NetworkState::MirrorProxy {
+            registries: match NetworkState::mirror_default() {
+                NetworkState::MirrorProxy { registries, .. } => registries,
+                _ => unreachable!(),
+            },
+            proxy: Some("127.0.0.1:39876".parse().unwrap()),
+        };
+        let p2 = seatbelt_profile(Path::new("/tmp/proj"), &with_proxy, &[]);
+        assert!(p2.contains("(deny network*)"));
+        assert!(p2.contains("(allow network-outbound (remote ip \"localhost:39876\"))"));
     }
 
     #[test]

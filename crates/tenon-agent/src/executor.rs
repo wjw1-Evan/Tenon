@@ -732,15 +732,21 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
             if let Err(reason) = tenon_core::install_policy::validate_install_command(cmd) {
                 return ToolOutput::err(reason);
             }
-            // 镜像代理态（§12.3 B 级）：registry 域白名单过滤在代理进程（P1，
-            // design-v2.md §4.4）；当前沙箱放行网络——残余风险（postinstall /
-            // 构建系统执行项目代码）已在 design.md §12.3 现状标注，不静默。
-            // v2.0 full_access 档：沙箱降为无（用户显式信任）
+            // 镜像代理态（§12.3 B 级）+ v2.0 域过滤代理（design-v2.md §4.4）：
+            // 本地 registry 白名单代理强制域过滤，Seatbelt 收紧为仅回环代理——
+            // 代理不可用时 fail-closed 拒绝（不静默回退全网放行）；
+            // 残余风险（postinstall / 构建系统执行项目代码）在代理内仅可触达
+            // 白名单域。full_access 档：沙箱降为无（用户显式信任）。
             let spec = if ctx.full_access.load(Ordering::Relaxed) {
                 tenon_sandbox::SandboxSpec::None
             } else {
+                let proxy = match tenon_sandbox::proxy::registry_proxy() {
+                    Ok(addr) => addr,
+                    Err(reason) => return ToolOutput::err(reason),
+                };
                 tenon_sandbox::SandboxSpec::MirrorProxy {
                     project_root: ctx.root.clone(),
+                    proxy: Some(proxy),
                 }
             };
             // 与 run_tests/run_build 同口径：在会话 working_dir 执行——

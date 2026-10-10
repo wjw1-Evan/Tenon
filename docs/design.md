@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | **v2.2** |
+| 版本 | **v2.3** |
 | 日期 | 2026-10-10 |
 | 状态 | 定稿，M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
@@ -572,7 +572,7 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 | `apply_patch` | B | 结构化编辑：① range 形式（file + range + content）；② search/replace 块格式（v1.188：file + search + replace，目标片段全文唯一匹配——精确优先、降级逐行空白归一序列匹配；零/多命中报错，与 range 互斥），产生事件与 checkpoint |
 | `spawn_subagents`（并行子代理，v1.190） | B | 分发 1–3 个独立子任务（`{tasks:[{instruction, files}]}`，文件集不相交——相交拒绝回传）；子代理各自运行于受管 worktree 并登记为独立会话，完成后回传摘要、合并/丢弃在子会话行处置；边界见 §9.5 |
 | `run_tests` / `run_build` | B | 沙箱内，断网态；单命令超时默认 120s（附录 E）；接受可选 `command` 覆盖（缺省按项目清单探测）——任意命令面经断网沙箱收敛，通用命令经 `run_command` 正名承载（v2.2） |
-| `install_deps` | B | 沙箱内，镜像代理态；**v2.0 命令白名单已收口**（design-v2.md §4.5）：仅接受已知包管理器与安装语义子命令（`tenon-core::install_policy`，拒绝脚本执行子命令 / shell 控制符 / 未知二进制）；镜像态 registry 域过滤仍待代理进程（现状见 §12.3 现状标注） |
+| `install_deps` | B | 沙箱内，镜像代理态；**v2.0 命令白名单**（design-v2.md §4.5）：仅接受已知包管理器与安装语义子命令（`tenon-core::install_policy`）；**v2.3 域过滤收口**（design-v2.md §4.4）：本地 registry 白名单代理 + Seatbelt 仅回环（§12.3 现状标注），代理不可用 fail-closed |
 | `run_command`（通用命令，v2.2 design-v2.md §4.2） | B | 诚实的通用命令通道：`command` 必填（无探测缺省）+ 可选 `timeout_s` 1-3600s；**execpolicy 前置拦截**（`tenon-core::execpolicy`：破坏性 git（reset --hard / clean -f / checkout --）、系统级 / 家目录递归 rm·chmod、管道注入解释器（curl\|sh 形态）、提权、电源 / 格式化 / 设备覆写、fork 炸弹——拒绝理由回传模型；规则刻意保守，项目内正常命令含 `rm -rf node_modules` 放行）；断网沙箱（full_access 档降级）；Laya 命令风险提示同轨（§9.8 #2） |
 | `http_fetch` | C | 直接执行；目标域名写入审计事件 |
 | `web_search`（v1.182；v1.189 多后端） | C | 网络搜索（Bing HTML 主 + DuckDuckGo Lite 兜底，免密钥）：`{query, max_results?}` → 标题 / 链接 / 摘要 JSON；SSRF 守卫与 `http_fetch` 同轨（见下文） |
@@ -785,7 +785,7 @@ A/B/C/D 仅是风险与执行边界标记，不再是审批门槛；去 Plan 安
 | Linux | namespace + seccomp | 同上 |
 | Windows | daemon 于 WSL2，复用 Linux 沙箱；检测不到 WSL2 时仍启用写守卫与项目边界，完整沙箱经 WSL2 补齐 | 完整沙箱经 WSL2 |
 
-网络三态：**断网**（测试/构建/纯分析）→ **镜像代理**（仅预授权 registry：npm/pypi/nuget/crates…，B 级）→ **域名代理**（请求 URL 的 host 直接放行并入事件，C 级）。**现状标注（v2.0）**：镜像/域名态的域过滤依赖尚未落地的代理进程——Seatbelt 路径当前 `(allow network*)` 放行全网（`NetworkState` 的 registry 白名单结构已备未消费）；install_deps 已先行命令白名单收窄任意命令面（§9.2），完整域过滤为 design-v2.md §4.4 P1 安全债——残余风险（包 postinstall / 构建系统执行项目代码 + 网络开放）如实标注不静默。**层间独立降级（v1.150）**：Linux 断网态的 network namespace（层 1）在受限环境（加固主机 / 托管 CI 禁用非特权 userns）不可用时降级跳过、不致命——网络隔离由层 3 seccomp inet 过滤兜底、写限仍由层 2 Landlock 承担，断网语义不变。系统只读、写限当前会话绑定的项目根 / 显式 worktree、每项目语言服务器隔离。多项目打开时为每个执行进程分别物化 project roots；跨项目路径既不是可写根，也不进入 A 级检索范围。
+网络三态：**断网**（测试/构建/纯分析）→ **镜像代理**（仅预授权 registry：npm/pypi/nuget/crates…，B 级）→ **域名代理**（请求 URL 的 host 直接放行并入事件，C 级）。**现状标注（v2.3 更新）**：镜像态域过滤**已收口**（design-v2.md §4.4）——macOS Seatbelt 收紧为「deny network\* + 仅放行回环代理端口 `localhost:<port>`」，沙箱内 install_deps 命令唯一出网通路是本地 registry 白名单代理进程（`tenon-sandbox::proxy`，白名单 = `mirror_default()` 扩充集：覆盖 install_policy 全部包管理器官方源 + git 依赖 / SPM 所需 GitHub 域）；代理不可用时工具层 fail-closed 拒绝、代理缺席的 profile 同样全拒（DSH「无后端显式失败、禁止静默透传」口径）。**Linux 余项**：镜像态网络收紧（回环 seccomp 过滤）随统一沙箱总线落地，此前 Linux 镜像态仍无网络限制——如实标注；域名代理态（C 级）域过滤维持现状（生产未消费）。残余风险面收窄为：postinstall / 构建系统任务**仅可触达白名单域**。**层间独立降级（v1.150）**：Linux 断网态的 network namespace（层 1）在受限环境（加固主机 / 托管 CI 禁用非特权 userns）不可用时降级跳过、不致命——网络隔离由层 3 seccomp inet 过滤兜底、写限仍由层 2 Landlock 承担，断网语义不变。系统只读、写限当前会话绑定的项目根 / 显式 worktree、每项目语言服务器隔离。多项目打开时为每个执行进程分别物化 project roots；跨项目路径既不是可写根，也不进入 A 级检索范围。
 
 ### 12.4 密钥处理
 

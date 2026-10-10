@@ -77,6 +77,8 @@ Approval（确认策略）：never │ on-irreversible │ on-elevated │ alway
 
 **4.4 域过滤代理进程**：镜像/域名态的 registry 白名单由本地代理进程强制执行（现状 Seatbelt 放行全网，见 §0.1）；在此之前 install_deps 命令白名单（§4.5）先行收窄任意命令面。
 
+**落地状态（v2.3 已收口·macOS）**：`tenon-sandbox::proxy` 本地 registry 白名单代理（127.0.0.1 随机端口、进程内常驻单例、CONNECT 隧道 + 绝对 URI 转发两形态、非白名单 403 带理由、TLS 不解密零证书面）；Seatbelt MirrorProxy 态收紧为「deny network\* + 仅放行 `localhost:<代理端口>`」（实测Seatbelt 网络地址仅支持 `localhost:*` / `*:port` 形态）；`exec_command` 为镜像态命令注入 HTTP(S)_PROXY / NO_PROXY（大小写双写）；install_deps 接单例代理、不可用 fail-closed 拒绝。白名单扩充至 install_policy 全部包管理器官方源 + git 依赖 / SPM 所需 GitHub 域（面扩大如实列出）。验证：proxy 单测 5 例（隧道放行/拒绝、绝对 URI 双路、相对 URI 拒、单例稳定）+ macOS 真沙箱 2 例（非白名单域双路皆拒、沙箱内代理可达且 403 应答）+ fail-closed profile 1 例。**余项**：Linux 镜像态回环收紧（随统一沙箱总线 §4.3）、白名单 settings 可配置（镜像源自定义）。
+
 **4.5 install_deps 命令白名单（v2.0 已收口）**：`tenon-core::install_policy::validate_install_command`——仅接受已知包管理器二进制 + 安装语义子命令（npm/pnpm/yarn/bun/pip/uv/poetry/cargo/go/dotnet/…，拒绝 run/exec/test 类脚本执行子命令与 shell 控制符/命令替换/未知二进制）。残余风险（包 postinstall / 构建系统执行项目代码 + 网络开放）由 §4.4 代理进程收口前如实标注，不静默。
 
 **4.6 安全姿态明示**：顶栏档位指示；Windows 无 WSL2 降级、沙箱初始化失败、快照库不可用统一走「安全姿态条」，降级期间默认收紧一档。

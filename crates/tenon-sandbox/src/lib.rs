@@ -9,11 +9,13 @@ pub mod guard;
 #[cfg(target_os = "linux")]
 pub mod linux;
 pub mod network;
+pub mod proxy;
 pub mod seatbelt;
 
 pub use exec::{exec_argv, exec_command, ExecOutcome, SandboxSpec};
 pub use guard::WriteGuard;
 pub use network::NetworkState;
+pub use proxy::{registry_proxy, RegistryProxy};
 pub use seatbelt::seatbelt_profile;
 
 /// 沙箱相关错误。
