@@ -71,6 +71,8 @@ Approval（确认策略）：never │ on-irreversible │ on-elevated │ alway
 
 **4.2 execpolicy + run_command 正名**：新工具 `run_command`（B 级沙箱）承载诚实的通用命令通道，execpolicy 规则引擎做命令级风险评估（高危模式拦截或触发 Approval；规则库开放用户/团队自定义，Claude Code permissions 形态）；`run_tests`/`run_build` 收敛为语义工具（显式覆盖归入 run_command 语义审计）。
 
+**落地状态（v2.2 已收口·首期）**：`run_command` 工具全链接线（Tool 枚举 B 级 / 模型目录 schema / prompt 描述 / executor 处理器：command 必填 + 可选 timeout_s + execpolicy 前置 + 断网沙箱含 full_access 降级）；`tenon-core::execpolicy` 首期规则库（破坏性 git / 系统级与家目录递归操作 / 管道注入解释器 / 提权 / 电源与格式化 / 设备覆写 / fork 炸弹，6 组单测矩阵）——规则刻意保守只拦「几乎不可能合法」形态；run_tests/run_build 任意 command 覆盖面在 §9.2 如实标注并由 run_command 分流承载。**余项（P1 后续）**：规则库用户/团队自定义（Claude Code permissions 形态）、execpolicy 高危档触发 Approval（当前只 Block）、Laya 评分可选后端、策略总线统一管线（当前 install_policy / execpolicy / gates 为分立消费者）。
+
 **4.3 统一外部进程沙箱总线**：语言服务器、MCP server、市场插件、hooks 外部命令全部进同一沙箱包装（Seatbelt/Landlock+seccomp），声明式权限（fs/net/exec）——消灭「语言服务器有沙箱、MCP 裸奔」倒挂。
 
 **4.4 域过滤代理进程**：镜像/域名态的 registry 白名单由本地代理进程强制执行（现状 Seatbelt 放行全网，见 §0.1）；在此之前 install_deps 命令白名单（§4.5）先行收窄任意命令面。

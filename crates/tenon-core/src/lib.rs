@@ -6,6 +6,7 @@
 
 pub mod circuit;
 pub mod context;
+pub mod execpolicy;
 pub mod gates;
 pub mod install_policy;
 pub mod machine;

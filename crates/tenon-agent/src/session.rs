@@ -369,6 +369,14 @@ fn tool_specs() -> Vec<ToolSpec> {
         ("install_deps", "安装依赖（沙箱镜像代理，如 npm install）", serde_json::json!({
             "type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]
         })),
+        ("run_command", "通用命令执行（B 级沙箱断网；execpolicy 前置拦截高危命令：破坏性 git / 系统级 rm / 管道注入解释器 / 提权 / 设备覆写直接拒绝）——测试优先 run_tests、构建优先 run_build、装依赖用 install_deps", serde_json::json!({
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "timeout_s": {"type": "integer", "minimum": 1, "maximum": 3600}
+            },
+            "required": ["command"]
+        })),
         ("http_fetch", "抓取 URL（C 级直执并审计）", serde_json::json!({
             "type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]
         })),
@@ -1994,7 +2002,7 @@ impl AgentSession {
                 let mut risk_hint: Option<String> = None;
                 if matches!(
                     call.name.as_str(),
-                    "run_tests" | "run_build" | "install_deps"
+                    "run_tests" | "run_build" | "install_deps" | "run_command"
                 ) {
                     let cmd = call
                         .arguments

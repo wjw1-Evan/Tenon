@@ -40,6 +40,9 @@ pub enum Tool {
     RunTests,
     RunBuild,
     InstallDeps,
+    /// 通用命令执行（design-v2.md §4.2 v2.0）：run_command——诚实的任意命令
+    /// 通道（B 级沙箱断网），execpolicy 命令级风险评估前置拦截（高危模式拒绝）。
+    RunCommand,
     HttpFetch,
     GitCommit,
     GitPush,
@@ -67,6 +70,7 @@ impl Tool {
             Tool::RunTests => "run_tests",
             Tool::RunBuild => "run_build",
             Tool::InstallDeps => "install_deps",
+            Tool::RunCommand => "run_command",
             Tool::HttpFetch => "http_fetch",
             Tool::GitCommit => "git_commit",
             Tool::GitPush => "git_push",
@@ -93,6 +97,7 @@ impl Tool {
             | Tool::RunTests
             | Tool::RunBuild
             | Tool::InstallDeps
+            | Tool::RunCommand
             | Tool::SpawnSubagents => Level::B,
             Tool::HttpFetch | Tool::WebSearch => Level::C,
             Tool::GitCommit | Tool::GitPush => Level::D,
@@ -121,6 +126,7 @@ impl Tool {
             "run_tests" => Tool::RunTests,
             "run_build" => Tool::RunBuild,
             "install_deps" => Tool::InstallDeps,
+            "run_command" => Tool::RunCommand,
             "http_fetch" => Tool::HttpFetch,
             "git_commit" => Tool::GitCommit,
             "git_push" => Tool::GitPush,

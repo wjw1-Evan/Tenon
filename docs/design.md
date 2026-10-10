@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | **v2.1** |
+| 版本 | **v2.2** |
 | 日期 | 2026-10-10 |
 | 状态 | 定稿，M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
@@ -571,8 +571,9 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 | `mcp_meta_resources_list / mcp_meta_resources_read / mcp_meta_prompts_list / mcp_meta_prompts_get`（MCP 资源与提示，v1.187） | A | 跨服务器枚举 / 读取 MCP resources（URI）与 prompts（渲染后消息文本）；内容按不可信数据处理（§12.1）、输出截 20k + redact；只读会话仍拒（与 MCP 工具既有语义一致——调用即拉起外部进程）；名字与 `mcp_{server}_{tool}` 形式重叠时精确名优先 |
 | `apply_patch` | B | 结构化编辑：① range 形式（file + range + content）；② search/replace 块格式（v1.188：file + search + replace，目标片段全文唯一匹配——精确优先、降级逐行空白归一序列匹配；零/多命中报错，与 range 互斥），产生事件与 checkpoint |
 | `spawn_subagents`（并行子代理，v1.190） | B | 分发 1–3 个独立子任务（`{tasks:[{instruction, files}]}`，文件集不相交——相交拒绝回传）；子代理各自运行于受管 worktree 并登记为独立会话，完成后回传摘要、合并/丢弃在子会话行处置；边界见 §9.5 |
-| `run_tests` / `run_build` | B | 沙箱内，断网态；单命令超时默认 120s（附录 E）；接受可选 `command` 覆盖（缺省按项目清单探测）——任意命令面经断网沙箱收敛，v2 将以 `run_command` 正名并配 execpolicy 命令分级（design-v2.md §4.2） |
+| `run_tests` / `run_build` | B | 沙箱内，断网态；单命令超时默认 120s（附录 E）；接受可选 `command` 覆盖（缺省按项目清单探测）——任意命令面经断网沙箱收敛，通用命令经 `run_command` 正名承载（v2.2） |
 | `install_deps` | B | 沙箱内，镜像代理态；**v2.0 命令白名单已收口**（design-v2.md §4.5）：仅接受已知包管理器与安装语义子命令（`tenon-core::install_policy`，拒绝脚本执行子命令 / shell 控制符 / 未知二进制）；镜像态 registry 域过滤仍待代理进程（现状见 §12.3 现状标注） |
+| `run_command`（通用命令，v2.2 design-v2.md §4.2） | B | 诚实的通用命令通道：`command` 必填（无探测缺省）+ 可选 `timeout_s` 1-3600s；**execpolicy 前置拦截**（`tenon-core::execpolicy`：破坏性 git（reset --hard / clean -f / checkout --）、系统级 / 家目录递归 rm·chmod、管道注入解释器（curl\|sh 形态）、提权、电源 / 格式化 / 设备覆写、fork 炸弹——拒绝理由回传模型；规则刻意保守，项目内正常命令含 `rm -rf node_modules` 放行）；断网沙箱（full_access 档降级）；Laya 命令风险提示同轨（§9.8 #2） |
 | `http_fetch` | C | 直接执行；目标域名写入审计事件 |
 | `web_search`（v1.182；v1.189 多后端） | C | 网络搜索（Bing HTML 主 + DuckDuckGo Lite 兜底，免密钥）：`{query, max_results?}` → 标题 / 链接 / 摘要 JSON；SSRF 守卫与 `http_fetch` 同轨（见下文） |
 | `git_commit` / `git_push` | D | 直接执行；命令与结果全量入 Trace |
