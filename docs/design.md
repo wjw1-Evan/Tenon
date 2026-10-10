@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | **v2.0** |
+| 版本 | **v2.1** |
 | 日期 | 2026-10-10 |
 | 状态 | 定稿，M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
@@ -769,6 +769,8 @@ L4 按包隔离、语言服务器按需启动；子代理限定单包；检索�
 | D 不可逆 | 仓库外写、git config、commit/push、PR、装插件 | 直接执行；命令 / 结果入事件，无快照回滚承诺 |
 
 A/B/C/D 仅是风险与执行边界标记，不再是审批门槛；去 Plan 安全兜底 = 只读开关 + 工具黑名单 + 沙箱 + 快照 + 熔断（§9.3）。
+
+**v2.1 安全档位（design-v2.md §4.1，已落地）**：A/B/C/D 之上叠加 **ExecMode × Approval 二维档位**——默认 `workspace-write × on-irreversible`：唯 D 级 / C+D 复合动作（commit / push / PR / 装插件）Hold 等待确认（`confirm_request` 事件 + 会话 `AwaitingConfirm` 态 + `POST /session/:id/confirm` 三键决议：本次允许 / 本会话允许（记忆）/ 拒绝——拒绝理由回传模型、回合继续）；`never` 档还原 v1.89 零审批；`always` 档全部非只读确认。运行中经 control `set_approval` / `set_exec_mode` 切换（Hold 等待即时重判）；settings `security.exec_mode / approval` 为新会话默认档；`read_only` 档派生会话只读、`full_access` 派生命令沙箱降级（§9.2 run_tests / run_build / install_deps）。无人值守链路（headless `--exec` / 子代理 / evals）显式 `never` 防 Hold 永等。
 
 **权限策略（TeamPolicy，v1.85；v1.89 修订）**：全局约束只允许收窄——`denied_tools` 在所有会话的工具入口前拒绝；`max_cost_usd` 与全局配置取更小值。字段经 `/team-policy` 校验后原子持久化到 `~/.tenon/policy.toml`（0600），仅对新会话生效；既有会话不回写放宽或收窄策略，避免运行中边界漂移。`force_interactive` 仅保留旧配置兼容，语义为无操作；没有 A/B 升级或快照关闭开关。
 

@@ -37,9 +37,19 @@ pub async fn run_exec(
         .provider_or_default(provider_name)
         .await
         .map_err(|e| anyhow::anyhow!(e))?;
-    let session = crate::routes::create_agent_session(&state, &project, provider, None, None, None)
-        .await
-        .map_err(|(_, e)| anyhow::anyhow!(e))?;
+    let session = crate::routes::create_agent_session(
+        &state,
+        &project,
+        provider,
+        None,
+        None,
+        None,
+        // v2.0（design-v2.md §4.1）：headless 一次性执行无交互面——Approval
+        // 收窄 never 防 Hold 永等（需要确认语义时走桌面 / Web 会话）
+        Some(tenon_core::gates::ApprovalGear::Never),
+    )
+    .await
+    .map_err(|(_, e)| anyhow::anyhow!(e))?;
     let session_id = session.session_id.clone();
 
     // 订阅先于启动：任务事件不丢首帧。任务完成即收尾（session 持有发送端

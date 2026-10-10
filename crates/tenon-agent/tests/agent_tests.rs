@@ -6,6 +6,7 @@ use std::time::Duration;
 use tenon_agent::session::{AgentConfig, ControlCommand, ProjectWriteLock, TaskOutcome};
 use tenon_agent::AgentSession;
 use tenon_core::context::ProjectRules;
+use tenon_core::gates::{ApprovalGear, ConfirmDecision};
 use tenon_fs::l4;
 use tenon_models::{MockProvider, Role, ScriptedReply};
 use tenon_snapshot::SnapshotStore;
@@ -34,6 +35,9 @@ async fn setup(
     let provider = Arc::new(MockProvider::new("mock", "mock-1", script));
     let mut config = AgentConfig::for_project(dir.path().to_path_buf(), &project_id);
     config.first_edit_buffer_ms = 20; // 测试加速
+                                      // v2.0（design-v2.md §4.1）：测试 harness 默认零审批档——既有 D 级直执
+                                      // 用例保持 v1 语义；确认回路用 setup_with_config 显式开 on_irreversible
+    config.gate.approval = tenon_core::gates::ApprovalGear::Never;
     let rules = ProjectRules::default();
     let session = AgentSession::create(
         store.clone(),
@@ -70,6 +74,9 @@ async fn setup_with_config(
     let provider = Arc::new(MockProvider::new("mock", "mock-1", script));
     let mut config = AgentConfig::for_project(dir.path().to_path_buf(), &project_id);
     config.first_edit_buffer_ms = 20; // 测试加速
+                                      // v2.0（design-v2.md §4.1）：测试 harness 默认零审批档——既有 D 级直执
+                                      // 用例保持 v1 语义；确认回路用 setup_with_config 显式开 on_irreversible
+    config.gate.approval = tenon_core::gates::ApprovalGear::Never;
     configure(&mut config);
     let rules = ProjectRules::default();
     let session = AgentSession::create(
@@ -398,6 +405,154 @@ async fn d_level_git_commit_executes_and_audits_directly() {
         .expect("D 级动作应有直执审计");
     assert_eq!(risk.payload["level"], "d");
     assert_eq!(risk.payload["tool"], "git_commit");
+}
+
+/// v2.0 档位（design-v2.md §4.1）：on_irreversible 档 D 级 Hold——确认
+/// allow_session 后执行且本会话记忆（第二次 D 级调用不再 Hold）。
+#[tokio::test]
+async fn gate_on_irreversible_holds_d_level_and_allow_session_memorizes() {
+    let (dir, session, store, _p) = setup_with_config(
+        vec![
+            ScriptedReply::Tool {
+                name: "git_commit".into(),
+                args: serde_json::json!({"message": "gate commit 1"}),
+            },
+            // 两次提交间制造真实变更（B 级不经 Hold），否则第二次 commit 无可提交
+            ScriptedReply::Tool {
+                name: "apply_patch".into(),
+                args: serde_json::json!({
+                    "file": "code2.txt", "range": null, "content": "second\n"
+                }),
+            },
+            ScriptedReply::Tool {
+                name: "git_commit".into(),
+                args: serde_json::json!({"message": "gate commit 2"}),
+            },
+            ScriptedReply::Text("两次均已提交".into()),
+        ],
+        |cfg| {
+            cfg.gate.approval = ApprovalGear::OnIrreversible;
+        },
+    )
+    .await;
+    let root = dir.path();
+    std::fs::write(root.join("code.txt"), "fn main() {}\n").unwrap();
+    for cmd in [
+        vec!["init", "-q", "."],
+        vec!["config", "user.email", "t@t"],
+        vec!["config", "user.name", "t"],
+    ] {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(&cmd)
+            .output()
+            .unwrap();
+    }
+    // 并发决议：待确认出现即 allow_session（模拟 UI 确认卡）
+    let resolver_session = session.clone();
+    let resolver = tokio::spawn(async move {
+        loop {
+            if resolver_session.pending_confirm().await.is_some() {
+                resolver_session
+                    .resolve_confirm(ConfirmDecision::AllowSession)
+                    .await
+                    .expect("应有待确认动作");
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(15)).await;
+        }
+    });
+    let outcome = session.run_task("提交两次").await;
+    resolver.await.unwrap();
+    assert!(matches!(outcome, TaskOutcome::Done(_)), "{outcome:?}");
+    // 两个 commit 均落盘（allow_session 记忆后第二次不再 Hold）
+    let log = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["log", "--oneline"])
+        .output()
+        .unwrap();
+    let log_text = String::from_utf8_lossy(&log.stdout);
+    assert!(log_text.contains("gate commit 1"), "{log_text}");
+    assert!(log_text.contains("gate commit 2"), "{log_text}");
+    // 确认事件链：请求 1 次（记忆后不再请求）+ 决议 allow_session
+    let mut st = store.lock().await;
+    let events = st.events(&session.session_id).unwrap();
+    let requests = events
+        .iter()
+        .filter(|e| e.kind == EventKind::ConfirmRequest)
+        .count();
+    assert_eq!(requests, 1, "allow_session 记忆后第二次 D 级不再 Hold");
+    let resolved = events
+        .iter()
+        .find(|e| e.kind == EventKind::ConfirmResolved)
+        .expect("应有确认决议事件");
+    assert_eq!(resolved.payload["decision"], "allow_session");
+    assert_eq!(resolved.payload["tool"], "git_commit");
+}
+
+/// v2.0 档位：deny 决议——工具收到拒绝结果，回合继续，D 级副作用不发生。
+#[tokio::test]
+async fn gate_deny_blocks_d_level_and_turn_continues() {
+    let (dir, session, store, _p) = setup_with_config(
+        vec![
+            ScriptedReply::Tool {
+                name: "git_commit".into(),
+                args: serde_json::json!({"message": "should not land"}),
+            },
+            ScriptedReply::Text("好的，用户拒绝了提交，我不提交。".into()),
+        ],
+        |cfg| {
+            cfg.gate.approval = ApprovalGear::OnIrreversible;
+        },
+    )
+    .await;
+    let root = dir.path();
+    std::fs::write(root.join("code.txt"), "fn main() {}\n").unwrap();
+    for cmd in [
+        vec!["init", "-q", "."],
+        vec!["config", "user.email", "t@t"],
+        vec!["config", "user.name", "t"],
+    ] {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(&cmd)
+            .output()
+            .unwrap();
+    }
+    let resolver_session = session.clone();
+    let resolver = tokio::spawn(async move {
+        loop {
+            if resolver_session.pending_confirm().await.is_some() {
+                resolver_session
+                    .resolve_confirm(ConfirmDecision::Deny)
+                    .await
+                    .unwrap();
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(15)).await;
+        }
+    });
+    let outcome = session.run_task("提交代码").await;
+    resolver.await.unwrap();
+    assert!(matches!(outcome, TaskOutcome::Done(_)), "{outcome:?}");
+    // 无 commit 落盘
+    let log = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["log", "--oneline"])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&log.stdout).trim().is_empty());
+    let mut st = store.lock().await;
+    let events = st.events(&session.session_id).unwrap();
+    let resolved = events
+        .iter()
+        .find(|e| e.kind == EventKind::ConfirmResolved)
+        .expect("应有确认决议事件");
+    assert_eq!(resolved.payload["decision"], "deny");
 }
 
 #[tokio::test]

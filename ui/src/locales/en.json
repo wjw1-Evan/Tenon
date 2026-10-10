@@ -483,5 +483,17 @@
   "shortcuts.close_tab": "Close editor tab",
   "onboarding.fallback_note": "The primary free model is rate-limited right now — switched to {model} (also an official free model).",
   "onboarding.fallback_chain": "Fallback chain configured: {model} (auto-switch on rate limits / failures).",
-  "onboarding.daemon_unreachable": "Cannot reach the local Tenon service (it may be restarting) — please retry in a moment."
+  "onboarding.daemon_unreachable": "Cannot reach the local Tenon service (it may be restarting) — please retry in a moment.",
+  "confirm.allow_once": "Allow once",
+  "confirm.allow_session": "Allow this session",
+  "confirm.deny": "Deny",
+  "confirm.args": "Arguments",
+  "gates.exec_mode": "Execution mode",
+  "gates.approval": "Approval",
+  "gates.exec_read_only": "Read-only",
+  "gates.exec_workspace_write": "Workspace write",
+  "gates.exec_full_access": "Full access",
+  "gates.approval_never": "No confirms",
+  "gates.approval_on_irreversible": "Confirm irreversible",
+  "gates.approval_always": "Confirm all"
 }

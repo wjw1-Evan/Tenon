@@ -483,5 +483,17 @@
   "shortcuts.close_tab": "關閉編輯器分頁",
   "onboarding.fallback_note": "首選免費模型限流中，已自動改用 {model}（同為官方免費檔）。",
   "onboarding.fallback_chain": "已設定備用模型鏈：{model}（主模型限流 / 故障時自動切換）。",
-  "onboarding.daemon_unreachable": "無法連線本機 Tenon 服務（可能正在重啟），請稍候再試。"
+  "onboarding.daemon_unreachable": "無法連線本機 Tenon 服務（可能正在重啟），請稍候再試。",
+  "confirm.allow_once": "本次允許",
+  "confirm.allow_session": "本工作階段允許",
+  "confirm.deny": "拒絕",
+  "confirm.args": "參數",
+  "gates.exec_mode": "執行邊界",
+  "gates.approval": "確認策略",
+  "gates.exec_read_only": "唯讀",
+  "gates.exec_workspace_write": "工作區寫入",
+  "gates.exec_full_access": "完全放行",
+  "gates.approval_never": "從不確認",
+  "gates.approval_on_irreversible": "不可逆確認",
+  "gates.approval_always": "全部確認"
 }

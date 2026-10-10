@@ -483,5 +483,17 @@
   "shortcuts.close_tab": "편집기 탭 닫기",
   "onboarding.fallback_note": "기본 무료 모델이 rate limit 중이라 {model}(역시 공식 무료 모델)로 자동 전환했습니다.",
   "onboarding.fallback_chain": "폴백 체인 구성됨: {model}(속도 제한·장애 시 자동 전환).",
-  "onboarding.daemon_unreachable": "로컬 Tenon 서비스에 연결할 수 없습니다(재시작 중일 수 있음). 잠시 후 다시 시도하세요."
+  "onboarding.daemon_unreachable": "로컬 Tenon 서비스에 연결할 수 없습니다(재시작 중일 수 있음). 잠시 후 다시 시도하세요.",
+  "confirm.allow_once": "한 번 허용",
+  "confirm.allow_session": "이 세션에서 허용",
+  "confirm.deny": "거부",
+  "confirm.args": "인자",
+  "gates.exec_mode": "실행 경계",
+  "gates.approval": "확인 정책",
+  "gates.exec_read_only": "읽기 전용",
+  "gates.exec_workspace_write": "작업 영역 쓰기",
+  "gates.exec_full_access": "전체 허용",
+  "gates.approval_never": "확인 안 함",
+  "gates.approval_on_irreversible": "되돌릴 수 없는 작업만 확인",
+  "gates.approval_always": "모두 확인"
 }

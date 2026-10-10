@@ -6,6 +6,7 @@
 
 pub mod circuit;
 pub mod context;
+pub mod gates;
 pub mod install_policy;
 pub mod machine;
 pub mod merge;
@@ -20,6 +21,7 @@ pub use circuit::{CircuitBreaker, CircuitLimits, CircuitStatus, PatchFootprint, 
 pub use context::{
     estimate_tokens, ContextSlice, IndexEntry, ProjectRules, SessionMemory, TokenBudget, WorkingSet,
 };
+pub use gates::{ApprovalGear, ExecMode, Gate, GateVerdict};
 pub use machine::{Event, Limits as StateLimits, State, StateMachine, TransitionError};
 pub use merge::{merge_three_way, MergeConflict};
 pub use policy::{Action, Decision, Level, Policy};

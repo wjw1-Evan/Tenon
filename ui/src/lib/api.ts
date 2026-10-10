@@ -470,7 +470,20 @@ export class TenonApi {
       outcome: Record<string, unknown> | null;
       /** v1.147 发送消息队列快照（运行态入队的待发消息，多窗口一致）。 */
       queue?: QueuedMessage[];
+      /** v2.0 档位确认（design-v2.md §4.1）：awaiting_confirm 时的待确认动作
+       *（事件之外的重载兜底；tool + 级别 + 截断参数预览）。 */
+      pending_confirm?: { tool: string; level: string; args: string } | null;
+      /** v2.0 会话当前档位（切换器回显）。 */
+      gate?: { exec_mode: string; approval: string };
     }>(`/session/${sessionId}`);
+  }
+
+  /** v2.0 档位确认决议（design-v2.md §4.1）：allow_once / allow_session / deny。 */
+  resolveConfirm(sessionId: string, decision: "allow_once" | "allow_session" | "deny") {
+    return this.request<{ resolved: boolean }>(`/session/${sessionId}/confirm`, {
+      method: "POST",
+      json: { decision },
+    });
   }
 
   /** v1.147（§9.1）：移除一条排队消息（编辑 = 移除后重新发送）。 */
@@ -484,6 +497,14 @@ export class TenonApi {
     return this.request<{ ok: boolean }>(`/session/${sessionId}/control`, {
       method: "POST",
       json: { action, value },
+    });
+  }
+
+  /** v2.0 档位运行中切换（design-v2.md §4.1）：set_approval / set_exec_mode。 */
+  controlGear(sessionId: string, action: "set_approval" | "set_exec_mode", gear: string) {
+    return this.request<{ ok: boolean }>(`/session/${sessionId}/control`, {
+      method: "POST",
+      json: { action, gear },
     });
   }
 

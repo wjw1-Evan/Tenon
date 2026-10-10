@@ -3266,3 +3266,72 @@ button:disabled { opacity: 0.45; cursor: default; }
 .turn-thinking.live .turn-thinking-head {
   color: var(--fg);
 }
+
+/* v2.0 档位确认卡（design-v2.md §4.1）：D 级 / C+D 动作被 on-irreversible
+   档 Hold——左缘风险橙竖线（§7.5 风险直执色系），钉在输入区上方不随线程滚动 */
+.confirm-card {
+  border-left: 3px solid #e07020;
+  background: var(--bg-raised, #141821);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 0 12px 8px;
+}
+.confirm-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.confirm-level {
+  font-family: var(--mono, ui-monospace, monospace);
+  color: #e07020;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.confirm-tool {
+  font-family: var(--mono, ui-monospace, monospace);
+  color: var(--fg);
+  font-weight: 600;
+}
+.confirm-args {
+  margin: 8px 0;
+  padding: 8px 10px;
+  background: var(--bg, #0e1015);
+  border-radius: 4px;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--fg-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 140px;
+  overflow: auto;
+}
+.confirm-actions {
+  display: flex;
+  gap: 8px;
+}
+.confirm-btn {
+  border: 1px solid var(--border, #2a2f3a);
+  background: transparent;
+  color: var(--fg);
+  border-radius: 5px;
+  padding: 4px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.confirm-btn:hover {
+  border-color: var(--fg-muted);
+}
+.confirm-btn.primary {
+  border-color: #2da44e;
+  color: #2da44e;
+}
+.confirm-btn.danger {
+  border-color: #d43d3d;
+  color: #d43d3d;
+}
+/* v2.0 档位切换器（会话态上下文条内，复用 agent-context-select 基态） */
+.gate-select {
+  margin-left: auto;
+  font-size: 11px;
+}

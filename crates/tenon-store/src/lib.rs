@@ -63,6 +63,9 @@ pub enum SessionStatus {
     Verifying,
     Fixing,
     Paused,
+    /// v2.0 档位确认（design-v2.md §4.1）：D 级 / C+D 复合动作在
+    /// on-irreversible 档 Hold 等待用户决议（allow_once / allow_session / deny）。
+    AwaitingConfirm,
     Error,
     Done,
     RolledBack,
@@ -78,6 +81,7 @@ impl SessionStatus {
             SessionStatus::Verifying => "verifying",
             SessionStatus::Fixing => "fixing",
             SessionStatus::Paused => "paused",
+            SessionStatus::AwaitingConfirm => "awaiting_confirm",
             SessionStatus::Error => "error",
             SessionStatus::Done => "done",
             SessionStatus::RolledBack => "rolled_back",
@@ -93,6 +97,7 @@ impl SessionStatus {
             "verifying" => SessionStatus::Verifying,
             "fixing" => SessionStatus::Fixing,
             "paused" => SessionStatus::Paused,
+            "awaiting_confirm" => SessionStatus::AwaitingConfirm,
             "error" => SessionStatus::Error,
             "done" => SessionStatus::Done,
             "rolled_back" => SessionStatus::RolledBack,
@@ -140,6 +145,11 @@ pub enum EventKind {
     /// 思考过程流增量（§7.2 v1.210，payload {text}，与 model_delta 同合并档；
     /// 不入正文，UI 以折叠「思考过程」卡呈现）。
     ReasoningDelta,
+    /// v2.0 档位确认请求（design-v2.md §4.1，payload {tool, level, args}——
+    /// args 序列化截 2k 防膨胀）：动作被 Approval 档 Hold，等待用户决议。
+    ConfirmRequest,
+    /// v2.0 档位确认决议（payload {tool, decision: allow_once|allow_session|deny}）。
+    ConfirmResolved,
 }
 
 impl EventKind {
@@ -167,6 +177,8 @@ impl EventKind {
             EventKind::PlanSubmitted => "plan_submitted",
             EventKind::HookRun => "hook_run",
             EventKind::ReasoningDelta => "reasoning_delta",
+            EventKind::ConfirmRequest => "confirm_request",
+            EventKind::ConfirmResolved => "confirm_resolved",
         }
     }
 
@@ -194,6 +206,8 @@ impl EventKind {
             "plan_submitted" => EventKind::PlanSubmitted,
             "hook_run" => EventKind::HookRun,
             "reasoning_delta" => EventKind::ReasoningDelta,
+            "confirm_request" => EventKind::ConfirmRequest,
+            "confirm_resolved" => EventKind::ConfirmResolved,
             _ => return None,
         })
     }

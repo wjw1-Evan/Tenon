@@ -67,6 +67,8 @@ Approval（确认策略）：never │ on-irreversible │ on-elevated │ alway
 - `never` = v1 零审批（降为可选档）；`always` = 新手/企业档；
 - 档位输入区旁一键切换 + 顶栏常驻指示；团队策略只能收窄。
 
+**落地状态（v2.1 已收口）**：全链落地——`tenon-core::gates`（Gate / ExecMode / ApprovalGear / ConfirmDecision 纯判定 + 单测矩阵）→ 会话闸门（D / Composite Hold：`confirm_request` 事件 + `AwaitingConfirm` 会话态 + oneshot 决议通道，Esc / Pause / Stop 打断按拒绝处理并回注控制通道，等待中 `set_approval` 即时改档重判）→ daemon（`POST /session/:id/confirm` 三键决议、control `set_approval` / `set_exec_mode`、settings `security.exec_mode / approval` 新会话默认档、GET /session 增 `pending_confirm` + `gate` 载荷）→ UI（输入区上方确认卡：级别徽标 + 工具 + 参数预览 + 本次允许 / 本会话允许 / 拒绝；会话态上下文条双切换器五语言；`awaiting_confirm` 入 RUNNING_STATES 发送转排队）。无人值守链路（headless `--exec` / 子代理 / evals）显式 `never` 防 Hold 永等；既有 D 级直执测试经 harness 默认 never 保持 v1 语义。顶栏常驻安全姿态指示随 P1 后续（统一沙箱总线）一并落。
+
 **4.2 execpolicy + run_command 正名**：新工具 `run_command`（B 级沙箱）承载诚实的通用命令通道，execpolicy 规则引擎做命令级风险评估（高危模式拦截或触发 Approval；规则库开放用户/团队自定义，Claude Code permissions 形态）；`run_tests`/`run_build` 收敛为语义工具（显式覆盖归入 run_command 语义审计）。
 
 **4.3 统一外部进程沙箱总线**：语言服务器、MCP server、市场插件、hooks 外部命令全部进同一沙箱包装（Seatbelt/Landlock+seccomp），声明式权限（fs/net/exec）——消灭「语言服务器有沙箱、MCP 裸奔」倒挂。

@@ -483,5 +483,17 @@
   "shortcuts.close_tab": "关闭编辑器标签",
   "onboarding.fallback_note": "首选免费模型限流中，已自动改用 {model}（同为官方免费档）。",
   "onboarding.fallback_chain": "已配置备用模型链：{model}（主模型限流 / 故障时自动切换）。",
-  "onboarding.daemon_unreachable": "无法连接本地 Tenon 服务（可能正在重启），请稍候重试。"
+  "onboarding.daemon_unreachable": "无法连接本地 Tenon 服务（可能正在重启），请稍候重试。",
+  "confirm.allow_once": "本次允许",
+  "confirm.allow_session": "本会话允许",
+  "confirm.deny": "拒绝",
+  "confirm.args": "参数",
+  "gates.exec_mode": "执行边界",
+  "gates.approval": "确认策略",
+  "gates.exec_read_only": "只读",
+  "gates.exec_workspace_write": "工作区写",
+  "gates.exec_full_access": "完全放行",
+  "gates.approval_never": "从不确认",
+  "gates.approval_on_irreversible": "不可逆确认",
+  "gates.approval_always": "全部确认"
 }

@@ -189,6 +189,10 @@ pub struct SettingsOverrides {
     pub models_generation_temperature: Option<f32>,
     /// v1.180 用户 hooks（§13.6）：数组整体替换，新会话生效。
     pub hooks: Option<Vec<tenon_agent::hooks::HookConfig>>,
+    /// v2.0 安全档位（design-v2.md §4.1）：security.exec_mode / security.approval
+    ///（新会话默认档；运行中切换走 /session/:id/control set_approval|set_exec_mode）。
+    pub security_exec_mode: Option<tenon_core::gates::ExecMode>,
+    pub security_approval: Option<tenon_core::gates::ApprovalGear>,
 }
 
 /// mcp.servers 单条校验（§13.5 安装期硬约束；settings PUT 与市场安装共用）。
@@ -264,6 +268,21 @@ impl SettingsOverrides {
                     return Err("exec.command_timeout_s 取值 1-3600s".into());
                 }
                 self.command_timeout_s = Some(v);
+            }
+        }
+        if let Some(security) = body.get("security") {
+            // v2.0 档位默认（design-v2.md §4.1）：新会话生效
+            if let Some(v) = security.get("exec_mode") {
+                let s = v.as_str().ok_or("security.exec_mode 须为字符串")?;
+                let mode = tenon_core::gates::ExecMode::parse(s)
+                    .ok_or("security.exec_mode ∈ read_only | workspace_write | full_access")?;
+                self.security_exec_mode = Some(mode);
+            }
+            if let Some(v) = security.get("approval") {
+                let s = v.as_str().ok_or("security.approval 须为字符串")?;
+                let gear = tenon_core::gates::ApprovalGear::parse(s)
+                    .ok_or("security.approval ∈ never | on_irreversible | always")?;
+                self.security_approval = Some(gear);
             }
         }
         if let Some(privacy) = body.get("privacy") {
@@ -444,6 +463,13 @@ impl SettingsOverrides {
         if let Some(v) = self.command_timeout_s {
             exec.insert("command_timeout_s".into(), serde_json::json!(v));
         }
+        let mut security = serde_json::Map::new();
+        if let Some(m) = self.security_exec_mode {
+            security.insert("exec_mode".into(), serde_json::json!(m.as_str()));
+        }
+        if let Some(g) = self.security_approval {
+            security.insert("approval".into(), serde_json::json!(g.as_str()));
+        }
         let mut models = serde_json::Map::new();
         if let Some(d) = &self.models_default {
             models.insert("default".into(), serde_json::Value::String(d.clone()));
@@ -498,6 +524,7 @@ impl SettingsOverrides {
         serde_json::json!({
             "session": session,
             "exec": exec,
+            "security": security,
             "models": models,
             "skills": skills,
             "market": market,

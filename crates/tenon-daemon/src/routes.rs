@@ -18,6 +18,7 @@ use tenon_agent::session::{
     sanitize_title, AgentConfig, AgentSession, ControlCommand, TaskOutcome,
 };
 use tenon_core::context::ProjectRules;
+use tenon_core::gates::{ApprovalGear, ConfirmDecision, ExecMode, Gate};
 use tenon_models::ModelProvider;
 use tenon_snapshot::SnapshotStore;
 use tenon_store::{EventKind, SessionStatus};
@@ -52,6 +53,8 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
             delete(delete_queued_message),
         )
         .route("/session/{id}/control", post(session_control))
+        // v2.0 档位确认决议（design-v2.md §4.1：D 级 Hold 等待用户三选一）
+        .route("/session/{id}/confirm", post(session_confirm))
         .route("/session/{id}/worktree/merge", post(merge_session_worktree))
         .route(
             "/session/{id}/worktree/discard",
@@ -159,6 +162,9 @@ pub(crate) async fn create_agent_session(
     working_dir: Option<String>,
     session_id: Option<String>,
     managed_worktree: Option<std::path::PathBuf>,
+    // v2.0（design-v2.md §4.1）：无人值守派生会话（headless / 子代理）传
+    // `Some(Never)`——无交互面可确认，Hold 会永等；None = settings 默认档。
+    approval_override: Option<ApprovalGear>,
 ) -> Result<Arc<tenon_agent::session::AgentSession>, (StatusCode, String)> {
     // v1.87 §9.7：受管 worktree 会话的快照分片 / 写边界 / 命令 cwd 均按 worktree
     // 隔离；L4 索引、脏缓冲与事件仍按 project_id 归属（project_root 不变）。
@@ -183,6 +189,16 @@ pub(crate) async fn create_agent_session(
         if let Some(v) = ov.command_timeout_s {
             agent_cfg.command_timeout_s = v;
         }
+        // v2.0 安全档位默认（design-v2.md §4.1）：settings security.* 注入新会话；
+        // 无人值守派生会话（headless / 子代理）显式 never——无交互面，Hold 永等
+        if let Some(mode) = ov.security_exec_mode {
+            agent_cfg.gate.exec_mode = mode;
+        }
+        agent_cfg.gate.approval = match (approval_override, ov.security_approval) {
+            (Some(o), _) => o,
+            (None, Some(g)) => g,
+            (None, None) => agent_cfg.gate.approval,
+        };
     }
     agent_cfg.circuit = (&state.config.agent.circuit).into();
     let team_policy = state.team_policy.read().expect("team policy lock").clone();
@@ -652,6 +668,7 @@ async fn create_session(
         body.working_dir.clone(),
         managed_session_id.clone(),
         managed_worktree.clone(),
+        None,
     )
     .await
     {
@@ -973,9 +990,24 @@ async fn get_session(State(state): State<Arc<DaemonState>>, Path(id): Path<Strin
         SessionStatus::Verifying => "verifying",
         SessionStatus::Fixing => "fixing",
         SessionStatus::Paused => "paused",
+        // v2.0 档位确认（design-v2.md §4.1）：D 级 Hold 等待用户决议
+        SessionStatus::AwaitingConfirm => "awaiting_confirm",
         SessionStatus::Error => "error",
         SessionStatus::Done => "done",
         SessionStatus::RolledBack => "rolled_back",
+    };
+    // v2.0：待确认动作随状态下发（UI 确认卡数据源，事件之外的重载兜底）；
+    // 档位快照供切换器回显
+    let (pending_confirm, gate) = {
+        let sessions = state.sessions.lock().await;
+        match sessions.get(&id) {
+            Some(e) => {
+                let pc = e.session.pending_confirm().await;
+                let gate = e.session.gate_snapshot().await;
+                (pc, gate)
+            }
+            None => (None, Gate::default()),
+        }
     };
     Json(json!({
         "session_id": id,
@@ -983,6 +1015,11 @@ async fn get_session(State(state): State<Arc<DaemonState>>, Path(id): Path<Strin
         "latest_seq": seq,
         "outcome": last_outcome.flatten(),
         "queue": queue,
+        "pending_confirm": pending_confirm,
+        "gate": {
+            "exec_mode": gate.exec_mode.as_str(),
+            "approval": gate.approval.as_str(),
+        },
     }))
     .into_response()
 }
@@ -992,6 +1029,9 @@ struct ControlBody {
     action: String,
     #[serde(default)]
     value: Option<bool>,
+    /// v2.0 档位切换（design-v2.md §4.1）：set_approval / set_exec_mode 的目标档值。
+    #[serde(default)]
+    gear: Option<String>,
 }
 
 async fn session_control(
@@ -1013,6 +1053,25 @@ async fn session_control(
         "set_readonly" => session.control(ControlCommand::SetReadonly(body.value.unwrap_or(true))),
         // v1.161 手动压缩（§10.2）：运行态下一模型回合跳过 24k 阈值强制省略陈旧工具输出
         "compact" => session.control(ControlCommand::Compact),
+        // v2.0 档位运行中切换（design-v2.md §4.1）：下一工具步生效，Hold 等待即时重判
+        "set_approval" => {
+            let Some(gear) = body.gear.as_deref().and_then(ApprovalGear::parse) else {
+                return api_err(
+                    StatusCode::BAD_REQUEST,
+                    "gear ∈ never | on_irreversible | always",
+                );
+            };
+            session.control(ControlCommand::SetApproval(gear));
+        }
+        "set_exec_mode" => {
+            let Some(mode) = body.gear.as_deref().and_then(ExecMode::parse) else {
+                return api_err(
+                    StatusCode::BAD_REQUEST,
+                    "gear ∈ read_only | workspace_write | full_access",
+                );
+            };
+            session.control(ControlCommand::SetExecMode(mode));
+        }
         "rollback" => {
             return match session.rollback_last().await {
                 Ok(files) => Json(json!({"rolled_back": files})).into_response(),
@@ -1033,6 +1092,37 @@ async fn session_control(
         other => return api_err(StatusCode::BAD_REQUEST, format!("未知 action: {other}")),
     }
     Json(json!({"ok": true})).into_response()
+}
+
+/// v2.0 档位确认决议（design-v2.md §4.1）：`POST /session/:id/confirm`
+/// body `{decision: allow_once | allow_session | deny}`——会话无待确认动作 409。
+#[derive(Deserialize)]
+struct ConfirmBody {
+    decision: String,
+}
+
+async fn session_confirm(
+    State(state): State<Arc<DaemonState>>,
+    Path(id): Path<String>,
+    Json(body): Json<ConfirmBody>,
+) -> Response {
+    let session = {
+        let sessions = state.sessions.lock().await;
+        match sessions.get(&id) {
+            Some(e) => e.session.clone(),
+            None => return api_err(StatusCode::NOT_FOUND, "session not found"),
+        }
+    };
+    let Some(decision) = ConfirmDecision::parse(&body.decision) else {
+        return api_err(
+            StatusCode::BAD_REQUEST,
+            "decision ∈ allow_once | allow_session | deny",
+        );
+    };
+    match session.resolve_confirm(decision).await {
+        Ok(()) => Json(json!({"resolved": true, "decision": decision.as_str()})).into_response(),
+        Err(e) => api_err(StatusCode::CONFLICT, e),
+    }
 }
 
 // ---------- 受管 worktree 收尾（v1.87 §9.7） ----------

@@ -215,6 +215,10 @@ pub struct ToolContext {
     pub skills_global_dir: Option<PathBuf>,
     /// 停用技能名单（settings.json `skills.disabled`，会话创建时快照）。
     pub skills_disabled: Vec<String>,
+    /// v2.0 档位派生（design-v2.md §4.1）：ExecMode = full_access 时为 true——
+    /// run_tests / run_build / install_deps 的沙箱降为无（用户显式信任，
+    /// 对齐 codex danger-full-access；写守卫与审计路径不变）。
+    pub full_access: std::sync::atomic::AtomicBool,
 }
 
 impl ToolContext {
@@ -235,6 +239,7 @@ impl ToolContext {
             lsp: None,
             skills_global_dir: None,
             skills_disabled: Vec::new(),
+            full_access: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -645,8 +650,13 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                 return ToolOutput::ok("（无可识别的测试/构建命令——走降级验证通道）");
             };
             // M0：断网态执行（Seatbelt profile 在 macOS 生成并应用；其他平台写守卫兜底）
-            let spec = tenon_sandbox::SandboxSpec::Offline {
-                project_root: ctx.root.clone(),
+            // v2.0 档位（design-v2.md §4.1）：full_access 档沙箱降为无（用户显式信任）
+            let spec = if ctx.full_access.load(Ordering::Relaxed) {
+                tenon_sandbox::SandboxSpec::None
+            } else {
+                tenon_sandbox::SandboxSpec::Offline {
+                    project_root: ctx.root.clone(),
+                }
             };
             match exec_command(&cmd, &ctx.command_cwd, ctx.command_timeout, &spec) {
                 Ok(out) => ToolOutput {
@@ -680,9 +690,14 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
             }
             // 镜像代理态（§12.3 B 级）：registry 域白名单过滤在代理进程（P1，
             // design-v2.md §4.4）；当前沙箱放行网络——残余风险（postinstall /
-            // 构建系统执行项目代码）已在 design.md §12.3 现状标注，不静默
-            let spec = tenon_sandbox::SandboxSpec::MirrorProxy {
-                project_root: ctx.root.clone(),
+            // 构建系统执行项目代码）已在 design.md §12.3 现状标注，不静默。
+            // v2.0 full_access 档：沙箱降为无（用户显式信任）
+            let spec = if ctx.full_access.load(Ordering::Relaxed) {
+                tenon_sandbox::SandboxSpec::None
+            } else {
+                tenon_sandbox::SandboxSpec::MirrorProxy {
+                    project_root: ctx.root.clone(),
+                }
             };
             // 与 run_tests/run_build 同口径：在会话 working_dir 执行——
             // monorepo 会话装错工作区（根 lockfile）比失败更糟

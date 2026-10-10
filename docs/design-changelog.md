@@ -231,3 +231,4 @@
 | v1.210 | 思考过程显示（§7.2 / §14.2，Codex 形态） |
 | v1.211 | 子代理验收（§9.5，主对话职责细化：分配+验收） |
 | v2.0 | Tenon v2 立项：监督工作台升级方案（docs/design-v2.md——十项产品决策推翻：安全档位 ExecMode×Approval / 常驻审查面 / 摘要式压缩 / ACP 双向 / 统一沙箱总线 / execpolicy+run_command 正名 / Laya 降级可选后端 / quirks 配置化 / 原型门禁+feature flag / 文档规格分离；P0-P4 排期 + 四项裁定采纳推荐档）；同笔收口 P1 首笔安全债 install_deps 命令白名单（§9.2/§12.3——复查坐实镜像态 Seatbelt 放行全网、registry 白名单结构未消费，工具层先行收窄任意命令面） |
+| v2.1 | P1 安全档位系统全链落地（§12.2 / design-v2.md §4.1——ExecMode×Approval 二维档位：默认 workspace-write×on-irreversible，D 级/C+D Hold 确认回路 allow_once/allow_session/deny + AwaitingConfirm 态 + confirm_request/resolved 事件 + POST /session/:id/confirm + control set_approval/set_exec_mode + settings security.* 默认档 + GET session pending_confirm/gate 载荷 + UI 确认卡与会话态档位切换器五语言；read_only 派生会话只读、full_access 派生命令沙箱降级；headless/子代理/evals 无人值守显式 never；测试 harness 默认 never 保全既有 D 级用例） |

@@ -268,6 +268,16 @@ export function AgentPanel({
   const [latestDiff, setLatestDiff] = useState<string | null>(null);
   // v1.147 发送消息队列（§9.1）：运行态入队的待发消息，随 GET /session/:id 轮询刷新。
   const [queue, setQueue] = useState<QueuedMessage[]>([]);
+  // v2.0 档位（design-v2.md §4.1）：待确认动作（确认卡）与当前档位（切换器回显）。
+  const [pendingConfirm, setPendingConfirm] = useState<{
+    tool: string;
+    level: string;
+    args: string;
+  } | null>(null);
+  const [gate, setGate] = useState<{ exec_mode: string; approval: string }>({
+    exec_mode: "workspace_write",
+    approval: "on_irreversible",
+  });
   const feedRef = useRef<HTMLDivElement>(null);
   const patchLinesCb = useRef<Props["onPatchLines"]>(undefined);
 
@@ -527,6 +537,9 @@ export function AgentPanel({
         const name = s.status as AgentStateName;
         setStatus(name);
         setQueue(s.queue ?? []);
+        // v2.0 档位（design-v2.md §4.1）：待确认动作与档位快照随轮询刷新
+        setPendingConfirm(s.pending_confirm ?? null);
+        if (s.gate) setGate(s.gate);
         onStateChange?.(name);
       } catch {
         // 断线重试
@@ -541,6 +554,17 @@ export function AgentPanel({
       clearInterval(timer);
     };
   }, [api, sessionId, onStateChange, onLatestDiff, onDirtyConflict, traceEpoch]);
+
+  /** v2.0 档位确认决议（design-v2.md §4.1）：三键决议；409 竞态由状态轮询收卡。 */
+  async function resolveGateConfirm(decision: "allow_once" | "allow_session" | "deny") {
+    if (!sessionId) return;
+    try {
+      await api.resolveConfirm(sessionId, decision);
+    } catch {
+      // 409 竞态（决议已被另一窗口 / 改档处理）：状态轮询自动收卡
+    }
+    setPendingConfirm(null);
+  }
 
   /** v1.161：发送拆出 sendText（斜杠命令注入任务复用），send 读输入缓冲后转调。 */
   async function sendText(text: string) {
@@ -1054,6 +1078,50 @@ export function AgentPanel({
       {/* §7.5（v1.148）：常驻进度卡——未完成清单钉在输入区上方，完成自动收起 */}
       <SubtasksLive items={liveSubtasks} t={t} />
 
+      {/* v2.0 档位确认卡（design-v2.md §4.1）：D 级 / C+D 动作被 on-irreversible
+          档 Hold——工具 + 级别徽标 + 参数预览 + 三键决议；409 竞态由状态轮询收卡 */}
+      {sessionId && status === "awaiting_confirm" && pendingConfirm && (
+        <div className="confirm-card" data-testid="confirm-card">
+          <div className="confirm-head">
+            <span className="confirm-level" data-testid="confirm-level">
+              {pendingConfirm.level.toUpperCase()}
+            </span>
+            <span className="confirm-tool" data-testid="confirm-tool">
+              {pendingConfirm.tool}
+            </span>
+          </div>
+          <pre className="confirm-args" aria-label={t("confirm.args")}>
+            {pendingConfirm.args}
+          </pre>
+          <div className="confirm-actions">
+            <button
+              type="button"
+              className="confirm-btn primary"
+              data-testid="confirm-allow-once"
+              onClick={() => void resolveGateConfirm("allow_once")}
+            >
+              {t("confirm.allow_once")}
+            </button>
+            <button
+              type="button"
+              className="confirm-btn"
+              data-testid="confirm-allow-session"
+              onClick={() => void resolveGateConfirm("allow_session")}
+            >
+              {t("confirm.allow_session")}
+            </button>
+            <button
+              type="button"
+              className="confirm-btn danger"
+              data-testid="confirm-deny"
+              onClick={() => void resolveGateConfirm("deny")}
+            >
+              {t("confirm.deny")}
+            </button>
+          </div>
+        </div>
+      )}
+
       <div
         className={inputDrop ? "agent-input drop-target" : "agent-input"}
         data-testid="task-input-box"
@@ -1138,6 +1206,42 @@ export function AgentPanel({
                     ⎇ {t("workspace.managed")}
                   </span>
                 )}
+                {/* v2.0 档位切换器（design-v2.md §4.1 / §6）：执行边界 × 确认策略，
+                    会话级即时切换（control 命令下一工具步生效，Hold 等待即时重判） */}
+                <select
+                  className="agent-context-select gate-select"
+                  data-testid="gate-exec-select"
+                  aria-label={t("gates.exec_mode")}
+                  title={t("gates.exec_mode")}
+                  value={gate.exec_mode}
+                  onChange={(e) => {
+                    const mode = e.target.value;
+                    setGate((g) => ({ ...g, exec_mode: mode }));
+                    void api
+                      .controlGear(sessionId!, "set_exec_mode", mode)
+                      .catch(() => {});
+                  }}
+                >
+                  <option value="read_only">{t("gates.exec_read_only")}</option>
+                  <option value="workspace_write">{t("gates.exec_workspace_write")}</option>
+                  <option value="full_access">{t("gates.exec_full_access")}</option>
+                </select>
+                <select
+                  className="agent-context-select gate-select"
+                  data-testid="gate-approval-select"
+                  aria-label={t("gates.approval")}
+                  title={t("gates.approval")}
+                  value={gate.approval}
+                  onChange={(e) => {
+                    const gear = e.target.value;
+                    setGate((g) => ({ ...g, approval: gear }));
+                    void api.controlGear(sessionId!, "set_approval", gear).catch(() => {});
+                  }}
+                >
+                  <option value="never">{t("gates.approval_never")}</option>
+                  <option value="on_irreversible">{t("gates.approval_on_irreversible")}</option>
+                  <option value="always">{t("gates.approval_always")}</option>
+                </select>
               </>
             )}
           </div>
