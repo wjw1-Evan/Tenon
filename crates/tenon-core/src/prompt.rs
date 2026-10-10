@@ -135,7 +135,7 @@ pub fn tool_catalog() -> String {
         (Tool::ApplyPatch, "结构化编辑：定向替换用 file + search + replace（search 全文唯一）；整段改写用 file + range + content"),
         (Tool::RunTests, "沙箱内运行测试（断网）"),
         (Tool::RunBuild, "沙箱内构建（断网）"),
-        (Tool::InstallDeps, "沙箱内经镜像代理安装依赖"),
+        (Tool::InstallDeps, "沙箱内经镜像代理安装依赖（仅包管理器安装命令，如 npm/pnpm/yarn/pip/uv/cargo/go/dotnet … install；禁 shell 控制符与脚本执行子命令）"),
         (Tool::HttpFetch, "抓取 URL（C 级：直执并审计目标）"),
         (
             Tool::WebSearch,
