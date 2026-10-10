@@ -347,20 +347,30 @@ mod tests {
         // 关闭写句柄再 exec：Linux 对有活动写句柄的文件 execve 报 ETXTBSY
         //（macOS 宽容）；TempPath 保路径、drop 时清理
         let script = script.into_temp_path();
-        let out = match exec_argv(
-            script.to_str().unwrap(),
-            &["--title".to_string(), "not a command".to_string()],
-            Path::new("/tmp"),
-            Duration::from_secs(5),
-            &[],
-        ) {
-            Ok(out) => out,
-            // 托管 CI 镜像 /tmp 可能挂 noexec：脚本无法就地执行，跳过本断言
-            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                eprintln!("跳过：/tmp noexec（{e}）");
-                return;
+        // ubuntu runner（overlayfs）偶发对刚写入 + chmod 的脚本 execve 仍短暂
+        // 报 ETXTBSY（Text file busy, errno 26）——内核 / overlayfs 时序伪影
+        //（actions/runner-images 已知现象），短暂重试越过而非误判测试失败
+        let mut etxtbusy_retry = 0;
+        let out = loop {
+            match exec_argv(
+                script.to_str().unwrap(),
+                &["--title".to_string(), "not a command".to_string()],
+                Path::new("/tmp"),
+                Duration::from_secs(5),
+                &[],
+            ) {
+                Ok(out) => break out,
+                // 托管 CI 镜像 /tmp 可能挂 noexec：脚本无法就地执行，跳过本断言
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                    eprintln!("跳过：/tmp noexec（{e}）");
+                    return;
+                }
+                Err(e) if e.raw_os_error() == Some(26) && etxtbusy_retry < 5 => {
+                    etxtbusy_retry += 1;
+                    std::thread::sleep(Duration::from_millis(120));
+                }
+                Err(e) => panic!("{e}"),
             }
-            Err(e) => panic!("{e}"),
         };
         assert!(out.success(), "{}{}", out.stdout, out.stderr);
         assert!(out.stdout.contains("argv=--title not a command"));
