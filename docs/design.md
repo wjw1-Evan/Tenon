@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v1.210** |
-| 日期 | 2026-10-08 |
+| 版本 | **v2.0** |
+| 日期 | 2026-10-10 |
 | 状态 | 定稿，M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 
@@ -22,6 +22,8 @@
 - 安全评审 → 第 12 章全篇。
 
 **版本演进**：版本演进索引在 [design-changelog.md](./design-changelog.md)——每版一行「版本号 + 一行标题」，只追加；变更详情（动机 / 方案 / 测试 / 门禁）由 git 提交信息唯一承载，提交信息以 `v<版本>：标题` 开头，`git log --grep "^v<版本>"` 定位对应提交，索引不复述提交信息。并行会话共用工作树、不依赖任何锁机制：加版本前先读 changelog 表尾取下一空闲版本号，文档改动即时提交；提交按 hunk 只含本人改动。
+
+**v2 升级方案（v2.0 已立项）**：[design-v2.md](./design-v2.md)——「监督工作台」重构：十项产品决策推翻（安全档位 ExecMode×Approval / 常驻审查面 / 摘要式压缩 / ACP 双向 / 统一沙箱总线 / execpolicy 等）+ P0-P4 排期与四项裁定。落地前本文件 v1 章节继续作为现行规格，仅 design-v2.md 明确标注「已收口」项（如 §4.5 install_deps 命令白名单）即时生效；各阶段落地时逐节改写本文件并照常记 changelog。
 
 ---
 
@@ -569,8 +571,8 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 | `mcp_meta_resources_list / mcp_meta_resources_read / mcp_meta_prompts_list / mcp_meta_prompts_get`（MCP 资源与提示，v1.187） | A | 跨服务器枚举 / 读取 MCP resources（URI）与 prompts（渲染后消息文本）；内容按不可信数据处理（§12.1）、输出截 20k + redact；只读会话仍拒（与 MCP 工具既有语义一致——调用即拉起外部进程）；名字与 `mcp_{server}_{tool}` 形式重叠时精确名优先 |
 | `apply_patch` | B | 结构化编辑：① range 形式（file + range + content）；② search/replace 块格式（v1.188：file + search + replace，目标片段全文唯一匹配——精确优先、降级逐行空白归一序列匹配；零/多命中报错，与 range 互斥），产生事件与 checkpoint |
 | `spawn_subagents`（并行子代理，v1.190） | B | 分发 1–3 个独立子任务（`{tasks:[{instruction, files}]}`，文件集不相交——相交拒绝回传）；子代理各自运行于受管 worktree 并登记为独立会话，完成后回传摘要、合并/丢弃在子会话行处置；边界见 §9.5 |
-| `run_tests` / `run_build` | B | 沙箱内，断网态；单命令超时默认 120s（附录 E） |
-| `install_deps` | B | 沙箱内，镜像代理态 |
+| `run_tests` / `run_build` | B | 沙箱内，断网态；单命令超时默认 120s（附录 E）；接受可选 `command` 覆盖（缺省按项目清单探测）——任意命令面经断网沙箱收敛，v2 将以 `run_command` 正名并配 execpolicy 命令分级（design-v2.md §4.2） |
+| `install_deps` | B | 沙箱内，镜像代理态；**v2.0 命令白名单已收口**（design-v2.md §4.5）：仅接受已知包管理器与安装语义子命令（`tenon-core::install_policy`，拒绝脚本执行子命令 / shell 控制符 / 未知二进制）；镜像态 registry 域过滤仍待代理进程（现状见 §12.3 现状标注） |
 | `http_fetch` | C | 直接执行；目标域名写入审计事件 |
 | `web_search`（v1.182；v1.189 多后端） | C | 网络搜索（Bing HTML 主 + DuckDuckGo Lite 兜底，免密钥）：`{query, max_results?}` → 标题 / 链接 / 摘要 JSON；SSRF 守卫与 `http_fetch` 同轨（见下文） |
 | `git_commit` / `git_push` | D | 直接执行；命令与结果全量入 Trace |
@@ -780,7 +782,7 @@ A/B/C/D 仅是风险与执行边界标记，不再是审批门槛；去 Plan 安
 | Linux | namespace + seccomp | 同上 |
 | Windows | daemon 于 WSL2，复用 Linux 沙箱；检测不到 WSL2 时仍启用写守卫与项目边界，完整沙箱经 WSL2 补齐 | 完整沙箱经 WSL2 |
 
-网络三态：**断网**（测试/构建/纯分析）→ **镜像代理**（仅预授权 registry：npm/pypi/nuget/crates…，B 级）→ **域名代理**（请求 URL 的 host 直接放行并入事件，C 级）。**层间独立降级（v1.150）**：Linux 断网态的 network namespace（层 1）在受限环境（加固主机 / 托管 CI 禁用非特权 userns）不可用时降级跳过、不致命——网络隔离由层 3 seccomp inet 过滤兜底、写限仍由层 2 Landlock 承担，断网语义不变。系统只读、写限当前会话绑定的项目根 / 显式 worktree、每项目语言服务器隔离。多项目打开时为每个执行进程分别物化 project roots；跨项目路径既不是可写根，也不进入 A 级检索范围。
+网络三态：**断网**（测试/构建/纯分析）→ **镜像代理**（仅预授权 registry：npm/pypi/nuget/crates…，B 级）→ **域名代理**（请求 URL 的 host 直接放行并入事件，C 级）。**现状标注（v2.0）**：镜像/域名态的域过滤依赖尚未落地的代理进程——Seatbelt 路径当前 `(allow network*)` 放行全网（`NetworkState` 的 registry 白名单结构已备未消费）；install_deps 已先行命令白名单收窄任意命令面（§9.2），完整域过滤为 design-v2.md §4.4 P1 安全债——残余风险（包 postinstall / 构建系统执行项目代码 + 网络开放）如实标注不静默。**层间独立降级（v1.150）**：Linux 断网态的 network namespace（层 1）在受限环境（加固主机 / 托管 CI 禁用非特权 userns）不可用时降级跳过、不致命——网络隔离由层 3 seccomp inet 过滤兜底、写限仍由层 2 Landlock 承担，断网语义不变。系统只读、写限当前会话绑定的项目根 / 显式 worktree、每项目语言服务器隔离。多项目打开时为每个执行进程分别物化 project roots；跨项目路径既不是可写根，也不进入 A 级检索范围。
 
 ### 12.4 密钥处理
 
