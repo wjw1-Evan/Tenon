@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | **v2.18** |
+| 版本 | **v2.19** |
 | 日期 | 2026-10-12 |
 | 状态 | 定稿，M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
@@ -771,7 +771,7 @@ L4 按包隔离、语言服务器按需启动；子代理限定单包；检索�
 
 A/B/C/D 仅是风险与执行边界标记，不再是审批门槛；去 Plan 安全兜底 = 只读开关 + 工具黑名单 + 沙箱 + 快照 + 熔断（§9.3）。
 
-**v2.1 安全档位（design-v2.md §4.1，已落地）**：A/B/C/D 之上叠加 **ExecMode × Approval 二维档位**——默认 `workspace-write × on-irreversible`：唯 D 级 / C+D 复合动作（commit / push / PR / 装插件）Hold 等待确认（`confirm_request` 事件 + 会话 `AwaitingConfirm` 态 + `POST /session/:id/confirm` 三键决议：本次允许 / 本会话允许（记忆）/ 拒绝——拒绝理由回传模型、回合继续）；`never` 档还原 v1.89 零审批；`always` 档全部非只读确认。运行中经 control `set_approval` / `set_exec_mode` 切换（Hold 等待即时重判）；settings `security.exec_mode / approval` 为新会话默认档；`read_only` 档派生会话只读、`full_access` 派生命令沙箱降级（§9.2 run_tests / run_build / install_deps）。无人值守链路（headless `--exec` / 子代理 / evals）显式 `never` 防 Hold 永等。**顶栏安全姿态指示（v2.17，design-v2.md §4.6）**：顶栏常驻紧凑档位徽标（盾形 + ExecMode/Approval 缩写，read_only 绿 / full_access 红 / 其余琥珀）——active 会话时随 `GET /session` gate 快照实时（AgentPanel `onGateChange` 上提，切换器操作即时反映），无 active 会话不渲染；hover title 全名与当前值，点击打开设置 Permissions 节；**设置 Permissions 分区补 security 新会话默认档编辑**（两 select，PUT `security.exec_mode / approval`——补 v2.1 后端已通而设置面板缺席的欠账，选项语义同 gates 枚举）；**降级警示**：会话事件流出现 `snapshot_unavailable`（error 事件载荷）即 toast.error 留驻「自动档已降级为交互档」（「自动 = 必可回滚」不变式的可感知面，§10.3）；Windows 无 WSL2 / 沙箱初始化失败信号 daemon 尚无暴露端点——统一姿态条的全信号面列余项（如实标注）。
+**v2.1 安全档位（design-v2.md §4.1，已落地）**：A/B/C/D 之上叠加 **ExecMode × Approval 二维档位**——默认 `workspace-write × on-irreversible`：唯 D 级 / C+D 复合动作（commit / push / PR / 装插件）Hold 等待确认（`confirm_request` 事件 + 会话 `AwaitingConfirm` 态 + `POST /session/:id/confirm` 三键决议：本次允许 / 本会话允许（记忆）/ 拒绝——拒绝理由回传模型、回合继续）；`never` 档还原 v1.89 零审批；`always` 档全部非只读确认。运行中经 control `set_approval` / `set_exec_mode` 切换（Hold 等待即时重判）；settings `security.exec_mode / approval` 为新会话默认档；`read_only` 档派生会话只读、`full_access` 派生命令沙箱降级（§9.2 run_tests / run_build / install_deps）。无人值守链路（headless `--exec` / 子代理 / evals）显式 `never` 防 Hold 永等。**策略总线统一管线（v2.19，design-v2.md §3.2——分立消费者收敛）**：`tenon-core::pipeline::decide` 纯判定函数承载六段管线的判定段——①分级判定（`team_denied_tools` 黑名单与 read_only 派生拒写，Deny(stage)）②命令评估（run_command 走 execpolicy 三档：Block→Deny / Hold→Hold；install_deps 走 install_policy 白名单：违例→Deny）③hooks（pre_tool block→Deny——会话侧编排，**按设计顺序位于档位检查之前**：v2.19 起 Hold 等待前 hooks 即已执行并可阻断，行为变化如实标注）④档位检查（gate.judge：D/Composite→Hold；execpolicy Hold 覆盖 B 级 Allow）⑤**单调拒绝不变式**：任一段 Deny 即提前返回，后继段不可翻案（结构化保证——管线为序贯短路）⑥执行+审计（既有 executor + CommandRun/direct_action 事件流不变）；`PolicyDecision::{Allow, Hold{stage}, Deny{stage, reason}}` 三态，Deny 携带命中段供审计；session 工具循环单点消费（散布的 v2.18 预判块、黑名单检查、readonly 拒绝收敛），executor 层 readonly/execpolicy-Block/install_policy 检查保留为防御纵深；v1 DSH ToolGuard 同款不变式（拒绝后继不可翻案）落成结构属性。**顶栏安全姿态指示（v2.17，design-v2.md §4.6）**：顶栏常驻紧凑档位徽标（盾形 + ExecMode/Approval 缩写，read_only 绿 / full_access 红 / 其余琥珀）——active 会话时随 `GET /session` gate 快照实时（AgentPanel `onGateChange` 上提，切换器操作即时反映），无 active 会话不渲染；hover title 全名与当前值，点击打开设置 Permissions 节；**设置 Permissions 分区补 security 新会话默认档编辑**（两 select，PUT `security.exec_mode / approval`——补 v2.1 后端已通而设置面板缺席的欠账，选项语义同 gates 枚举）；**降级警示**：会话事件流出现 `snapshot_unavailable`（error 事件载荷）即 toast.error 留驻「自动档已降级为交互档」（「自动 = 必可回滚」不变式的可感知面，§10.3）；Windows 无 WSL2 / 沙箱初始化失败信号 daemon 尚无暴露端点——统一姿态条的全信号面列余项（如实标注）。
 
 **权限策略（TeamPolicy，v1.85；v1.89 修订）**：全局约束只允许收窄——`denied_tools` 在所有会话的工具入口前拒绝；`max_cost_usd` 与全局配置取更小值。字段经 `/team-policy` 校验后原子持久化到 `~/.tenon/policy.toml`（0600），仅对新会话生效；既有会话不回写放宽或收窄策略，避免运行中边界漂移。`force_interactive` 仅保留旧配置兼容，语义为无操作；没有 A/B 升级或快照关闭开关。
 

@@ -885,6 +885,82 @@ async fn execpolicy_hold_spares_project_local_commands_v218() {
 }
 
 #[tokio::test]
+async fn pipeline_team_blacklist_denies_before_gate_v219() {
+    // v2.19 管线①段：team_denied_tools 黑名单在档位前拒绝（mock 直接调黑名单
+    // 工具——生产路径该工具不进目录，此为管线纵深验证）；拒绝消息含段语义。
+    let (_d, session, store, _p) = setup_with_config(
+        vec![
+            ScriptedReply::Tool {
+                name: "create_pr".into(),
+                args: serde_json::json!({"title": "x"}),
+            },
+            ScriptedReply::Text("好的，该工具被禁用，我换种方式。".into()),
+        ],
+        |cfg| {
+            cfg.gate.approval = ApprovalGear::OnIrreversible;
+            cfg.team_denied_tools.push("create_pr".into());
+        },
+    )
+    .await;
+    let outcome = session.run_task("建 PR").await;
+    assert!(matches!(outcome, TaskOutcome::Done(_)), "{outcome:?}");
+    let mut st = store.lock().await;
+    let events = st.events(&session.session_id).unwrap();
+    // 黑名单拒绝发生在档位前——不发 ConfirmRequest（Hold 未到）
+    assert!(
+        !events.iter().any(|e| e.kind == EventKind::ConfirmRequest),
+        "黑名单在档位段前拒绝，不应 Hold"
+    );
+    // 拒绝消息回传模型（tool result 不可直接断言——以回合完成与零审计为准）
+    drop(events);
+}
+
+#[tokio::test]
+async fn pipeline_pre_tool_hook_blocks_before_gate_hold_v219() {
+    // v2.19 管线③段前移：pre_tool hook block 在档位 Hold 之前——D 级工具
+    //（git_commit 本应 Hold）被 hook 先拒：无 ConfirmRequest、hook_run 记 block。
+    let (_d, session, store, _p) = setup_with_config(
+        vec![
+            ScriptedReply::Tool {
+                name: "git_commit".into(),
+                args: serde_json::json!({"message": "x"}),
+            },
+            ScriptedReply::Text("hook 拒了，我不提交。".into()),
+        ],
+        |cfg| {
+            cfg.gate.approval = ApprovalGear::OnIrreversible;
+            cfg.hooks.push(tenon_agent::hooks::HookConfig {
+                event: tenon_agent::hooks::HookEvent::PreTool,
+                command: "false".into(), // 非零退出 + Block 策略 = 阻断
+                timeout_ms: 5000,
+                on_fail: tenon_agent::hooks::HookOnFail::Block,
+                tools: Vec::new(), // 全工具
+            });
+        },
+    )
+    .await;
+    let outcome = session.run_task("提交").await;
+    assert!(matches!(outcome, TaskOutcome::Done(_)), "{outcome:?}");
+    let mut st = store.lock().await;
+    let events = st.events(&session.session_id).unwrap();
+    assert!(
+        !events.iter().any(|e| e.kind == EventKind::ConfirmRequest),
+        "hook 前置阻断——不应进档位 Hold"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| e.kind == EventKind::HookRun && e.payload.to_string().contains("\"block\"")),
+        "hook_run 应记 block: {:?}",
+        events
+            .iter()
+            .filter(|e| e.kind == EventKind::HookRun)
+            .map(|e| e.payload.to_string())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
 async fn gate_deny_blocks_d_level_and_turn_continues() {
     let (dir, session, store, _p) = setup_with_config(
         vec![

@@ -11,6 +11,7 @@ pub mod gates;
 pub mod install_policy;
 pub mod machine;
 pub mod merge;
+pub mod pipeline;
 pub mod policy;
 pub mod prompt;
 pub mod redact;

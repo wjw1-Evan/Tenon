@@ -2157,45 +2157,62 @@ impl AgentSession {
                     }
                 }
 
-                // ---- v2.0 档位闸门（design-v2.md §4.1）：Approval 档 Hold ----
-                // ExecMode read_only 已由会话 readonly 开关承载（上游 Decision 拒绝）；
-                // allow_session 记忆优先；verdict 先行求值释放锁再进等待。
-                // v2.18 execpolicy 高危档前置（design-v2.md §4.2）：run_command 预判
-                // ——Block 直接拒绝（与 executor 文案同源）；Hold 覆盖档位判定走确认
-                // 卡（args 预览含命令；allow_session 记忆按 run_command 工具粒度；
-                // never 档 judge 放行、由沙箱写限根兜底）。Hold 判定单一归此处，
-                // executor 层仅拦 Block（防双闸漂移）。
-                if call.name == "run_command" {
-                    if let Some(cmd) = call.arguments.get("command").and_then(|c| c.as_str()) {
-                        if let tenon_core::execpolicy::Verdict::Block(reason) =
-                            tenon_core::execpolicy::evaluate(cmd)
-                        {
-                            tool_messages.push(ChatMessage::tool_result(
-                                call.id.clone(),
-                                format!("execpolicy 拦截：{reason}"),
-                            ));
-                            continue;
-                        }
-                    }
-                }
-                let mut gate_verdict = {
+                // ---- v2.19 策略总线统一管线（design-v2.md §3.2 / design.md §12）----
+                // 六段判定段单点消费：①分级（team 黑名单 / read_only 拒写）②命令评估
+                //（execpolicy 三档 / install_policy 白名单）③hooks（下一段，按设计
+                // 顺序在档位检查之前——Hold 等待前 hooks 已可阻断）④档位（gate.judge
+                // + execpolicy Hold）⑤单调拒绝（Deny 提前返回，后继段不可翻案）。
+                // 收敛前形态：v2.18 execpolicy 预判块 + v2.0 档位闸门分立；executor
+                // 层 readonly/Block/install 检查保留为防御纵深。
+                let decision = {
                     let gate = self.gate.lock().await;
-                    let allowed = self.gate_allowed.lock().await.contains(&call.name);
-                    gate.judge(level, allowed)
+                    let already_allowed = self.gate_allowed.lock().await.contains(&call.name);
+                    let readonly = self.tool_ctx.readonly.load(Ordering::SeqCst);
+                    tenon_core::pipeline::decide(&tenon_core::pipeline::PolicyInput {
+                        tool: &call.name,
+                        level,
+                        args: &call.arguments,
+                        gate: &gate,
+                        already_allowed,
+                        readonly,
+                        team_denied_tools: &self.tool_ctx.team_denied_tools,
+                    })
                 };
-                // v2.18：execpolicy Hold 覆盖（B 级 Allow → Hold；D/Composite 已 Hold
-                // 不降级；never 档 judge 已放行则尊重零审批裁定）
-                if gate_verdict == GateVerdict::Allow && call.name == "run_command" {
-                    if let Some(cmd) = call.arguments.get("command").and_then(|c| c.as_str()) {
-                        if matches!(
-                            tenon_core::execpolicy::evaluate(cmd),
-                            tenon_core::execpolicy::Verdict::Hold(_)
-                        ) {
-                            gate_verdict = GateVerdict::Hold;
-                        }
+                if let tenon_core::pipeline::PolicyDecision::Deny { stage: _, reason } = &decision {
+                    tool_messages.push(ChatMessage::tool_result(call.id.clone(), reason.clone()));
+                    continue;
+                }
+                // ③ hooks 段（管线序：分级/命令评估后、档位前）：pre_tool block 即拒
+                //（v1.180 语义不变——v2.19 起从档位后前移至此，Hold 等待前已可阻断）
+                if !self.config.hooks.is_empty() {
+                    let hook_outcome = crate::hooks::run_hooks(
+                        &self.config.hooks,
+                        crate::hooks::HookEvent::PreTool,
+                        &crate::hooks::HookContext {
+                            session_id: &self.session_id,
+                            root: &self.tool_ctx.root,
+                            tool: Some(&call.name),
+                            tool_args: Some(&call.arguments.to_string()),
+                            tool_output: None,
+                        },
+                    )
+                    .await;
+                    self.emit_hook_run(&hook_outcome).await;
+                    if hook_outcome.blocked {
+                        tool_messages.push(ChatMessage::tool_result(
+                            call.id.clone(),
+                            format!(
+                                "被 pre_tool hook 阻断: {}",
+                                hook_outcome.block_reason.unwrap_or_default()
+                            ),
+                        ));
+                        continue;
                     }
                 }
-                if gate_verdict == GateVerdict::Hold {
+                // ④档位 Hold（含 execpolicy Hold 覆盖——管线已归一）
+                if decision == tenon_core::pipeline::PolicyDecision::Allow {
+                    // 纯 Allow 快路径（省 borrow）
+                } else if matches!(decision, tenon_core::pipeline::PolicyDecision::Hold { .. }) {
                     match self
                         .hold_for_confirm(&call.name, level, &call.arguments)
                         .await
@@ -2389,33 +2406,7 @@ impl AgentSession {
                 // §9.8 #4（v1.124）：laya_decide 走会话循环内联分发（LayaRuntime
                 // 异步推理），不经 execute_tool 同步面；团队策略黑名单在
                 // exec_laya_decide 内同轨检查。
-                // §13.6 v1.180 pre_tool hooks：block 即拒绝（stderr 回模型），
-                // 不执行不记 CommandRun（hook_run 事件已记 block）。
-                if !self.config.hooks.is_empty() {
-                    let hook_outcome = crate::hooks::run_hooks(
-                        &self.config.hooks,
-                        crate::hooks::HookEvent::PreTool,
-                        &crate::hooks::HookContext {
-                            session_id: &self.session_id,
-                            root: &self.tool_ctx.root,
-                            tool: Some(&call.name),
-                            tool_args: Some(&call.arguments.to_string()),
-                            tool_output: None,
-                        },
-                    )
-                    .await;
-                    self.emit_hook_run(&hook_outcome).await;
-                    if hook_outcome.blocked {
-                        tool_messages.push(ChatMessage::tool_result(
-                            call.id.clone(),
-                            format!(
-                                "被 pre_tool hook 阻断: {}",
-                                hook_outcome.block_reason.unwrap_or_default()
-                            ),
-                        ));
-                        continue;
-                    }
-                }
+                //（pre_tool hooks 已随 v2.19 策略总线前移至档位检查之前，见管线③段）
                 // §9.2（v1.146）：subtasks 子任务清单同走内联分发（会话内计划
                 // 状态，零工作区副作用），边界与 Trace 在 exec_subtasks 内同轨。
                 // §9.2（v1.179）：submit_plan 计划提交同轨（零副作用），提交过
