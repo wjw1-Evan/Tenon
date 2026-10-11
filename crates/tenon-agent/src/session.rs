@@ -612,11 +612,7 @@ struct ContextBreakdown {
     tools: u64,
 }
 
-fn context_breakdown(
-    messages: &[ChatMessage],
-    l1_tokens: u64,
-    l5_tokens: u64,
-) -> ContextBreakdown {
+fn context_breakdown(messages: &[ChatMessage], l1_tokens: u64, l5_tokens: u64) -> ContextBreakdown {
     let mut out = ContextBreakdown {
         l1: l1_tokens,
         l5: l5_tokens,
@@ -641,9 +637,7 @@ fn context_breakdown(
                 out.history += est
                     + m.tool_calls
                         .iter()
-                        .map(|tc| {
-                            tenon_core::context::estimate_tokens(&tc.arguments.to_string())
-                        })
+                        .map(|tc| tenon_core::context::estimate_tokens(&tc.arguments.to_string()))
                         .sum::<u64>();
             }
         }

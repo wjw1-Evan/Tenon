@@ -203,7 +203,11 @@ async fn context_usage_event_carries_breakdown_and_totals() {
     let num = |k: &str| b.get(k).and_then(|v| v.as_u64()).unwrap_or(u64::MAX);
     assert!(num("system") > 0, "系统提示桶非空");
     assert!(num("tools") > 0, "工具结果轮 tools 桶非空");
-    let est_total = last.payload.get("est_total").and_then(|v| v.as_u64()).unwrap_or(0);
+    let est_total = last
+        .payload
+        .get("est_total")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
     assert_eq!(
         est_total,
         num("system") + num("l1") + num("history") + num("l5") + num("tools"),
@@ -211,7 +215,11 @@ async fn context_usage_event_carries_breakdown_and_totals() {
     );
     let totals = last.payload.get("totals").unwrap();
     assert!(
-        totals.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) > 0,
+        totals
+            .get("input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+            > 0,
         "会话累计 input>0"
     );
     assert!(
