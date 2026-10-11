@@ -37,12 +37,17 @@ const server = createServer(async (request, response) => {
       );
       const slowMatch = task.match(/E2E_SLOW_TURN_MS=(\d+)/);
       const turnDelay = !isMetaCall && slowMatch ? Number(slowMatch[1]) : 0;
+      // v2.6 审查面 E2E：E2E_SLOW_ALL_MS=<n> 对含工具结果的后续调用也延迟——
+      // apply_patch 落 diff 后撑出确定的运行窗口（供审查面内容断言）
+      const slowAllMatch = task.match(/E2E_SLOW_ALL_MS=(\d+)/);
+      const afterToolDelay = !isMetaCall && slowAllMatch ? Number(slowAllMatch[1]) : 0;
       const match = task.match(/E2E_WRITE\n(.+?)\n([A-Za-z0-9+/=]+)/s);
       // v2.1 档位确认 E2E（design-v2.md §4.1）：D 级 git_commit 触发 Hold
       const commitMatch = task.match(/E2E_GIT_COMMIT\n(.+)/);
       if (!match && !commitMatch) {
         if (payload.stream) {
-          if (turnDelay && !hasToolResult) await new Promise((r) => setTimeout(r, turnDelay));
+          const turnWait = hasToolResult ? afterToolDelay : turnDelay;
+      if (turnWait) await new Promise((r) => setTimeout(r, turnWait));
           const usage = { prompt_tokens: 1, completion_tokens: 1 };
           response.setHeader("Content-Type", "text/event-stream");
           response.write(`data: ${JSON.stringify({
@@ -59,7 +64,8 @@ const server = createServer(async (request, response) => {
           return;
         }
         response.setHeader("Content-Type", "application/json");
-        if (turnDelay && !hasToolResult) await new Promise((r) => setTimeout(r, turnDelay));
+        const turnWait = hasToolResult ? afterToolDelay : turnDelay;
+      if (turnWait) await new Promise((r) => setTimeout(r, turnWait));
         response.end(JSON.stringify({
           choices: [{ message: { role: "assistant", content: "E2E task missing write directive" }, finish_reason: "stop" }],
           usage: { prompt_tokens: 1, completion_tokens: 1 },
@@ -72,7 +78,8 @@ const server = createServer(async (request, response) => {
       const toolArguments = commitMatch
         ? JSON.stringify({ message: commitMatch[1] })
         : JSON.stringify({ file, range: null, content });
-      if (turnDelay && !hasToolResult) await new Promise((r) => setTimeout(r, turnDelay));
+      const turnWait = hasToolResult ? afterToolDelay : turnDelay;
+      if (turnWait) await new Promise((r) => setTimeout(r, turnWait));
       if (!payload.stream) {
         const message = hasToolResult
           ? { role: "assistant", content: "E2E write complete" }

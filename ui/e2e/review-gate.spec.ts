@@ -22,15 +22,25 @@ test.beforeAll(async () => {
   runtime = JSON.parse(await readFile(runtimeFile, "utf8")) as Runtime;
 });
 
+/** 全新会话入口（message-queue spec 同款纪律）：共享 daemon 下不点会复用
+ *  上一 spec 留下的会话——其工具历史使 mock server 首趟直出文本（无
+ *  apply_patch / git_commit），档位与审查面断言全部落空。 */
+async function openFreshTask(page: import("@playwright/test").Page) {
+  await page.goto(runtime.baseUrl);
+  await expect(
+    page.getByTestId("project-list").getByText("project-a", { exact: true }),
+  ).toBeVisible();
+  await page.getByTestId("project-new-task").click();
+}
+
 test("review pane auto-docks during a running task and collapses when done", async ({ page }) => {
   test.setTimeout(90_000);
-  await page.goto(runtime.baseUrl);
-  await expect(page.getByTestId("project-list").getByText("project-a", { exact: true })).toBeVisible();
+  await openFreshTask(page);
 
-  // E2E_SLOW_TURN_MS 撑出确定性运行窗口：首趟 apply_patch 落 diff 后第二趟
-  // 模型调用延迟——审查面在窗口内停靠且 diff 可见
+  // E2E_SLOW_ALL_MS：apply_patch 落 diff 后第二趟模型调用延迟 4s——撑出
+  // 确定性运行窗口供审查面内容断言（首趟无延迟，diff 尽早到达）
   const task = [
-    "E2E_SLOW_TURN_MS=5000",
+    "E2E_SLOW_ALL_MS=4000",
     "E2E_WRITE",
     "e2e-review.txt",
     Buffer.from("review pane payload\n").toString("base64"),
@@ -42,9 +52,6 @@ test("review pane auto-docks during a running task and collapses when done", asy
   await expect(pane).toBeVisible({ timeout: 30_000 });
   await expect(pane).toHaveAttribute("data-running", "1");
   await expect(pane).toContainText("e2e-review.txt", { timeout: 20_000 });
-  await expect(page.getByTestId("review-status")).toContainText(/running|执行|运行/, { timeout: 10_000 }).catch(() => {
-    // 状态文案随语言；data-running 已断言运行态，此处仅尽力校验
-  });
 
   // 完成后自动收起（reviewManual 未覆盖）
   await expect(page.getByTestId("agent-feed")).toContainText("E2E write complete", { timeout: 60_000 });
@@ -53,8 +60,7 @@ test("review pane auto-docks during a running task and collapses when done", asy
 
 test("d-level confirm card holds, deny resolves, task completes", async ({ page }) => {
   test.setTimeout(90_000);
-  await page.goto(runtime.baseUrl);
-  await expect(page.getByTestId("project-list").getByText("project-a", { exact: true })).toBeVisible();
+  await openFreshTask(page);
 
   // git_commit 是 D 级：默认档 on_irreversible → Hold 等待确认（v2.1）
   const task = ["E2E_GIT_COMMIT", "e2e should not land"].join("\n");
