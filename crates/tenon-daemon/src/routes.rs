@@ -1053,7 +1053,9 @@ async fn session_control(
         "set_readonly" => session.control(ControlCommand::SetReadonly(body.value.unwrap_or(true))),
         // v1.161 手动压缩（§10.2）：运行态下一模型回合跳过 24k 阈值强制省略陈旧工具输出
         "compact" => session.control(ControlCommand::Compact),
-        // v2.0 档位运行中切换（design-v2.md §4.1）：下一工具步生效，Hold 等待即时重判
+        // v2.0 档位运行中切换（design-v2.md §4.1）：直改即时生效（空闲 /
+        // 运行 / Hold 等待——gate 每工具步现读、Hold 150ms 重判），控制命令
+        // 并发入队覆盖 v1.93 挂起循环的消费路径（幂等）
         "set_approval" => {
             let Some(gear) = body.gear.as_deref().and_then(ApprovalGear::parse) else {
                 return api_err(
@@ -1061,6 +1063,7 @@ async fn session_control(
                     "gear ∈ never | on_irreversible | always",
                 );
             };
+            session.set_gate(None, Some(gear)).await;
             session.control(ControlCommand::SetApproval(gear));
         }
         "set_exec_mode" => {
@@ -1070,6 +1073,7 @@ async fn session_control(
                     "gear ∈ read_only | workspace_write | full_access",
                 );
             };
+            session.set_gate(Some(mode), None).await;
             session.control(ControlCommand::SetExecMode(mode));
         }
         "rollback" => {
@@ -3599,6 +3603,14 @@ async fn get_settings(State(state): State<Arc<DaemonState>>) -> Response {
             obj.insert("command_timeout_s".into(), serde_json::json!(v));
         }
     }
+    // v2.0 档位默认回显（design-v2.md §4.1）：覆盖优先，未配置回 Gate::default
+    let default_gate = tenon_core::gates::Gate::default();
+    let security = json!({
+        "exec_mode": ov.security_exec_mode.map(|m| m.as_str().to_string())
+            .unwrap_or_else(|| default_gate.exec_mode.as_str().to_string()),
+        "approval": ov.security_approval.map(|g| g.as_str().to_string())
+            .unwrap_or_else(|| default_gate.approval.as_str().to_string()),
+    });
     // skills 合并视图（§13.4 v1.130）：停用名单回显（启停经 PUT /settings）
     let skills = json!({
         "disabled": ov.skills_disabled.clone().unwrap_or_default(),
@@ -3613,6 +3625,7 @@ async fn get_settings(State(state): State<Arc<DaemonState>>) -> Response {
     Json(json!({
         "session": session,
         "exec": exec,
+        "security": security,
         "models": models,
         "agent": state.config.agent,
         "checkpoint": state.config.checkpoint,

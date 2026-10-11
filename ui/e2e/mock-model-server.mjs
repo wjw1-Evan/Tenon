@@ -38,7 +38,9 @@ const server = createServer(async (request, response) => {
       const slowMatch = task.match(/E2E_SLOW_TURN_MS=(\d+)/);
       const turnDelay = !isMetaCall && slowMatch ? Number(slowMatch[1]) : 0;
       const match = task.match(/E2E_WRITE\n(.+?)\n([A-Za-z0-9+/=]+)/s);
-      if (!match) {
+      // v2.1 档位确认 E2E（design-v2.md §4.1）：D 级 git_commit 触发 Hold
+      const commitMatch = task.match(/E2E_GIT_COMMIT\n(.+)/);
+      if (!match && !commitMatch) {
         if (payload.stream) {
           if (turnDelay && !hasToolResult) await new Promise((r) => setTimeout(r, turnDelay));
           const usage = { prompt_tokens: 1, completion_tokens: 1 };
@@ -64,8 +66,12 @@ const server = createServer(async (request, response) => {
         }));
         return;
       }
-      const [, file, encoded] = match;
-      const content = Buffer.from(encoded, "base64").toString("utf8");
+      const [, file, encoded] = match ?? [];
+      const content = match ? Buffer.from(encoded, "base64").toString("utf8") : "";
+      const toolName = commitMatch ? "git_commit" : "apply_patch";
+      const toolArguments = commitMatch
+        ? JSON.stringify({ message: commitMatch[1] })
+        : JSON.stringify({ file, range: null, content });
       if (turnDelay && !hasToolResult) await new Promise((r) => setTimeout(r, turnDelay));
       if (!payload.stream) {
         const message = hasToolResult
@@ -76,8 +82,8 @@ const server = createServer(async (request, response) => {
                 id: `call-${Date.now()}`,
                 type: "function",
                 function: {
-                  name: "apply_patch",
-                  arguments: JSON.stringify({ file, range: null, content }),
+                  name: toolName,
+                  arguments: toolArguments,
                 },
               }],
             };
@@ -98,8 +104,8 @@ const server = createServer(async (request, response) => {
               id: callId,
               type: "function",
               function: {
-                name: "apply_patch",
-                arguments: JSON.stringify({ file, range: null, content }),
+                name: toolName,
+                arguments: toolArguments,
               },
             }],
           };

@@ -2678,10 +2678,6 @@ impl AgentSession {
                         Some(ControlCommand::SetApproval(gear)) => {
                             // 改档即时重判：不再需要确认则直接放行
                             self.gate.lock().await.approval = gear;
-                            let allowed = self.gate_allowed.lock().await.contains(tool);
-                            if self.gate.lock().await.judge(level, allowed) == GateVerdict::Allow {
-                                break ConfirmDecision::AllowOnce;
-                            }
                         }
                         Some(ControlCommand::SetExecMode(mode)) => {
                             self.apply_exec_mode(mode).await;
@@ -2690,6 +2686,12 @@ impl AgentSession {
                             self.tool_ctx.readonly.store(v, Ordering::SeqCst);
                         }
                         _ => {}
+                    }
+                    // v2.6：外部档位直改（set_gate）即时解锁——150ms 重判，
+                    // 改 never / 记忆补录后无需等控制命令到达
+                    let allowed = self.gate_allowed.lock().await.contains(tool);
+                    if self.gate.lock().await.judge(level, allowed) == GateVerdict::Allow {
+                        break ConfirmDecision::AllowOnce;
                     }
                 }
             }
@@ -2711,8 +2713,8 @@ impl AgentSession {
         decision
     }
 
-    /// v2.0 应用执行边界档（design-v2.md §4.1）：read_only 派生会话只读；
-    /// full_access 派生命令沙箱降级；readonly 开关自身的独立切换不受影响。
+    /// v2.0 运行中切换执行边界档（design-v2.md §4.1）：read_only 置会话
+    /// 只读、full_access 置命令沙箱降级，下一工具步生效。
     async fn apply_exec_mode(&self, mode: tenon_core::gates::ExecMode) {
         match mode {
             tenon_core::gates::ExecMode::ReadOnly => {
@@ -2727,6 +2729,22 @@ impl AgentSession {
             }
         }
         self.gate.lock().await.exec_mode = mode;
+    }
+
+    /// v2.0 档位直改（daemon control 路由调用，design-v2.md §4.1）：空闲 /
+    /// 运行 / Hold 等待态均即时生效——gate 每工具步现读、Hold 循环 150ms
+    /// 重判（hold_for_confirm tick 分支），无需等控制检查点。
+    pub async fn set_gate(
+        &self,
+        exec_mode: Option<tenon_core::gates::ExecMode>,
+        approval: Option<tenon_core::gates::ApprovalGear>,
+    ) {
+        if let Some(mode) = exec_mode {
+            self.apply_exec_mode(mode).await;
+        }
+        if let Some(gear) = approval {
+            self.gate.lock().await.approval = gear;
+        }
     }
 
     /// v2.0 决议入口（daemon `POST /session/:id/confirm` 调用）。
