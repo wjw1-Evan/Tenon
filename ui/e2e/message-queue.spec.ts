@@ -79,20 +79,30 @@ test("停止后队列冻结保留，冻结期手动续发", async ({ page }) => 
   await page.getByTestId("send").click();
   await expect(page.getByTestId("stop")).toBeVisible({ timeout: 10_000 });
 
-  // 运行窗口内入队
+  // 运行窗口内入队。v2.16 队列落库后条目 id = q<库内自增行号>（跨会话单调），
+  // 共享 daemon 下不可写死 q1——按「含文本」动态定位。
   await page.getByTestId("task-input").fill("排队消息三");
   await page.getByTestId("send").click();
-  await expect(page.getByTestId("queue-item-q1")).toBeVisible({ timeout: 10_000 });
+  const frozenItem = page.locator('[data-testid^="queue-item-"]').filter({
+    hasText: "排队消息三",
+  });
+  await expect(frozenItem).toBeVisible({ timeout: 10_000 });
 
   // 停止 → paused：队列冻结不清空，条目出现手动发送钮
   await page.getByTestId("stop").click();
   await expect(page.getByTestId("resume")).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByTestId("queue-item-q1")).toBeVisible();
-  await expect(page.getByTestId("queue-send-q1")).toBeVisible();
+  await expect(frozenItem).toBeVisible();
+  const frozenId = (await frozenItem.getAttribute("data-testid"))!.replace(
+    "queue-item-",
+    "",
+  );
+  await expect(page.getByTestId(`queue-send-${frozenId}`)).toBeVisible();
 
   // 手动续发（先出队后投递，防 drain 重复）：新回合即时完成，队列清空、状态回 done
-  await page.getByTestId("queue-send-q1").click();
-  await expect(page.getByTestId("queue-item-q1")).toHaveCount(0, { timeout: 30_000 });
+  await page.getByTestId(`queue-send-${frozenId}`).click();
+  await expect(page.getByTestId(`queue-item-${frozenId}`)).toHaveCount(0, {
+    timeout: 30_000,
+  });
   await expect(page.getByTestId("stop")).toHaveCount(0, { timeout: 30_000 });
   await expect(page.getByTestId("resume")).toHaveCount(0);
 });

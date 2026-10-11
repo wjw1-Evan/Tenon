@@ -373,3 +373,79 @@ async fn stop_freezes_queue_then_manual_send_resumes_drain() {
         "冻结的「任务二」在手动续发回合完成后按 FIFO 出队"
     );
 }
+
+#[tokio::test]
+async fn queue_freeze_echo_and_edit_remove() {
+    // v2.16 队列落库：运行态入队 + stop 冻结后 GET queue 回显（store 单一
+    // 事实源）；条目 id 形态 q<数字> 且删除端点（编辑重发）可用。
+    let provider = Arc::new(SlowOnceProvider {
+        inner: MockProvider::new(
+            "slow-once",
+            "mock-1",
+            vec![ScriptedReply::Text("第一回合完成".into())],
+        ),
+        delayed: AtomicBool::new(false),
+        delay: Duration::from_millis(4000),
+    });
+    let (_dir, port, token) = start_daemon_with(provider).await;
+    let client = client_with_token(&token);
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(project.join("README.md"), "# demo\n").unwrap();
+    let sid = setup_session(&client, port, &project).await;
+
+    // 首条消息（撑出运行窗口）→ 运行态入队
+    client
+        .post(format!("{}/session/{sid}/message", base(port)))
+        .json(&serde_json::json!({ "text": "首任务" }))
+        .send()
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let r = client
+        .post(format!("{}/session/{sid}/message", base(port)))
+        .json(&serde_json::json!({ "text": "排队的下一条" }))
+        .send()
+        .await
+        .unwrap();
+    let body = r.json::<serde_json::Value>().await.unwrap();
+    assert_eq!(body["queued"], true, "运行态入队: {body}");
+    // 运行窗口内 GET queue 即回显（store 单一事实源）——id 形态 q<数字>；
+    // 删除端点（编辑重发语义）立即可用；无需等终态（流中 stop/pause 不即时
+    // 打断回合，回合自然完成后队列按 v1.147 语义自动 drain——非本单元断言面）。
+    let s = client
+        .get(format!("{}/session/{sid}", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    let queue = s["queue"].as_array().cloned().unwrap_or_default();
+    assert_eq!(queue.len(), 1, "运行中队列回显: {s}");
+    let mid = queue[0]["id"].as_str().unwrap().to_string();
+    assert!(
+        mid.starts_with('q') && mid[1..].parse::<i64>().is_ok(),
+        "id 形态: {mid}"
+    );
+    assert_eq!(queue[0]["text"], "排队的下一条");
+    let removed = client
+        .delete(format!("{}/session/{sid}/queue/{mid}", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(removed["removed"], true);
+    let s = client
+        .get(format!("{}/session/{sid}", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(s["queue"].as_array().map(Vec::len), Some(0));
+}

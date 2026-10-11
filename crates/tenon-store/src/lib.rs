@@ -508,6 +508,14 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 CREATE INDEX IF NOT EXISTS idx_runs_session ON runs(session_id);
 
+CREATE TABLE IF NOT EXISTS message_queue (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_message_queue_session ON message_queue(session_id);
+
 CREATE TABLE IF NOT EXISTS model_usage_monthly (
     month TEXT PRIMARY KEY,
     input_tokens INTEGER NOT NULL DEFAULT 0,
@@ -1742,6 +1750,75 @@ impl Store {
             rusqlite::params![run_id, now, outcome, detail, last_seq],
         )?;
         Ok(n)
+    }
+
+    /// v2.16 发送队列落库（design-v2.md §3.1）：入队（FIFO 自增 id）；
+    /// 单会话上限 `max` 条（同连接内 count 判定），超限返回 Err。
+    pub fn enqueue_message(
+        &mut self,
+        session_id: &str,
+        text: &str,
+        max: usize,
+    ) -> std::result::Result<(i64, usize), String> {
+        let count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM message_queue WHERE session_id = ?1",
+                [session_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if count as usize >= max {
+            return Err("发送队列已满".into());
+        }
+        let now = Self::now();
+        self.conn
+            .execute(
+                "INSERT INTO message_queue (session_id, text, created_at) VALUES (?1, ?2, ?3)",
+                rusqlite::params![session_id, text, now],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok((self.conn.last_insert_rowid(), count as usize + 1))
+    }
+
+    /// 出队首条（FIFO 按自增 id）；空队列返回 None。
+    pub fn dequeue_message(&mut self, session_id: &str) -> Result<Option<(i64, String)>> {
+        let row = self.conn.query_row(
+            "SELECT id, text FROM message_queue WHERE session_id = ?1 ORDER BY id ASC LIMIT 1",
+            [session_id],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+        );
+        match row {
+            Ok((id, text)) => {
+                self.conn.execute("DELETE FROM message_queue WHERE id = ?1", [id])?;
+                Ok(Some((id, text)))
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// 队列快照（旧→新）；GET /session `queue` 载荷。
+    pub fn list_message_queue(&mut self, session_id: &str) -> Result<Vec<(i64, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, text FROM message_queue WHERE session_id = ?1 ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map([session_id], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// 按 "q<id>" 形态移除排队消息；不存在返回 false。
+    pub fn remove_message(&mut self, session_id: &str, msg_id: &str) -> Result<bool> {
+        let Ok(id) = msg_id.trim_start_matches('q').parse::<i64>() else {
+            return Ok(false);
+        };
+        let n = self.conn.execute(
+            "DELETE FROM message_queue WHERE id = ?1 AND session_id = ?2",
+            rusqlite::params![id, session_id],
+        )?;
+        Ok(n > 0)
     }
 
     /// 会话的 Run 列表（旧→新；审计端点消费）。
@@ -3521,5 +3598,38 @@ mod managed_worktree_tests {
         let p1 = s.upsert_project(path).unwrap();
         let p2 = s.upsert_project(path).unwrap();
         assert_eq!(p1.id, p2.id);
+    }
+}
+
+#[cfg(test)]
+mod message_queue_tests {
+    use super::*;
+
+    /// v2.16 发送队列落库：FIFO / 上限 / 移除 / 快照——重启恢复由表持久性天然承载。
+    #[test]
+    fn queue_fifo_limit_remove_and_snapshot() {
+        let mut store = Store::open_in_memory().unwrap();
+        let pid = store.upsert_project("/tmp/p").unwrap().id;
+        let sid = store.create_session(&pid, "m").unwrap().id;
+
+        let (id1, pos1) = store.enqueue_message(&sid, "一", 2).unwrap();
+        let (_, pos2) = store.enqueue_message(&sid, "二", 2).unwrap();
+        assert_eq!((pos1, pos2), (1, 2));
+        // 上限：第 3 条拒收
+        assert!(store.enqueue_message(&sid, "三", 2).is_err());
+
+        // 快照 FIFO 序
+        let snap = store.list_message_queue(&sid).unwrap();
+        assert_eq!(snap.len(), 2);
+        assert_eq!(snap[0], (id1, "一".to_string()));
+
+        // 移除（q 前缀 id 形态）+ 幂等不存在
+        assert!(store.remove_message(&sid, &format!("q{id1}")).unwrap());
+        assert!(!store.remove_message(&sid, &format!("q{id1}")).unwrap());
+        assert!(!store.remove_message(&sid, "bogus").unwrap());
+
+        // 出队 FIFO；空后 None
+        assert_eq!(store.dequeue_message(&sid).unwrap(), Some((snap[1].0, "二".to_string())));
+        assert_eq!(store.dequeue_message(&sid).unwrap(), None);
     }
 }

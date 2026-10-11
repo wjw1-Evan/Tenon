@@ -17,7 +17,7 @@ use tenon_agent::subagents::{
 };
 use tenon_models::ModelProvider;
 
-use crate::state::{DaemonState, MessageQueue, SessionEntry};
+use crate::state::{DaemonState, SessionEntry};
 
 pub struct DaemonSubagents {
     pub state: Arc<DaemonState>,
@@ -152,7 +152,6 @@ impl SubagentOrchestrator for DaemonSubagents {
                             project_id: self.project.id.clone(),
                             managed_worktree: Some(wt.clone()),
                             last_outcome: Mutex::new(None),
-                            queue: Mutex::new(MessageQueue::default()),
                             busy: AtomicBool::new(false),
                             last_seq: 0,
                         },

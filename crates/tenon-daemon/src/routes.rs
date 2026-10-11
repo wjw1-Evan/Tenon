@@ -25,7 +25,8 @@ use tenon_store::{EventKind, SessionStatus};
 
 use crate::auth::auth_middleware;
 use crate::state::{
-    persist_team_policy, validate_team_policy, DaemonState, L4IndexRequest, MessageQueue,
+    persist_team_policy, validate_team_policy, DaemonState, L4IndexRequest,
+    MESSAGE_QUEUE_MAX,
     SessionEntry,
 };
 
@@ -328,7 +329,6 @@ async fn register_session_entry(
             project_id: project.id.clone(),
             managed_worktree,
             last_outcome: Mutex::new(None),
-            queue: Mutex::new(MessageQueue::default()),
             busy: AtomicBool::new(false),
             last_seq: 0,
         },
@@ -795,15 +795,17 @@ async fn send_message(
             None => return api_err(StatusCode::NOT_FOUND, "session not found"),
         };
         if entry.busy.load(Ordering::SeqCst) || entry.session.is_running() {
-            // v1.191 §11：队列仅承载文本（MessageQueue 无附件位）——带附件
-            // 的运行态发送显式 409（不静默丢图）
+            // v1.191 §11：队列仅承载文本——带附件的运行态发送显式 409（不静默丢图）
             if !body.attachments.is_empty() {
                 return api_err(
                     StatusCode::CONFLICT,
                     "运行态发送暂不支持随队列入队附件——请稍后重发（含图片）",
                 );
             }
-            return match entry.queue.lock().await.enqueue(body.text) {
+            // v2.16 队列落库（design-v2.md §3.1）：store 为单一事实源——daemon
+            // 重启不丢；FIFO 由自增 id 保证（并发入队顺序即落库顺序）。
+            let mut store = state.store.lock().await;
+            return match store.enqueue_message(&id, &body.text, MESSAGE_QUEUE_MAX) {
                 Ok((_, position)) => (
                     StatusCode::ACCEPTED,
                     Json(json!({"accepted": true, "queued": true, "position": position})),
@@ -882,7 +884,9 @@ async fn send_message(
             let next = {
                 let mut sessions = state2.sessions.lock().await;
                 let next = match sessions.get(&sid) {
-                    Some(entry) if completed => entry.queue.lock().await.pop(),
+                    Some(_entry) if completed => {
+                        state2.store.lock().await.dequeue_message(&sid).unwrap_or(None)
+                    }
                     _ => None,
                 };
                 if next.is_none() {
@@ -893,7 +897,7 @@ async fn send_message(
                 next
             };
             match next {
-                Some(msg) => text = msg.text,
+                Some((_row_id, msg_text)) => text = msg_text,
                 None => break,
             }
         }
@@ -951,16 +955,16 @@ async fn delete_queued_message(
     State(state): State<Arc<DaemonState>>,
     Path((id, msg_id)): Path<(String, String)>,
 ) -> Response {
-    let sessions = state.sessions.lock().await;
-    match sessions.get(&id) {
-        Some(entry) => {
-            if entry.queue.lock().await.remove(&msg_id) {
-                Json(json!({"removed": true})).into_response()
-            } else {
-                api_err(StatusCode::NOT_FOUND, "queued message not found")
-            }
-        }
-        None => api_err(StatusCode::NOT_FOUND, "session not found"),
+    // v2.16：队列在 store——无需内存会话 runtime（孤儿会话也可编辑队列）。
+    let mut store = state.store.lock().await;
+    let exists = store.session(&id).ok().flatten().is_some();
+    if !exists {
+        return api_err(StatusCode::NOT_FOUND, "session not found");
+    }
+    match store.remove_message(&id, &msg_id) {
+        Ok(true) => Json(json!({"removed": true})).into_response(),
+        Ok(false) => api_err(StatusCode::NOT_FOUND, "queued message not found"),
+        Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }
 
@@ -975,21 +979,25 @@ async fn get_session(State(state): State<Arc<DaemonState>>, Path(id): Path<Strin
         (sess.status, seq)
     };
     // v1.147：发送消息队列随状态响应下发（§9.1，多窗口一致，随既有轮询刷新）。
-    let (last_outcome, queue) = {
+    // v2.16 落库：queue 直读 store——daemon 重启后（含 v2.15 孤儿 paused 会话）
+    // 队列照常回显可续发，不再随 runtime 蒸发。两锁顺序获取（锁序恒 sessions→store）。
+    let queue = {
+        let mut store = state.store.lock().await;
+        store
+            .list_message_queue(&id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(row_id, text)| json!({"id": format!("q{row_id}"), "text": text}))
+            .collect::<Vec<_>>()
+    };
+    let last_outcome = {
         let sessions = state.sessions.lock().await;
         match sessions.get(&id) {
             Some(e) => {
-                let queue = e
-                    .queue
-                    .lock()
-                    .await
-                    .snapshot()
-                    .into_iter()
-                    .map(|m| json!({"id": m.id, "text": m.text}))
-                    .collect::<Vec<_>>();
-                (Some(e.last_outcome.lock().await.clone()), queue)
+                let outcome = e.last_outcome.lock().await;
+                Some(outcome.clone())
             }
-            None => (None, Vec::new()),
+            None => None,
         }
     };
     let state_str = match status {
