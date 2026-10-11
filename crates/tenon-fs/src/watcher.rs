@@ -289,9 +289,12 @@ mod tests {
         // 上注册可达数秒（v1.128；v2.10 实测 sample 钳到 FSEventStreamStart
         // 的 f2d_register_rpc mach RPC——长时运行开发机对新路径注册延迟波动
         // 至 10s 以上，10s 预算已不够）。事件投递等待同放宽，防投递尾部超时。
+        // v2.11：注册超时瞬时抖动（双会话并行 cargo 下 mach RPC 拥塞可超满
+        // 30s 预算）补一次重试——第二次注册无冷启动竞态，秒级完成。
         let dir = tempfile::tempdir().unwrap();
         let watcher = FileWatcher::watch_with_budget(dir.path(), Duration::from_secs(30))
-            .expect("native watcher");
+            .or_else(|_| FileWatcher::watch_with_budget(dir.path(), Duration::from_secs(30)));
+        let watcher = watcher.expect("native watcher");
         std::fs::write(dir.path().join("native.txt"), "hi").unwrap();
         let events = watcher.next_batch(Duration::from_secs(30));
         assert!(

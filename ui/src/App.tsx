@@ -395,6 +395,11 @@ export default function App({
   // v2.4 常驻审查面（design-v2.md §6）：null = 跟随运行态自动（运行中停靠、
   // 空闲收起）；false = 用户手动关闭（会话切换重置回自动）。
   const [reviewManual, setReviewManual] = useState<boolean | null>(null);
+  // v2.11 审查面宽度拖拽记忆（design-v2.md §6「可折叠记忆宽度」）：280-520px、
+  // 默认 340，localStorage 全局记忆（与左栏 tenon:leftWidth 同款机制）。
+  const [reviewWidth, setReviewWidth] = useState(
+    () => Math.min(520, Math.max(280, Number(localStorage.getItem("tenon:reviewWidth")) || 340))
+  );
   const [routeNote, setRouteNote] = useState<string | null>(null);
   // 底部面板 tab（v1.107 移除「源码」——Git 视图迁右区源码树）：枚举收敛为三项。
   const [bottomTab, setBottomTab] = useState<"timeline" | "trace" | "evals" | "terminal">(
@@ -1527,17 +1532,37 @@ export default function App({
             关闭，会话切换重置回自动），实时呈现 latestDiff 改动流——「人改与 AI 改
             实时互见」的默认形态；窄屏不渲染（浮层语义后续演进）。 */}
         {!narrow && (reviewManual ?? RUNNING_STATES.has(agentState)) && (
-          <ReviewPane
-            t={t}
-            diff={latestDiff}
-            running={RUNNING_STATES.has(agentState)}
-            statusLabel={
-              RUNNING_STATES.has(agentState) ? t("review.running") : t("review.idle")
-            }
-            onClose={() => setReviewManual(false)}
-            onFeedback={sendTaskText}
-            digest={reviewDigest}
-          />
+          <>
+            {/* v2.11 宽度拖拽记忆（design-v2.md §6）：审查面左缘把手——鼠标左移
+                delta 为负增宽（w - d），clamp 280-520 防挤压，双击回默认 340。 */}
+            <ResizeHandle
+              dir="horizontal"
+              testId="resize-review"
+              onResize={(d) =>
+                setReviewWidth((w) => {
+                  const v = Math.min(520, Math.max(280, w - d));
+                  localStorage.setItem("tenon:reviewWidth", String(v));
+                  return v;
+                })
+              }
+              onDoubleClick={() => {
+                setReviewWidth(340);
+                localStorage.setItem("tenon:reviewWidth", "340");
+              }}
+            />
+            <ReviewPane
+              t={t}
+              diff={latestDiff}
+              running={RUNNING_STATES.has(agentState)}
+              statusLabel={
+                RUNNING_STATES.has(agentState) ? t("review.running") : t("review.idle")
+              }
+              onClose={() => setReviewManual(false)}
+              onFeedback={sendTaskText}
+              digest={reviewDigest}
+              width={reviewWidth}
+            />
+          </>
         )}
         {/* 编辑器应用内浮层（§7.2 v1.139 / v1.110 形态回归）：侧栏源码区 / 模糊 / 搜索 /
             诊断打开文件即弹出，✕ 关闭返回线程；EditorPane 多标签 / 分栏语义不变。 */}

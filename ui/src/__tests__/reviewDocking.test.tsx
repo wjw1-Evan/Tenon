@@ -112,4 +112,31 @@ describe("常驻审查面 App 接线（design-v2.md §6）", () => {
     await new Promise((r) => setTimeout(r, 600));
     expect(screen.queryByTestId("review-pane")).toBeNull();
   });
+
+  it("v2.11 宽度拖拽记忆：左缘把手拖拽调宽并落 localStorage，双击回默认", async () => {
+    localStorage.removeItem("tenon:reviewWidth");
+    currentStatus = "executing";
+    render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/proj-a" />);
+    await waitFor(() => expect(screen.getByTestId("review-pane")).toBeTruthy(), { timeout: 4000 });
+    const handle = screen.getByTestId("resize-review");
+    expect(handle).toBeTruthy();
+    // 默认 340；拖拽：把手在审查面左缘，鼠标左移（delta -60）→ 增宽到 400
+    const pane = () => screen.getByTestId("review-pane");
+    expect(pane().style.width).toBe("340px");
+    fireEvent.mouseDown(handle, { clientX: 700 });
+    fireEvent.mouseMove(window, { clientX: 640 });
+    fireEvent.mouseUp(window);
+    expect(pane().style.width).toBe("400px");
+    expect(localStorage.getItem("tenon:reviewWidth")).toBe("400");
+    // 上限 clamp 520：一次大位移拉过界
+    fireEvent.mouseDown(handle, { clientX: 640 });
+    fireEvent.mouseMove(window, { clientX: 0 });
+    fireEvent.mouseUp(window);
+    expect(pane().style.width).toBe("520px");
+    expect(localStorage.getItem("tenon:reviewWidth")).toBe("520");
+    // 双击回默认 340
+    fireEvent.dblClick(handle);
+    expect(pane().style.width).toBe("340px");
+    expect(localStorage.getItem("tenon:reviewWidth")).toBe("340");
+  });
 });

@@ -94,6 +94,7 @@ export function ReviewPane({
   onClose,
   onFeedback,
   digest,
+  width,
 }: {
   t: Translate;
   diff: string | null;
@@ -104,6 +105,8 @@ export function ReviewPane({
   onFeedback?: (task: string) => void;
   /** v2.8 审查摘要（AgentPanel 事件流汇总上提）：计划 / 子任务 / 产物 / 证据。 */
   digest?: ReviewDigest;
+  /** v2.11 宽度拖拽记忆（design-v2.md §6）：App 持有并持久化的像素宽（280-520）。 */
+  width?: number;
 }) {
   const [range, setRange] = useState<{ start: number; end: number } | null>(null);
   const [instruction, setInstruction] = useState("");
@@ -128,7 +131,12 @@ export function ReviewPane({
   };
 
   return (
-    <aside className="zone zone-review" data-testid="review-pane" data-running={running ? "1" : "0"}>
+    <aside
+      className="zone zone-review"
+      data-testid="review-pane"
+      data-running={running ? "1" : "0"}
+      style={width !== undefined ? { width } : undefined}
+    >
       <div className="review-head">
         <span
           className={`review-dot${running ? " live" : ""}`}

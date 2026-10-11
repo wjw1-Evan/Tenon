@@ -59,6 +59,16 @@ test("review pane auto-docks during a running task and collapses when done", asy
   await expect(pane).toHaveAttribute("data-running", "1");
   await expect(pane).toContainText("e2e-review.txt", { timeout: 20_000 });
 
+  // v2.11 宽度拖拽记忆：左缘把手左拖 60px → 审查面增宽（boundingBox 实测）
+  const before = (await pane.boundingBox())!.width;
+  const hb = (await page.getByTestId("resize-review").boundingBox())!;
+  await page.mouse.move(hb.x + hb.width / 2, hb.y + 80);
+  await page.mouse.down();
+  await page.mouse.move(hb.x + hb.width / 2 - 60, hb.y + 80, { steps: 2 });
+  await page.mouse.up();
+  const after = (await pane.boundingBox())!.width;
+  expect(after - before).toBeGreaterThanOrEqual(30);
+
   // 完成后自动收起（reviewManual 未覆盖）
   await expect(page.getByTestId("agent-feed")).toContainText("E2E write complete", { timeout: 60_000 });
   await expect(pane).toBeHidden({ timeout: 15_000 });
