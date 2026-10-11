@@ -4,14 +4,19 @@ import {
   LOCALE_CHANGE,
   createTranslator,
   loadLocaleResource,
+  localeDirection,
   readLocalePreference,
   resolveLocale,
   useLocaleTranslator,
   useResolvedLocale,
 } from "../lib/i18n";
+import ar from "../locales/ar.json";
 import en from "../locales/en.json";
+import es from "../locales/es.json";
+import fr from "../locales/fr.json";
 import ja from "../locales/ja.json";
 import ko from "../locales/ko.json";
+import ru from "../locales/ru.json";
 import zh from "../locales/zh.json";
 import zhTW from "../locales/zh-TW.json";
 
@@ -27,7 +32,7 @@ beforeEach(() => {
   });
 });
 
-describe("i18n（Q5：英文源 / 多语言社区包 v1.100）", () => {
+describe("i18n（Q5：英文源 / 多语言社区包 v1.100 / 联合国官方语言全集 v2.10）", () => {
   it("全部语言键与 en 完全对齐（防漏翻；新增语言包必须过此门禁）", () => {
     const enKeys = Object.keys(en).sort();
     for (const [name, table] of [
@@ -35,8 +40,28 @@ describe("i18n（Q5：英文源 / 多语言社区包 v1.100）", () => {
       ["zh-TW", zhTW],
       ["ja", ja],
       ["ko", ko],
+      ["es", es],
+      ["fr", fr],
+      ["ru", ru],
+      ["ar", ar],
     ] as const) {
       expect(Object.keys(table).sort(), `${name} 键集须与 en 对齐`).toEqual(enKeys);
+    }
+  });
+
+  it("占位符逐键对齐：每个键的 {var} 集合与 en 完全一致（防翻译吞占位符）", () => {
+    const placeholders = (s: string) => (s.match(/\{[a-z_]+\}/g) ?? []).sort();
+    for (const [name, table] of [
+      ["es", es],
+      ["fr", fr],
+      ["ru", ru],
+      ["ar", ar],
+    ] as const) {
+      for (const [key, value] of Object.entries(en)) {
+        expect(placeholders((table as Record<string, string>)[key]), `${name}:${key}`).toEqual(
+          placeholders(value),
+        );
+      }
     }
   });
 
@@ -46,9 +71,13 @@ describe("i18n（Q5：英文源 / 多语言社区包 v1.100）", () => {
     expect(resolveLocale("ja")).toBe("ja");
     expect(resolveLocale("ko")).toBe("ko");
     expect(resolveLocale("en")).toBe("en");
+    expect(resolveLocale("es")).toBe("es");
+    expect(resolveLocale("fr")).toBe("fr");
+    expect(resolveLocale("ru")).toBe("ru");
+    expect(resolveLocale("ar")).toBe("ar");
   });
 
-  it("resolveLocale：auto 按系统语言前缀匹配（繁体区→zh-TW）", () => {
+  it("resolveLocale：auto 按系统语言前缀匹配（繁体区→zh-TW；v2.10 扩 es/fr/ru/ar）", () => {
     const setLang = (value: string) =>
       Object.defineProperty(window.navigator, "language", { value, configurable: true });
     try {
@@ -66,11 +95,26 @@ describe("i18n（Q5：英文源 / 多语言社区包 v1.100）", () => {
       expect(resolveLocale("auto")).toBe("ja");
       setLang("ko-KR");
       expect(resolveLocale("auto")).toBe("ko");
-      setLang("fr");
+      setLang("es-419");
+      expect(resolveLocale("auto")).toBe("es");
+      setLang("fr-CA");
+      expect(resolveLocale("auto")).toBe("fr");
+      setLang("ru-RU");
+      expect(resolveLocale("auto")).toBe("ru");
+      setLang("ar-EG");
+      expect(resolveLocale("auto")).toBe("ar");
+      setLang("de-DE");
       expect(resolveLocale("auto")).toBe("en");
     } finally {
       setLang("en-US");
     }
+  });
+
+  it("书写方向：阿拉伯语 rtl，其余 ltr（<html dir> 同步依据）", () => {
+    expect(localeDirection("ar")).toBe("rtl");
+    expect(localeDirection("en")).toBe("ltr");
+    expect(localeDirection("zh-CN")).toBe("ltr");
+    expect(localeDirection("ru")).toBe("ltr");
   });
 
   it("翻译回退：缺失键回英文再回键名", () => {
@@ -92,6 +136,17 @@ describe("i18n（Q5：英文源 / 多语言社区包 v1.100）", () => {
     const after = createTranslator("ja");
     expect(after("tree.rename")).toBe("名前を変更");
     expect(after("message.send")).toBe("送信");
+  });
+
+  it("懒加载：联合国官方语言包（es / ar）同轨道懒加载生效", async () => {
+    const tEs = createTranslator("es");
+    expect(tEs("message.send")).toBe("Send"); // 未载入前回退 en
+    await loadLocaleResource("es");
+    expect(createTranslator("es")("message.send")).toBe(es["message.send"]);
+    const tAr = createTranslator("ar");
+    expect(tAr("timeline.rollback")).toBe("Roll back to this node");
+    await loadLocaleResource("ar");
+    expect(createTranslator("ar")("timeline.rollback")).toBe(ar["timeline.rollback"]);
   });
 
   it("useLocaleTranslator：懒加载语言就绪后自动切换", async () => {

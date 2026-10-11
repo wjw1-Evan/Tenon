@@ -3574,3 +3574,15 @@ button:disabled { opacity: 0.45; cursor: default; }
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
 }
+
+/* ── RTL（v2.10 §4.2 阿拉伯语）：整体布局随 <html dir="rtl"> 镜像（flex/grid 顺序、文本对齐自动跟随）；
+   代码面（编辑器 / diff / 终端等机器文本）恒为 LTR，避免双向文本粘连与代码镜像。 ── */
+[dir="rtl"] pre,
+[dir="rtl"] code,
+[dir="rtl"] .monaco-editor,
+[dir="rtl"] .diff-body,
+[dir="rtl"] .diff-window,
+[dir="rtl"] .xterm {
+  direction: ltr;
+  text-align: left;
+}

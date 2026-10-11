@@ -1,11 +1,22 @@
-// i18n（Q5 / v1.100）：英文为源语言（source of truth），中文一级翻译静态随包（首屏即需），
-// 社区语言包（繁體中文 / 日本語 / 한국어）按需懒加载；默认跟随系统，可手动切换；
-// 文案全部外置（§4.2）。新增语言 = locales/<tag>.json（键与 en 对齐，测试门禁）+ LOCALES 注册一行。
+// i18n（Q5 / v1.100 / v2.10）：英文为源语言（source of truth），中文一级翻译静态随包（首屏即需），
+// 其余语言包（繁體中文 / 日本語 / 한국어 / العربية / Français / Русский / Español）按需懒加载；
+// 默认跟随系统，可手动切换；文案全部外置（§4.2）。
+// 新增语言 = locales/<tag>.json（键与 en 对齐，测试门禁）+ LOCALES 注册一行；RTL 语言另入 RTL_LOCALES。
 import { useEffect, useMemo, useState } from "react";
 import en from "../locales/en.json";
 import zh from "../locales/zh.json";
 
-export type Locale = "auto" | "en" | "zh-CN" | "zh-TW" | "ja" | "ko";
+export type Locale =
+  | "auto"
+  | "en"
+  | "zh-CN"
+  | "zh-TW"
+  | "ja"
+  | "ko"
+  | "ar"
+  | "fr"
+  | "ru"
+  | "es";
 
 /** 语言注册表：顶栏选择器按此渲染（nativeName 不经 t()，语言名以母语显示是 i18n 惯例）。 */
 export const LOCALES: ReadonlyArray<{ tag: Exclude<Locale, "auto">; nativeName: string }> = [
@@ -14,6 +25,10 @@ export const LOCALES: ReadonlyArray<{ tag: Exclude<Locale, "auto">; nativeName: 
   { tag: "zh-TW", nativeName: "繁體中文" },
   { tag: "ja", nativeName: "日本語" },
   { tag: "ko", nativeName: "한국어" },
+  { tag: "es", nativeName: "Español" },
+  { tag: "fr", nativeName: "Français" },
+  { tag: "ru", nativeName: "Русский" },
+  { tag: "ar", nativeName: "العربية" },
 ];
 
 export function isLocale(value: unknown): value is Locale {
@@ -30,7 +45,19 @@ const LOADER: Partial<Record<string, () => Promise<{ default: Record<string, str
   "zh-TW": () => import("../locales/zh-TW.json"),
   ja: () => import("../locales/ja.json"),
   ko: () => import("../locales/ko.json"),
+  es: () => import("../locales/es.json"),
+  fr: () => import("../locales/fr.json"),
+  ru: () => import("../locales/ru.json"),
+  ar: () => import("../locales/ar.json"),
 };
+
+/** RTL 语言集（v2.10 联合国官方语言全集含阿拉伯语）：App 据此同步 <html dir>（§4.2）。 */
+const RTL_LOCALES: ReadonlySet<string> = new Set(["ar"]);
+
+/** 解析后语言标签的书写方向：阿拉伯语 rtl（布局镜像），其余 ltr。 */
+export function localeDirection(locale: string): "ltr" | "rtl" {
+  return RTL_LOCALES.has(locale) ? "rtl" : "ltr";
+}
 
 const RESOURCES: Record<string, Record<string, string>> = { ...STATIC };
 
@@ -53,7 +80,8 @@ export function saveLocalePreference(preference: Locale): void {
   }
 }
 
-/** auto → 系统语言：繁体区（zh-Hant / TW / HK / MO）→ zh-TW，其余中文 → zh-CN，ja / ko 按前缀。 */
+/** auto → 系统语言：繁体区（zh-Hant / TW / HK / MO）→ zh-TW，其余中文 → zh-CN，
+ *  ja / ko / es / fr / ru / ar 按前缀（BCP-47 主子标签匹配，如 es-419 → es）。 */
 export function resolveLocale(preference: Locale): string {
   if (preference !== "auto") return preference;
   if (typeof navigator === "undefined") return "en";
@@ -63,6 +91,10 @@ export function resolveLocale(preference: Locale): string {
   }
   if (lang.startsWith("ja")) return "ja";
   if (lang.startsWith("ko")) return "ko";
+  if (lang.startsWith("es")) return "es";
+  if (lang.startsWith("fr")) return "fr";
+  if (lang.startsWith("ru")) return "ru";
+  if (lang.startsWith("ar")) return "ar";
   return "en";
 }
 

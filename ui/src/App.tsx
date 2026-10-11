@@ -8,6 +8,7 @@ import type { ProjectSummary } from "./lib/api";
 import {
   LOCALES,
   LOCALE_CHANGE,
+  localeDirection,
   readLocalePreference,
   resolveLocale,
   saveLocalePreference,
@@ -151,11 +152,13 @@ export default function App({
     window.addEventListener(LOCALE_CHANGE, onLocaleChange);
     return () => window.removeEventListener(LOCALE_CHANGE, onLocaleChange);
   }, [api, locale]);
-  /** 翻译器随偏好重建；懒加载语言（zh-TW / ja / ko）资源就绪后自动重渲染。 */
+  /** 翻译器随偏好重建；懒加载语言（zh-TW / ja / ko / es / fr / ru / ar）资源就绪后自动重渲染。 */
   const t = useLocaleTranslator(localePref);
   useEffect(() => {
-    // <html lang> 随应用语言（无障碍 / 屏幕阅读器发音）
-    document.documentElement.lang = resolveLocale(localePref);
+    // <html lang> 随应用语言（无障碍 / 屏幕阅读器发音）；RTL 语言（阿拉伯语）同步 <html dir>（v2.10 §4.2）
+    const resolved = resolveLocale(localePref);
+    document.documentElement.lang = resolved;
+    document.documentElement.dir = localeDirection(resolved);
   }, [localePref]);
 
   const [projectId, setProjectId] = useState<string | null>(null);
