@@ -4,10 +4,31 @@
 // v2.7 diff 级反馈回路：diff 行点选（DiffPanel selectable）→ 反馈卡
 // （文件:行上下文 + 反馈输入）→ 任务文本经行内指令同款链路注入当前会话；
 // 运行态发送自动入队（v1.147），回合自然完成后续跑消费——「边跑边审、审完即改」。
+// v2.8 审查摘要卡（design-v2.md §6「计划/子任务与证据/产物卡」）：diff 流上方
+// 常驻摘要区——计划 / 子任务进度 / 改动产物 / 验证证据（对齐 Codex summary pane）。
 import { useMemo, useState } from "react";
 import { DiffPanel, parseDiffLines } from "./DiffPanel";
 import { mapDiffLines, selectionTargetFromInfos, type DiffSelectionTarget } from "../lib/diffSelect";
+import {
+  digestHasContent,
+  EVIDENCE_LIMIT,
+  type ReviewDigest,
+  type ReviewSubtaskItem,
+} from "../lib/reviewDigest";
 import type { Translate } from "../lib/i18n";
+
+/** 子任务状态行（v2.8）：复用 v1.146 状态语义 ○ 待执行 / ▶ 进行中 / ✓ 完成。 */
+function ReviewSubtaskRow({ item }: { item: ReviewSubtaskItem }) {
+  const icon = item.status === "done" ? "✓" : item.status === "in_progress" ? "▶" : "○";
+  return (
+    <li data-status={item.status}>
+      <span className="review-subtask-icon" aria-hidden="true">
+        {icon}
+      </span>
+      <span className="review-subtask-title">{item.title}</span>
+    </li>
+  );
+}
 
 /** 审查反馈任务文本组装（design.md §7.2 v2.7）：反馈前缀 + 目标行区 + diff
  *  摘录 + 最小改动约束；文案随应用语言，摘录上限与行内指令一致（1200 字）。 */
@@ -34,6 +55,7 @@ export function ReviewPane({
   statusLabel,
   onClose,
   onFeedback,
+  digest,
 }: {
   t: Translate;
   diff: string | null;
@@ -42,6 +64,8 @@ export function ReviewPane({
   onClose: () => void;
   /** v2.7 反馈发送：入参为组装完成的任务文本（App 经行内指令同款链路注入会话）。 */
   onFeedback?: (task: string) => void;
+  /** v2.8 审查摘要（AgentPanel 事件流汇总上提）：计划 / 子任务 / 产物 / 证据。 */
+  digest?: ReviewDigest;
 }) {
   const [range, setRange] = useState<{ start: number; end: number } | null>(null);
   const [instruction, setInstruction] = useState("");
@@ -88,6 +112,54 @@ export function ReviewPane({
         </button>
       </div>
       <div className="review-body">
+        {digest && digestHasContent(digest) && (
+          <div className="review-digest" data-testid="review-digest">
+            {digest.plan && digest.plan.length > 0 && (
+              <section className="review-digest-block" data-testid="review-plan">
+                <h4>{t("review.plan_title")}</h4>
+                <ol>
+                  {digest.plan.map((item, i) => (
+                    <li key={i}>{item}</li>
+                  ))}
+                </ol>
+              </section>
+            )}
+            {digest.subtasks.length > 0 && (
+              <section className="review-digest-block" data-testid="review-subtasks">
+                <h4>
+                  {t("review.subtasks_title")}
+                  <span className="review-digest-count">
+                    {" "}
+                    {digest.subtasks.filter((s) => s.status === "done").length}/{digest.subtasks.length}
+                  </span>
+                </h4>
+                <ul>
+                  {digest.subtasks.map((item, i) => (
+                    <ReviewSubtaskRow key={i} item={item} />
+                  ))}
+                </ul>
+              </section>
+            )}
+            {digest.artifacts.length > 0 && (
+              <section className="review-digest-block" data-testid="review-artifacts">
+                <h4>{t("review.artifacts_title")}</h4>
+                <ul>
+                  {digest.artifacts.map((file) => (
+                    <li key={file} className="review-digest-file">
+                      {file}
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+            {digest.evidence !== null && (
+              <section className="review-digest-block" data-testid="review-evidence">
+                <h4>{t("review.evidence_title")}</h4>
+                <pre>{digest.evidence.slice(0, EVIDENCE_LIMIT)}</pre>
+              </section>
+            )}
+          </div>
+        )}
         {target && (
           <div className="review-feedback" data-testid="review-feedback">
             <div className="review-fb-head">

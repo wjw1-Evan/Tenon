@@ -514,5 +514,9 @@
   "review.fb_task_range": "{start}-{end}줄",
   "review.fb_task_file": "(파일 전체 변경)",
   "review.fb_task_excerpt": "변경 발췌:",
-  "review.fb_task_constraint": "제약: 편집 전에 해당 영역의 현재 내용을 다시 읽으세요. 위 피드백만 처리하고 관련 없는 줄은 변경하지 마세요. 완료 후 새 진단이나 회귀가 없는지 확인하세요."
+  "review.fb_task_constraint": "제약: 편집 전에 해당 영역의 현재 내용을 다시 읽으세요. 위 피드백만 처리하고 관련 없는 줄은 변경하지 마세요. 완료 후 새 진단이나 회귀가 없는지 확인하세요.",
+  "review.plan_title": "계획",
+  "review.subtasks_title": "하위 작업",
+  "review.artifacts_title": "변경된 파일",
+  "review.evidence_title": "검증 증거"
 }

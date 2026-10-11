@@ -514,5 +514,9 @@
   "review.fb_task_range": "第 {start}-{end} 行",
   "review.fb_task_file": "（ファイル全体の変更）",
   "review.fb_task_excerpt": "変更抜粋：",
-  "review.fb_task_constraint": "制約：編集前に該当領域の現在の内容を再読み込みしてください。上記のフィードバックのみを扱い、無関係な行は変更しないでください。完了後、新しい診断やリグレッションがないことを確認してください。"
+  "review.fb_task_constraint": "制約：編集前に該当領域の現在の内容を再読み込みしてください。上記のフィードバックのみを扱い、無関係な行は変更しないでください。完了後、新しい診断やリグレッションがないことを確認してください。",
+  "review.plan_title": "プラン",
+  "review.subtasks_title": "サブタスク",
+  "review.artifacts_title": "変更ファイル",
+  "review.evidence_title": "検証結果"
 }

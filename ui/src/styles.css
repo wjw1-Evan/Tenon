@@ -3450,3 +3450,66 @@ button:disabled { opacity: 0.45; cursor: default; }
   color: var(--fg);
   background: var(--bg);
 }
+/* v2.8 审查摘要卡（design.md §7.2 / design-v2.md §6）：diff 流上方常驻摘要区
+   ——计划 / 子任务 / 产物 / 证据四块，紧凑可滚动，不挤占 diff 主区 */
+.review-digest {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 40%;
+  overflow-y: auto;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border, #2a2f3a);
+  overscroll-behavior: contain;
+}
+.review-digest-block h4 {
+  margin: 0 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.review-digest-count {
+  color: var(--accent-text);
+  font-variant-numeric: tabular-nums;
+}
+.review-digest-block ol,
+.review-digest-block ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.review-digest-block li {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.review-digest-block pre {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--fg-muted);
+}
+.review-digest-file {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+}
+.review-subtask-icon {
+  display: inline-block;
+  width: 14px;
+  margin-left: -14px;
+  color: var(--fg-muted);
+  font-size: 10px;
+}
+.review-digest-block li[data-status="done"] .review-subtask-title {
+  color: var(--fg-muted);
+  text-decoration: line-through;
+}
+.review-digest-block li[data-status="in_progress"] .review-subtask-icon {
+  color: #d9a514;
+}

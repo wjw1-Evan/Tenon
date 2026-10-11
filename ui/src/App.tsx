@@ -34,6 +34,7 @@ import { EditorPane, type EditorSelection, type EditorTab } from "./components/E
 import { InlineInstruction, buildInlineTask, type InlineTarget } from "./components/InlineInstruction";
 import { AgentPanel } from "./components/AgentPanel";
 import { ReviewPane } from "./components/ReviewPane";
+import { EMPTY_REVIEW_DIGEST, type ReviewDigest } from "./lib/reviewDigest";
 import { RUNNING_STATES } from "./lib/stateColors";
 import { CheckpointTimeline } from "./components/CheckpointTimeline";
 import { DiffPanel } from "./components/DiffPanel";
@@ -173,6 +174,9 @@ export default function App({
   // 项目 ui-state 记忆（saved.timelineOpen）优先于新默认。
   const [timelineOpen, setTimelineOpen] = useState(false);
   const [latestDiff, setLatestDiff] = useState<string | null>(null);
+  // v2.8 审查摘要卡（design-v2.md §6）：AgentPanel 事件流汇总上提——计划 /
+  // 子任务 / 产物 / 证据；会话切换随空事件流自然清空（无显式复位）。
+  const [reviewDigest, setReviewDigest] = useState<ReviewDigest>(EMPTY_REVIEW_DIGEST);
   const [dirtyConflict, setDirtyConflict] = useState<DirtyConflict | null>(null);
   const [aiLines, setAiLines] = useState<Record<string, number[]>>({});
   /** ProjectRuntime 文件事件版本：驱动文件树增量刷新与打开缓冲同步（§6.4 / §8.1）。 */
@@ -1485,6 +1489,7 @@ export default function App({
             onDraftSend={sendDraftMessage}
             onStateChange={onStateChange}
             onLatestDiff={setLatestDiff}
+            onReviewDigest={setReviewDigest}
             onPatchLines={(path, lines) => {
               setAiLines((prev) => ({
                 ...prev,
@@ -1528,6 +1533,7 @@ export default function App({
             }
             onClose={() => setReviewManual(false)}
             onFeedback={sendTaskText}
+            digest={reviewDigest}
           />
         )}
         {/* 编辑器应用内浮层（§7.2 v1.139 / v1.110 形态回归）：侧栏源码区 / 模糊 / 搜索 /

@@ -13,6 +13,7 @@ import type { Translate } from "../lib/i18n";
 import { RUNNING_STATES, STATE_COLORS, type AgentStateName } from "../lib/stateColors";
 import { renderMarkdownLite } from "../lib/markdownLite";
 import { diffFromPatchEvent } from "./DiffPanel";
+import { digestFromEvents, type ReviewDigest } from "../lib/reviewDigest";
 import { aiLinesFromDiff } from "../lib/aiLines";
 import { ModelRoutingPanel } from "./ModelRoutingPanel";
 import { markWorkspaceInputReady } from "../lib/performance";
@@ -76,6 +77,9 @@ interface Props {
   onDraftSend?: (text: string) => Promise<void>;
   onStateChange?: (s: AgentStateName) => void;
   onLatestDiff?: (diff: string | null) => void;
+  /** v2.8 审查摘要卡（design-v2.md §6）：事件流汇总 digest 上提 App 注入
+   *  ReviewPane（计划 / 子任务 / 产物 / 证据）——与 onLatestDiff 同款管道。 */
+  onReviewDigest?: (digest: ReviewDigest) => void;
   /** v1.160 回合改动摘要徽标：点击徽标注入该回合聚合 diff 并展开底部 Diff（App 持有面板状态）。 */
   onShowDiff?: (diff: string) => void;
   onDirtyConflict?: (c: DirtyConflictView | null) => void;
@@ -219,6 +223,7 @@ export function AgentPanel({
   onDraftSend,
   onStateChange,
   onLatestDiff,
+  onReviewDigest,
   onDirtyConflict,
   onPatchLines,
   followMode,
@@ -882,6 +887,12 @@ export function AgentPanel({
     }
     return [];
   }, [events]);
+
+  // v2.8 审查摘要卡（design-v2.md §6）：事件流 → digest 上提（事件流清空即空
+  // digest——会话切换自然复位，App 无需显式清理）。
+  useEffect(() => {
+    onReviewDigest?.(digestFromEvents(events));
+  }, [events, onReviewDigest]);
 
   const empty = events.length === 0 && !streamText;
 

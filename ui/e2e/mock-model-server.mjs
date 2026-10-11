@@ -44,7 +44,14 @@ const server = createServer(async (request, response) => {
       const match = task.match(/E2E_WRITE\n(.+?)\n([A-Za-z0-9+/=]+)/s);
       // v2.1 档位确认 E2E（design-v2.md §4.1）：D 级 git_commit 触发 Hold
       const commitMatch = task.match(/E2E_GIT_COMMIT\n(.+)/);
-      if (!match && !commitMatch) {
+      // v2.8 审查摘要卡 E2E：E2E_SUBTASKS\n[{"title","status"}] 两腿脚本——
+      // 趟 1（0 个工具结果）发 subtasks 清单，趟 2（恰 1 个工具结果）再走
+      // E2E_WRITE 改码，趟 3 文本收尾；驱动审查面子任务卡 + 产物卡真链路
+      const subtasksMatch = task.match(/E2E_SUBTASKS\n(\[[^\n]+\])/);
+      const toolResultCount = messages.filter((message) => message.role === "tool").length;
+      const wantSubtasks = Boolean(subtasksMatch) && toolResultCount === 0;
+      const subtasksSecondLeg = Boolean(subtasksMatch) && toolResultCount === 1 && Boolean(match);
+      if (!match && !commitMatch && !wantSubtasks) {
         if (payload.stream) {
           const turnWait = hasToolResult ? afterToolDelay : turnDelay;
       if (turnWait) await new Promise((r) => setTimeout(r, turnWait));
@@ -74,14 +81,16 @@ const server = createServer(async (request, response) => {
       }
       const [, file, encoded] = match ?? [];
       const content = match ? Buffer.from(encoded, "base64").toString("utf8") : "";
-      const toolName = commitMatch ? "git_commit" : "apply_patch";
-      const toolArguments = commitMatch
-        ? JSON.stringify({ message: commitMatch[1] })
-        : JSON.stringify({ file, range: null, content });
+      const toolName = wantSubtasks ? "subtasks" : commitMatch ? "git_commit" : "apply_patch";
+      const toolArguments = wantSubtasks
+        ? JSON.stringify({ items: JSON.parse(subtasksMatch[1]) })
+        : commitMatch
+          ? JSON.stringify({ message: commitMatch[1] })
+          : JSON.stringify({ file, range: null, content });
       const turnWait = hasToolResult ? afterToolDelay : turnDelay;
       if (turnWait) await new Promise((r) => setTimeout(r, turnWait));
       if (!payload.stream) {
-        const message = hasToolResult
+        const message = hasToolResult && !subtasksSecondLeg
           ? { role: "assistant", content: "E2E write complete" }
           : {
               role: "assistant",
@@ -96,14 +105,14 @@ const server = createServer(async (request, response) => {
             };
         response.setHeader("Content-Type", "application/json");
         response.end(JSON.stringify({
-          choices: [{ message, finish_reason: hasToolResult ? "stop" : "tool_use" }],
+          choices: [{ message, finish_reason: hasToolResult && !subtasksSecondLeg ? "stop" : "tool_use" }],
           usage: { prompt_tokens: 1, completion_tokens: 1 },
         }));
         return;
       }
 
       const callId = `call-${Date.now()}`;
-      const delta = hasToolResult
+      const delta = hasToolResult && !subtasksSecondLeg
         ? { content: "E2E write complete" }
         : {
             tool_calls: [{
@@ -121,7 +130,7 @@ const server = createServer(async (request, response) => {
       response.write(`data: ${JSON.stringify({ model: "mock-1", choices: [{ delta }] })}\n\n`);
       response.write(`data: ${JSON.stringify({
         model: "mock-1",
-        choices: [{ delta: {}, finish_reason: hasToolResult ? "stop" : "tool_use" }],
+        choices: [{ delta: {}, finish_reason: hasToolResult && !subtasksSecondLeg ? "stop" : "tool_use" }],
       })}\n\n`);
       response.write(`data: ${JSON.stringify({ model: "mock-1", choices: [], usage })}\n\n`);
       response.write("data: [DONE]\n\n");

@@ -514,5 +514,9 @@
   "review.fb_task_range": "第 {start}-{end} 行",
   "review.fb_task_file": "（整檔案變更）",
   "review.fb_task_excerpt": "變更摘錄：",
-  "review.fb_task_constraint": "約束：先重讀該區域目前內容再動手；只處理上述回饋，與回饋無關的行保持不變；完成後確認無新診斷或迴歸。"
+  "review.fb_task_constraint": "約束：先重讀該區域目前內容再動手；只處理上述回饋，與回饋無關的行保持不變；完成後確認無新診斷或迴歸。",
+  "review.plan_title": "計畫",
+  "review.subtasks_title": "子任務",
+  "review.artifacts_title": "變更產物",
+  "review.evidence_title": "驗證證據"
 }

@@ -514,5 +514,9 @@
   "review.fb_task_range": "lines {start}-{end}",
   "review.fb_task_file": "(whole-file change)",
   "review.fb_task_excerpt": "Change excerpt:",
-  "review.fb_task_constraint": "Constraints: re-read the current content of that region before editing; address only the feedback above and leave unrelated lines unchanged; verify no new diagnostics or regressions when done."
+  "review.fb_task_constraint": "Constraints: re-read the current content of that region before editing; address only the feedback above and leave unrelated lines unchanged; verify no new diagnostics or regressions when done.",
+  "review.plan_title": "Plan",
+  "review.subtasks_title": "Subtasks",
+  "review.artifacts_title": "Changed files",
+  "review.evidence_title": "Verification"
 }

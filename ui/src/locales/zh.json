@@ -514,5 +514,9 @@
   "review.fb_task_range": "第 {start}-{end} 行",
   "review.fb_task_file": "（整文件改动）",
   "review.fb_task_excerpt": "改动摘录：",
-  "review.fb_task_constraint": "约束：先重读该区域当前内容再动手；只处理上述反馈，与反馈无关的行保持不变；完成后确认无新诊断或回归。"
+  "review.fb_task_constraint": "约束：先重读该区域当前内容再动手；只处理上述反馈，与反馈无关的行保持不变；完成后确认无新诊断或回归。",
+  "review.plan_title": "计划",
+  "review.subtasks_title": "子任务",
+  "review.artifacts_title": "改动产物",
+  "review.evidence_title": "验证证据"
 }

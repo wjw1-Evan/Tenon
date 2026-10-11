@@ -3,7 +3,9 @@
 // ② 档位确认卡（v2.1）：D 级 git_commit 被默认档 on_irreversible Hold——
 //    卡片渲染（工具 + 参数预览）→ 拒绝 → 模型收到拒绝继续 → 任务完成、卡片收起；
 // ③ diff 级反馈回路（v2.7）：运行中审查面选中改动行 → 反馈卡发送（运行态入队）→
-//    回合完成队列消费 → 第二回合按反馈改码落盘——「边跑边审、审完即改」闭环。
+//    回合完成队列消费 → 第二回合按反馈改码落盘——「边跑边审、审完即改」闭环；
+// ④ 审查摘要卡（v2.8）：运行中审查面呈现子任务进度与改动产物（mock E2E_SUBTASKS
+//    驱动；证据卡在回合尾验证阶段产生、面板随完成收起，由 vitest App 级覆盖）。
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -120,4 +122,39 @@ test("diff line feedback loop: review while running, feedback re-edits the file"
   await expect
     .poll(async () => (await readFile(target, "utf8").catch(() => "")), { timeout: 90_000 })
     .toContain(v3);
+});
+
+test("review digest cards surface subtask progress and changed files during a run", async ({ page }) => {
+  test.setTimeout(90_000);
+  await openFreshTask(page);
+
+  const file = "e2e-digest.txt";
+  const task = [
+    "E2E_SLOW_ALL_MS=4000",
+    "E2E_SUBTASKS",
+    JSON.stringify([
+      { title: "write the digest fixture", status: "done" },
+      { title: "verify the digest fixture", status: "in_progress" },
+    ]),
+    "E2E_WRITE",
+    file,
+    Buffer.from("digest payload\n").toString("base64"),
+  ].join("\n");
+  await page.getByTestId("task-input").fill(task);
+  await page.getByTestId("send").click();
+
+  // 审查面停靠 → 摘要区：子任务卡（清单 + n/m）与产物卡（改动文件）实时可见
+  const pane = page.getByTestId("review-pane");
+  await expect(pane).toBeVisible({ timeout: 30_000 });
+  const subtasks = page.getByTestId("review-subtasks");
+  await expect(subtasks).toBeVisible({ timeout: 30_000 });
+  await expect(subtasks).toContainText("write the digest fixture");
+  await expect(subtasks).toContainText("1/2");
+  const artifacts = page.getByTestId("review-artifacts");
+  await expect(artifacts).toBeVisible({ timeout: 30_000 });
+  await expect(artifacts).toContainText(file);
+
+  // 完成收起（摘要区随面板）
+  await expect(page.getByTestId("agent-feed")).toContainText("E2E write complete", { timeout: 60_000 });
+  await expect(pane).toBeHidden({ timeout: 15_000 });
 });

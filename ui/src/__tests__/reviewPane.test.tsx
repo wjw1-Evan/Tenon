@@ -5,6 +5,7 @@
 //    本次会话不再自动弹（rerender 保持），关闭回调触发。
 // v2.7 diff 级反馈回路：行点选 → 反馈卡（上下文标签 + 反馈输入）→ 发送组装
 // 任务（前缀 + 摘录 + 约束）→ 选区清空；纯元数据行选区不出卡。
+// v2.8 审查摘要卡：digest（计划/子任务/产物/证据）注入渲染、空 digest 不渲染。
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ReviewPane, buildReviewTask } from "../components/ReviewPane";
@@ -151,5 +152,82 @@ describe("buildReviewTask 任务组装（v2.7）", () => {
   it("文件级目标（纯删除选区）：行区退化为整文件占位", () => {
     const task = buildReviewTask("这个文件不该删", { path: "gone.ts", excerpt: "-a" }, t);
     expect(task).toContain("针对 gone.ts （整文件改动）的最新改动——这个文件不该删");
+  });
+});
+
+describe("ReviewPane 审查摘要卡（v2.8，design-v2.md §6）", () => {
+  const DIFF = "--- a/f.ts\n+++ b/f.ts\n@@ -1 +1 @@\n-old\n+new";
+
+  it("digest 注入渲染：计划清单 / 子任务状态与计数 / 产物 / 证据截断", () => {
+    render(
+      <ReviewPane
+        t={t}
+        diff={DIFF}
+        running
+        statusLabel="review.running"
+        onClose={() => {}}
+        digest={{
+          plan: ["扫描调用点", "替换 API", "回归验证"],
+          subtasks: [
+            { title: "扫描调用点", status: "done" },
+            { title: "替换 API", status: "in_progress" },
+            { title: "回归验证", status: "pending" },
+          ],
+          artifacts: ["src/api.ts", "src/api.test.ts"],
+          evidence: "验证通过（无新诊断）",
+        }}
+      />
+    );
+    const digest = screen.getByTestId("review-digest");
+    expect(digest).toBeTruthy();
+    const plan = screen.getByTestId("review-plan");
+    expect(plan.querySelectorAll("li")).toHaveLength(3);
+    expect(plan).toHaveTextContent("替换 API");
+    const subtasks = screen.getByTestId("review-subtasks");
+    expect(subtasks).toHaveTextContent("1/3");
+    expect(subtasks.querySelector('li[data-status="in_progress"]')).toBeTruthy();
+    expect(screen.getByTestId("review-artifacts")).toHaveTextContent("src/api.test.ts");
+    expect(screen.getByTestId("review-evidence")).toHaveTextContent("验证通过（无新诊断）");
+  });
+
+  it("证据超长截断至 EVIDENCE_LIMIT", () => {
+    render(
+      <ReviewPane
+        t={t}
+        diff={DIFF}
+        running
+        statusLabel="review.running"
+        onClose={() => {}}
+        digest={{ plan: null, subtasks: [], artifacts: [], evidence: "x".repeat(1000) }}
+      />
+    );
+    expect(screen.getByTestId("review-evidence").querySelector("pre")?.textContent).toHaveLength(400);
+  });
+
+  it("空 digest（无任一区块数据）不渲染摘要区；计划空数组不渲染计划块", () => {
+    const { rerender } = render(
+      <ReviewPane
+        t={t}
+        diff={DIFF}
+        running
+        statusLabel="review.running"
+        onClose={() => {}}
+        digest={{ plan: null, subtasks: [], artifacts: [], evidence: null }}
+      />
+    );
+    expect(screen.queryByTestId("review-digest")).toBeNull();
+    rerender(
+      <ReviewPane
+        t={t}
+        diff={DIFF}
+        running
+        statusLabel="review.running"
+        onClose={() => {}}
+        digest={{ plan: [], subtasks: [], artifacts: ["only.ts"], evidence: null }}
+      />
+    );
+    expect(screen.getByTestId("review-digest")).toBeTruthy();
+    expect(screen.queryByTestId("review-plan")).toBeNull();
+    expect(screen.getByTestId("review-artifacts")).toHaveTextContent("only.ts");
   });
 });

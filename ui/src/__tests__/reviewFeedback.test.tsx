@@ -2,6 +2,8 @@
 // 运行中会话（审查面自动停靠）→ trace patch_applied 落 latestDiff →
 // 审查面选中 diff 行 → 反馈卡输入发送 → 经行内指令同款链路 POST /session/:id/message
 // （运行态自动入队，回合完成续跑——「边跑边审、审完即改」闭环的 UI 半边）。
+// v2.8 审查摘要卡：trace 事件流（subtasks / patch_applied / diagnostics.verification）
+// 经 AgentPanel digest 上提 → 审查面摘要区渲染。
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
@@ -56,8 +58,23 @@ beforeEach(() => {
         events: [
           {
             seq: 1,
+            type: "subtasks",
+            payload: {
+              items: [
+                { title: "write the file", status: "done" },
+                { title: "verify the file", status: "in_progress" },
+              ],
+            },
+          },
+          {
+            seq: 2,
             type: "patch_applied",
             payload: { output: { content: `已写入\n${PATCH_DIFF}`, changed_files: ["src/app.ts"] } },
+          },
+          {
+            seq: 3,
+            type: "diagnostics",
+            payload: { verification: "no new diagnostics" },
           },
         ],
       });
@@ -125,5 +142,20 @@ describe("审查面 diff 级反馈 App 接线（v2.7）", () => {
       expect(body.text).toContain("src/app.ts");
       expect(body.text).toContain("+new");
     });
+  });
+
+  it("v2.8 审查摘要卡：事件流上提渲染子任务 / 产物 / 证据", async () => {
+    render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/proj-a" />);
+    await waitFor(() => expect(screen.getByTestId("review-pane")).toBeTruthy(), { timeout: 5000 });
+    const digest = await waitFor(() => {
+      const node = screen.getByTestId("review-digest");
+      expect(node).toBeTruthy();
+      return node;
+    });
+    expect(screen.getByTestId("review-subtasks")).toHaveTextContent("1/2");
+    expect(screen.getByTestId("review-subtasks")).toHaveTextContent("verify the file");
+    expect(screen.getByTestId("review-artifacts")).toHaveTextContent("src/app.ts");
+    expect(screen.getByTestId("review-evidence")).toHaveTextContent("no new diagnostics");
+    expect(digest).toBeTruthy();
   });
 });
