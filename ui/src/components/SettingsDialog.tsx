@@ -34,6 +34,9 @@ interface ProviderRow {
   priceIn: string;
   priceOut: string;
   priceCached: string;
+  /** v2.13 §10.2 阈值自适应两字段（空串 = 未配置 / 保留配置值）。 */
+  contextTokens: string;
+  compactionThreshold: string;
   /** 在设置覆盖表中：可删除（纯配置文件条目只能编辑，删除即恢复配置文件值）。 */
   overridden: boolean;
 }
@@ -60,6 +63,9 @@ function rowsFromSettings(settings: SettingsData | null): ProviderRow[] {
     priceIn: p.price_in_per_mtok == null ? "" : String(p.price_in_per_mtok),
     priceOut: p.price_out_per_mtok == null ? "" : String(p.price_out_per_mtok),
     priceCached: p.price_cached_per_mtok == null ? "" : String(p.price_cached_per_mtok),
+    /** v2.13 §10.2 阈值自适应两字段回显（缺省 null = 保留配置值）。 */
+    contextTokens: p.context_tokens == null ? "" : String(p.context_tokens),
+    compactionThreshold: p.compaction_threshold == null ? "" : String(p.compaction_threshold),
     overridden: Boolean(p.overridden),
   }));
 }
@@ -214,6 +220,8 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, p
         priceIn: "",
         priceOut: "",
         priceCached: "",
+        contextTokens: "",
+        compactionThreshold: "",
         overridden: true,
       },
     ]);
@@ -261,6 +269,18 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, p
           const v = Number(raw);
           if (!Number.isFinite(v) || v < 0) {
             throw new Error(t("settings.models.price_invalid"));
+          }
+          entry[key] = v;
+        }
+        // v2.13 §10.2 阈值自适应两字段：空 = 保留配置值；正整数校验保存前报错
+        for (const [key, raw] of [
+          ["context_tokens", p.contextTokens ?? ""],
+          ["compaction_threshold", p.compactionThreshold ?? ""],
+        ] as const) {
+          if (!raw.trim()) continue;
+          const v = Number(raw);
+          if (!Number.isInteger(v) || v <= 0) {
+            throw new Error(t("settings.models.context_invalid"));
           }
           entry[key] = v;
         }
@@ -565,6 +585,31 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, p
                         step={0.01}
                         value={p.priceCached}
                         onChange={(e) => updateProvider(p.name, { priceCached: e.target.value })}
+                      />
+                      {/* v2.13 §10.2 阈值自适应：空 = 保留配置值（未知窗口维持 24k） */}
+                      <input
+                        aria-label={`${t("settings.models.context_tokens")} · ${p.name}`}
+                        placeholder={t("settings.models.context_tokens")}
+                        type="number"
+                        min={1}
+                        step={1}
+                        value={p.contextTokens}
+                        data-testid={`provider-context-tokens-${p.name}`}
+                        onChange={(e) =>
+                          updateProvider(p.name, { contextTokens: e.target.value })
+                        }
+                      />
+                      <input
+                        aria-label={`${t("settings.models.compaction_threshold")} · ${p.name}`}
+                        placeholder={t("settings.models.compaction_threshold")}
+                        type="number"
+                        min={1}
+                        step={1}
+                        value={p.compactionThreshold}
+                        data-testid={`provider-compaction-threshold-${p.name}`}
+                        onChange={(e) =>
+                          updateProvider(p.name, { compactionThreshold: e.target.value })
+                        }
                       />
                       {p.overridden && (
                         <button

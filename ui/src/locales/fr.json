@@ -531,5 +531,8 @@
   "palette.activity": "Activité globale",
   "activity.title": "Activité globale",
   "activity.empty": "Aucune tâche pour le moment",
-  "activity.running_count": "{count} en cours"
+  "activity.running_count": "{count} en cours",
+  "settings.models.context_tokens": "Jetons de contexte",
+  "settings.models.compaction_threshold": "Seuil de compactage",
+  "settings.models.context_invalid": "Les jetons de contexte / le seuil doivent être des entiers positifs"
 }

@@ -57,6 +57,10 @@ pub struct ProviderOverride {
     pub price_out_per_mtok: Option<f64>,
     /// 美元 / 百万缓存命中输入 token（缺省 = 缓存部分按输入价计）
     pub price_cached_per_mtok: Option<f64>,
+    /// §10.2 v2.13 阈值自适应：provider 真实上下文窗口 token（缺省 = 保留配置文件值）。
+    pub context_tokens: Option<u64>,
+    /// §10.2 v2.13：压缩阈值显式覆盖（优先于 max(24k, ×40%) 公式；缺省 = 保留配置文件值）。
+    pub compaction_threshold: Option<u64>,
 }
 
 impl ProviderOverride {
@@ -114,6 +118,21 @@ impl ProviderOverride {
                 *slot = Some(p);
             }
         }
+        // v2.13 §10.2 阈值自适应两字段：正整数；字段缺席 = 保留配置文件值
+        for (key, slot) in [
+            ("context_tokens", &mut self.context_tokens),
+            ("compaction_threshold", &mut self.compaction_threshold),
+        ] {
+            if let Some(n) = v.get(key) {
+                let n = n
+                    .as_u64()
+                    .ok_or(format!("models.providers.{key} 须为正整数"))?;
+                if n == 0 {
+                    return Err(format!("models.providers.{key} 须为正整数"));
+                }
+                *slot = Some(n);
+            }
+        }
         if let Some(e) = v.get("api_key_env") {
             let e = e
                 .as_str()
@@ -161,6 +180,13 @@ impl ProviderOverride {
         }
         if let Some(p) = &self.price_cached_per_mtok {
             o.insert("price_cached_per_mtok".into(), serde_json::json!(p));
+        }
+        // v2.13 §10.2 阈值自适应两字段（同上持久化 + 回显）
+        if let Some(n) = &self.context_tokens {
+            o.insert("context_tokens".into(), serde_json::json!(n));
+        }
+        if let Some(n) = &self.compaction_threshold {
+            o.insert("compaction_threshold".into(), serde_json::json!(n));
         }
         serde_json::Value::Object(o)
     }
@@ -575,6 +601,13 @@ impl SettingsOverrides {
             if let Some(p) = ov.price_cached_per_mtok {
                 entry.price_cached_per_mtok = Some(p);
             }
+            // v2.13 §10.2 阈值自适应两字段（缺席 = 保留配置文件值）
+            if let Some(n) = ov.context_tokens {
+                entry.context_tokens = Some(n);
+            }
+            if let Some(n) = ov.compaction_threshold {
+                entry.compaction_threshold = Some(n);
+            }
         }
     }
 
@@ -808,6 +841,51 @@ mod models_settings_tests {
         assert_eq!(entry.price_in_per_mtok, Some(0.9));
         assert_eq!(entry.price_out_per_mtok, Some(2.2), "缺席字段保留原值");
         assert_eq!(entry.price_cached_per_mtok, Some(0.11), "缺席字段保留原值");
+    }
+
+    #[test]
+    fn provider_override_context_fields_v213() {
+        // v2.13 §10.2 阈值自适应：context_tokens / compaction_threshold 的
+        // 校验（正整数）、回显、合并（缺席保留）与拒收（0 / 负数 / 非整数）。
+        let mut ov = SettingsOverrides::default();
+        ov.merge_json(&serde_json::json!({
+            "models": { "providers": { "glm": {
+                "context_tokens": 128_000,
+                "compaction_threshold": 51_200
+            } } }
+        }))
+        .unwrap();
+        let echo = ov.to_json()["models"]["providers"]["glm"].clone();
+        assert_eq!(echo["context_tokens"].as_u64(), Some(128_000));
+        assert_eq!(echo["compaction_threshold"].as_u64(), Some(51_200));
+
+        let mut models = tenon_config::ModelsConfig::default();
+        ov.apply_models_to(&mut models);
+        let entry = models.providers.get("glm").unwrap();
+        assert_eq!(entry.context_tokens, Some(128_000));
+        assert_eq!(entry.compaction_threshold, Some(51_200));
+
+        // 阈值公式经合并视图可算（128k → 51.2k；显式覆盖优先）
+        assert_eq!(
+            tenon_core::context::compaction_threshold(
+                entry.context_tokens,
+                entry.compaction_threshold
+            ),
+            51_200
+        );
+
+        // 拒收：0 / 负数 / 非整数（浮点）
+        for bad in [
+            serde_json::json!(0),
+            serde_json::json!(-5),
+            serde_json::json!(5.5),
+        ] {
+            let mut ovb = SettingsOverrides::default();
+            let res = ovb.merge_json(&serde_json::json!({
+                "models": { "providers": { "glm": { "context_tokens": bad } } }
+            }));
+            assert!(res.is_err(), "应拒收 {bad}");
+        }
     }
 
     #[test]

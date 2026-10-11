@@ -246,6 +246,12 @@ pub struct ProviderConfig {
     pub price_out_per_mtok: Option<f64>,
     /// 美元 / 百万缓存命中输入 token（v1.196 §11；缺省 = 缓存部分按输入价计）
     pub price_cached_per_mtok: Option<f64>,
+    /// provider 真实上下文窗口 token（§10.2 v2.13 阈值自适应输入；
+    /// 缺省 = 未知窗口，压缩阈值维持 24k 基线）。
+    pub context_tokens: Option<u64>,
+    /// 历史压缩触发阈值显式覆盖（§10.2 v2.13；优先于 max(24k, ×40%) 公式，
+    /// 防呆下限 1k）。
+    pub compaction_threshold: Option<u64>,
 }
 
 /// Laya 本地决策模型（§9.8）。

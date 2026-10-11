@@ -531,5 +531,8 @@
   "palette.activity": "Actividad global",
   "activity.title": "Actividad global",
   "activity.empty": "Aún no hay tareas",
-  "activity.running_count": "{count} en ejecución"
+  "activity.running_count": "{count} en ejecución",
+  "settings.models.context_tokens": "Tokens de contexto",
+  "settings.models.compaction_threshold": "Umbral de compactación",
+  "settings.models.context_invalid": "Los tokens de contexto / umbral deben ser enteros positivos"
 }

@@ -531,5 +531,8 @@
   "palette.activity": "全局活动",
   "activity.title": "全局活动",
   "activity.empty": "暂无任务",
-  "activity.running_count": "{count} 个运行中"
+  "activity.running_count": "{count} 个运行中",
+  "settings.models.context_tokens": "上下文窗口",
+  "settings.models.compaction_threshold": "压缩阈值",
+  "settings.models.context_invalid": "上下文窗口 / 压缩阈值须为正整数"
 }

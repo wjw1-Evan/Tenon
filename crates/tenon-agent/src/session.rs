@@ -54,6 +54,9 @@ pub struct AgentConfig {
     pub command_timeout_s: u64,
     /// 每任务最大模型回合数（防失控；收敛条件之一）。
     pub max_tool_rounds: u32,
+    /// 历史压缩触发阈值（§10.2 v2.13 自适应：daemon 按合并后 provider 配置
+    /// `max(24k, context_tokens × 40%)` 或显式覆盖注入；缺省 24k = v1 行为）。
+    pub compaction_input_tokens: u64,
     /// Laya 本地决策模型（§9.8；None = 未启用，各集成点回退现状）。
     pub laya: Option<Arc<tenon_laya::LayaRuntime>>,
     /// daemon 共享 LSP 宿主（§8.5 / §9.2：编辑器与代理同实例）。
@@ -130,6 +133,7 @@ impl AgentConfig {
             fix_rounds: 3,
             command_timeout_s: 120,
             max_tool_rounds: 24,
+            compaction_input_tokens: tenon_core::context::MIN_COMPACTION_INPUT_TOKENS,
             laya: None,
             lsp: None,
             dirty: None,
@@ -578,9 +582,8 @@ fn decider_result_summary(value: &tenon_laya::DecideValue) -> serde_json::Value 
     }
 }
 
-/// 历史压缩触发阈值（§10.2 v1.105）：任务内请求输入 token 的估算值或上一回合
-/// provider 权威 usage 超过阈值即触发压缩（真实计数由 usage 回填，估算为兜底信号）。
-const COMPACTION_INPUT_TOKENS: u64 = 24_000;
+/// 历史压缩阈值语义见 §10.2（v2.13 自适应：AgentConfig.compaction_input_tokens，
+/// 公式与基线常量在 tenon-core::context）。
 /// 压缩时保留原文的最近工具输出条数；更早的替换为存根。
 const KEEP_RECENT_TOOL_RESULTS: usize = 4;
 
@@ -1622,8 +1625,8 @@ impl AgentSession {
             let est_tokens = estimate_messages_tokens(&messages);
             let manual_compact = self.force_compact.swap(false, Ordering::SeqCst);
             if manual_compact
-                || est_tokens > COMPACTION_INPUT_TOKENS
-                || last_input_tokens > COMPACTION_INPUT_TOKENS
+                || est_tokens > self.config.compaction_input_tokens
+                || last_input_tokens > self.config.compaction_input_tokens
             {
                 if let Some((compacted, elided)) = elide_stale_tool_outputs(&messages) {
                     if tool_call_pairs_intact(&compacted) {

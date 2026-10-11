@@ -531,5 +531,8 @@
   "palette.activity": "全域活動",
   "activity.title": "全域活動",
   "activity.empty": "暫無任務",
-  "activity.running_count": "{count} 個執行中"
+  "activity.running_count": "{count} 個執行中",
+  "settings.models.context_tokens": "上下文視窗",
+  "settings.models.compaction_threshold": "壓縮閾值",
+  "settings.models.context_invalid": "上下文視窗 / 壓縮閾值須為正整數"
 }

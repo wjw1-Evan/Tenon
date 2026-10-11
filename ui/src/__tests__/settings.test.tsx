@@ -170,6 +170,57 @@ describe("SettingsDialog", () => {
     expect(JSON.stringify(payload)).not.toContain('"api_key"');
   });
 
+  it("v2.13 模型分区：上下文窗口/压缩阈值回显、进载荷、非法值保存前报错", async () => {
+    const put = vi.fn().mockResolvedValue(settings);
+    const withModels: SettingsData = {
+      ...settings,
+      models: {
+        default: "glm",
+        providers: {
+          glm: {
+            kind: "openai",
+            base_url: "https://example.com",
+            model: "glm-4.7",
+            context_tokens: 128_000,
+            overridden: false,
+          },
+        },
+      },
+    };
+    render(
+      <SettingsDialog
+        api={makeApi(put)}
+        t={t}
+        settings={withModels}
+        saveMode="auto"
+        onSaveModeChange={() => {}}
+        onClose={() => {}}
+        onSaved={() => {}}
+      />
+    );
+    openSection("models");
+    // 回显：context_tokens 回填；compaction_threshold 未配置为空
+    const ctx = screen.getByTestId("provider-context-tokens-glm") as HTMLInputElement;
+    expect(ctx.value).toBe("128000");
+    const threshold = screen.getByTestId("provider-compaction-threshold-glm") as HTMLInputElement;
+    expect(threshold.value).toBe("");
+    // 填入阈值 → 保存 → 载荷携带两字段（128k → 显式 51200 覆盖档）
+    fireEvent.change(threshold, { target: { value: "51200" } });
+    fireEvent.click(screen.getByTestId("settings-save"));
+    await waitFor(() => expect(put).toHaveBeenCalled());
+    const payload = put.mock.calls[0][0];
+    expect(payload.models.providers.glm.context_tokens).toBe(128_000);
+    expect(payload.models.providers.glm.compaction_threshold).toBe(51200);
+
+    // 非法（非正整数）保存前报错不发请求
+    const callsBefore = put.mock.calls.length;
+    fireEvent.change(ctx, { target: { value: "0" } });
+    fireEvent.click(screen.getByTestId("settings-save"));
+    const alert = await waitFor(() => screen.getByRole("alert"));
+    expect(alert.textContent).toContain("settings.models.context_invalid");
+    expect(put.mock.calls.length).toBe(callsBefore);
+  });
+
   it("模型分区：备用链与生成参数回填并进保存载荷（v1.174 §11）", async () => {
     const put = vi.fn().mockResolvedValue(settings);
     const withModels: SettingsData = {

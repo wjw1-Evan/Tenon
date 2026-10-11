@@ -506,6 +506,8 @@ mod tests {
                 price_in_per_mtok: None,
                 price_out_per_mtok: None,
                 price_cached_per_mtok: None,
+                context_tokens: None,
+                compaction_threshold: None,
             },
         );
         let cfg = tenon_config::ModelsConfig {

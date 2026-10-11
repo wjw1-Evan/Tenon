@@ -531,5 +531,8 @@
   "palette.activity": "النشاط العام",
   "activity.title": "النشاط العام",
   "activity.empty": "لا مهام بعد",
-  "activity.running_count": "{count} قيد التشغيل"
+  "activity.running_count": "{count} قيد التشغيل",
+  "settings.models.context_tokens": "رموز السياق",
+  "settings.models.compaction_threshold": "عتبة الضغط",
+  "settings.models.context_invalid": "يجب أن تكون رموز السياق / عتبة الضغط أعدادًا صحيحة موجبة"
 }

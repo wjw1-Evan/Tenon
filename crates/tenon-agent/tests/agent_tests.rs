@@ -93,6 +93,67 @@ async fn setup_with_config(
 }
 
 #[tokio::test]
+async fn compaction_threshold_configurable_via_agent_config() {
+    // v2.13 §10.2 阈值自适应：AgentConfig.compaction_input_tokens 注入生效——
+    // 阈值收紧到 200 token 时（历史含 >KEEP_RECENT 个可省略工具结果）触发自动
+    // 压缩事件；默认 24k 基线下同脚本不触发（对照断言）。
+    let script = || {
+        let mut s = vec![
+            ScriptedReply::Tool {
+                name: "read_file".into(),
+                args: serde_json::json!({"path": "big.txt"}),
+            },
+            ScriptedReply::Tool {
+                name: "read_file".into(),
+                args: serde_json::json!({"path": "big.txt"}),
+            },
+            ScriptedReply::Tool {
+                name: "read_file".into(),
+                args: serde_json::json!({"path": "big.txt"}),
+            },
+            ScriptedReply::Tool {
+                name: "read_file".into(),
+                args: serde_json::json!({"path": "big.txt"}),
+            },
+            ScriptedReply::Tool {
+                name: "read_file".into(),
+                args: serde_json::json!({"path": "big.txt"}),
+            },
+        ];
+        s.push(ScriptedReply::Text("完成".into()));
+        s
+    };
+    let (dir, session, store, _p) = setup_with_config(script(), |cfg| {
+        cfg.compaction_input_tokens = 200;
+    })
+    .await;
+    std::fs::write(dir.path().join("big.txt"), "x".repeat(3_000)).unwrap();
+    let outcome = session.run_task("读文件").await;
+    assert!(matches!(outcome, TaskOutcome::Done(_)));
+    let mut st = store.lock().await;
+    let events = st.events(&session.session_id).unwrap();
+    let auto_compacted = events.iter().any(|e| {
+        e.kind == EventKind::Compaction && e.payload.get("manual") != Some(&serde_json::json!(true))
+    });
+    assert!(auto_compacted, "收紧阈值应触发自动压缩");
+
+    // 对照：默认 24k 基线，同脚本输入远低于阈值不压缩
+    let (dir2, session2, store2, _p2) = setup(script()).await;
+    std::fs::write(dir2.path().join("big.txt"), "x".repeat(3_000)).unwrap();
+    let outcome2 = session2.run_task("读文件").await;
+    assert!(matches!(outcome2, TaskOutcome::Done(_)));
+    let mut st2 = store2.lock().await;
+    let events2 = st2.events(&session2.session_id).unwrap();
+    assert!(
+        !events2
+            .iter()
+            .any(|e| e.kind == EventKind::Compaction
+                && e.payload.get("manual") != Some(&true.into())),
+        "默认 24k 基线不应自动压缩"
+    );
+}
+
+#[tokio::test]
 async fn answer_only_task_completes_without_changes() {
     let (_d, session, store, _p) =
         setup(vec![ScriptedReply::Text("这是纯回答，无改动".into())]).await;

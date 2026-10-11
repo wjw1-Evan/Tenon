@@ -218,9 +218,12 @@ pub(crate) async fn create_agent_session(
     agent_cfg.team_denied_tools = team_policy.denied_tools;
     // §11 v1.93：按 provider 配置单价构建价格表（设置覆盖优先于 config），
     // 会话每回合计价入 model_usage.cost_usd 并作为熔断预算输入（§9.3）。
+    // v2.13 起本块改读 effective_models 合并视图——顺带修复 v1.199 缺口：
+    // 此前读 raw config，settings 覆盖的计价字段未进新会话价格表。
     {
         let provider_name = provider.name().to_string();
-        let cfg = state.config.models.providers.get(&provider_name);
+        let effective_cfg = state.effective_models();
+        let cfg = effective_cfg.providers.get(&provider_name);
         let price_in = cfg.and_then(|c| c.price_in_per_mtok);
         let price_out = cfg.and_then(|c| c.price_out_per_mtok);
         let price_cached = cfg.and_then(|c| c.price_cached_per_mtok);
@@ -232,6 +235,12 @@ pub(crate) async fn create_agent_session(
                 price_cached,
             );
         }
+        // §10.2 v2.13 阈值自适应：合并后（settings 覆盖已并入 config）按
+        // max(24k, context_tokens × 40%) 或显式覆盖计算注入——新会话生效。
+        agent_cfg.compaction_input_tokens = tenon_core::context::compaction_threshold(
+            cfg.and_then(|c| c.context_tokens),
+            cfg.and_then(|c| c.compaction_threshold),
+        );
     }
     // §9.8 v1.92 接线：enabled 时把 Laya 运行时注入会话配置（#1 意图预判 /
     // #2 命令风险补盲区随之生效；未下载 / 未加载由运行时内部回退现状）。

@@ -531,5 +531,8 @@
   "palette.activity": "Глобальная активность",
   "activity.title": "Глобальная активность",
   "activity.empty": "Задач пока нет",
-  "activity.running_count": "{count} в работе"
+  "activity.running_count": "{count} в работе",
+  "settings.models.context_tokens": "Токены контекста",
+  "settings.models.compaction_threshold": "Порог сжатия",
+  "settings.models.context_invalid": "Токены контекста / порог сжатия должны быть положительными целыми"
 }

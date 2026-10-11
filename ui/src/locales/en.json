@@ -531,5 +531,8 @@
   "palette.activity": "Global activity",
   "activity.title": "Global activity",
   "activity.empty": "No tasks yet",
-  "activity.running_count": "{count} running"
+  "activity.running_count": "{count} running",
+  "settings.models.context_tokens": "Context tokens",
+  "settings.models.compaction_threshold": "Compaction threshold",
+  "settings.models.context_invalid": "Context tokens / compaction threshold must be positive integers"
 }

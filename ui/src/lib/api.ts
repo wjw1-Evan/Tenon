@@ -186,6 +186,9 @@ export interface ProviderSettings {
   price_in_per_mtok?: number;
   price_out_per_mtok?: number;
   price_cached_per_mtok?: number;
+  /** v2.13 §10.2 阈值自适应：上下文窗口与压缩阈值显式覆盖（缺省 = 保留配置值）。 */
+  context_tokens?: number;
+  compaction_threshold?: number;
   /** 该 provider 在设置覆盖表中（可从设置删除；纯配置文件条目只能编辑）。 */
   overridden?: boolean;
   [k: string]: unknown;

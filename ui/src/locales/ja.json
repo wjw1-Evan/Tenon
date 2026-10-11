@@ -531,5 +531,8 @@
   "palette.activity": "グローバルアクティビティ",
   "activity.title": "グローバルアクティビティ",
   "activity.empty": "タスクはまだありません",
-  "activity.running_count": "{count} 件実行中"
+  "activity.running_count": "{count} 件実行中",
+  "settings.models.context_tokens": "コンテキストトークン",
+  "settings.models.compaction_threshold": "圧縮しきい値",
+  "settings.models.context_invalid": "コンテキストトークン / 圧縮しきい値は正の整数である必要があります"
 }

@@ -531,5 +531,8 @@
   "palette.activity": "전역 활동",
   "activity.title": "전역 활동",
   "activity.empty": "작업 없음",
-  "activity.running_count": "{count}개 실행 중"
+  "activity.running_count": "{count}개 실행 중",
+  "settings.models.context_tokens": "컨텍스트 토큰",
+  "settings.models.compaction_threshold": "압축 임계값",
+  "settings.models.context_invalid": "컨텍스트 토큰 / 압축 임계값은 양의 정수여야 합니다"
 }

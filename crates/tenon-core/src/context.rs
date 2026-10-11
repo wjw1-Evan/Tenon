@@ -198,6 +198,23 @@ impl TokenBudget {
     }
 }
 
+/// 历史压缩触发阈值下限（§10.2 v2.13 自适应基线；v1 固定值维持为未知窗口缺省）。
+pub const MIN_COMPACTION_INPUT_TOKENS: u64 = 24_000;
+
+/// 压缩阈值自适应（§10.2 v2.13 / design-v2.md §5②）：
+/// `max(24k, context_tokens × 40%)`——provider 上下文窗口已配置时按窗口放行
+/// （128k → 51.2k），未知窗口（None）维持 24k（v1 行为不变）；
+/// `compaction_threshold` 显式覆盖优先于公式（防呆下限 1k，尊重用户显式配置）。
+pub fn compaction_threshold(context_tokens: Option<u64>, override_tokens: Option<u64>) -> u64 {
+    if let Some(t) = override_tokens {
+        return t.max(1_000);
+    }
+    match context_tokens {
+        Some(window) => (window / 5 * 2).max(MIN_COMPACTION_INPUT_TOKENS),
+        None => MIN_COMPACTION_INPUT_TOKENS,
+    }
+}
+
 /// 粗略 token 估算（实现期用字符近似；真实计数由 provider usage 回填）。
 pub fn estimate_tokens(text: &str) -> u64 {
     // 经验近似：中英混合 ~3.5 字符/token；保守取 3。
@@ -245,6 +262,24 @@ mod tests {
         // 小窗口
         let small = TokenBudget::new(8_000, 8_000, 1_000);
         assert_eq!(small.for_step(), 0, "饱和下不为负");
+    }
+
+    /// v2.13 阈值自适应矩阵（design-v2.md §5②）。
+    #[test]
+    fn compaction_threshold_adaptive_matrix() {
+        use super::compaction_threshold;
+        // 未知窗口：v1 固定 24k 行为不变
+        assert_eq!(compaction_threshold(None, None), 24_000);
+        // 已配窗口：max(24k, ×40%)
+        assert_eq!(compaction_threshold(Some(128_000), None), 51_200);
+        assert_eq!(compaction_threshold(Some(200_000), None), 80_000);
+        // 小窗口：40% 低于基线时钳到 24k
+        assert_eq!(compaction_threshold(Some(8_192), None), 24_000);
+        assert_eq!(compaction_threshold(Some(0), None), 24_000);
+        // 显式覆盖优先于公式（含低于 24k 的收紧档），防呆下限 1k
+        assert_eq!(compaction_threshold(Some(128_000), Some(30_000)), 30_000);
+        assert_eq!(compaction_threshold(None, Some(12_000)), 12_000);
+        assert_eq!(compaction_threshold(Some(128_000), Some(0)), 1_000);
     }
 
     #[test]
