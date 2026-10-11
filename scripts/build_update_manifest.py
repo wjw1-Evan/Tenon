@@ -69,10 +69,14 @@ def main() -> int:
         if not signature_text:
             print(f"{signature.name}: 签名为空", file=sys.stderr)
             return 1
+        # GitHub Release 资产上传会把文件名中的空格规范为点（v0.2.0 发布实测：
+        # 「Tenon Harness.dmg」→「Tenon.Harness.dmg」）——URL 必须用点号形态，
+        # quote(含空格) 的 %20 形态线上 404，自动更新链路断裂
+        remote_name = artifact.name.replace(" ", ".")
         platforms[platform] = {
             "signature": signature_text,
             "url": "https://github.com/wjw1-Evan/Tenon/releases/download/"
-            f"{tag}/{quote(artifact.name)}",
+            f"{tag}/{quote(remote_name)}",
         }
 
     manifest = {
