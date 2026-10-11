@@ -1,11 +1,24 @@
 //! 语言包语义端点集成测试（§8.5 / §8.3：共享 LSP 宿主）。
 //! 真实语言服务器（typescript-language-server / pyright）；未安装时跳过。
+//! v2.4：测试串行信号量——沙箱总线（design-v2.md §4.3）下 tsserver 冷启动
+//! 开销放大，并发冷启动撞测试内诊断等待窗（时序脆弱非正确性问题）；
+//! 串行化后确定性通过（串行全量 ~4.5s）。
 
 use std::path::Path;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use tenon_lsp::manager::command_on_path;
 use tenon_lsp::manager::{LspManager, LspManagerError};
+
+async fn lsp_serial() -> tokio::sync::OwnedMutexGuard<()> {
+    static LSP_SERIAL: OnceLock<Arc<tokio::sync::Mutex<()>>> = OnceLock::new();
+    LSP_SERIAL
+        .get_or_init(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
+        .lock_owned()
+        .await
+}
 
 fn skip_if_missing(binary: &str) -> bool {
     if !command_on_path(binary) {
@@ -29,6 +42,7 @@ async fn semantic(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn typescript_pack_hover_definition_references_completion() {
+    let _serial = lsp_serial().await;
     if skip_if_missing("typescript-language-server") {
         return;
     }
@@ -108,6 +122,7 @@ async fn typescript_pack_hover_definition_references_completion() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn typescript_pack_diagnostics_report_type_errors() {
+    let _serial = lsp_serial().await;
     if skip_if_missing("typescript-language-server") {
         return;
     }
@@ -144,6 +159,7 @@ async fn typescript_pack_diagnostics_report_type_errors() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn python_pack_hover_and_diagnostics() {
+    let _serial = lsp_serial().await;
     if skip_if_missing("pyright-langserver") {
         return;
     }
@@ -208,6 +224,7 @@ async fn missing_server_returns_unavailable() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn typescript_codeaction_returns_quickfix_for_errors() {
+    let _serial = lsp_serial().await;
     if skip_if_missing("typescript-language-server") {
         return;
     }
@@ -231,6 +248,7 @@ async fn typescript_codeaction_returns_quickfix_for_errors() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn typescript_rename_and_workspace_symbol() {
+    let _serial = lsp_serial().await;
     if skip_if_missing("typescript-language-server") {
         return;
     }
@@ -272,6 +290,7 @@ async fn typescript_rename_and_workspace_symbol() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn typescript_signature_help() {
+    let _serial = lsp_serial().await;
     if skip_if_missing("typescript-language-server") {
         return;
     }

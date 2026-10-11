@@ -5,6 +5,7 @@
 //! 统一走本 crate 的超时执行器（§9.2：单命令默认 120s）。
 
 pub mod exec;
+pub mod external;
 pub mod guard;
 #[cfg(target_os = "linux")]
 pub mod linux;
@@ -13,6 +14,7 @@ pub mod proxy;
 pub mod seatbelt;
 
 pub use exec::{exec_argv, exec_command, ExecOutcome, SandboxSpec};
+pub use external::{spawn_external, ExternalNetwork, ExternalSpec, SpawnedExternal};
 pub use guard::WriteGuard;
 pub use network::NetworkState;
 pub use proxy::{registry_proxy, RegistryProxy};

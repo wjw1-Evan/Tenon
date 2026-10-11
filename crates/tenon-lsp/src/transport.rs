@@ -2,7 +2,7 @@
 //! 进程 stdio（真实语言服务器）与通道（测试用假服务器）两种实现。
 
 use std::io::{self, BufReader};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout};
 use std::sync::{Arc, Mutex};
 
 /// 帧读端。
@@ -34,24 +34,32 @@ pub struct ProcessReader {
 pub struct ProcessWriter {
     stdin: ChildStdin,
     child: Arc<Mutex<Child>>,
+    /// v2.4 沙箱总线（design-v2.md §4.3）：Seatbelt profile 保活句柄——
+    /// sandbox-exec 在 exec 时读取，提前删除丢沙箱；随写端存活持有。
+    #[allow(dead_code)]
+    keepalive: tenon_sandbox::external::SpawnKeepalive,
 }
 
 impl ProcessConnection {
-    /// 启动语言服务器进程。
+    /// 启动语言服务器进程（v2.4 沙箱总线默认路径：文件系统隔离——写限
+    /// 项目/worktree + 临时 + 平台缓存目录，读全开；网络首期开放——
+    /// cargo metadata 等工具链联网，逐语言包收紧另行验证，design-v2 §4.4）。
     pub fn spawn(program: &str, args: &[&str], cwd: &std::path::Path) -> io::Result<Self> {
-        let mut child = Command::new(program)
-            .args(args)
-            .current_dir(cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()?;
+        let spec =
+            tenon_sandbox::ExternalSpec::for_workspace(cwd, tenon_sandbox::ExternalNetwork::Open);
+        let spawned = tenon_sandbox::spawn_external(program, args, cwd, &spec, &[])?;
+        let mut child = spawned.child;
+        let keepalive = spawned.keepalive;
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout = BufReader::new(child.stdout.take().expect("piped stdout"));
         let child = Arc::new(Mutex::new(child));
         Ok(Self {
             reader: ProcessReader { stdout },
-            writer: ProcessWriter { stdin, child },
+            writer: ProcessWriter {
+                stdin,
+                child,
+                keepalive,
+            },
         })
     }
 }

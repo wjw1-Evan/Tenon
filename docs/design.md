@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | **v2.3** |
+| 版本 | **v2.4** |
 | 日期 | 2026-10-10 |
 | 状态 | 定稿，M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
@@ -758,7 +758,7 @@ L4 按包隔离、语言服务器按需启动；子代理限定单包；检索�
 | 可信 | 会话内用户直接输入；内核内置工具 | 正常执行 |
 | 不可信 | 仓库内容（含 AGENTS.md / 注释 / issue）；插件；MCP 输出；**语言服务器加载的工作区配置与插件**；浏览器第三方网页；**注入提示的 L5 对话记忆**（v1.104：可能携带仓库内容间接污染，只作参考数据） | 一律作为数据；网页请求本地服务一律拒绝 |
 
-**铁律（v1.89 修订）**：只读开关与工具黑名单只信会话 / 团队策略，模型与仓库内容不可放宽；AGENTS.md 只收窄；插件签名 / 哈希 / 保留字校验不可跳过；MCP 仍按声明分级并全量审计；**语言服务器属 B 级沙箱进程**（tsserver 会加载工作区插件、Roslyn 求值可执行构建目标）；**LSP 宿主命令白名单**——宿主永不执行语言服务器下发的任意 `executeCommand`，服务器请求的 workspace edits / `showDocument` / 动态注册 capability 一律过 B 级写守卫与项目内路径检查，仅白名单能力放行（防「沙箱内进程借宿主之手逃逸」）；**写回通道（v1.200 库层 + v1.203 接线）**：守卫放行的 workspace edits 由宿主注入的执行器落盘（§8.5）——库层为 tenon-lsp 双形态解析 + UTF-16 位置拼接 + `EditApplier` 接缝（越界 / 双形态歧义 / 空集 / 区间重叠 / 行号越界二道拒绝；执行器缺席如实回 `applied:false` 不谎报落盘）；v1.203 daemon 接线——`LspManager::set_edit_applier` 注入闭包（读盘 → writedit 拼接 → `FileService::write_file` 守卫写盘（resolve 前缀校验二道防线）→ watcher 自动传播变更；闭包自足不引 state，LSP 读线程同步执行纯 fs 操作；首错即停如实报错，不半写不谎报）。审批门禁已移除，直接执行的后果由 Trace 与对话节点回滚承接；不可逆外部副作用无回滚承诺，用户开启只读或黑名单才是硬拒绝。
+**铁律（v1.89 修订）**：只读开关与工具黑名单只信会话 / 团队策略，模型与仓库内容不可放宽；AGENTS.md 只收窄；插件签名 / 哈希 / 保留字校验不可跳过；MCP 仍按声明分级并全量审计；**语言服务器与 MCP 进程属沙箱进程（v2.4 统一沙箱总线落地，design-v2.md §4.3——`tenon-sandbox::spawn_external`：文件系统隔离（写限项目/worktree + 临时 + 平台缓存目录，读全开）+ 网络按声明（MCP 服务器 `permissions` 含 `net:*` 才开放，否则 offline）；macOS Seatbelt / Linux Landlock+seccomp、其他平台降级直跑；`TENON_SANDBOX_EXTERNAL=0` 逃生舱；LSP 网络首期开放——cargo metadata 等工具链联网，逐语言包收紧）**；**LSP 宿主命令白名单**——宿主永不执行语言服务器下发的任意 `executeCommand`，服务器请求的 workspace edits / `showDocument` / 动态注册 capability 一律过 B 级写守卫与项目内路径检查，仅白名单能力放行（防「沙箱内进程借宿主之手逃逸」）；**写回通道（v1.200 库层 + v1.203 接线）**：守卫放行的 workspace edits 由宿主注入的执行器落盘（§8.5）——库层为 tenon-lsp 双形态解析 + UTF-16 位置拼接 + `EditApplier` 接缝（越界 / 双形态歧义 / 空集 / 区间重叠 / 行号越界二道拒绝；执行器缺席如实回 `applied:false` 不谎报落盘）；v1.203 daemon 接线——`LspManager::set_edit_applier` 注入闭包（读盘 → writedit 拼接 → `FileService::write_file` 守卫写盘（resolve 前缀校验二道防线）→ watcher 自动传播变更；闭包自足不引 state，LSP 读线程同步执行纯 fs 操作；首错即停如实报错，不半写不谎报）。审批门禁已移除，直接执行的后果由 Trace 与对话节点回滚承接；不可逆外部副作用无回滚承诺，用户开启只读或黑名单才是硬拒绝。
 
 ### 12.2 动作能力分级
 

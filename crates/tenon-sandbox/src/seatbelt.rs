@@ -78,6 +78,40 @@ pub fn seatbelt_profile(
     p
 }
 
+/// 外部进程 profile（design-v2.md §4.3 沙箱总线；MCP / 语言服务器等长驻
+/// stdio 进程）：系统只读、读全开（工具链与动态库需要）、写限显式根 + 临时
+/// 目录、网络二态（offline 全拒 / open 放行）。与 `seatbelt_profile`（命令
+/// 执行三态）分离——外部进程的写根由声明式权限决定而非固定项目根。
+pub fn external_profile(write_roots: &[std::path::PathBuf], network_open: bool) -> String {
+    let mut p = String::new();
+    p.push_str("(version 1)\n");
+    p.push_str("(deny default)\n");
+    p.push_str("(allow process-exec)\n");
+    p.push_str("(allow process-fork)\n");
+    p.push_str("(allow file-read*)\n");
+    p.push_str("(allow system-socket (socket-domain AF_UNIX))\n");
+    p.push_str("(allow mach-lookup)\n");
+    p.push_str("(allow sysctl-read)\n");
+    // macOS /tmp、/var 是 /private 前缀符号链接——Seatbelt 按规范化路径判定，
+    // subpath 须写规范化形式（seatbelt_profile 同规，漏掉即根内写全拒）
+    for path in write_roots {
+        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+        p.push_str(&format!(
+            "(allow file-write* (subpath \"{}\"))\n",
+            sb_escape(&canonical.to_string_lossy())
+        ));
+    }
+    p.push_str("(allow file-write* (subpath \"/private/tmp\"))\n");
+    p.push_str("(allow file-write* (subpath \"/tmp\"))\n");
+    p.push_str("(allow file-write* (literal \"/dev/null\"))\n");
+    if network_open {
+        p.push_str("(allow network*)\n");
+    } else {
+        p.push_str("(deny network*)\n");
+    }
+    p
+}
+
 /// Seatbelt profile 字符串字面量转义：`"` 终止字面量、`\` 改写转义序列，
 /// 均会产出无法解析的 profile（沙箱 fail-closed 拒绝一切执行）。
 fn sb_escape(s: &str) -> String {

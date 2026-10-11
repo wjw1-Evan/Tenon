@@ -15,7 +15,8 @@ fn which_node() -> String {
 #[test]
 fn full_client_flow_with_fake_server() {
     let server = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake_server.mjs");
-    let conn = McpConnection::spawn(&which_node(), &[server], Path::new(".")).expect("spawn");
+    let conn =
+        McpConnection::spawn(&which_node(), &[server], Path::new("."), false).expect("spawn");
 
     let init = conn.initialize("tenon-test").expect("initialize");
     assert!(init.get("serverInfo").is_some(), "{init}");
@@ -68,6 +69,7 @@ rl.on('line', (line) => {
         &which_node(),
         &[script.to_string_lossy().as_ref()],
         dir.path(),
+        false,
     )
     .unwrap();
     conn.initialize("tenon-test").unwrap();
@@ -157,8 +159,13 @@ rl.on('line', (line) => {
     let script = dir.path().join("fake_meta.mjs");
     std::fs::write(&script, server_js).unwrap();
     let conn = std::sync::Arc::new(
-        McpConnection::spawn(&which_node(), &[script.to_str().unwrap()], Path::new("."))
-            .expect("spawn"),
+        McpConnection::spawn(
+            &which_node(),
+            &[script.to_str().unwrap()],
+            Path::new("."),
+            false,
+        )
+        .expect("spawn"),
     );
     conn.initialize("tenon-test").expect("initialize");
 

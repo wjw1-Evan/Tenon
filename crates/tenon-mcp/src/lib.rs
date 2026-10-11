@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -71,15 +71,26 @@ pub struct McpConnection {
     /// 共享写端（v1.187：读者线程回复服务器发起请求的 METHOD_NOT_FOUND 也走它）。
     stdin: Arc<Mutex<ChildStdin>>,
     child: Mutex<Child>,
+    /// v2.4 沙箱总线（design-v2.md §4.3）：Seatbelt profile 保活句柄——
+    /// sandbox-exec 在 exec 时读取，提前删除丢沙箱；随连接存活持有。
+    #[allow(dead_code)]
+    keepalive: tenon_sandbox::external::SpawnKeepalive,
     next_id: AtomicI64,
     /// id → 等待者的响应通道（读者线程路由；请求超时 / 连接断开时清理）。
     pending: Arc<Mutex<std::collections::HashMap<i64, std::sync::mpsc::SyncSender<Value>>>>,
 }
 
 impl McpConnection {
-    /// 启动 MCP 服务器子进程。
-    pub fn spawn(program: &str, args: &[&str], cwd: &Path) -> io::Result<McpConnection> {
-        Self::spawn_with_env(program, args, cwd, &[])
+    /// 启动 MCP 服务器子进程（v2.4 沙箱总线默认路径：文件系统隔离 + 网络
+    /// 按声明——`network_open` = permissions 含 `net:*`；offline 服务器的
+    /// 进程网络同样收紧）。
+    pub fn spawn(
+        program: &str,
+        args: &[&str],
+        cwd: &Path,
+        network_open: bool,
+    ) -> io::Result<McpConnection> {
+        Self::spawn_with_env(program, args, cwd, &[], network_open)
     }
 
     /// 带 env 注入的启动（§13.5 v1.145：值由调用方解析自 `env:VAR` 引用）。
@@ -88,20 +99,24 @@ impl McpConnection {
         args: &[&str],
         cwd: &Path,
         envs: &[(&str, &str)],
+        network_open: bool,
     ) -> io::Result<McpConnection> {
-        let mut cmd = Command::new(program);
-        cmd.args(args)
-            .current_dir(cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        for (k, v) in envs {
-            cmd.env(k, v);
-        }
-        Self::from_child(cmd.spawn()?)
+        let spec = tenon_sandbox::ExternalSpec::for_workspace(
+            cwd,
+            if network_open {
+                tenon_sandbox::ExternalNetwork::Open
+            } else {
+                tenon_sandbox::ExternalNetwork::Offline
+            },
+        );
+        let spawned = tenon_sandbox::spawn_external(program, args, cwd, &spec, envs)?;
+        Self::from_spawned(spawned)
     }
 
-    pub fn from_child(mut child: Child) -> io::Result<Self> {
+    /// 沙箱总线 spawn 产物接线（v2.4 design-v2.md §4.3）。
+    pub fn from_spawned(spawned: tenon_sandbox::SpawnedExternal) -> io::Result<Self> {
+        let mut child = spawned.child;
+        let keepalive = spawned.keepalive;
         let stdin = Arc::new(Mutex::new(child.stdin.take().expect("piped stdin")));
         let stdout = child.stdout.take().expect("piped stdout");
         let pending: Arc<
@@ -159,6 +174,7 @@ impl McpConnection {
         Ok(Self {
             stdin,
             child: Mutex::new(child),
+            keepalive,
             next_id: AtomicI64::new(1),
             pending,
         })
@@ -503,7 +519,9 @@ impl McpHost {
             .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect::<Vec<_>>();
-        let conn = McpConnection::spawn_with_env(&cfg.command, &args, &self.cwd, &env_refs)?;
+        let network_open = cfg.permissions.iter().any(|p| p == "net:*");
+        let conn =
+            McpConnection::spawn_with_env(&cfg.command, &args, &self.cwd, &env_refs, network_open)?;
         conn.initialize("tenon")?;
         Ok(conn)
     }

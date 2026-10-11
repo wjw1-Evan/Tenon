@@ -5254,6 +5254,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tenon-core",
+ "tenon-sandbox",
  "thiserror 2.0.21",
 ]
 
