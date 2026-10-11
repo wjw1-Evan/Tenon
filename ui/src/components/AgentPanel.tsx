@@ -80,6 +80,8 @@ interface Props {
   /** v2.8 审查摘要卡（design-v2.md §6）：事件流汇总 digest 上提 App 注入
    *  ReviewPane（计划 / 子任务 / 产物 / 证据）——与 onLatestDiff 同款管道。 */
   onReviewDigest?: (digest: ReviewDigest) => void;
+  /** v2.17 §4.6：会话档位快照上提（顶栏安全姿态徽标消费；切换器操作即时反映）。 */
+  onGateChange?: (gate: { exec_mode: string; approval: string }) => void;
   /** v1.160 回合改动摘要徽标：点击徽标注入该回合聚合 diff 并展开底部 Diff（App 持有面板状态）。 */
   onShowDiff?: (diff: string) => void;
   onDirtyConflict?: (c: DirtyConflictView | null) => void;
@@ -224,6 +226,7 @@ export function AgentPanel({
   onStateChange,
   onLatestDiff,
   onReviewDigest,
+  onGateChange,
   onDirtyConflict,
   onPatchLines,
   followMode,
@@ -524,6 +527,12 @@ export function AgentPanel({
                 if (path) patchLinesCb.current?.(path, aiLinesFromDiff(d));
               }
             }
+            // v2.17 §4.6：快照库不可用降级警示（「自动 = 必可回滚」不变式可感知面）
+            if (ev.type === "error" && ev.payload.snapshot_unavailable) {
+              toast.error(
+                `${t("security.snapshot_downgraded")}: ${String(ev.payload.snapshot_unavailable)}`
+              );
+            }
             if (
               ev.type === "diagnostics" &&
               (ev.payload as { dirty_conflict?: boolean }).dirty_conflict
@@ -544,7 +553,10 @@ export function AgentPanel({
         setQueue(s.queue ?? []);
         // v2.0 档位（design-v2.md §4.1）：待确认动作与档位快照随轮询刷新
         setPendingConfirm(s.pending_confirm ?? null);
-        if (s.gate) setGate(s.gate);
+        if (s.gate) {
+          setGate(s.gate);
+          onGateChange?.(s.gate);
+        }
         onStateChange?.(name);
       } catch {
         // 断线重试
@@ -1227,7 +1239,11 @@ export function AgentPanel({
                   value={gate.exec_mode}
                   onChange={(e) => {
                     const mode = e.target.value;
-                    setGate((g) => ({ ...g, exec_mode: mode }));
+                    setGate((g) => {
+                      const next = { ...g, exec_mode: mode };
+                      onGateChange?.(next);
+                      return next;
+                    });
                     void api
                       .controlGear(sessionId!, "set_exec_mode", mode)
                       .catch(() => {});
@@ -1245,7 +1261,11 @@ export function AgentPanel({
                   value={gate.approval}
                   onChange={(e) => {
                     const gear = e.target.value;
-                    setGate((g) => ({ ...g, approval: gear }));
+                    setGate((g) => {
+                      const next = { ...g, approval: gear };
+                      onGateChange?.(next);
+                      return next;
+                    });
                     void api.controlGear(sessionId!, "set_approval", gear).catch(() => {});
                   }}
                 >

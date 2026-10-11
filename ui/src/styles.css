@@ -3695,3 +3695,25 @@ button:disabled { opacity: 0.45; cursor: default; }
   background: var(--overlay, #1c212b);
   border-radius: 6px;
 }
+/* v2.17 顶栏安全姿态徽标（design-v2.md §4.6）：风险三色紧凑徽标 */
+.security-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border, #2a2f3a);
+  background: none;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.security-badge.tone-safe { color: #3fb950; border-color: #3fb95055; }
+.security-badge.tone-caution { color: #d9a514; border-color: #d9a51455; }
+.security-badge.tone-risky { color: #f85149; border-color: #f8514955; }
+.security-badge:hover { background: var(--accent-soft); }
+[data-theme="light"] .security-badge.tone-safe { color: #1a7f37; }
+[data-theme="light"] .security-badge.tone-caution { color: #9a6700; }
+[data-theme="light"] .security-badge.tone-risky { color: #cf222e; }

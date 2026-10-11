@@ -536,5 +536,9 @@
   "settings.models.compaction_threshold": "壓縮閾值",
   "settings.models.context_invalid": "上下文視窗 / 壓縮閾值須為正整數",
   "thread.compaction_summary": "早期歷史已摘要（{before} → {after} tok，語義保留）",
-  "thread.compaction_summary_manual": "歷史已摘要（{before} → {after} tok，語義保留）"
+  "thread.compaction_summary_manual": "歷史已摘要（{before} → {after} tok，語義保留）",
+  "topbar.security": "安全姿態",
+  "security.snapshot_downgraded": "快照庫不可用——自動檔已降級為互動檔",
+  "settings.security.exec": "預設執行邊界（新會話）",
+  "settings.security.approval": "預設確認策略（新會話）"
 }

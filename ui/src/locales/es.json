@@ -536,5 +536,9 @@
   "settings.models.compaction_threshold": "Umbral de compactación",
   "settings.models.context_invalid": "Los tokens de contexto / umbral deben ser enteros positivos",
   "thread.compaction_summary": "Historial inicial resumido ({before} → {after} tok, semántica preservada)",
-  "thread.compaction_summary_manual": "Historial resumido ({before} → {after} tok, semántica preservada)"
+  "thread.compaction_summary_manual": "Historial resumido ({before} → {after} tok, semántica preservada)",
+  "topbar.security": "Postura de seguridad",
+  "security.snapshot_downgraded": "Almacén de instantáneas no disponible — modo automático degradado a interactivo",
+  "settings.security.exec": "Modo de ejecución predeterminado (nuevas sesiones)",
+  "settings.security.approval": "Aprobación predeterminada (nuevas sesiones)"
 }

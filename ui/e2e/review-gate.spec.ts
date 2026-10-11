@@ -54,10 +54,22 @@ test("review pane auto-docks during a running task and collapses when done", asy
   await page.getByTestId("task-input").fill(task);
   await page.getByTestId("send").click();
 
+  // DEBUG v2.17：观察 GET /session 响应的 gate 载荷
   const pane = page.getByTestId("review-pane");
   await expect(pane).toBeVisible({ timeout: 30_000 });
   await expect(pane).toHaveAttribute("data-running", "1");
   await expect(pane).toContainText("e2e-review.txt", { timeout: 20_000 });
+
+  // v2.17 顶栏安全姿态徽标：运行中会话档快照常驻（默认 workspace-write 琥珀），
+  // 点击直达设置 Permissions 节（security 默认档两 select 在位）
+  const badge = page.getByTestId("security-badge");
+  await expect(badge).toBeVisible({ timeout: 15_000 });
+  await expect(badge).toHaveAttribute("data-exec-mode", "workspace_write");
+  await expect(badge).toHaveAttribute("data-approval", "on_irreversible");
+  await badge.click();
+  const settingsExec = page.getByTestId("settings-security-exec");
+  await expect(settingsExec).toBeVisible({ timeout: 10_000 });
+  await page.keyboard.press("Escape");
 
   // v2.11 宽度拖拽记忆：左缘把手左拖 60px → 审查面增宽（boundingBox 实测）
   const before = (await pane.boundingBox())!.width;

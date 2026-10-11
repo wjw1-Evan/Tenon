@@ -536,5 +536,9 @@
   "settings.models.compaction_threshold": "압축 임계값",
   "settings.models.context_invalid": "컨텍스트 토큰 / 압축 임계값은 양의 정수여야 합니다",
   "thread.compaction_summary": "초기 기록 요약됨({before} → {after} 토큰, 의미 보존)",
-  "thread.compaction_summary_manual": "기록 요약됨({before} → {after} 토큰, 의미 보존)"
+  "thread.compaction_summary_manual": "기록 요약됨({before} → {after} 토큰, 의미 보존)",
+  "topbar.security": "보안 태세",
+  "security.snapshot_downgraded": "스냅샷 저장소 사용 불가——자동 모드가 대화형으로 강등됨",
+  "settings.security.exec": "기본 실행 경계(새 세션)",
+  "settings.security.approval": "기본 확인 정책(새 세션)"
 }

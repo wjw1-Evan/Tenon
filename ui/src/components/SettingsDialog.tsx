@@ -94,11 +94,13 @@ interface Props {
   projects?: SkillsProjectOption[];
   onClose: () => void;
   onSaved: (s: SettingsData) => void;
+  /** v2.17 §4.6：初始分区（顶栏安全徽标点击直达 Permissions）。 */
+  initialSection?: SettingsSection;
   /** 免费模型引导重开入口（§7.1 v1.163）：Models 分区 CTA；缺省不渲染。 */
   onOpenOnboarding?: () => void;
 }
 
-export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, projects = [], onClose, onSaved, onOpenOnboarding }: Props) {
+export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, projects = [], onClose, onSaved, onOpenOnboarding, initialSection }: Props) {
   const [bufferMs, setBufferMs] = useState(2000);
   const [commandTimeout, setCommandTimeout] = useState(120);
   const [deniedTools, setDeniedTools] = useState("");
@@ -114,7 +116,14 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, p
   const [laya, setLaya] = useState<LayaStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [section, setSection] = useState<SettingsSection>("general");
+  const [section, setSection] = useState<SettingsSection>(initialSection ?? "general");
+  // v2.17 §4.6：新会话默认安全档（回显 + 保存进 PUT security.*）
+  const [defaultExecMode, setDefaultExecMode] = useState(
+    () => (settings?.security?.exec_mode as string | undefined) ?? "workspace_write"
+  );
+  const [defaultApproval, setDefaultApproval] = useState(
+    () => (settings?.security?.approval as string | undefined) ?? "on_irreversible"
+  );
   /** 技能停用名单（§13.4 v1.130）：Skills 分区即时 PUT，App 侧经 onSaved 回写。 */
   const [skillsDisabled, setSkillsDisabled] = useState<string[]>([]);
   /** 局域网访问状态（v1.157 §15 /lan/status）：地址 / 配对码 / 已配对设备。 */
@@ -309,6 +318,11 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, p
       const next = await api.putSettings({
         session: {
           first_edit_buffer_ms: bufferMs,
+        },
+        // v2.17 §4.6：新会话默认安全档（daemon 校验枚举，新会话生效）
+        security: {
+          exec_mode: defaultExecMode,
+          approval: defaultApproval,
         },
         exec: { command_timeout_s: commandTimeout },
         models: {
@@ -679,6 +693,31 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, p
             {section === "permissions" && (
               <div className="settings-section" data-testid="settings-policy-section">
                 <div className="settings-section-title">{t("settings.policy")}</div>
+                <div className="settings-grid">
+                  {/* v2.17 §4.6：新会话默认安全档（补 v2.1 设置面板欠账） */}
+                  <label htmlFor="set-security-exec">{t("settings.security.exec")}</label>
+                  <select
+                    id="set-security-exec"
+                    data-testid="settings-security-exec"
+                    value={defaultExecMode}
+                    onChange={(e) => setDefaultExecMode(e.target.value)}
+                  >
+                    <option value="read_only">{t("gates.exec_read_only")}</option>
+                    <option value="workspace_write">{t("gates.exec_workspace_write")}</option>
+                    <option value="full_access">{t("gates.exec_full_access")}</option>
+                  </select>
+                  <label htmlFor="set-security-approval">{t("settings.security.approval")}</label>
+                  <select
+                    id="set-security-approval"
+                    data-testid="settings-security-approval"
+                    value={defaultApproval}
+                    onChange={(e) => setDefaultApproval(e.target.value)}
+                  >
+                    <option value="never">{t("gates.approval_never")}</option>
+                    <option value="on_irreversible">{t("gates.approval_on_irreversible")}</option>
+                    <option value="always">{t("gates.approval_always")}</option>
+                  </select>
+                </div>
                 <div className="settings-grid">
                   <label htmlFor="set-denied-tools">{t("settings.policy.denied_tools")}</label>
                   <input

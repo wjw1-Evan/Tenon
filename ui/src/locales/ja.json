@@ -536,5 +536,9 @@
   "settings.models.compaction_threshold": "圧縮しきい値",
   "settings.models.context_invalid": "コンテキストトークン / 圧縮しきい値は正の整数である必要があります",
   "thread.compaction_summary": "初期の履歴を要約（{before} → {after} トークン、意味を保持）",
-  "thread.compaction_summary_manual": "履歴を要約（{before} → {after} トークン、意味を保持）"
+  "thread.compaction_summary_manual": "履歴を要約（{before} → {after} トークン、意味を保持）",
+  "topbar.security": "セキュリティ姿勢",
+  "security.snapshot_downgraded": "スナップショット庫が利用不可——自動モードを対話モードにダウングレード",
+  "settings.security.exec": "既定の実行境界（新セッション）",
+  "settings.security.approval": "既定の確認ポリシー（新セッション）"
 }

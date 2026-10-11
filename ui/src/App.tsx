@@ -70,6 +70,7 @@ import { UpdateReadyToast } from "./components/UpdateReadyToast";
 import { ToastHost } from "./components/ToastHost";
 import { ShortcutsDialog } from "./components/ShortcutsDialog";
 import { GlobalActivityDialog } from "./components/GlobalActivityDialog";
+import { SecurityBadge } from "./components/SecurityBadge";
 import { WsStatusDot, type WsStatus } from "./components/WsStatusDot";
 import { toast } from "./lib/toast";
 import { CommandPalette, type Command } from "./components/CommandPalette";
@@ -256,6 +257,10 @@ export default function App({
   // 全局设置（§7.2）：会话默认档等；设置面板开关
   const [settings, setSettings] = useState<SettingsData | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // v2.17 §4.6 顶栏安全姿态：active 会话档快照（AgentPanel onGateChange 上提；
+  // 无会话不渲染徽标）；settingsJumpSection 支撑徽标点击直达 Permissions 节。
+  const [topGate, setTopGate] = useState<{ exec_mode: string; approval: string } | null>(null);
+  const [settingsJumpSection, setSettingsJumpSection] = useState<"permissions" | null>(null);
   useEffect(() => {
     void api
       .getSettings()
@@ -1319,6 +1324,17 @@ export default function App({
       <header className="app-head" data-tauri-drag-region>
         <strong data-tauri-drag-region>{t("app.title")}</strong>
         <span className="spacer" data-tauri-drag-region />
+        {/* v2.17 §4.6 顶栏安全姿态：active 会话档常驻徽标（无会话不渲染） */}
+        {topGate && (
+          <SecurityBadge
+            t={t}
+            gate={topGate}
+            onClick={() => {
+              setSettingsJumpSection("permissions");
+              setSettingsOpen(true);
+            }}
+          />
+        )}
         <WsStatusDot status={wsStatus} t={t} onReconnect={reconnectWs} />
         <ThemePicker api={api} t={t} />
         <LanguagePicker value={localePref} t={t} />
@@ -1526,6 +1542,7 @@ export default function App({
             onStateChange={onStateChange}
             onLatestDiff={setLatestDiff}
             onReviewDigest={setReviewDigest}
+            onGateChange={setTopGate}
             onPatchLines={(path, lines) => {
               setAiLines((prev) => ({
                 ...prev,
@@ -1760,6 +1777,7 @@ export default function App({
       />
       {settingsOpen && (
         <SettingsDialog
+          initialSection={settingsJumpSection ?? undefined}
           api={api}
           t={t}
           settings={settings}
@@ -1769,7 +1787,10 @@ export default function App({
             id: p.id,
             label: p.display_name || p.path.split("/").filter(Boolean).pop() || p.path,
           }))}
-          onClose={() => setSettingsOpen(false)}
+          onClose={() => {
+            setSettingsOpen(false);
+            setSettingsJumpSection(null);
+          }}
           onSaved={setSettings}
           onOpenOnboarding={openOnboarding}
         />

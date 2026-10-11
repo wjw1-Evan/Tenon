@@ -536,5 +536,9 @@
   "settings.models.compaction_threshold": "Compaction threshold",
   "settings.models.context_invalid": "Context tokens / compaction threshold must be positive integers",
   "thread.compaction_summary": "Early history summarized ({before} → {after} tok, semantics preserved)",
-  "thread.compaction_summary_manual": "History summarized ({before} → {after} tok, semantics preserved)"
+  "thread.compaction_summary_manual": "History summarized ({before} → {after} tok, semantics preserved)",
+  "topbar.security": "Security posture",
+  "security.snapshot_downgraded": "Snapshot store unavailable — auto mode downgraded to interactive",
+  "settings.security.exec": "Default exec mode (new sessions)",
+  "settings.security.approval": "Default approval (new sessions)"
 }

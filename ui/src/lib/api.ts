@@ -223,6 +223,12 @@ export interface SettingsData {
     first_edit_buffer_ms?: number;
     [k: string]: unknown;
   };
+  /** v2.17 §4.6：新会话默认安全档（v2.6 起后端已回显，UI 编辑 v2.17 补）。 */
+  security?: {
+    exec_mode?: string;
+    approval?: string;
+    [k: string]: unknown;
+  };
   exec?: { command_timeout_s?: number; [k: string]: unknown };
   models?: {
     default?: string;
