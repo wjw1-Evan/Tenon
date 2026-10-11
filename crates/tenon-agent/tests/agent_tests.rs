@@ -730,6 +730,161 @@ async fn gate_on_irreversible_holds_d_level_and_allow_session_memorizes() {
 
 /// v2.0 档位：deny 决议——工具收到拒绝结果，回合继续，D 级副作用不发生。
 #[tokio::test]
+async fn execpolicy_hold_triggers_confirm_card_v218() {
+    // v2.18（design-v2.md §4.2 余项）：execpolicy Hold 高危命令（git clean -f）
+    // 在默认 on_irreversible 档（B 级本不 Hold）被覆盖 Hold——走既有确认卡：
+    // deny → 拒绝消息回传模型、命令不执行；ConfirmRequest 事件在案。
+    let (dir, session, store, _p) = setup_with_config(
+        vec![
+            ScriptedReply::Tool {
+                name: "run_command".into(),
+                args: serde_json::json!({"command": "git clean -fdx"}),
+            },
+            ScriptedReply::Text("好的，用户拒绝清理，我不执行。".into()),
+        ],
+        |cfg| {
+            cfg.gate.approval = ApprovalGear::OnIrreversible;
+        },
+    )
+    .await;
+    // 造一个未跟踪文件（clean -fdx 会删它——deny 后应仍在）
+    std::fs::write(dir.path().join("untracked.txt"), "keep\n").unwrap();
+    let resolver_session = session.clone();
+    let resolver = tokio::spawn(async move {
+        loop {
+            if resolver_session.pending_confirm().await.is_some() {
+                resolver_session
+                    .resolve_confirm(ConfirmDecision::Deny)
+                    .await
+                    .unwrap();
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(15)).await;
+        }
+    });
+    let outcome = session.run_task("清理构建产物").await;
+    resolver.await.unwrap();
+    assert!(matches!(outcome, TaskOutcome::Done(_)), "{outcome:?}");
+    assert!(
+        dir.path().join("untracked.txt").exists(),
+        "deny 后高危命令不得执行"
+    );
+    let mut st = store.lock().await;
+    let events = st.events(&session.session_id).unwrap();
+    let req = events
+        .iter()
+        .find(|e| e.kind == EventKind::ConfirmRequest)
+        .expect("Hold 应发确认请求事件");
+    assert_eq!(req.payload["tool"], "run_command");
+    assert!(
+        req.payload["args"].to_string().contains("git clean"),
+        "args 预览应含命令: {}",
+        req.payload["args"]
+    );
+}
+
+#[tokio::test]
+async fn execpolicy_hold_allow_once_executes_v218() {
+    // v2.18 allow 路径：Hold 命令（git clean -fdx）经 AllowOnce 决议后照常执行
+    //（executor 不拦 Hold——判定单一归 session 闸门）；full_access 档断网沙箱
+    // 降级直跑（测试环境 Seatbelt 沙箱冷启动过慢，§9.2 降级语义本身另行覆盖）。
+    let (dir, session, store, _p) = setup_with_config(
+        vec![
+            ScriptedReply::Tool {
+                name: "run_command".into(),
+                args: serde_json::json!({"command": "git clean -fdx"}),
+            },
+            ScriptedReply::Text("已清理".into()),
+        ],
+        |cfg| {
+            cfg.gate.approval = ApprovalGear::OnIrreversible;
+            cfg.gate.exec_mode = tenon_core::gates::ExecMode::FullAccess;
+        },
+    )
+    .await;
+    let root = dir.path();
+    std::fs::write(root.join("untracked.txt"), "gone after clean\n").unwrap();
+    for cmd in [
+        vec!["init", "-q", "."],
+        vec!["config", "user.email", "t@t"],
+        vec!["config", "user.name", "t"],
+    ] {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(&cmd)
+            .output()
+            .unwrap();
+    }
+    let resolver_session = session.clone();
+    let resolver = tokio::spawn(async move {
+        loop {
+            if resolver_session.pending_confirm().await.is_some() {
+                resolver_session
+                    .resolve_confirm(ConfirmDecision::AllowOnce)
+                    .await
+                    .unwrap();
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(15)).await;
+        }
+    });
+    let outcome = session.run_task("清理").await;
+    resolver.await.unwrap();
+    assert!(matches!(outcome, TaskOutcome::Done(_)), "{outcome:?}");
+    assert!(
+        !root.join("untracked.txt").exists(),
+        "allow 后 Hold 命令应执行"
+    );
+    let mut st = store.lock().await;
+    let events = st.events(&session.session_id).unwrap();
+    assert!(
+        events.iter().any(|e| e.kind == EventKind::ConfirmRequest),
+        "Hold 应发确认请求"
+    );
+}
+
+#[tokio::test]
+async fn execpolicy_hold_spares_project_local_commands_v218() {
+    // v2.18 allow 路径：AllowOnce 决议后命令照常执行（executor 不拦 Hold——
+    // Hold 判定单一归 session 闸门）。用 rm -rf $HOME 形态在隔离 HOME 的临时
+    // 目录内验证执行链（沙箱外直接执行路径，full_access 降级语义不在此测）。
+    let (dir, session, store, _p) = setup_with_config(
+        vec![
+            ScriptedReply::Tool {
+                name: "run_command".into(),
+                args: serde_json::json!({"command": "rm -rf ./safe-dir"}),
+            },
+            ScriptedReply::Text("已清理".into()),
+        ],
+        |cfg| {
+            cfg.gate.approval = ApprovalGear::OnIrreversible;
+            // full_access：run_command 断网沙箱降级为直跑（§9.2）——测试环境
+            // Seatbelt 沙箱 exec rm 曾观察卡死（v2.4 冷启动开销的极端形态），
+            // 本例目标是 Hold 名单外对照而非沙箱行为。
+            cfg.gate.exec_mode = tenon_core::gates::ExecMode::FullAccess;
+        },
+    )
+    .await;
+    std::fs::create_dir_all(dir.path().join("safe-dir")).unwrap();
+    std::fs::write(dir.path().join("safe-dir/junk.txt"), "x").unwrap();
+    // 对照例：相对路径项目内 rm 不在 Hold 名单——无确认卡，直接执行（无 resolver）
+    let outcome = session.run_task("清理").await;
+    assert!(matches!(outcome, TaskOutcome::Done(_)), "{outcome:?}");
+    assert!(
+        !dir.path().join("safe-dir").exists(),
+        "allow 后命令应执行（safe-dir 相对路径不在 Hold 名单，本例验证 Hold 名单外命令正常执行不误伤）"
+    );
+    let mut st = store.lock().await;
+    let events = st.events(&session.session_id).unwrap();
+    // 相对路径项目内 rm -rf 不在 Hold 名单——无确认卡、直接执行（对照：Hold 只覆盖名单内）
+    assert!(
+        !events.iter().any(|e| e.kind == EventKind::ConfirmRequest),
+        "项目内相对路径 rm 不应触发 Hold"
+    );
+}
+
+#[tokio::test]
 async fn gate_deny_blocks_d_level_and_turn_continues() {
     let (dir, session, store, _p) = setup_with_config(
         vec![

@@ -2160,11 +2160,41 @@ impl AgentSession {
                 // ---- v2.0 档位闸门（design-v2.md §4.1）：Approval 档 Hold ----
                 // ExecMode read_only 已由会话 readonly 开关承载（上游 Decision 拒绝）；
                 // allow_session 记忆优先；verdict 先行求值释放锁再进等待。
-                let gate_verdict = {
+                // v2.18 execpolicy 高危档前置（design-v2.md §4.2）：run_command 预判
+                // ——Block 直接拒绝（与 executor 文案同源）；Hold 覆盖档位判定走确认
+                // 卡（args 预览含命令；allow_session 记忆按 run_command 工具粒度；
+                // never 档 judge 放行、由沙箱写限根兜底）。Hold 判定单一归此处，
+                // executor 层仅拦 Block（防双闸漂移）。
+                if call.name == "run_command" {
+                    if let Some(cmd) = call.arguments.get("command").and_then(|c| c.as_str()) {
+                        if let tenon_core::execpolicy::Verdict::Block(reason) =
+                            tenon_core::execpolicy::evaluate(cmd)
+                        {
+                            tool_messages.push(ChatMessage::tool_result(
+                                call.id.clone(),
+                                format!("execpolicy 拦截：{reason}"),
+                            ));
+                            continue;
+                        }
+                    }
+                }
+                let mut gate_verdict = {
                     let gate = self.gate.lock().await;
                     let allowed = self.gate_allowed.lock().await.contains(&call.name);
                     gate.judge(level, allowed)
                 };
+                // v2.18：execpolicy Hold 覆盖（B 级 Allow → Hold；D/Composite 已 Hold
+                // 不降级；never 档 judge 已放行则尊重零审批裁定）
+                if gate_verdict == GateVerdict::Allow && call.name == "run_command" {
+                    if let Some(cmd) = call.arguments.get("command").and_then(|c| c.as_str()) {
+                        if matches!(
+                            tenon_core::execpolicy::evaluate(cmd),
+                            tenon_core::execpolicy::Verdict::Hold(_)
+                        ) {
+                            gate_verdict = GateVerdict::Hold;
+                        }
+                    }
+                }
                 if gate_verdict == GateVerdict::Hold {
                     match self
                         .hold_for_confirm(&call.name, level, &call.arguments)
