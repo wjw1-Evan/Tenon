@@ -534,5 +534,7 @@
   "activity.running_count": "{count} в работе",
   "settings.models.context_tokens": "Токены контекста",
   "settings.models.compaction_threshold": "Порог сжатия",
-  "settings.models.context_invalid": "Токены контекста / порог сжатия должны быть положительными целыми"
+  "settings.models.context_invalid": "Токены контекста / порог сжатия должны быть положительными целыми",
+  "thread.compaction_summary": "Ранняя история сжата ({before} → {after} токенов, смысл сохранён)",
+  "thread.compaction_summary_manual": "История сжата ({before} → {after} токенов, смысл сохранён)"
 }

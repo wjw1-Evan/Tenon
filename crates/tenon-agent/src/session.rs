@@ -711,6 +711,92 @@ fn tool_call_pairs_intact(messages: &[ChatMessage]) -> bool {
     true
 }
 
+/// v2.14 摘要式压缩第二阶段的剪枝结果（§10.2 / design-v2.md §5①）。
+pub(crate) struct EarlyRoundsPrune {
+    /// 剪枝后消息（`[历史摘要]` 占位 user 消息已插回原区间起始位——内容为
+    /// 空串占位，由调用方填入摘要文本）。
+    pub messages: Vec<ChatMessage>,
+    /// 被移除区间的原文（渲染进摘要 prompt）。
+    pub raw: String,
+    /// 被移除消息条数。
+    pub removed: usize,
+    /// 占位消息在剪枝后消息中的下标。
+    pub placeholder_index: usize,
+}
+
+/// 摘要式剪枝（§10.2 v2.14 阶段②）：从首条 user 之后成对移除最早轮次，保留
+/// 尾部使剩余估算 ≤ `target_tokens`；边界回退到含 tool_calls 的 assistant 之前
+/// （成对移除，配对完整性不变式）；system 与首条 user（任务 + L1）恒保留；
+/// 已含 `[历史摘要]` 前导的上一轮摘要并入被移除区间（幂等——摘要消息不堆积）。
+/// 无可移除对象（历史过短 / 保留尾已达标）返回 None。
+fn summarize_prune_early_rounds(
+    messages: &[ChatMessage],
+    target_tokens: u64,
+) -> Option<EarlyRoundsPrune> {
+    if messages.len() < 3 {
+        return None;
+    }
+    // 保留尾部：从末尾向前累计 est 直到覆盖 target_tokens（阈值 × 80%）——
+    // 之前的消息构成候选移除区间 [2, keep_from)（下标 0 = system、1 = 首条 user）。
+    let est: Vec<u64> = messages
+        .iter()
+        .map(|m| {
+            tenon_core::context::estimate_tokens(&m.content)
+                + m.tool_calls
+                    .iter()
+                    .map(|tc| tenon_core::context::estimate_tokens(&tc.arguments.to_string()))
+                    .sum::<u64>()
+        })
+        .collect();
+    let mut acc: u64 = 0;
+    let mut keep_from = messages.len();
+    while keep_from > 2 {
+        keep_from -= 1;
+        acc = acc.saturating_add(est[keep_from]);
+        if acc >= target_tokens {
+            break;
+        }
+    }
+    // 保留尾起点若落在 tool 结果上（其 assistant 在移除区间，切走会留孤儿）——
+    // 向前扩展保留尾直到非 tool 消息（把成对的 assistant 一并保留）。
+    while keep_from > 2 && messages[keep_from].role == Role::Tool {
+        keep_from -= 1;
+    }
+    if messages[keep_from].role == Role::Tool {
+        return None; // 极端：候选保留尾全为 tool 链——保守放弃，调用方回退省略式
+    }
+    // keep_from ∈ [2, len-1]；候选区间 [2, keep_from)
+    let start = 2usize;
+    // 幂等：候选区间内已有的 [历史摘要] 消息一并移除（不堆积）；区间外的
+    // 首条 user 若为摘要占位（上一轮压缩结果）也并入区间（换成新的任务原文？
+    // 不——首条 user 恒保留，摘要占位只会在 start 位）。
+    let removed_slice = &messages[start..keep_from];
+    if removed_slice.is_empty() {
+        return None;
+    }
+    let mut raw = String::new();
+    for m in removed_slice {
+        raw.push_str(&format!("[{:?}] {}\n", m.role, m.content));
+    }
+    let mut out = Vec::with_capacity(messages.len() - removed_slice.len() + 1);
+    out.push(messages[0].clone()); // system
+    out.push(messages[1].clone()); // 首条 user（任务 + L1）
+    let placeholder_index = out.len();
+    out.push(ChatMessage::user(String::new())); // [历史摘要] 占位（调用方填）
+    out.extend_from_slice(&messages[keep_from..]);
+    // 成对性守则：保留尾首条消息若是 tool 结果（其 assistant 落在移除区间被切走）
+    // ——保守放弃本次剪枝，调用方回退省略式（编排层 tool_call_pairs_intact 亦兜底）。
+    if messages[keep_from].role == Role::Tool {
+        return None;
+    }
+    Some(EarlyRoundsPrune {
+        messages: out,
+        raw,
+        removed: removed_slice.len(),
+        placeholder_index,
+    })
+}
+
 impl AgentSession {
     /// 会话级受管 worktree 根（v1.87；None = 主根会话）。
     pub fn managed_worktree(&self) -> Option<&Path> {
@@ -1312,6 +1398,36 @@ impl AgentSession {
         }
     }
 
+    /// v2.14 摘要式压缩（§10.2 / design-v2.md §5①）：被移除早期轮次经会话
+    /// provider 单轮辅助调用生成结构化摘要（SUMMARY_MARKER 标记——与标题 /
+    /// 记忆提取同法零脚本扰动；低推理档防 reasoning 吃光 max_tokens）。
+    /// 失败 / 空文本返回 Err——调用方回退省略式兜底（不变式）。
+    async fn summarize_history(
+        &self,
+        provider: &StdArc<dyn ModelProvider>,
+        raw: &str,
+    ) -> Result<String, tenon_models::ProviderError> {
+        let mut request = ChatRequest::new(
+            provider.default_model(),
+            vec![
+                ChatMessage::system(format!(
+                    "{}\n你是历史压缩摘要器。把给定对话历史压缩为三段结构化摘要（每段一两句）：\n目标进展：…\n关键决策与发现：…\n当前状态与未决：…\n只输出摘要文本，不要多余解释。",
+                    tenon_models::SUMMARY_MARKER
+                )),
+                ChatMessage::user(format!("待摘要历史（原文已从上下文剪除）：\n{raw}")),
+            ],
+        );
+        request.reasoning_effort = Some("low".into());
+        let resp = Self::aux_chat_resilient(provider, &request).await?;
+        let text = resp.content.trim().to_string();
+        if text.is_empty() {
+            return Err(tenon_models::ProviderError::Config(
+                "历史摘要为空文本".into(),
+            ));
+        }
+        Ok(text)
+    }
+
     /// v1.171 辅助单轮调用韧性（§11）：瞬时错误重试 ≤1（2s 退避，429 尊重
     /// Retry-After 上限 60s），仍失败返回末次错误——调用方维持既有静默回退
     /// 语义（标题回退本地截断 / 提取静默跳过 / 补全 UI 静默）。
@@ -1619,7 +1735,9 @@ impl AgentSession {
             self.force_state(State::Deciding).await;
             self.set_status(SessionStatus::Deciding).await;
 
-            // ---- 历史压缩（§10.2 v1.105）：输入预算超限即省略陈旧工具输出。
+            // ---- 历史压缩（§10.2 v1.105 → v2.14 两阶段摘要式）：
+            // ①确定性剪枝先行（elide 陈旧工具输出）②剪枝后仍超阈值 → 摘要保留
+            // 早期语义（成对移除 + provider 单轮摘要插回），失败回退纯省略式。
             // v1.161 手动压缩：ControlCommand::Compact 置位后跳过阈值强制执行一次（标志即消费）。
             // 压缩后自检配对完整性，失败则本回合放弃压缩（保持原历史）----
             let est_tokens = estimate_messages_tokens(&messages);
@@ -1628,8 +1746,43 @@ impl AgentSession {
                 || est_tokens > self.config.compaction_input_tokens
                 || last_input_tokens > self.config.compaction_input_tokens
             {
-                if let Some((compacted, elided)) = elide_stale_tool_outputs(&messages) {
+                if let Some((mut compacted, elided)) = elide_stale_tool_outputs(&messages) {
                     if tool_call_pairs_intact(&compacted) {
+                        // v2.14 阶段②：仅自适应放行的大阈值（> 24k 基线，即
+                        // 用户配置了 provider 窗口 / 显式阈值）且 elide 后仍超
+                        // 时摘要——缺省 24k 维持 v1 纯省略式（摘要的收益场景是
+                        // 大窗口保留更多语义；小阈值下深度移除信息损失大于收益）。
+                        let mut mode = "elide";
+                        let mut summary_text: Option<String> = None;
+                        let mut removed_rounds = 0usize;
+                        if self.config.compaction_input_tokens
+                            > tenon_core::context::MIN_COMPACTION_INPUT_TOKENS
+                            && estimate_messages_tokens(&compacted)
+                                > self.config.compaction_input_tokens
+                        {
+                            let target = self.config.compaction_input_tokens / 5 * 4; // 保留尾 ≤ 阈值 ×80%
+                            if let Some(prune) = summarize_prune_early_rounds(&compacted, target) {
+                                let provider_now = self.provider.read().await.clone();
+                                match self.summarize_history(&provider_now, &prune.raw).await {
+                                    Ok(summary) => {
+                                        let mut m = prune.messages;
+                                        m[prune.placeholder_index] = ChatMessage::user(format!(
+                                            "[历史摘要（早期对话已压缩，语义保留）]\n{summary}"
+                                        ));
+                                        if tool_call_pairs_intact(&m) {
+                                            compacted = m;
+                                            mode = "summary";
+                                            summary_text = Some(summary);
+                                            removed_rounds = prune.removed;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        // 摘要失败回退省略式（兜底不变式），留痕不中断任务
+                                        tracing::warn!("历史摘要失败，回退省略式压缩: {e}");
+                                    }
+                                }
+                            }
+                        }
                         let after_tokens = estimate_messages_tokens(&compacted);
                         messages = compacted;
                         self.emit(
@@ -1640,6 +1793,10 @@ impl AgentSession {
                                 "after_est_tokens": after_tokens,
                                 "elided_tool_results": elided,
                                 "manual": manual_compact,
+                                "mode": mode,
+                                "summary_text": summary_text.as_deref()
+                                    .map(|s| s.chars().take(2_000).collect::<String>()),
+                                "removed_rounds": removed_rounds,
                             }),
                         )
                         .await;
@@ -3352,6 +3509,33 @@ mod compaction_tests {
             ));
         }
         messages
+    }
+
+    /// v2.14 摘要式剪枝：边界守则与幂等。
+    #[test]
+    fn summarize_prune_keeps_pairs_and_boundaries() {
+        // 6 轮小历史 + 极小 target：从首条 user 后成对移除，保留尾起点的
+        // tool 结果触发向前扩展（其 assistant 一并保留），配对完整。
+        let messages = base_history(6);
+        let prune = summarize_prune_early_rounds(&messages, 1).expect("可剪枝");
+        assert!(tool_call_pairs_intact(&prune.messages));
+        assert_eq!(prune.messages[0].content, "sys");
+        assert_eq!(prune.messages[1].content, "任务 + L1 工作集");
+        assert!(prune.messages[2].content.is_empty(), "占位空串待填");
+        assert!(prune.removed > 0);
+        assert!(prune.raw.contains("out-0"), "被移除原文进摘要素材");
+        // 保留尾首条不是 tool（成对性守则）
+        assert_ne!(prune.messages[3].role, Role::Tool);
+
+        // target 巨大（保留尾需覆盖全部）→ 无可移除 → None
+        assert!(summarize_prune_early_rounds(&messages, u64::MAX / 2).is_none());
+
+        // 历史过短（<3 条）→ None
+        let short = vec![
+            ChatMessage::system(String::from("s")),
+            ChatMessage::user(String::from("u")),
+        ];
+        assert!(summarize_prune_early_rounds(&short, 1).is_none());
     }
 
     #[test]

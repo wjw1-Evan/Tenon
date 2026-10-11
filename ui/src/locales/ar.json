@@ -534,5 +534,7 @@
   "activity.running_count": "{count} قيد التشغيل",
   "settings.models.context_tokens": "رموز السياق",
   "settings.models.compaction_threshold": "عتبة الضغط",
-  "settings.models.context_invalid": "يجب أن تكون رموز السياق / عتبة الضغط أعدادًا صحيحة موجبة"
+  "settings.models.context_invalid": "يجب أن تكون رموز السياق / عتبة الضغط أعدادًا صحيحة موجبة",
+  "thread.compaction_summary": "تم تلخيص السجل المبكر ({before} → {after} رمزًا مع الحفاظ على المعنى)",
+  "thread.compaction_summary_manual": "تم تلخيص السجل ({before} → {after} رمزًا مع الحفاظ على المعنى)"
 }

@@ -534,5 +534,7 @@
   "activity.running_count": "{count} 个运行中",
   "settings.models.context_tokens": "上下文窗口",
   "settings.models.compaction_threshold": "压缩阈值",
-  "settings.models.context_invalid": "上下文窗口 / 压缩阈值须为正整数"
+  "settings.models.context_invalid": "上下文窗口 / 压缩阈值须为正整数",
+  "thread.compaction_summary": "早期历史已摘要（{before} → {after} tok，语义保留）",
+  "thread.compaction_summary_manual": "历史已摘要（{before} → {after} tok，语义保留）"
 }

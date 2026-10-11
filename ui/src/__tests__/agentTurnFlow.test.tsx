@@ -176,7 +176,7 @@ describe("会话过程流：工具步骤卡", () => {
     expect(await screen.findByText(/thread\.denied bash · readonly/)).toBeTruthy();
   });
 
-  it("信息行仅保留回滚语义（v1.112 降噪：压缩 / 记忆 / 降级不显示）", async () => {
+  it("信息行语义（v1.112 降噪 → v2.14 压缩卡例外：压缩可感知，记忆 / 降级仍不显示）", async () => {
     const events = [
       { id: 1, seq: 1, type: "rollback", payload: {} },
       { id: 2, seq: 2, type: "compaction", payload: {} },
@@ -186,10 +186,28 @@ describe("会话过程流：工具步骤卡", () => {
     ];
     render(<AgentPanel api={mockApi(events)} t={t} sessionId="s1" />);
     expect(await screen.findByText(/thread\.rollback/)).toBeTruthy();
-    expect(screen.queryByText(/thread\.compaction/)).toBeNull();
+    // v2.14（§10.2 摘要式压缩）：压缩卡可感知（模式 + 前后估算 + 摘要文本）
+    expect(screen.getByTestId("turn-compaction")).toBeTruthy();
     expect(screen.queryByText(/thread\.memory_saved/)).toBeNull();
     expect(screen.queryByText(/thread\.model_fallback/)).toBeNull();
     expect(screen.queryByText(/sensing/)).toBeNull();
+  });
+
+  it("v2.14 压缩卡：摘要模式呈现摘要文本与前后估算", async () => {
+    const events = [
+      { id: 1, seq: 1, type: "compaction", payload: {
+        mode: "summary",
+        before_est_tokens: 30000,
+        after_est_tokens: 9000,
+        summary_text: "目标进展：修复导出管道；关键决策与发现：改动集中两文件；当前状态与未决：验证通过",
+        removed_rounds: 6,
+      } },
+    ];
+    render(<AgentPanel api={mockApi(events)} t={t} sessionId="s1" />);
+    const card = await screen.findByTestId("turn-compaction");
+    expect(card.getAttribute("data-mode")).toBe("summary");
+    expect(card.textContent).toContain("thread.compaction_summary");
+    expect(card.textContent).toContain("目标进展：修复导出管道");
   });
 
   it("v1.112 只读步骤聚合为单行动词计数，不落卡", async () => {

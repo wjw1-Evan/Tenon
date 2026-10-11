@@ -92,6 +92,95 @@ async fn setup_with_config(
     (dir, session, store, provider)
 }
 
+/// v2.14 摘要式压缩脚本：>KEEP_RECENT 个大工具结果轮 + 收尾文本——阈值收紧
+/// 后 elide（阶段①）不足以达标，必然进入摘要阶段（阶段②）。
+fn summary_script() -> Vec<ScriptedReply> {
+    let mut s = Vec::new();
+    for _ in 0..6 {
+        s.push(ScriptedReply::Tool {
+            name: "read_file".into(),
+            args: serde_json::json!({"path": "big.txt"}),
+        });
+    }
+    s.push(ScriptedReply::Text("完成".into()));
+    s
+}
+
+#[tokio::test]
+async fn compaction_summarizes_early_rounds_and_persists_event() {
+    // v2.14 §10.2 / design-v2.md §5①：两阶段压缩——elide 后仍超阈值 → 成对移除
+    // 早期轮次经 SUMMARY_MARKER 单轮摘要插回（mock 固定文本）；compaction 持久
+    // 事件带 mode=summary / summary_text / removed_rounds；后续请求含 [历史摘要]。
+    let (dir, session, store, provider) = setup_with_config(summary_script(), |cfg| {
+        cfg.compaction_input_tokens = 25_000;
+    })
+    .await;
+    std::fs::write(dir.path().join("big.txt"), "x".repeat(80_000)).unwrap();
+    let outcome = session.run_task("读文件").await;
+    assert!(matches!(outcome, TaskOutcome::Done(_)));
+    // 摘要走 marker 分支（零脚本消耗）且确实被调用
+    assert!(
+        !provider.summary_calls().is_empty(),
+        "SUMMARY_MARKER 调用发生"
+    );
+    let mut st = store.lock().await;
+    let events = st.events(&session.session_id).unwrap();
+    let compaction = events
+        .iter()
+        .find(|e| e.kind == EventKind::Compaction)
+        .expect("压缩事件");
+    assert_eq!(compaction.payload["mode"], "summary");
+    assert!(
+        compaction.payload["summary_text"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("目标进展"),
+        "摘要文本入载荷: {:?}",
+        compaction.payload["summary_text"]
+    );
+    assert!(compaction.payload["removed_rounds"].as_u64().unwrap_or(0) > 0);
+    // 上下文里已无被移除轮次原文、有历史摘要占位（经 mock calls 最后一次请求验证）
+    let all_calls = provider.calls();
+    let last = all_calls.last().expect("模型调用存在");
+    let joined = last
+        .messages
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n---\n");
+    assert!(joined.contains("[历史摘要（早期对话已压缩，语义保留）]"));
+    // 保留尾按 elide 语义仍含最近 KEEP_RECENT 条工具结果原文——被移除区间的
+    // 原文（每段 3000 连 x）不应超过 KEEP_RECENT(4) 段
+    let raw_runs = joined
+        .split(|c: char| c != 'x')
+        .filter(|seg| seg.len() >= 100)
+        .count();
+    assert!(raw_runs <= 4, "长 x 游程 {raw_runs} 超过 KEEP_RECENT");
+}
+
+#[tokio::test]
+async fn compaction_summary_failure_falls_back_to_elide() {
+    // v2.14 兜底不变式：摘要失败（mock 开关注入）→ 回退纯省略式（mode=elide），
+    // 任务照常完成。
+    let (dir, session, store, provider) = setup_with_config(summary_script(), |cfg| {
+        cfg.compaction_input_tokens = 25_000;
+    })
+    .await;
+    provider.fail_summary_calls(10);
+    std::fs::write(dir.path().join("big.txt"), "x".repeat(80_000)).unwrap();
+    let outcome = session.run_task("读文件").await;
+    assert!(matches!(outcome, TaskOutcome::Done(_)), "兜底不中断任务");
+    assert!(!provider.summary_calls().is_empty(), "摘要调用已尝试");
+    let mut st = store.lock().await;
+    let events = st.events(&session.session_id).unwrap();
+    let compaction = events
+        .iter()
+        .find(|e| e.kind == EventKind::Compaction)
+        .expect("压缩事件");
+    assert_eq!(compaction.payload["mode"], "elide", "失败回退省略式");
+    assert!(compaction.payload["summary_text"].is_null());
+}
+
 #[tokio::test]
 async fn compaction_threshold_configurable_via_agent_config() {
     // v2.13 §10.2 阈值自适应：AgentConfig.compaction_input_tokens 注入生效——
@@ -1285,8 +1374,10 @@ async fn history_compaction_stubs_stale_tool_outputs_and_emits_trace_event() {
             .collect(),
     )
     .await;
-    // 80k 字符 ≈ 26.7k 估算 token > 24k 阈值：首个工具输出后即进入压缩触发区间
-    std::fs::write(dir.path().join("big.txt"), "x".repeat(80_000)).unwrap();
+    // v2.14 两阶段语义：13k 字符（≈4.3k token）× 6 = 26k > 24k 触发压缩，
+    // elide 后（2 存根 + 4 原文 ≈ 18.5k）低于阈值——纯省略式路径（摘要阶段
+    // 不触发；摘要路径由 v2.14 专属用例覆盖）。
+    std::fs::write(dir.path().join("big.txt"), "x".repeat(13_000)).unwrap();
     let outcome = session.run_task("读取大文件").await;
     assert!(matches!(outcome, TaskOutcome::Done(_)));
 

@@ -3683,3 +3683,15 @@ button:disabled { opacity: 0.45; cursor: default; }
   color: var(--fg-muted);
   flex: none;
 }
+/* v2.14 摘要式压缩卡（§10.2）：摘要文本块 */
+.turn-compaction-summary {
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--fg-muted);
+  background: var(--overlay, #1c212b);
+  border-radius: 6px;
+}

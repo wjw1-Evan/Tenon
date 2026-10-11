@@ -534,5 +534,7 @@
   "activity.running_count": "{count} en cours",
   "settings.models.context_tokens": "Jetons de contexte",
   "settings.models.compaction_threshold": "Seuil de compactage",
-  "settings.models.context_invalid": "Les jetons de contexte / le seuil doivent être des entiers positifs"
+  "settings.models.context_invalid": "Les jetons de contexte / le seuil doivent être des entiers positifs",
+  "thread.compaction_summary": "Début de l'historique résumé ({before} → {after} jetons, sémantique préservée)",
+  "thread.compaction_summary_manual": "Historique résumé ({before} → {after} jetons, sémantique préservée)"
 }

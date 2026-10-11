@@ -28,8 +28,13 @@ pub const TITLE_MARKER: &str = "TENON_TASK_TITLE";
 
 /// L5 记忆提取请求的标记（v1.104 §10.1）：任务完成后的单轮无工具提取调用，
 /// 系统提示以此开头。测试替身识别后返回固定记忆 JSON、不消耗脚本队列，
-/// 与 TITLE_MARKER 同法保证脚本化测试的调用次数 / 序列断言零扰动。
+/// 与 TITLE_MARKER 同法保证脚本化测试的调用次数 / 序列的断言零扰动。
 pub const MEMORY_MARKER: &str = "TENON_MEMORY_EXTRACT";
+
+/// 历史摘要请求的标记（v2.14 §10.2 摘要式压缩）：压缩时对被移除早期轮次的
+/// 单轮无工具摘要调用，系统提示以此开头。测试替身识别后返回固定结构化摘要、
+/// 不消耗脚本队列——与 TITLE / MEMORY 同法零扰动。
+pub const SUMMARY_MARKER: &str = "TENON_HISTORY_SUMMARIZE";
 
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};

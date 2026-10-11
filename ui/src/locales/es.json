@@ -534,5 +534,7 @@
   "activity.running_count": "{count} en ejecución",
   "settings.models.context_tokens": "Tokens de contexto",
   "settings.models.compaction_threshold": "Umbral de compactación",
-  "settings.models.context_invalid": "Los tokens de contexto / umbral deben ser enteros positivos"
+  "settings.models.context_invalid": "Los tokens de contexto / umbral deben ser enteros positivos",
+  "thread.compaction_summary": "Historial inicial resumido ({before} → {after} tok, semántica preservada)",
+  "thread.compaction_summary_manual": "Historial resumido ({before} → {after} tok, semántica preservada)"
 }

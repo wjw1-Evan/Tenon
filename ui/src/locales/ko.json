@@ -534,5 +534,7 @@
   "activity.running_count": "{count}개 실행 중",
   "settings.models.context_tokens": "컨텍스트 토큰",
   "settings.models.compaction_threshold": "압축 임계값",
-  "settings.models.context_invalid": "컨텍스트 토큰 / 압축 임계값은 양의 정수여야 합니다"
+  "settings.models.context_invalid": "컨텍스트 토큰 / 압축 임계값은 양의 정수여야 합니다",
+  "thread.compaction_summary": "초기 기록 요약됨({before} → {after} 토큰, 의미 보존)",
+  "thread.compaction_summary_manual": "기록 요약됨({before} → {after} 토큰, 의미 보존)"
 }

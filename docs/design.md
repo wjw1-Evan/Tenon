@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | **v2.13** |
+| 版本 | **v2.14** |
 | 日期 | 2026-10-11 |
 | 状态 | 定稿，M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
@@ -696,7 +696,7 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 
 ### 10.2 Token 预算与压缩
 
-**输入预算（v1.105 实装）**：每回合请求前按字符近似估算输入 token（正文 + tool_calls 参数，约 3 字符/token）；估算或上一回合 provider 权威 usage（`input_tokens`）超过压缩阈值即触发历史压缩。**阈值自适应（v2.13，design-v2.md §5②「max(24k, provider 上下文 × 40%)，per-provider 可配」）**：`tenon-core::context::compaction_threshold` 纯函数——provider 配置可选 `context_tokens`（真实上下文窗口）时阈值 = `max(24k, context_tokens × 40%)`（128k 窗口 → 51.2k），未知窗口缺省维持 24k（v1 行为不变）；可选 `compaction_threshold` 显式覆盖优先于公式（防呆下限 1k，尊重用户显式配置）；两字段经 config.toml `[providers.x]` 与 settings 覆盖双轨（与 v1.199 计价字段同构），daemon 会话构建时按合并后配置算阈值注入 `AgentConfig.compaction_input_tokens`（新会话生效）。**手动压缩（v1.161）**：`compact` 控制命令（§15）置位会话级标志，下一模型回合跳过阈值强制执行一次省略（标志即消费；无陈旧工具输出可省略时照发 `compaction` 事件 `elided_tool_results: 0` 供 UI 反馈，不静默；事件载荷增 `manual` 标记区分自动 / 手动触发）。**溢出恢复（v1.191，DSH「overflow 恢复路径」确定借鉴项落地）**：自动恢复全链（瞬时重试 + fallback）穷尽且末次错误命中上下文超限文案（`ProviderError::is_context_overflow`，4xx 错误体特征归一：OpenAI「maximum context length」/ Anthropic「prompt is too long」/ 通用 token 超限与中文「过长」等，误报代价仅为一次压缩重试）时，同一回合内跳过阈值强制省略一次陈旧工具输出并重试一次——`compaction` 事件载荷增 `overflow: true` 标记；压缩不可行（无可省略对象 / 配对自检失败）或重试再溢出即照常落 ERROR，单回合至多恢复一次防循环。真实计数由 provider usage 回填，估算是无 usage provider 的兜底信号。
+**输入预算（v1.105 实装）**：每回合请求前按字符近似估算输入 token（正文 + tool_calls 参数，约 3 字符/token）；估算或上一回合 provider 权威 usage（`input_tokens`）超过压缩阈值即触发历史压缩。**阈值自适应（v2.13，design-v2.md §5②「max(24k, provider 上下文 × 40%)，per-provider 可配」）**：`tenon-core::context::compaction_threshold` 纯函数——provider 配置可选 `context_tokens`（真实上下文窗口）时阈值 = `max(24k, context_tokens × 40%)`（128k 窗口 → 51.2k），未知窗口缺省维持 24k（v1 行为不变）；可选 `compaction_threshold` 显式覆盖优先于公式（防呆下限 1k，尊重用户显式配置）；两字段经 config.toml `[providers.x]` 与 settings 覆盖双轨（与 v1.199 计价字段同构），daemon 会话构建时按合并后配置算阈值注入 `AgentConfig.compaction_input_tokens`（新会话生效）。**摘要式压缩（v2.14，design-v2.md §5①——省略式升级为两阶段，回放可确定性重现）**：阈值触发（自适应 / 手动 / 溢出恢复统一编排）后两阶段——①确定性剪枝先行：elide 陈旧工具输出（v1.105 路径不动）；②剪枝后估算仍超阈值**且阈值经自适应放行（> 24k 基线——缺省 24k 维持 v1 纯省略式，摘要收益场景是大窗口；附录 D 基准回归坐实小阈值深度移除损益比差）** → **摘要保留早期语义**：从首条 user 之后成对移除最早轮次（assistant tool_calls + 其 tool 结果整对移除，配对完整性不变式；边界回退到该 assistant 之前防切半对；保留尾部使剩余估算 ≤ 阈值 × 80%），被移除原文经会话 provider 单轮辅助调用（`TENON_SUMMARY_MARKER` 标记——mock 走 marker 分支零脚本消耗，与标题 / 记忆提取同法）生成结构化摘要（目标进展 / 关键决策与发现 / 当前状态与未决），以 `[历史摘要]` user 消息插回原区间起始位；**摘要失败（错误 / 空文本）回退纯省略式结果**（兜底不变式，v1 行为保留）；`compaction` 持久事件载荷增 `mode: elide | summary`、`summary_text`（截断 2k）与 `removed_rounds`（事件溯源回放确定性重现压缩效果）；UI EventNode 补 compaction 卡（v1.161 键既有而无消费方的欠账——运行线程流呈现压缩模式与摘要文本，九语言）。**手动压缩（v1.161）**：`compact` 控制命令（§15）置位会话级标志，下一模型回合跳过阈值强制执行一次省略（标志即消费；无陈旧工具输出可省略时照发 `compaction` 事件 `elided_tool_results: 0` 供 UI 反馈，不静默；事件载荷增 `manual` 标记区分自动 / 手动触发）。**溢出恢复（v1.191，DSH「overflow 恢复路径」确定借鉴项落地）**：自动恢复全链（瞬时重试 + fallback）穷尽且末次错误命中上下文超限文案（`ProviderError::is_context_overflow`，4xx 错误体特征归一：OpenAI「maximum context length」/ Anthropic「prompt is too long」/ 通用 token 超限与中文「过长」等，误报代价仅为一次压缩重试）时，同一回合内跳过阈值强制省略一次陈旧工具输出并重试一次——`compaction` 事件载荷增 `overflow: true` 标记；压缩不可行（无可省略对象 / 配对自检失败）或重试再溢出即照常落 ERROR，单回合至多恢复一次防循环。真实计数由 provider usage 回填，估算是无 usage provider 的兜底信号。
 
 **历史压缩（任务内，确定性省略）**：工具输出是任务内历史的主要膨胀源（read_file / grep / 命令输出全文驻留并逐回合重发）。压缩保留**最近 4 条工具输出原文**，更早的 tool 消息替换为存根（`[工具输出已省略：{tool} 原约 N 字符——需要时重新调用该工具获取]`）：
 

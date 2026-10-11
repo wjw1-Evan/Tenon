@@ -1850,8 +1850,30 @@ function EventNode({
         </div>
       );
     }
+    case "compaction": {
+      // §10.2（v2.14 摘要式压缩）：压缩卡——模式（省略 / 摘要）与前后估算 +
+      // 摘要文本（有则呈现，回放可确定性重现）；turn-note 轻量形态。
+      const mode = String(ev.payload.mode ?? "elide");
+      const before = Number(ev.payload.before_est_tokens ?? 0);
+      const after = Number(ev.payload.after_est_tokens ?? 0);
+      const summary = String(ev.payload.summary_text ?? "").trim();
+      const manual = ev.payload.manual === true;
+      const label =
+        mode === "summary"
+          ? manual
+            ? t("thread.compaction_summary_manual", { before, after })
+            : t("thread.compaction_summary", { before, after })
+          : t("thread.compaction") +
+            ` (${before} → ${after})`;
+      return (
+        <div className="turn-note" data-testid="turn-compaction" data-mode={mode}>
+          ⤾ {label}
+          {summary && <pre className="turn-compaction-summary">{summary}</pre>}
+        </div>
+      );
+    }
     default:
-      // sensing / checkpoint / session_title / 降级 / 压缩 / 记忆 / 未知：不渲染
+      // sensing / checkpoint / session_title / 降级 / 记忆 / 未知：不渲染
       return null;
   }
 }

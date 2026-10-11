@@ -534,5 +534,7 @@
   "activity.running_count": "{count} 件実行中",
   "settings.models.context_tokens": "コンテキストトークン",
   "settings.models.compaction_threshold": "圧縮しきい値",
-  "settings.models.context_invalid": "コンテキストトークン / 圧縮しきい値は正の整数である必要があります"
+  "settings.models.context_invalid": "コンテキストトークン / 圧縮しきい値は正の整数である必要があります",
+  "thread.compaction_summary": "初期の履歴を要約（{before} → {after} トークン、意味を保持）",
+  "thread.compaction_summary_manual": "履歴を要約（{before} → {after} トークン、意味を保持）"
 }

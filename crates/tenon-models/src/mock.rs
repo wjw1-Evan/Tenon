@@ -44,6 +44,10 @@ pub struct MockProvider {
     title_calls: std::sync::Mutex<Vec<ChatRequest>>,
     /// 记忆提取请求（MEMORY_MARKER，v1.104）单独记录，不进 calls / 脚本队列。
     memory_calls: std::sync::Mutex<Vec<ChatRequest>>,
+    /// 历史摘要请求（SUMMARY_MARKER，v2.14）单独记录，不进 calls / 脚本队列。
+    summary_calls: std::sync::Mutex<Vec<ChatRequest>>,
+    /// v2.14 测试钩子：>0 时摘要调用返回失败（兜底回退断言）。
+    fail_summary: std::sync::Mutex<usize>,
     /// v1.171 测试钩子：前 N 次标题调用返回 RateLimited（辅助调用重试断言）。
     title_fail_first: std::sync::Mutex<usize>,
 }
@@ -58,6 +62,8 @@ impl MockProvider {
             calls: std::sync::Mutex::new(Vec::new()),
             title_calls: std::sync::Mutex::new(Vec::new()),
             memory_calls: std::sync::Mutex::new(Vec::new()),
+            summary_calls: std::sync::Mutex::new(Vec::new()),
+            fail_summary: std::sync::Mutex::new(0),
             title_fail_first: std::sync::Mutex::new(0),
         }
     }
@@ -77,6 +83,19 @@ impl MockProvider {
 
     pub fn memory_calls(&self) -> Vec<ChatRequest> {
         self.memory_calls.lock().expect("memory calls lock").clone()
+    }
+
+    /// v2.14：历史摘要调用记录（SUMMARY_MARKER 请求）。
+    pub fn summary_calls(&self) -> Vec<ChatRequest> {
+        self.summary_calls
+            .lock()
+            .expect("summary calls lock")
+            .clone()
+    }
+
+    /// v2.14 测试钩子：让后续 n 次摘要调用失败（0 = 恢复正常）。
+    pub fn fail_summary_calls(&self, n: usize) {
+        *self.fail_summary.lock().expect("fail summary lock") = n;
     }
 }
 
@@ -138,6 +157,37 @@ impl ModelProvider for MockProvider {
                 .push(req.clone());
             return Ok(ChatResponse {
                 content: r#"{"memories":[{"kind":"preference","scope":"global","content":"Mock 记忆：回复用中文","importance":3}]}"#.into(),
+                tool_calls: vec![],
+                usage: Usage {
+                    input_tokens: 1,
+                    output_tokens: 1,
+                    cached_input_tokens: 0,
+                },
+                model: self.model.clone(),
+                finish_reason: Some("stop".into()),
+                reasoning: String::new(),
+            });
+        }
+        // v2.14 §10.2 历史摘要请求（SUMMARY_MARKER）：固定结构化摘要、单独记录、
+        // 不消耗脚本队列（与标题 / 记忆提取同法）；fail_summary 开关模拟摘要失败
+        // （兜底回退路径测试）。
+        if req
+            .messages
+            .iter()
+            .any(|m| m.content.contains(crate::SUMMARY_MARKER))
+        {
+            self.summary_calls
+                .lock()
+                .expect("summary calls lock")
+                .push(req.clone());
+            if *self.fail_summary.lock().expect("fail summary lock") > 0 {
+                return Err(crate::ProviderError::Config(
+                    "mock 摘要调用失败（开关注入）".into(),
+                ));
+            }
+            return Ok(ChatResponse {
+                content: "目标进展：读取并修复目标文件；关键决策与发现：改动集中在导出管道；当前状态与未决：验证通过，尚余文档更新"
+                    .into(),
                 tool_calls: vec![],
                 usage: Usage {
                     input_tokens: 1,
