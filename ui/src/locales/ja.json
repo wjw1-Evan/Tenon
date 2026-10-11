@@ -495,5 +495,11 @@
   "gates.exec_full_access": "フルアクセス",
   "gates.approval_never": "確認しない",
   "gates.approval_on_irreversible": "不可逆のみ確認",
-  "gates.approval_always": "すべて確認"
+  "gates.approval_always": "すべて確認",
+  "review.title": "レビュー",
+  "review.close": "レビュー面を閉じる",
+  "review.running": "エージェント実行中——変更をリアルタイム表示",
+  "review.idle": "アイドル",
+  "review.empty": "変更はまだありません",
+  "review.empty_running": "エージェントの変更がここにリアルタイム表示されます"
 }

@@ -3335,3 +3335,54 @@ button:disabled { opacity: 0.45; cursor: default; }
   margin-left: auto;
   font-size: 11px;
 }
+
+/* v2.4 常驻审查面（design-v2.md §6）：运行中自动停靠右栏——左缘分隔、头部
+   状态行 + 关闭钮，DiffPanel 占满余高（ResizeObserver 自适应容器） */
+.zone-review {
+  display: flex;
+  flex-direction: column;
+  width: 340px;
+  min-width: 280px;
+  max-width: 520px;
+  border-left: 1px solid var(--border, #2a2f3a);
+  background: var(--bg, #0e1015);
+  overflow: hidden;
+}
+.review-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border, #2a2f3a);
+}
+.review-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fg-muted, #8a8f98);
+  flex: none;
+}
+.review-dot.live {
+  background: #d9a514;
+  animation: review-pulse 1.2s ease-in-out infinite;
+}
+@keyframes review-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.review-status {
+  color: var(--fg-muted);
+  font-size: 11px;
+  margin-left: auto;
+}
+.review-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.review-body > * {
+  flex: 1;
+  min-height: 0;
+}

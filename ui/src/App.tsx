@@ -33,6 +33,8 @@ import { FileFinder } from "./components/FileFinder";
 import { EditorPane, type EditorSelection, type EditorTab } from "./components/EditorPane";
 import { InlineInstruction, buildInlineTask, type InlineTarget } from "./components/InlineInstruction";
 import { AgentPanel } from "./components/AgentPanel";
+import { ReviewPane } from "./components/ReviewPane";
+import { RUNNING_STATES } from "./lib/stateColors";
 import { CheckpointTimeline } from "./components/CheckpointTimeline";
 import { DiffPanel } from "./components/DiffPanel";
 import { L4StatusPanel } from "./components/L4StatusPanel";
@@ -383,6 +385,9 @@ export default function App({
     [narrow, sideFloat, sideView, sidebarOpen]
   );
   const [agentState, setAgentState] = useState<AgentStateName>("idle");
+  // v2.4 常驻审查面（design-v2.md §6）：null = 跟随运行态自动（运行中停靠、
+  // 空闲收起）；false = 用户手动关闭（会话切换重置回自动）。
+  const [reviewManual, setReviewManual] = useState<boolean | null>(null);
   const [routeNote, setRouteNote] = useState<string | null>(null);
   // 底部面板 tab（v1.107 移除「源码」——Git 视图迁右区源码树）：枚举收敛为三项。
   const [bottomTab, setBottomTab] = useState<"timeline" | "trace" | "evals" | "terminal">(
@@ -917,6 +922,8 @@ export default function App({
   soundDoneRef.current = soundDone;
   useEffect(() => {
     prevAgentStateRef.current = "idle";
+    // v2.4 审查面：会话切换重置手动覆盖，恢复「跟随运行态自动」
+    setReviewManual(null);
   }, [sessionId]);
   const onStateChange = useCallback((s: AgentStateName) => {
     setAgentState(s);
@@ -1501,6 +1508,20 @@ export default function App({
             }}
           />
         </section>
+        {/* v2.4 常驻审查面（design-v2.md §6）：会话运行中自动停靠右栏（用户可手动
+            关闭，会话切换重置回自动），实时呈现 latestDiff 改动流——「人改与 AI 改
+            实时互见」的默认形态；窄屏不渲染（浮层语义后续演进）。 */}
+        {!narrow && (reviewManual ?? RUNNING_STATES.has(agentState)) && (
+          <ReviewPane
+            t={t}
+            diff={latestDiff}
+            running={RUNNING_STATES.has(agentState)}
+            statusLabel={
+              RUNNING_STATES.has(agentState) ? t("review.running") : t("review.idle")
+            }
+            onClose={() => setReviewManual(false)}
+          />
+        )}
         {/* 编辑器应用内浮层（§7.2 v1.139 / v1.110 形态回归）：侧栏源码区 / 模糊 / 搜索 /
             诊断打开文件即弹出，✕ 关闭返回线程；EditorPane 多标签 / 分栏语义不变。 */}
         {editorOpen && (

@@ -495,5 +495,11 @@
   "gates.exec_full_access": "전체 허용",
   "gates.approval_never": "확인 안 함",
   "gates.approval_on_irreversible": "되돌릴 수 없는 작업만 확인",
-  "gates.approval_always": "모두 확인"
+  "gates.approval_always": "모두 확인",
+  "review.title": "검토",
+  "review.close": "검토 창 닫기",
+  "review.running": "에이전트 실행 중——변경 실시간 표시",
+  "review.idle": "대기",
+  "review.empty": "변경 사항 없음",
+  "review.empty_running": "에이전트 변경 사항이 여기에 실시간 표시됩니다"
 }

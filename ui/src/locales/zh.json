@@ -495,5 +495,11 @@
   "gates.exec_full_access": "完全放行",
   "gates.approval_never": "从不确认",
   "gates.approval_on_irreversible": "不可逆确认",
-  "gates.approval_always": "全部确认"
+  "gates.approval_always": "全部确认",
+  "review.title": "审查",
+  "review.close": "关闭审查面",
+  "review.running": "代理运行中——改动实时呈现",
+  "review.idle": "空闲",
+  "review.empty": "暂无改动",
+  "review.empty_running": "代理改动将实时呈现在这里"
 }

@@ -495,5 +495,11 @@
   "gates.exec_full_access": "Full access",
   "gates.approval_never": "No confirms",
   "gates.approval_on_irreversible": "Confirm irreversible",
-  "gates.approval_always": "Confirm all"
+  "gates.approval_always": "Confirm all",
+  "review.title": "Review",
+  "review.close": "Close review pane",
+  "review.running": "Agent running — changes appear live",
+  "review.idle": "Idle",
+  "review.empty": "No changes yet",
+  "review.empty_running": "Agent edits appear here in real time"
 }
