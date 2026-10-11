@@ -966,7 +966,6 @@ mod models_settings_tests {
     }
 }
 
-
 /// WS / ProjectRuntime 文件变更事件（§7.2 / §8.1；项目作用域）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProjectFileEvent {

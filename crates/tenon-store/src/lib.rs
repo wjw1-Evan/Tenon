@@ -1790,7 +1790,8 @@ impl Store {
         );
         match row {
             Ok((id, text)) => {
-                self.conn.execute("DELETE FROM message_queue WHERE id = ?1", [id])?;
+                self.conn
+                    .execute("DELETE FROM message_queue WHERE id = ?1", [id])?;
                 Ok(Some((id, text)))
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -1800,9 +1801,9 @@ impl Store {
 
     /// 队列快照（旧→新）；GET /session `queue` 载荷。
     pub fn list_message_queue(&mut self, session_id: &str) -> Result<Vec<(i64, String)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, text FROM message_queue WHERE session_id = ?1 ORDER BY id ASC",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, text FROM message_queue WHERE session_id = ?1 ORDER BY id ASC")?;
         let rows = stmt.query_map([session_id], |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
         })?;
@@ -3629,7 +3630,10 @@ mod message_queue_tests {
         assert!(!store.remove_message(&sid, "bogus").unwrap());
 
         // 出队 FIFO；空后 None
-        assert_eq!(store.dequeue_message(&sid).unwrap(), Some((snap[1].0, "二".to_string())));
+        assert_eq!(
+            store.dequeue_message(&sid).unwrap(),
+            Some((snap[1].0, "二".to_string()))
+        );
         assert_eq!(store.dequeue_message(&sid).unwrap(), None);
     }
 }
