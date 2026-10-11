@@ -527,5 +527,9 @@
   "review.ctx_tools": "도구 출력",
   "review.cost_in": "입력",
   "review.cost_out": "출력",
-  "review.cost_total": "누적 비용"
+  "review.cost_total": "누적 비용",
+  "palette.activity": "전역 활동",
+  "activity.title": "전역 활동",
+  "activity.empty": "작업 없음",
+  "activity.running_count": "{count}개 실행 중"
 }

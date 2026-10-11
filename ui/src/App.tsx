@@ -69,6 +69,7 @@ import { UpdateNotesDialog } from "./components/UpdateNotesDialog";
 import { UpdateReadyToast } from "./components/UpdateReadyToast";
 import { ToastHost } from "./components/ToastHost";
 import { ShortcutsDialog } from "./components/ShortcutsDialog";
+import { GlobalActivityDialog } from "./components/GlobalActivityDialog";
 import { WsStatusDot, type WsStatus } from "./components/WsStatusDot";
 import { toast } from "./lib/toast";
 import { CommandPalette, type Command } from "./components/CommandPalette";
@@ -345,6 +346,8 @@ export default function App({
   const reconnectWs = useCallback(() => setWsEpoch((epoch) => epoch + 1), []);
   // 快捷键速查表（§7.5 v1.167）：Cmd/Ctrl+/ 或命令面板 help.shortcuts 打开。
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  // v2.12 全局活动视图（design-v2.md §6）：按需浮层（rail 钮 + 命令面板双入口）。
+  const [activityOpen, setActivityOpen] = useState(false);
   // 编辑器应用内浮层（v1.110）：单击文件 / 模糊打开 / 搜索 / 诊断 / 跟随模式
   // 打开文件即弹出；✕ 关闭返回线程；会话内状态不持久化（重启后不自动弹出）。
   // 编辑器应用内浮层（§7.2 v1.110）：侧栏源码区 / 模糊 / 搜索 / 诊断打开文件即弹出；
@@ -1012,6 +1015,8 @@ export default function App({
     () => [
       { id: "toggle.bottom", label: t("panel.bottom.toggle"), run: () => setTimelineOpen((v) => !v) },
       { id: "open.settings", label: t("settings.open"), run: () => setSettingsOpen(true) },
+      // v2.12 全局活动视图（design-v2.md §6）：跨项目任务总览按需浮层
+      { id: "open.activity", label: t("palette.activity"), run: () => setActivityOpen(true) },
       // v1.167 快捷键速查表（§7.5）：与 Cmd/Ctrl+/ 同入口
       { id: "help.shortcuts", label: t("shortcuts.open"), run: () => setShortcutsOpen(true) },
       {
@@ -1364,6 +1369,29 @@ export default function App({
             <RailIcon view="packs" />
           </button>
           <span className="rail-spacer" />
+          {/* v2.12 全局活动视图（design-v2.md §6）：按需浮层入口（克制——非常驻） */}
+          <button
+            type="button"
+            className="rail-btn"
+            data-testid="rail-activity"
+            title={t("activity.title")}
+            aria-label={t("activity.title")}
+            onClick={() => setActivityOpen(true)}
+          >
+            <svg
+              width={17}
+              height={17}
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={1.8}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M3 12h4l3-8 4 16 3-8h4" />
+            </svg>
+          </button>
           <button
             type="button"
             className="rail-btn"
@@ -1769,6 +1797,20 @@ export default function App({
       <ToastHost t={t} />
       {/* 快捷键速查表（§7.5 v1.167） */}
       <ShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} t={t} />
+      {/* v2.12 全局活动视图（design-v2.md §6）：跨项目任务总览按需浮层——行点击
+          经 activateProject + selectSession 既有链跳转（跨项目隐式激活）。 */}
+      <GlobalActivityDialog
+        open={activityOpen}
+        onClose={() => setActivityOpen(false)}
+        projects={projects}
+        t={t}
+        onOpenSession={async (pid, sid) => {
+          const target = projects.find((p) => p.id === pid);
+          if (target && target.id !== projectIdRef.current) await activateProject(target);
+          selectSession(pid, sid);
+          setActivityOpen(false);
+        }}
+      />
       <FileFinder
         open={finderOpen}
         onClose={() => setFinderOpen(false)}

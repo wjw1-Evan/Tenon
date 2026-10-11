@@ -527,5 +527,9 @@
   "review.ctx_tools": "工具輸出",
   "review.cost_in": "入",
   "review.cost_out": "出",
-  "review.cost_total": "累計成本"
+  "review.cost_total": "累計成本",
+  "palette.activity": "全域活動",
+  "activity.title": "全域活動",
+  "activity.empty": "暫無任務",
+  "activity.running_count": "{count} 個執行中"
 }

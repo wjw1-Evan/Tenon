@@ -527,5 +527,9 @@
   "review.ctx_tools": "Sortie d'outils",
   "review.cost_in": "entrée",
   "review.cost_out": "sortie",
-  "review.cost_total": "Coût total"
+  "review.cost_total": "Coût total",
+  "palette.activity": "Activité globale",
+  "activity.title": "Activité globale",
+  "activity.empty": "Aucune tâche pour le moment",
+  "activity.running_count": "{count} en cours"
 }

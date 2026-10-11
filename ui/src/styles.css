@@ -3586,3 +3586,100 @@ button:disabled { opacity: 0.45; cursor: default; }
   direction: ltr;
   text-align: left;
 }
+/* v2.12 全局活动视图（design-v2.md §6）：跨项目任务总览按需浮层 */
+.activity-pane {
+  width: min(560px, 92vw);
+  max-height: min(560px, 80vh);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg, #0e1015);
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+.activity-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border, #2a2f3a);
+  font-size: 13px;
+}
+.activity-running {
+  font-size: 11px;
+  color: #d9a514;
+}
+.activity-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 8px 0;
+}
+.activity-empty {
+  padding: 24px 16px;
+  text-align: center;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+.activity-group-head {
+  padding: 6px 16px 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.activity-group ul {
+  list-style: none;
+  margin: 0;
+  padding: 0 8px;
+}
+.activity-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--fg, #e6e8ee);
+  font: inherit;
+  font-size: 12px;
+  text-align: start;
+  cursor: pointer;
+}
+.activity-row:hover {
+  background: var(--accent-soft);
+}
+.activity-row.running .activity-title {
+  color: var(--accent-text);
+}
+.activity-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+.activity-dot.live {
+  animation: review-pulse 1.2s ease-in-out infinite;
+}
+.activity-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.activity-subtasks {
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+.activity-time {
+  font-size: 11px;
+  color: var(--fg-muted);
+  flex: none;
+}

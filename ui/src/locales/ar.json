@@ -527,5 +527,9 @@
   "review.ctx_tools": "مخرجات الأدوات",
   "review.cost_in": "وارد",
   "review.cost_out": "صادر",
-  "review.cost_total": "التكلفة الإجمالية"
+  "review.cost_total": "التكلفة الإجمالية",
+  "palette.activity": "النشاط العام",
+  "activity.title": "النشاط العام",
+  "activity.empty": "لا مهام بعد",
+  "activity.running_count": "{count} قيد التشغيل"
 }

@@ -527,5 +527,9 @@
   "review.ctx_tools": "Tool output",
   "review.cost_in": "in",
   "review.cost_out": "out",
-  "review.cost_total": "Total cost"
+  "review.cost_total": "Total cost",
+  "palette.activity": "Global activity",
+  "activity.title": "Global activity",
+  "activity.empty": "No tasks yet",
+  "activity.running_count": "{count} running"
 }

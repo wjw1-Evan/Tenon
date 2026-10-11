@@ -527,5 +527,9 @@
   "review.ctx_tools": "工具输出",
   "review.cost_in": "入",
   "review.cost_out": "出",
-  "review.cost_total": "累计成本"
+  "review.cost_total": "累计成本",
+  "palette.activity": "全局活动",
+  "activity.title": "全局活动",
+  "activity.empty": "暂无任务",
+  "activity.running_count": "{count} 个运行中"
 }

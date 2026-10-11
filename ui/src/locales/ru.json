@@ -527,5 +527,9 @@
   "review.ctx_tools": "Вывод инструментов",
   "review.cost_in": "вход",
   "review.cost_out": "выход",
-  "review.cost_total": "Общая стоимость"
+  "review.cost_total": "Общая стоимость",
+  "palette.activity": "Глобальная активность",
+  "activity.title": "Глобальная активность",
+  "activity.empty": "Задач пока нет",
+  "activity.running_count": "{count} в работе"
 }
