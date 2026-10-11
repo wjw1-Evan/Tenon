@@ -211,8 +211,11 @@ jobs:
         run: |
           set -euo pipefail
           tag="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}"
-          assets="$(find release-assets -type f -print0 | xargs -0 echo)"
-          gh release create "$tag" $assets updater/latest.json \
+          # 产物文件名含空格（「Tenon 0.2.0.dmg」形态）——必须 null 分隔数组
+          # 传递，字符串 + 不加引号展开会按空格分词击碎文件名（v0.2.0 发布
+          # 实测：gh 收到「release-assets/aarch64-apple-darwin-Tenon」残片）
+          mapfile -d '' assets < <(find release-assets -type f -print0)
+          gh release create "$tag" "${assets[@]}" updater/latest.json \
             --title "Tenon ${tag#v}" \
             --notes-file release-notes.md \
             --verify-tag \
