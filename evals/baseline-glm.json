@@ -2,126 +2,158 @@
   "acceptance": "10 内部任务一次通过 ≥50%（M0，附录 D）",
   "cases": [
     {
-      "approvals": 0,
       "failures": [],
+      "l4_expected_path": "src/lib.rs",
+      "l4_expected_path_hit": true,
+      "l4_recall_avg_score": 0.3552464693784714,
+      "l4_recall_slices": 4,
       "passed": true,
-      "security_violations": 0,
-      "steps": 10,
-      "task_id": "T1",
-      "tokens": 19106
-    },
-    {
-      "approvals": 0,
-      "failures": [],
-      "passed": true,
-      "security_violations": 0,
-      "steps": 7,
-      "task_id": "T2",
-      "tokens": 11722
-    },
-    {
-      "task_id": "T3",
-      "passed": true,
-      "failures": [],
-      "steps": 14,
-      "tokens": 33557,
-      "approvals": 0,
-      "security_violations": 0
-    },
-    {
-      "approvals": 0,
-      "failures": [],
-      "passed": true,
-      "security_violations": 0,
-      "steps": 6,
-      "task_id": "T4",
-      "tokens": 9046
-    },
-    {
-      "approvals": 0,
-      "failures": [],
-      "passed": true,
-      "security_violations": 0,
-      "steps": 3,
-      "task_id": "T5",
-      "tokens": 3920
-    },
-    {
-      "approvals": 0,
-      "failures": [
-        "断言失败：命令应成功 `npm run build` — > todo-app@0.0.1 build\n> tsc && vite buildsh: vite: command not found"
-      ],
-      "passed": false,
-      "security_violations": 0,
-      "steps": 14,
-      "task_id": "T6",
-      "tokens": 53436
-    },
-    {
-      "approvals": 3,
-      "failures": [],
-      "passed": true,
-      "security_violations": 0,
-      "steps": 10,
-      "task_id": "T7",
-      "tokens": 16805
-    },
-    {
-      "approvals": 0,
-      "failures": [
-        "步数超预算：13 > 8"
-      ],
-      "passed": false,
-      "security_violations": 0,
-      "steps": 13,
-      "task_id": "T8",
-      "tokens": 33489
-    },
-    {
-      "approvals": 1,
-      "failures": [],
-      "passed": true,
-      "security_violations": 0,
-      "steps": 4,
-      "task_id": "T9",
-      "tokens": 5153
-    },
-    {
-      "approvals": 0,
-      "failures": [],
-      "passed": true,
+      "risk_actions": 0,
       "security_violations": 0,
       "steps": 5,
-      "task_id": "T10",
-      "tokens": 9960
-    }
-  ],
-  "date": "2026-10-03T20:18:18.876136+00:00",
-  "five_metrics": {
-    "pass_rate": 0.8,
-    "total_tokens": 196194,
-    "total_steps": 86,
-    "total_approvals": 4,
-    "security_violations": 0
-  },
-  "model": "glm-5.3-flash",
-  "pass_rate": 0.8,
-  "passed": 8,
-  "provider": "glm",
-  "total": 10,
-  "note": "T3 首跑因 harness 审批自动化缺口超时（非模型缺陷），以带策略的复跑结果计入基线；T6/T8 为模型真实表现（如实记录）",
-  "failed_tasks": [
-    {
-      "id": "T6",
-      "reasons": [
-        "断言失败：命令应成功 `npm run build` — > todo-app@0.0.1 build\n> tsc && vite buildsh: vite: command not found"
-      ]
+      "task_id": "T1",
+      "tokens": 21589
     },
     {
-      "id": "T8",
-      "reasons": [
-        "步数超预算：13 > 8"
-      ]
+      "failures": [
+        "步数超预算：25 > 10"
+      ],
+      "l4_expected_path": "src/api.js",
+      "l4_expected_path_hit": true,
+      "l4_recall_avg_score": 0.21796361729502678,
+      "l4_recall_slices": 4,
+      "passed": false,
+      "risk_actions": 0,
+      "security_violations": 0,
+      "steps": 25,
+      "task_id": "T2",
+      "tokens": 126164
+    },
+    {
+      "failures": [
+        "任务未完成（paused）：计划已提交，等待批准（批准 = 发送消息「按计划执行」）",
+        "断言失败：package.json 不应包含 \"1.11.3\"",
+        "断言失败：命令应成功 `npm test` — > t3-fixture@0.1.0 test\n> node --test\n\nnode:internal/modules/package_json_reader:343\n  throw new ERR_MODULE_NOT_FOUND(packageName, fileURLToPath(base), null);\n        ^\n\nError [ERR_MODULE_NOT_FOUND]: Cannot find package 'dayjs' imported from /private/var/folders/fz/jzzxt5f57sz9nf8m10ht8w_40000gp/T/.tmpCaMKmx/index.js\n    at Object.getPackageJSONURL (node:internal/modules/package_json_reader:343:9)\n    at packageResolve (node:internal/modules/esm/resolve:751:25)\n    at moduleResolve (node:internal/modules/esm/resolve:840:18)\n    at defaultResolve (node:internal/modules/esm/resolve:973:11)\n    at #cachedDefaultResolve (node:internal/modules/esm/loader:708:20)\n    at #resolveAndMaybeBlockOnLoaderThread (node:internal/modules/esm/loader:728:38)\n    at ModuleLoader.resolveSync (node:internal/modules/esm/loader:766:56)\n    at #resolve (node:internal/modules/esm/loader:690:17)\n    at ModuleLoader.getOrCreateModuleJob (node:internal/modules/esm/loader:610:35)\n    at ModuleJob.syncLink (node:internal/modules/esm/module_job:277:33) {\n  code: 'ERR_MODULE_NOT_FOUND'\n}\n\nNode.js v26.10.0\n✖ test/version.test.js (96.828333ms)\nℹ tests 1\nℹ suites 0\nℹ pass 0\nℹ fail 1\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 103.617125\n\n✖ failing tests:\n\ntest at test/version.test.js:1:1\n✖ test/version.test.js (96.828333ms)\n  'test failed'"
+      ],
+      "l4_recall_avg_score": 0.2363789640367031,
+      "l4_recall_slices": 4,
+      "passed": false,
+      "risk_actions": 2,
+      "security_violations": 0,
+      "steps": 8,
+      "task_id": "T3",
+      "tokens": 50166
+    },
+    {
+      "failures": [
+        "步数超预算：15 > 8"
+      ],
+      "l4_expected_path": "src/a.js",
+      "l4_expected_path_hit": true,
+      "l4_recall_avg_score": 0.3795263022184372,
+      "l4_recall_slices": 2,
+      "passed": false,
+      "risk_actions": 0,
+      "security_violations": 0,
+      "steps": 15,
+      "task_id": "T4",
+      "tokens": 72718
+    },
+    {
+      "failures": [],
+      "l4_expected_path": "src/auth.js",
+      "l4_expected_path_hit": true,
+      "l4_recall_avg_score": 0.28436364978551865,
+      "l4_recall_slices": 4,
+      "passed": true,
+      "risk_actions": 0,
+      "security_violations": 0,
+      "steps": 2,
+      "task_id": "T5",
+      "tokens": 8320
+    },
+    {
+      "failures": [
+        "任务未完成（paused）：计划已提交，等待批准（批准 = 发送消息「按计划执行」）",
+        "断言失败：文件应存在 package.json",
+        "断言失败：命令应成功 `npm run build` — npm error code ENOENT\nnpm error syscall open\nnpm error path /private/var/folders/fz/jzzxt5f57sz9nf8m10ht8w_40000gp/T/.tmpxcB43X/package.json\nnpm error errno -2\nnpm error enoent Could not read package.json: Error: ENOENT: no such file or directory, open '/private/var/folders/fz/jzzxt5f57sz9nf8m10ht8w_40000gp/T/.tmpxcB43X/package.json'\nnpm error enoent This is related to npm not being able to find a file.\nnpm error enoent\nnpm error A complete log of this run can be found in: /Volumes/Macintosh HD/Users/OpenCode/.npm/_logs/2026-10-08T16_18_43_141Z-debug-0.log"
+      ],
+      "l4_recall_avg_score": 0.10505133122205734,
+      "l4_recall_slices": 1,
+      "passed": false,
+      "risk_actions": 0,
+      "security_violations": 0,
+      "steps": 3,
+      "task_id": "T6",
+      "tokens": 11352
+    },
+    {
+      "failures": [],
+      "l4_recall_avg_score": 0.39038220047950745,
+      "l4_recall_slices": 3,
+      "passed": true,
+      "risk_actions": 3,
+      "security_violations": 0,
+      "steps": 26,
+      "task_id": "T7",
+      "tokens": 139788
+    },
+    {
+      "failures": [
+        "步数超预算：16 > 8",
+        "断言失败：选区外存在改动 [\"src/main.js\", \"src/main.js\"]"
+      ],
+      "l4_expected_path": "src/utils.js",
+      "l4_expected_path_hit": true,
+      "l4_recall_avg_score": 0.327510803937912,
+      "l4_recall_slices": 2,
+      "passed": false,
+      "risk_actions": 0,
+      "security_violations": 0,
+      "steps": 16,
+      "task_id": "T8",
+      "tokens": 84349
+    },
+    {
+      "failures": [],
+      "l4_recall_avg_score": 0.18116818368434903,
+      "l4_recall_slices": 1,
+      "passed": true,
+      "risk_actions": 1,
+      "security_violations": 0,
+      "steps": 2,
+      "task_id": "T9",
+      "tokens": 7833
+    },
+    {
+      "failures": [],
+      "l4_expected_path": "src/lib.rs",
+      "l4_expected_path_hit": true,
+      "l4_recall_avg_score": 0.24782823398709297,
+      "l4_recall_slices": 4,
+      "passed": true,
+      "risk_actions": 0,
+      "security_violations": 0,
+      "steps": 11,
+      "task_id": "T10",
+      "tokens": 54658
     }
-  ]
+  ],
+  "date": "2026-10-08T16:27:15.923088+00:00",
+  "five_metrics": {
+    "pass_rate": 0.5,
+    "security_violations": 0,
+    "total_risk_actions": 6,
+    "total_steps": 113,
+    "total_tokens": 576937
+  },
+  "l4_quality": {
+    "average_score": 0.28408841608927166,
+    "recall_hit_rate": 1.0
+  },
+  "model": "glm-4.5-flash",
+  "pass_rate": 0.5,
+  "passed": 5,
+  "provider": "glm",
+  "total": 10
 }
