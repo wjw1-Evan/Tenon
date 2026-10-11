@@ -182,6 +182,39 @@ async fn compaction_summary_failure_falls_back_to_elide() {
 }
 
 #[tokio::test]
+async fn run_task_records_run_row_with_outcome() {
+    // v2.15 Task/Run 分离：run_task 全生命周期落 runs 表——done 行带结束 seq；
+    // error 收尾（script 故障）记 outcome=error + 原因 detail。
+    let (dir, session, store, _p) = setup(vec![ScriptedReply::Text("完成".into())]).await;
+    std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+    let outcome = session.run_task("解释").await;
+    assert!(matches!(outcome, TaskOutcome::Done(_)));
+    {
+        let mut st = store.lock().await;
+        let runs = st.session_runs(&session.session_id).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].outcome.as_deref(), Some("done"));
+        assert!(runs[0].last_seq.unwrap_or(0) > 0);
+        assert!(runs[0].finished_at.is_some());
+        assert!(runs[0].resumed_from.is_none());
+    }
+
+    // error 收尾：mock 脚本故障（NonTransient）→ run 行 outcome=error 带原因
+    let (_d2, session2, store2, _p2) = setup(vec![
+        ScriptedReply::NonTransient("401 unauthorized".into()),
+        ScriptedReply::Text("不应到达".into()),
+    ])
+    .await;
+    let outcome2 = session2.run_task("任务").await;
+    assert!(matches!(outcome2, TaskOutcome::Error(_)));
+    let mut st2 = store2.lock().await;
+    let runs2 = st2.session_runs(&session2.session_id).unwrap();
+    assert_eq!(runs2.len(), 1);
+    assert_eq!(runs2[0].outcome.as_deref(), Some("error"));
+    assert!(runs2[0].outcome_detail.contains("401"));
+}
+
+#[tokio::test]
 async fn compaction_threshold_configurable_via_agent_config() {
     // v2.13 §10.2 阈值自适应：AgentConfig.compaction_input_tokens 注入生效——
     // 阈值收紧到 200 token 时（历史含 >KEEP_RECENT 个可省略工具结果）触发自动

@@ -1485,7 +1485,7 @@ impl DaemonState {
             tracing::info!("局域网访问已开启（--lan，0.0.0.0）：配对码见设置面板「局域网」分类");
         }
         let state = Self {
-            store: Arc::new(Mutex::new(store)),
+            store: Arc::new(Mutex::new(boot_recover_orphans(store))),
             lsp: {
                 // v1.202 §8.5 / §12.1 写回通道接线：applyEdit 守卫放行后落盘。
                 // FileService 为无状态守卫包装（resolve 做第二道前缀校验），
@@ -2131,5 +2131,114 @@ impl DaemonState {
             }
             self.set_l4_status(project_id, "ready", None);
         }
+    }
+}
+
+/// v2.15 daemon 启动孤儿恢复（design-v2.md §3.1）：上次崩溃 / 被杀遗留——
+/// ①库内 status ∈ 运行态的会话统一置 paused 并补一条 error 事件（运行态不再
+/// 悬死；「上下文已保留，发送消息即新 Run 续跑」）②未收尾 Run 行补
+/// interrupted（finish_run 幂等守卫使干净退出不受影响）。消费 store 所有权，
+/// 恢复后原样交还。
+fn boot_recover_orphans(store: Store) -> Store {
+    let running_like = [
+        tenon_store::SessionStatus::Sensing,
+        tenon_store::SessionStatus::Deciding,
+        tenon_store::SessionStatus::Executing,
+        tenon_store::SessionStatus::Verifying,
+        tenon_store::SessionStatus::Fixing,
+        tenon_store::SessionStatus::AwaitingConfirm,
+    ];
+    let mut store = store;
+    let orphans: Vec<String> = store
+        .list_all_sessions()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|s| running_like.contains(&s.status))
+        .map(|s| s.id)
+        .collect();
+    for sid in &orphans {
+        if store
+            .set_session_status(sid, tenon_store::SessionStatus::Paused)
+            .is_ok()
+        {
+            let _ = store.append_event(
+                sid,
+                tenon_store::EventKind::Error,
+                &serde_json::json!({
+                    "interrupted": "daemon 重启中断——上下文已保留，发送消息即新 Run 续跑"
+                }),
+            );
+        }
+    }
+    match store.finish_interrupted_runs("daemon 重启") {
+        Ok(n) if n > 0 => {
+            tracing::info!(
+                "孤儿恢复：{n} 个未收尾 Run 置 interrupted；{} 个运行态会话置 paused",
+                orphans.len()
+            )
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!("孤儿 Run 收尾失败: {e}"),
+    }
+    if !orphans.is_empty() {
+        tracing::info!(
+            "孤儿恢复：{} 个运行态会话置 paused（可发消息续跑）",
+            orphans.len()
+        );
+    }
+    store
+}
+
+#[cfg(test)]
+mod boot_recover_tests {
+    use super::*;
+
+    /// v2.15 孤儿恢复：运行态会话置 paused + error 事件；未收尾 Run 置
+    /// interrupted；终态会话与已收尾 Run 不受影响。
+    #[test]
+    fn boot_recover_orphans_marks_running_and_open_runs() {
+        let mut store = tenon_store::Store::open_in_memory().unwrap();
+        let pid = store.upsert_project("/tmp/p1").unwrap().id;
+        let s1 = store.create_session(&pid, "m").unwrap().id;
+        store
+            .set_session_status(&s1, tenon_store::SessionStatus::Executing)
+            .unwrap();
+        let s2 = store.create_session(&pid, "m").unwrap().id;
+        store
+            .set_session_status(&s2, tenon_store::SessionStatus::Done)
+            .unwrap();
+        store.begin_run(&s1, None).unwrap(); // 孤儿 Run（故意不收尾）
+        let closed_run = store.begin_run(&s2, None).unwrap();
+        store.finish_run(closed_run, "done", "", Some(5)).unwrap();
+
+        let mut store = boot_recover_orphans(store);
+
+        let sessions: Vec<tenon_store::Session> = store
+            .list_all_sessions()
+            .unwrap()
+            .into_iter()
+            .filter(|s| s.id == s1 || s.id == s2)
+            .collect();
+        let s1_row = sessions.iter().find(|s| s.id == s1).unwrap();
+        assert_eq!(s1_row.status, tenon_store::SessionStatus::Paused);
+        let s2_row = sessions.iter().find(|s| s.id == s2).unwrap();
+        assert_eq!(s2_row.status, tenon_store::SessionStatus::Done);
+        // 孤儿会话补 error 事件（含续跑指引）
+        let events = store.events(&s1).unwrap();
+        assert!(events
+            .iter()
+            .any(|e| e.kind == tenon_store::EventKind::Error
+                && e.payload.to_string().contains("新 Run 续跑")));
+        // Run 收尾：孤儿 interrupted、已收尾 done 不变
+        let runs1 = store.session_runs(&s1).unwrap();
+        assert_eq!(runs1[0].outcome.as_deref(), Some("interrupted"));
+        assert!(runs1[0].finished_at.is_some());
+        let runs2 = store.session_runs(&s2).unwrap();
+        assert_eq!(runs2[0].outcome.as_deref(), Some("done"));
+        assert_eq!(runs2[0].last_seq, Some(5));
+        // 幂等：干净库再跑一次无副作用
+        let mut store = boot_recover_orphans(store);
+        assert_eq!(store.finish_interrupted_runs("again").unwrap(), 0);
+        assert!(store.create_session(&pid, "m").is_ok());
     }
 }

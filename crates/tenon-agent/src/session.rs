@@ -1530,6 +1530,14 @@ impl AgentSession {
                 "任务进行中（暂停 = 挂起待恢复）：请先停止或等待完成".into(),
             );
         }
+        // v2.15 Task/Run 分离（design-v2.md §3.1）：本次执行尝试登记一行 Run
+        // （TaskOutcome → outcome 收尾；重入拒绝不开 Run——守卫在前）。
+        let run_id = self
+            .store
+            .lock()
+            .await
+            .begin_run(&self.session_id, None)
+            .ok();
         let outcome = self.run_task_inner(user_text, task_images).await;
         // 任务收尾后排空残留控制命令（v1.166）：Stop/Pause 发出时任务可能恰好
         // 在最后一段无检查点的流式回答/验证中收尾，命令滞留通道会让下一个任务
@@ -1545,6 +1553,24 @@ impl AgentSession {
             }
         }
         self.running.store(false, Ordering::SeqCst);
+        // v2.15 Run 收尾：TaskOutcome → outcome（done / error / paused / stopped）
+        // + 原因 detail + 结束时事件 seq（审计锚点）；写失败仅留痕不影响任务结果。
+        if let Some(rid) = run_id {
+            let (outcome_label, detail) = match &outcome {
+                TaskOutcome::Done(_) => ("done", String::new()),
+                TaskOutcome::Error(e) => ("error", e.clone()),
+                TaskOutcome::Paused { reason, .. } => ("paused", reason.clone()),
+            };
+            let last_seq = self.store.lock().await.latest_seq(&self.session_id).ok();
+            let n = self
+                .store
+                .lock()
+                .await
+                .finish_run(rid, outcome_label, &detail, last_seq);
+            if !matches!(n, Ok(1)) {
+                tracing::warn!("run {rid} 收尾落库异常: {n:?}");
+            }
+        }
         outcome
     }
 

@@ -7165,3 +7165,79 @@ async fn spawn_subagents_full_path_via_http() {
         "主根不受子代理影响"
     );
 }
+
+#[tokio::test]
+async fn session_runs_endpoint_lists_run_history() {
+    // v2.15 Task/Run 分离：任务跑完 → GET /session/:id/runs 返回 done 行
+    //（含 finished_at / last_seq / resumed_from=null）。
+    let (dir, port, token) = start_daemon(vec![
+        ScriptedReply::Tool {
+            name: "apply_patch".into(),
+            args: serde_json::json!({"file": "a.txt", "range": null, "content": "hi\n"}),
+        },
+        ScriptedReply::Text("完成".into()),
+    ])
+    .await;
+    let client = client_with_token(&token);
+    let pid = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": dir.path().to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let sid = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({ "project_id": pid }))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap()["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    client
+        .post(format!("{}/session/{sid}/message", base(port)))
+        .json(&serde_json::json!({ "text": "写文件" }))
+        .send()
+        .await
+        .unwrap();
+    // 轮询至终态
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        assert!(std::time::Instant::now() < deadline, "任务 60s 未完成");
+        let s = client
+            .get(format!("{}/session/{sid}", base(port)))
+            .send()
+            .await
+            .unwrap()
+            .json::<serde_json::Value>()
+            .await
+            .unwrap();
+        if s["status"].as_str() == Some("done") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    }
+    let runs = client
+        .get(format!("{}/session/{sid}/runs", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    let list = runs["runs"].as_array().unwrap();
+    assert_eq!(list.len(), 1, "一次执行一行 Run: {runs}");
+    assert_eq!(list[0]["outcome"], "done");
+    assert!(list[0]["finished_at"].is_string());
+    assert!(list[0]["last_seq"].as_i64().unwrap_or(0) > 0);
+    assert!(list[0]["resumed_from"].is_null());
+}

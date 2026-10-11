@@ -322,6 +322,23 @@ pub struct Approval {
     pub decided_at: Option<String>,
 }
 
+/// v2.15 Task/Run 分离（design-v2.md §3.1）：一次执行尝试（Run）的审计行。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunRow {
+    pub id: i64,
+    pub session_id: String,
+    pub started_at: String,
+    /// NULL = 进行中（仅 daemon 崩溃后短暂残留，启动恢复补 interrupted）。
+    pub finished_at: Option<String>,
+    /// done | error | paused | interrupted | stopped…（TaskOutcome 映射）。
+    pub outcome: Option<String>,
+    pub outcome_detail: String,
+    /// 结束时事件 seq（审计锚点）；NULL = 未收尾。
+    pub last_seq: Option<i64>,
+    /// 前驱 Run id（resume 续跑链）；NULL = 该 Task 首次执行。
+    pub resumed_from: Option<i64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelUsage {
     pub id: i64,
@@ -478,6 +495,18 @@ CREATE TABLE IF NOT EXISTS model_usage (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_model_usage_session ON model_usage(session_id);
+
+CREATE TABLE IF NOT EXISTS runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    outcome TEXT,
+    outcome_detail TEXT NOT NULL DEFAULT '',
+    last_seq INTEGER,
+    resumed_from INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_runs_session ON runs(session_id);
 
 CREATE TABLE IF NOT EXISTS model_usage_monthly (
     month TEXT PRIMARY KEY,
@@ -1683,6 +1712,69 @@ impl Store {
             cost_usd,
             created_at: now,
         })
+    }
+
+    /// v2.15 Task/Run 分离（design-v2.md §3.1）：开跑登记一行 Run，返回 run id。
+    /// `resumed_from` = 前驱 Run id（resume 续跑链）；None = 该 Task 首次执行。
+    pub fn begin_run(&mut self, session_id: &str, resumed_from: Option<i64>) -> Result<i64> {
+        let now = Self::now();
+        self.conn.execute(
+            "INSERT INTO runs (session_id, started_at, resumed_from) VALUES (?1, ?2, ?3)",
+            rusqlite::params![session_id, now, resumed_from],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Run 收尾（TaskOutcome → outcome：done / error / paused / interrupted /
+    /// stopped 等；原因入 detail；结束时事件 seq 作审计锚点）。幂等防护：仅未
+    /// 收尾（finished_at IS NULL）的 Run 可写。
+    pub fn finish_run(
+        &mut self,
+        run_id: i64,
+        outcome: &str,
+        detail: &str,
+        last_seq: Option<i64>,
+    ) -> Result<usize> {
+        let now = Self::now();
+        let n = self.conn.execute(
+            "UPDATE runs SET finished_at = ?2, outcome = ?3, outcome_detail = ?4, last_seq = ?5
+             WHERE id = ?1 AND finished_at IS NULL",
+            rusqlite::params![run_id, now, outcome, detail, last_seq],
+        )?;
+        Ok(n)
+    }
+
+    /// 会话的 Run 列表（旧→新；审计端点消费）。
+    pub fn session_runs(&mut self, session_id: &str) -> Result<Vec<RunRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, session_id, started_at, finished_at, outcome, outcome_detail, last_seq, resumed_from
+             FROM runs WHERE session_id = ?1 ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map([session_id], |r| {
+            Ok(RunRow {
+                id: r.get(0)?,
+                session_id: r.get(1)?,
+                started_at: r.get(2)?,
+                finished_at: r.get(3)?,
+                outcome: r.get(4)?,
+                outcome_detail: r.get(5)?,
+                last_seq: r.get(6)?,
+                resumed_from: r.get(7)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// daemon 启动孤儿恢复（v2.15）：全部未收尾 Run 补 interrupted——返回受影响
+    /// 行数（正常为 0：上次 daemon 干净退出）。
+    pub fn finish_interrupted_runs(&mut self, detail: &str) -> Result<usize> {
+        let now = Self::now();
+        let n = self.conn.execute(
+            "UPDATE runs SET finished_at = ?1, outcome = 'interrupted', outcome_detail = ?2
+             WHERE finished_at IS NULL",
+            rusqlite::params![now, detail],
+        )?;
+        Ok(n)
     }
 
     pub fn session_usage(&mut self, session_id: &str) -> Result<Vec<ModelUsage>> {

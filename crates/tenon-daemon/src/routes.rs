@@ -64,6 +64,7 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
         .route("/session/{id}/unarchive", post(unarchive_session))
         .route("/session/{id}", delete(delete_session))
         .route("/session/{id}/trace", get(session_trace))
+        .route("/session/{id}/runs", get(session_runs))
         .route("/session/{id}/checkpoints", get(session_checkpoints))
         .route("/checkpoint/{id}/rollback", post(checkpoint_rollback))
         .route("/session/{id}/model", post(switch_session_model))
@@ -1641,6 +1642,15 @@ async fn session_checkpoints(
     let mut store = state.store.lock().await;
     match store.checkpoints(&id) {
         Ok(cps) => Json(json!({"checkpoints": cps})).into_response(),
+        Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+/// v2.15 Task/Run 分离（design-v2.md §3.1）：会话的 Run 列表（执行尝试审计）。
+async fn session_runs(State(state): State<Arc<DaemonState>>, Path(id): Path<String>) -> Response {
+    let mut store = state.store.lock().await;
+    match store.session_runs(&id) {
+        Ok(runs) => Json(json!({"runs": runs})).into_response(),
         Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }

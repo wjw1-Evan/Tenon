@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v2.14** |
-| 日期 | 2026-10-11 |
+| 版本 | **v2.15** |
+| 日期 | 2026-10-12 |
 | 状态 | 定稿，M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 
@@ -721,7 +721,7 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
   2. **整体恢复 restore**（高级）：`read-tree` + `checkout-index -a -f` 回到快照全量状态（含用户手改，预览警示）；
 - **撤销回滚（unrevert）**：每次回滚前自动追加快照（记录回滚前状态），时间轴支持一键撤销最近一次回滚——回滚是双向操作；
 - **保留与清理**（v1.93 接线）：shadow 库按 `checkpoint.keep_days`（默认 7 天）周期 `git gc --prune`（daemon 周期任务，默认每小时；项目 runtime 回收时顺带执行）——仅影响「checkpoint 整体恢复」的可达快照对象；checkpoint 记录与事件日志不受此限（会话归档策略见 §14.2）；`keep_last` / `checkpoint.enabled` 字段已删（前者无独立机制，后者可静默关闭快照、破坏回滚安全故事）；
-- **崩溃恢复语义**：恢复 = 回滚到最近快照 + 依据事件日志重建会话上下文；EXECUTING 中崩溃不承诺原地续跑；
+- **崩溃恢复语义**：恢复 = 回滚到最近快照 + 依据事件日志重建会话上下文；EXECUTING 中崩溃不承诺原地续跑；**Task/Run 分离与 Run 级恢复（v2.15，design-v2.md §3.1——Session 双重身份拆解的执行审计面）**：store 新增 `runs` 表（`id / session_id / started_at / finished_at / outcome / outcome_detail / last_seq / resumed_from`）——Task（= 既有 sessions 行，持久对话与上下文载体）的**每次执行尝试**（run_task 调用，含 resume 续跑）记一行 Run；`begin_run` 开跑登记（`resumed_from` 指向前驱 Run 构成恢复链）、`finish_run` 收尾（TaskOutcome → outcome：done / error / paused / interrupted + 原因入 detail + 结束时事件 seq 作审计锚点）；**daemon 启动孤儿恢复**：启动时将库内 status ∈ 运行态的会话（上次 daemon 崩溃 / 被杀遗留）统一置 paused 并补一条 error 事件（「daemon 重启中断——上下文已保留，发送消息即新 Run 续跑」），未收尾 Run 行补 `outcome=interrupted, detail=daemon 重启`——运行态不再悬死、执行历史可审计；续跑语义 = 用户再发消息（新 Run，L2 记忆 + 事件溯源承载上下文连续性），不自动重放原地续跑（与「必可回滚」不变式一致）；`GET /session/:id/runs` 返回 Run 列表（审计端点，UI 消费列后续）；发送队列随 Task 落库列 P3 余项。
 - 快照库不可用（关闭 / 磁盘满 / 损坏）→ 自动降交互档（「自动 = 必可回滚」不变式）；
 - 事件溯源：工具调用 / diff / 风险级别 / **用户编辑**全量追加日志，只增不删（归档策略见 §14.2）。
 
