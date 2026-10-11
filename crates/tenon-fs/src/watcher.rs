@@ -284,14 +284,16 @@ mod tests {
     #[test]
     fn native_backend_delivers_events() {
         // 默认路径（v1.80 原生事件后端）：注册即返回、写入即有事件。
-        // 就绪预算放宽到 10s：本用例对象是「原生事件可达」而非激活链路的
+        // 就绪预算放宽到 30s：本用例对象是「原生事件可达」而非激活链路的
         // 2s 快速降级（后者由 daemon 集成测试覆盖），fseventsd 高负载机器
-        // 上注册可达数秒（v1.128）。
+        // 上注册可达数秒（v1.128；v2.10 实测 sample 钳到 FSEventStreamStart
+        // 的 f2d_register_rpc mach RPC——长时运行开发机对新路径注册延迟波动
+        // 至 10s 以上，10s 预算已不够）。事件投递等待同放宽，防投递尾部超时。
         let dir = tempfile::tempdir().unwrap();
-        let watcher = FileWatcher::watch_with_budget(dir.path(), Duration::from_secs(10))
+        let watcher = FileWatcher::watch_with_budget(dir.path(), Duration::from_secs(30))
             .expect("native watcher");
         std::fs::write(dir.path().join("native.txt"), "hi").unwrap();
-        let events = watcher.next_batch(Duration::from_secs(10));
+        let events = watcher.next_batch(Duration::from_secs(30));
         assert!(
             events.iter().any(|e| e.path == "native.txt"),
             "原生后端应收到 native.txt 事件，实际: {events:?}"
