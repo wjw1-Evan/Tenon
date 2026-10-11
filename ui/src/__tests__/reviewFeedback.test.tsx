@@ -76,6 +76,16 @@ beforeEach(() => {
             type: "diagnostics",
             payload: { verification: "no new diagnostics" },
           },
+          {
+            seq: 4,
+            type: "context_usage",
+            payload: {
+              breakdown: { system: 700, l1: 0, history: 200, l5: 0, tools: 100 },
+              est_total: 1000,
+              usage: { input_tokens: 1000, output_tokens: 10, cost_usd: 0.001 },
+              totals: { input_tokens: 1000, output_tokens: 10, cost_usd: 0.001 },
+            },
+          },
         ],
       });
     if (url.endsWith("/session/s-a"))
@@ -146,7 +156,7 @@ describe("审查面 diff 级反馈 App 接线（v2.7）", () => {
 
   it("v2.8 审查摘要卡：事件流上提渲染子任务 / 产物 / 证据", async () => {
     render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/proj-a" />);
-    await waitFor(() => expect(screen.getByTestId("review-pane")).toBeTruthy(), { timeout: 5000 });
+    await waitFor(() => expect(screen.getByTestId("review-pane")).toBeTruthy(), { timeout: 10_000 });
     const digest = await waitFor(() => {
       const node = screen.getByTestId("review-digest");
       expect(node).toBeTruthy();
@@ -157,5 +167,18 @@ describe("审查面 diff 级反馈 App 接线（v2.7）", () => {
     expect(screen.getByTestId("review-artifacts")).toHaveTextContent("src/app.ts");
     expect(screen.getByTestId("review-evidence")).toHaveTextContent("no new diagnostics");
     expect(digest).toBeTruthy();
+  });
+
+  it("v2.9 运行仪表：context_usage 事件上提渲染占比条与累计成本", async () => {
+    render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/proj-a" />);
+    await waitFor(() => expect(screen.getByTestId("review-pane")).toBeTruthy(), { timeout: 10_000 });
+    await waitFor(() => expect(screen.getByTestId("review-gauges")).toBeTruthy(), { timeout: 10_000 });
+    const segs = screen.getByTestId("review-ctx-bar").querySelectorAll(".review-ctx-seg");
+    expect(segs).toHaveLength(5);
+    expect(segs[0].getAttribute("style")).toContain("70%");
+    expect(screen.getByTestId("review-ctx-legend").textContent).toContain("700");
+    const cost = screen.getByTestId("review-ctx-cost").textContent ?? "";
+    expect(cost).toContain("1000");
+    expect(cost).toContain("0.0010");
   });
 });

@@ -518,5 +518,14 @@
   "review.plan_title": "计划",
   "review.subtasks_title": "子任务",
   "review.artifacts_title": "改动产物",
-  "review.evidence_title": "验证证据"
+  "review.evidence_title": "验证证据",
+  "review.ctx_title": "运行仪表",
+  "review.ctx_system": "系统提示",
+  "review.ctx_l1": "工作集",
+  "review.ctx_history": "历史对话",
+  "review.ctx_l5": "跨会话记忆",
+  "review.ctx_tools": "工具输出",
+  "review.cost_in": "入",
+  "review.cost_out": "出",
+  "review.cost_total": "累计成本"
 }

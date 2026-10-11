@@ -150,6 +150,10 @@ pub enum EventKind {
     ConfirmRequest,
     /// v2.0 档位确认决议（payload {tool, decision: allow_once|allow_session|deny}）。
     ConfirmResolved,
+    /// v2.9 运行仪表（design-v2.md §5③ 上下文观测 / §6）：每轮模型调用后发，
+    /// payload {breakdown:{system,l1,history,l5,tools}, est_total, usage, totals}
+    /// ——输入构成五桶字符近似估算 + 本次 usage（含 cost_usd）+ 会话累计。
+    ContextUsage,
 }
 
 impl EventKind {
@@ -179,6 +183,7 @@ impl EventKind {
             EventKind::ReasoningDelta => "reasoning_delta",
             EventKind::ConfirmRequest => "confirm_request",
             EventKind::ConfirmResolved => "confirm_resolved",
+            EventKind::ContextUsage => "context_usage",
         }
     }
 
@@ -208,6 +213,7 @@ impl EventKind {
             "reasoning_delta" => EventKind::ReasoningDelta,
             "confirm_request" => EventKind::ConfirmRequest,
             "confirm_resolved" => EventKind::ConfirmResolved,
+            "context_usage" => EventKind::ContextUsage,
             _ => return None,
         })
     }

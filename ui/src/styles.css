@@ -3513,3 +3513,64 @@ button:disabled { opacity: 0.45; cursor: default; }
 .review-digest-block li[data-status="in_progress"] .review-subtask-icon {
   color: #d9a514;
 }
+/* v2.9 运行仪表（design.md §7.2 / design-v2.md §5③）：五桶堆叠占比条 + 图例 + 成本行 */
+.review-ctx-bar {
+  display: flex;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--overlay, #1c212b);
+  margin-bottom: 6px;
+}
+.review-ctx-seg {
+  min-width: 1px;
+  height: 100%;
+}
+.review-ctx-seg.seg-system { background: #5c8af5; }
+.review-ctx-seg.seg-l1 { background: #3fb950; }
+.review-ctx-seg.seg-history { background: #d9a514; }
+.review-ctx-seg.seg-l5 { background: #a371f7; }
+.review-ctx-seg.seg-tools { background: #f0883e; }
+[data-theme="light"] .review-ctx-seg.seg-system { background: #2f6bec; }
+[data-theme="light"] .review-ctx-seg.seg-l1 { background: #1a7f37; }
+[data-theme="light"] .review-ctx-seg.seg-history { background: #9a6700; }
+[data-theme="light"] .review-ctx-seg.seg-l5 { background: #8250df; }
+[data-theme="light"] .review-ctx-seg.seg-tools { background: #bc4c00; }
+.review-ctx-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  list-style: none;
+  padding: 0;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+.review-ctx-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  margin-right: 4px;
+  vertical-align: baseline;
+}
+.review-ctx-dot.seg-system { background: #5c8af5; }
+.review-ctx-dot.seg-l1 { background: #3fb950; }
+.review-ctx-dot.seg-history { background: #d9a514; }
+.review-ctx-dot.seg-l5 { background: #a371f7; }
+.review-ctx-dot.seg-tools { background: #f0883e; }
+[data-theme="light"] .review-ctx-dot.seg-system { background: #2f6bec; }
+[data-theme="light"] .review-ctx-dot.seg-l1 { background: #1a7f37; }
+[data-theme="light"] .review-ctx-dot.seg-history { background: #9a6700; }
+[data-theme="light"] .review-ctx-dot.seg-l5 { background: #8250df; }
+[data-theme="light"] .review-ctx-dot.seg-tools { background: #bc4c00; }
+.review-ctx-tok {
+  font-variant-numeric: tabular-nums;
+}
+.review-ctx-cost {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}

@@ -83,4 +83,33 @@ describe("digestFromEvents（v2.8）", () => {
     expect(digest.evidence).toBeNull();
     expect(digestHasContent(digest)).toBe(false);
   });
+
+  it("v2.9 context_usage：最新快照覆盖、字段归一、缺 breakdown/totals 容错跳过", () => {
+    const gaugeEvent = (over: Record<string, unknown>) => ({
+      type: "context_usage",
+      payload: {
+        breakdown: { system: 900, l1: 100, history: 250, l5: 50, tools: 0 },
+        est_total: 1300,
+        totals: { input_tokens: 1400, output_tokens: 60, cost_usd: 0.0123 },
+        ...over,
+      },
+    });
+    let digest = digestFromEvents([gaugeEvent({})]);
+    expect(digest.context).toEqual({
+      breakdown: { system: 900, l1: 100, history: 250, l5: 50, tools: 0 },
+      estTotal: 1300,
+      totals: { inputTokens: 1400, outputTokens: 60, costUsd: 0.0123 },
+    });
+    expect(digestHasContent(digest)).toBe(true);
+    // 第二轮覆盖第一轮（仪表显示最新构成）
+    digest = digestFromEvents([
+      gaugeEvent({}),
+      gaugeEvent({ breakdown: { system: 800, l1: 0, history: 400, l5: 0, tools: 200 }, est_total: 1400 }),
+    ]);
+    expect(digest.context!.breakdown.tools).toBe(200);
+    // 缺段容错：不产生仪表（宁缺勿错）
+    digest = digestFromEvents([{ type: "context_usage", payload: { est_total: 100 } }]);
+    expect(digest.context).toBeNull();
+    expect(digestHasContent(digest)).toBe(false);
+  });
 });

@@ -5,7 +5,9 @@
 // ③ diff 级反馈回路（v2.7）：运行中审查面选中改动行 → 反馈卡发送（运行态入队）→
 //    回合完成队列消费 → 第二回合按反馈改码落盘——「边跑边审、审完即改」闭环；
 // ④ 审查摘要卡（v2.8）：运行中审查面呈现子任务进度与改动产物（mock E2E_SUBTASKS
-//    驱动；证据卡在回合尾验证阶段产生、面板随完成收起，由 vitest App 级覆盖）。
+//    驱动；证据卡在回合尾验证阶段产生、面板随完成收起，由 vitest App 级覆盖）；
+// ⑤ 运行仪表（v2.9）：daemon 每轮模型调用自动发 context_usage（零 mock 改动）——
+//    审查面占比条 + 图例 + 累计成本行真链路可见。
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -153,6 +155,14 @@ test("review digest cards surface subtask progress and changed files during a ru
   const artifacts = page.getByTestId("review-artifacts");
   await expect(artifacts).toBeVisible({ timeout: 30_000 });
   await expect(artifacts).toContainText(file);
+
+  // v2.9 运行仪表：daemon 每轮模型调用后自动发 context_usage（真链路零 mock
+  // 改动）——五段占比条 + 图例（含 tok 数）+ 累计成本行
+  const gauges = page.getByTestId("review-gauges");
+  await expect(gauges).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId("review-ctx-bar").locator(".review-ctx-seg")).toHaveCount(5);
+  await expect(page.getByTestId("review-ctx-legend")).toContainText("System prompt");
+  await expect(page.getByTestId("review-ctx-cost")).toContainText(/\$/);
 
   // 完成收起（摘要区随面板）
   await expect(page.getByTestId("agent-feed")).toContainText("E2E write complete", { timeout: 60_000 });

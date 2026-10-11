@@ -518,5 +518,14 @@
   "review.plan_title": "Plan",
   "review.subtasks_title": "Subtasks",
   "review.artifacts_title": "Changed files",
-  "review.evidence_title": "Verification"
+  "review.evidence_title": "Verification",
+  "review.ctx_title": "Runtime gauges",
+  "review.ctx_system": "System prompt",
+  "review.ctx_l1": "Working set",
+  "review.ctx_history": "History",
+  "review.ctx_l5": "Cross-session memory",
+  "review.ctx_tools": "Tool output",
+  "review.cost_in": "in",
+  "review.cost_out": "out",
+  "review.cost_total": "Total cost"
 }

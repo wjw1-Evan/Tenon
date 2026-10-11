@@ -9,6 +9,19 @@ export interface ReviewSubtaskItem {
   status: string;
 }
 
+/** v2.9 运行仪表（design-v2.md §5③）：最新一次 context_usage 事件的快照。 */
+export interface ReviewContextGauge {
+  breakdown: {
+    system: number;
+    l1: number;
+    history: number;
+    l5: number;
+    tools: number;
+  };
+  estTotal: number;
+  totals: { inputTokens: number; outputTokens: number; costUsd: number };
+}
+
 export interface ReviewDigest {
   /** 最新 plan_submitted 的计划清单；null = 无计划。 */
   plan: string[] | null;
@@ -18,6 +31,8 @@ export interface ReviewDigest {
   artifacts: string[];
   /** 最新验证结论（diagnostics.verification 非空）；null = 尚无。 */
   evidence: string | null;
+  /** v2.9 运行仪表（上下文构成 + 会话累计成本）；null = 尚无模型调用。 */
+  context: ReviewContextGauge | null;
 }
 
 export const EMPTY_REVIEW_DIGEST: ReviewDigest = {
@@ -25,6 +40,7 @@ export const EMPTY_REVIEW_DIGEST: ReviewDigest = {
   subtasks: [],
   artifacts: [],
   evidence: null,
+  context: null,
 };
 
 export const ARTIFACTS_LIMIT = 8;
@@ -41,6 +57,7 @@ export function digestFromEvents(events: DigestEvent[]): ReviewDigest {
   let plan: string[] | null = null;
   let subtasks: ReviewSubtaskItem[] = [];
   let evidence: string | null = null;
+  let context: ReviewContextGauge | null = null;
   const artifacts: string[] = [];
   for (const ev of events) {
     if (ev.type === "plan_submitted") {
@@ -57,6 +74,27 @@ export function digestFromEvents(events: DigestEvent[]): ReviewDigest {
     } else if (ev.type === "diagnostics") {
       const text = String(ev.payload.verification ?? "").trim();
       if (text) evidence = text;
+    } else if (ev.type === "context_usage") {
+      const b = ev.payload.breakdown as Record<string, unknown> | undefined;
+      const totals = ev.payload.totals as Record<string, unknown> | undefined;
+      if (b && totals) {
+        const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+        context = {
+          breakdown: {
+            system: num(b.system),
+            l1: num(b.l1),
+            history: num(b.history),
+            l5: num(b.l5),
+            tools: num(b.tools),
+          },
+          estTotal: num(ev.payload.est_total),
+          totals: {
+            inputTokens: num(totals.input_tokens),
+            outputTokens: num(totals.output_tokens),
+            costUsd: num(totals.cost_usd),
+          },
+        };
+      }
     } else if (ev.type === "patch_applied") {
       const changed = (ev.payload.output as { changed_files?: unknown } | undefined)?.changed_files;
       if (!Array.isArray(changed)) continue;
@@ -68,7 +106,7 @@ export function digestFromEvents(events: DigestEvent[]): ReviewDigest {
       }
     }
   }
-  return { plan, subtasks, artifacts, evidence };
+  return { plan, subtasks, artifacts, evidence, context };
 }
 
 /** digest 是否含任何可渲染区块（摘要区整体是否渲染的判据）。 */
@@ -77,6 +115,7 @@ export function digestHasContent(digest: ReviewDigest): boolean {
     (digest.plan !== null && digest.plan.length > 0) ||
     digest.subtasks.length > 0 ||
     digest.artifacts.length > 0 ||
-    digest.evidence !== null
+    digest.evidence !== null ||
+    digest.context !== null
   );
 }

@@ -518,5 +518,14 @@
   "review.plan_title": "계획",
   "review.subtasks_title": "하위 작업",
   "review.artifacts_title": "변경된 파일",
-  "review.evidence_title": "검증 증거"
+  "review.evidence_title": "검증 증거",
+  "review.ctx_title": "실행 계기",
+  "review.ctx_system": "시스템 프롬프트",
+  "review.ctx_l1": "워킹셋",
+  "review.ctx_history": "대화 기록",
+  "review.ctx_l5": "세션 간 메모리",
+  "review.ctx_tools": "도구 출력",
+  "review.cost_in": "입력",
+  "review.cost_out": "출력",
+  "review.cost_total": "누적 비용"
 }

@@ -176,6 +176,51 @@ async fn model_stream_is_persisted_and_joined_without_loss() {
 }
 
 #[tokio::test]
+async fn context_usage_event_carries_breakdown_and_totals() {
+    // v2.9 运行仪表（design-v2.md §5③）：每轮模型调用后发 context_usage——
+    // 五桶 breakdown（工具轮 tools>0、system>0）+ 本次 usage + 会话累计 totals。
+    let (_d, session, store, _p) = setup(
+        vec![
+            ScriptedReply::Tool {
+                name: "apply_patch".into(),
+                args: serde_json::json!({"file": "src/lib.rs", "range": null, "content": "fn m() {}\n"}),
+            },
+            ScriptedReply::Text("完成".into()),
+        ],
+    )
+    .await;
+    let outcome = session.run_task("修复").await;
+    assert!(matches!(outcome, TaskOutcome::Done(_)));
+    let mut st = store.lock().await;
+    let events = st.events(&session.session_id).unwrap();
+    let ctx: Vec<_> = events
+        .iter()
+        .filter(|e| e.kind == EventKind::ContextUsage)
+        .collect();
+    assert_eq!(ctx.len(), 2, "两轮模型调用各发一次");
+    let last = ctx.last().unwrap();
+    let b = last.payload.get("breakdown").unwrap();
+    let num = |k: &str| b.get(k).and_then(|v| v.as_u64()).unwrap_or(u64::MAX);
+    assert!(num("system") > 0, "系统提示桶非空");
+    assert!(num("tools") > 0, "工具结果轮 tools 桶非空");
+    let est_total = last.payload.get("est_total").and_then(|v| v.as_u64()).unwrap_or(0);
+    assert_eq!(
+        est_total,
+        num("system") + num("l1") + num("history") + num("l5") + num("tools"),
+        "est_total 为五桶之和"
+    );
+    let totals = last.payload.get("totals").unwrap();
+    assert!(
+        totals.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) > 0,
+        "会话累计 input>0"
+    );
+    assert!(
+        last.payload.get("usage").unwrap().get("cost_usd").is_some(),
+        "本次 usage 携带成本"
+    );
+}
+
+#[tokio::test]
 async fn patch_task_auto_mode_writes_verifies_and_checkpoints() {
     let (dir, session, store, _p) = setup(
         vec![

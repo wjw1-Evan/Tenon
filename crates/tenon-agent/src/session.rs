@@ -598,6 +598,59 @@ fn estimate_messages_tokens(messages: &[ChatMessage]) -> u64 {
         .sum()
 }
 
+/// v2.9 运行仪表（design-v2.md §5③ 上下文观测）：输入构成五桶分解——
+/// 系统提示（system 消息总量扣除 L5 段）、L1 工作集（回合级估算由调用方
+/// 传入）、历史对话（首条 user 扣除 L1 后的正文 + 后续 user/assistant）、
+/// L5 跨会话记忆（render_memories 段估算）、工具输出（role=tool）。
+/// 字符近似与 §10.2 同口径，如实标注非精确 tokenizer。
+#[derive(Debug, Default, PartialEq, Eq, Serialize)]
+struct ContextBreakdown {
+    system: u64,
+    l1: u64,
+    history: u64,
+    l5: u64,
+    tools: u64,
+}
+
+fn context_breakdown(
+    messages: &[ChatMessage],
+    l1_tokens: u64,
+    l5_tokens: u64,
+) -> ContextBreakdown {
+    let mut out = ContextBreakdown {
+        l1: l1_tokens,
+        l5: l5_tokens,
+        ..ContextBreakdown::default()
+    };
+    let mut first_user_seen = false;
+    for m in messages {
+        let est = tenon_core::context::estimate_tokens(&m.content);
+        match m.role {
+            Role::System => out.system += est.saturating_sub(l5_tokens),
+            Role::Tool => out.tools += est,
+            Role::User => {
+                if first_user_seen {
+                    out.history += est;
+                } else {
+                    // 首条 user = 任务正文 + L1 工作集（§10.1）——正文归历史
+                    out.history += est.saturating_sub(l1_tokens);
+                    first_user_seen = true;
+                }
+            }
+            Role::Assistant => {
+                out.history += est
+                    + m.tool_calls
+                        .iter()
+                        .map(|tc| {
+                            tenon_core::context::estimate_tokens(&tc.arguments.to_string())
+                        })
+                        .sum::<u64>();
+            }
+        }
+    }
+    out
+}
+
 /// 历史压缩（§10.2 v1.105）：确定性省略——工具输出是任务内历史的主要膨胀源，
 /// 保留最近 `KEEP_RECENT_TOOL_RESULTS` 条原文，更早的 tool 消息替换为存根。
 /// 只替换内容、不增删消息，tool_call_id 配对保持完整；首条 user（任务 + L1
@@ -1071,9 +1124,10 @@ impl AgentSession {
         let _ = st.set_session_status(&self.session_id, status);
     }
 
-    async fn record_usage(&self, usage: Usage, duration_ms: u64) {
+    /// 记账并返回本次成本（v2.9 运行仪表：context_usage 事件的 usage 段消费）。
+    async fn record_usage(&self, usage: Usage, duration_ms: u64) -> f64 {
         if usage.input_tokens == 0 && usage.output_tokens == 0 {
-            return;
+            return 0.0;
         }
         let provider = self.provider.read().await.clone();
         let model = provider.default_model();
@@ -1103,6 +1157,7 @@ impl AgentSession {
             duration_ms as i64,
             cost,
         );
+        cost
     }
 
     /// 流式调用当前模型；权威 usage / tool calls 只取流末尾 Final。
@@ -1526,6 +1581,13 @@ impl AgentSession {
             self.managed_worktree.as_deref(),
             &self.config.skills_disabled,
         );
+        // v2.9 运行仪表（design-v2.md §5③）：L1 / L5 桶的回合级估算——
+        // breakdown 在每轮模型调用后按当时的 messages 现算（历史 / 工具
+        // 输出桶随轮次增长），L1 / L5 为回合内常量在此一次算好。
+        let l1_tokens = tenon_core::context::estimate_tokens(&render_working_set(&working_set));
+        let l5_tokens = tenon_core::context::estimate_tokens(&tenon_core::prompt::render_memories(
+            &memory_items,
+        ));
         let mut messages: Vec<ChatMessage> = vec![
             ChatMessage::system(tenon_core::prompt::build_system_prompt(
                 &self.rules.lock().await.clone(),
@@ -1679,8 +1741,39 @@ impl AgentSession {
                 }
             };
             last_input_tokens = resp.usage.input_tokens;
-            self.record_usage(resp.usage, turn_duration_ms).await;
+            let turn_cost_usd = self.record_usage(resp.usage, turn_duration_ms).await;
             steps += 1;
+
+            // v2.9 运行仪表（design-v2.md §5③ / §6）：每轮发输入构成 breakdown +
+            // 本次 usage（含成本）+ 会话累计——审查面仪表卡消费；估算为字符近似。
+            let breakdown = context_breakdown(&messages, l1_tokens, l5_tokens);
+            let totals = self
+                .store
+                .lock()
+                .await
+                .session_usage_totals(&self.session_id)
+                .unwrap_or_default();
+            self.emit(
+                EventKind::ContextUsage,
+                &serde_json::json!({
+                    "breakdown": breakdown,
+                    "est_total": breakdown.system + breakdown.l1 + breakdown.history
+                        + breakdown.l5 + breakdown.tools,
+                    "usage": {
+                        "input_tokens": resp.usage.input_tokens,
+                        "output_tokens": resp.usage.output_tokens,
+                        "cached_input_tokens": resp.usage.cached_input_tokens,
+                        "duration_ms": turn_duration_ms,
+                        "cost_usd": turn_cost_usd,
+                    },
+                    "totals": {
+                        "input_tokens": totals.input_tokens,
+                        "output_tokens": totals.output_tokens,
+                        "cost_usd": totals.cost_usd,
+                    },
+                }),
+            )
+            .await;
 
             // 决策意图卡（payload.usage 供 UI 回合页脚缓存命中率 / 输出速度聚合，v1.129）
             // payload.model 供 UI 气泡下回合模型标注（v1.131：热切换 / fallback 后各回合如实标注）
@@ -3030,6 +3123,54 @@ mod parallel_write_lock_tests {
         let root_again = lock.lock_for("root").await;
         let contended = tokio::time::timeout(Duration::from_millis(100), root_again.lock()).await;
         assert!(contended.is_err(), "同作用域写锁必须互斥");
+    }
+}
+
+#[cfg(test)]
+mod context_breakdown_tests {
+    use super::*;
+
+    /// v2.9 运行仪表：五桶分解口径——system 扣 L5、首条 user 扣 L1 归历史、
+    /// 后续 user/assistant（含 tool_calls 参数）归历史、role=tool 归工具输出。
+    #[test]
+    fn context_breakdown_splits_five_buckets() {
+        let est = tenon_core::context::estimate_tokens;
+        let mut assistant_with_call = ChatMessage::assistant("计划".to_string());
+        assistant_with_call.tool_calls = vec![tenon_models::ToolCallReq {
+            id: "c1".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({"path": "a.rs"}),
+        }];
+        let messages = vec![
+            ChatMessage::system("SYSTEM BASE + L5 SEGMENT".to_string()),
+            ChatMessage::user("任务正文\n\nL1 WORKING SET".to_string()),
+            assistant_with_call,
+            ChatMessage::tool_result("c1", "FILE CONTENT".to_string()),
+            ChatMessage::user("追加指令".to_string()),
+        ];
+        let l1 = est("L1 WORKING SET");
+        let l5 = est("L5 SEGMENT");
+        let b = context_breakdown(&messages, l1, l5);
+        assert_eq!(b.l1, l1);
+        assert_eq!(b.l5, l5);
+        assert_eq!(b.system, est("SYSTEM BASE + L5 SEGMENT") - l5);
+        assert_eq!(
+            b.history,
+            est("任务正文") + est("计划") + est("{\"path\":\"a.rs\"}") + est("追加指令")
+        );
+        assert_eq!(b.tools, est("FILE CONTENT"));
+        // 五桶之和 = 全消息估算（扣减项在桶间平移不丢失）
+        let total: u64 = b.system + b.l1 + b.history + b.l5 + b.tools;
+        assert_eq!(total, estimate_messages_tokens(&messages));
+    }
+
+    /// system 消息短于 L5 估算时钳到 0（saturating，不出现负数下溢）。
+    #[test]
+    fn context_breakdown_saturates_system_bucket() {
+        let messages = vec![ChatMessage::system("S".to_string())];
+        let b = context_breakdown(&messages, 0, 1000);
+        assert_eq!(b.system, 0);
+        assert_eq!(b.history, 0);
     }
 }
 

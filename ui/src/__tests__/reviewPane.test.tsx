@@ -175,6 +175,7 @@ describe("ReviewPane 审查摘要卡（v2.8，design-v2.md §6）", () => {
           ],
           artifacts: ["src/api.ts", "src/api.test.ts"],
           evidence: "验证通过（无新诊断）",
+          context: null,
         }}
       />
     );
@@ -198,7 +199,7 @@ describe("ReviewPane 审查摘要卡（v2.8，design-v2.md §6）", () => {
         running
         statusLabel="review.running"
         onClose={() => {}}
-        digest={{ plan: null, subtasks: [], artifacts: [], evidence: "x".repeat(1000) }}
+        digest={{ plan: null, subtasks: [], artifacts: [], evidence: "x".repeat(1000), context: null }}
       />
     );
     expect(screen.getByTestId("review-evidence").querySelector("pre")?.textContent).toHaveLength(400);
@@ -212,7 +213,7 @@ describe("ReviewPane 审查摘要卡（v2.8，design-v2.md §6）", () => {
         running
         statusLabel="review.running"
         onClose={() => {}}
-        digest={{ plan: null, subtasks: [], artifacts: [], evidence: null }}
+        digest={{ plan: null, subtasks: [], artifacts: [], evidence: null, context: null }}
       />
     );
     expect(screen.queryByTestId("review-digest")).toBeNull();
@@ -223,11 +224,47 @@ describe("ReviewPane 审查摘要卡（v2.8，design-v2.md §6）", () => {
         running
         statusLabel="review.running"
         onClose={() => {}}
-        digest={{ plan: [], subtasks: [], artifacts: ["only.ts"], evidence: null }}
+        digest={{ plan: [], subtasks: [], artifacts: ["only.ts"], evidence: null, context: null }}
       />
     );
     expect(screen.getByTestId("review-digest")).toBeTruthy();
     expect(screen.queryByTestId("review-plan")).toBeNull();
     expect(screen.getByTestId("review-artifacts")).toHaveTextContent("only.ts");
+  });
+
+  it("v2.9 运行仪表：仅 context 也渲染摘要区——五段占比条 + 图例 + 累计成本行", () => {
+    render(
+      <ReviewPane
+        t={t}
+        diff={DIFF}
+        running
+        statusLabel="review.running"
+        onClose={() => {}}
+        digest={{
+          plan: null,
+          subtasks: [],
+          artifacts: [],
+          evidence: null,
+          context: {
+            breakdown: { system: 500, l1: 100, history: 300, l5: 50, tools: 50 },
+            estTotal: 1000,
+            totals: { inputTokens: 1200, outputTokens: 40, costUsd: 0.0056 },
+          },
+        }}
+      />
+    );
+    expect(screen.getByTestId("review-digest")).toBeTruthy();
+    const segs = screen.getByTestId("review-ctx-bar").querySelectorAll(".review-ctx-seg");
+    expect(segs).toHaveLength(5);
+    expect(segs[0].getAttribute("style")).toContain("50%");
+    expect(segs[2].getAttribute("style")).toContain("30%");
+    const legend = screen.getByTestId("review-ctx-legend");
+    expect(legend.textContent).toContain("review.ctx_system");
+    expect(legend.textContent).toContain("500");
+    const cost = screen.getByTestId("review-ctx-cost");
+    expect(cost.textContent).toContain("1200");
+    expect(cost.textContent).toContain("0.0056");
+    expect(screen.queryByTestId("review-plan")).toBeNull();
+    expect(screen.queryByTestId("review-evidence")).toBeNull();
   });
 });
