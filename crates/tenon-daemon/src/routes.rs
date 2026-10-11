@@ -25,9 +25,8 @@ use tenon_store::{EventKind, SessionStatus};
 
 use crate::auth::auth_middleware;
 use crate::state::{
-    persist_team_policy, validate_team_policy, DaemonState, L4IndexRequest,
+    persist_team_policy, validate_team_policy, DaemonState, L4IndexRequest, SessionEntry,
     MESSAGE_QUEUE_MAX,
-    SessionEntry,
 };
 
 pub fn build_router(state: Arc<DaemonState>) -> Router {
@@ -884,9 +883,12 @@ async fn send_message(
             let next = {
                 let mut sessions = state2.sessions.lock().await;
                 let next = match sessions.get(&sid) {
-                    Some(_entry) if completed => {
-                        state2.store.lock().await.dequeue_message(&sid).unwrap_or(None)
-                    }
+                    Some(_entry) if completed => state2
+                        .store
+                        .lock()
+                        .await
+                        .dequeue_message(&sid)
+                        .unwrap_or(None),
                     _ => None,
                 };
                 if next.is_none() {
