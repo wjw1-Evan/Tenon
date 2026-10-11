@@ -501,5 +501,18 @@
   "review.running": "代理執行中——變更即時呈現",
   "review.idle": "閒置",
   "review.empty": "暫無變更",
-  "review.empty_running": "代理變更將即時呈現在這裡"
+  "review.empty_running": "代理變更將即時呈現在這裡",
+  "review.fb_title": "審查回饋",
+  "review.fb_target": "對 {path} 第 {start}-{end} 行的變更",
+  "review.fb_target_file": "對 {path} 的變更",
+  "review.fb_placeholder": "對這處變更的回饋…（Cmd/Ctrl+Enter 傳送）",
+  "review.fb_send": "傳送回饋",
+  "review.fb_clear": "取消選取",
+  "review.fb_hint_queued": "執行中：回饋已排隊，本回合完成後自動執行",
+  "review.fb_hint_now": "回饋將作為下一指令傳送",
+  "review.fb_task_prefix": "審查回饋：針對 {path} {range}的最新變更——{instruction}",
+  "review.fb_task_range": "第 {start}-{end} 行",
+  "review.fb_task_file": "（整檔案變更）",
+  "review.fb_task_excerpt": "變更摘錄：",
+  "review.fb_task_constraint": "約束：先重讀該區域目前內容再動手；只處理上述回饋，與回饋無關的行保持不變；完成後確認無新診斷或迴歸。"
 }

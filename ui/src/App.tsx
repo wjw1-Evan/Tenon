@@ -684,12 +684,11 @@ export default function App({
     return () => window.clearTimeout(timer);
   }, [injectedTask]);
 
-  /** 行内指令（§8.5 / S2 / T8）：选区上下文组装后直接发送当前项目会话。
-   *  v1.126：主根草稿态改走草稿首发链路（建会话再发），不再静默丢弃；
-   *  受管 worktree 草稿不接——编辑器选区属项目主根上下文，注入 worktree 会话会写副本。 */
-  const sendInline = useCallback(
-    (instruction: string, target: InlineTarget) => {
-      const task = buildInlineTask(instruction, target, t);
+  /** 注入类任务文本发送（§7.4 / §8.5）：行内指令（v1.126 起主根草稿态改走草稿
+   *  首发链路，不再静默丢弃；受管 worktree 草稿不接——编辑器选区属项目主根上下文）
+   *  与 v2.7 审查面 diff 级反馈共用；运行态发送自动入队（v1.147），回合完成续跑。 */
+  const sendTaskText = useCallback(
+    (task: string) => {
       if (sessionId) {
         void api.sendMessage(sessionId, task).catch((error) => toast.error(String(error)));
         return;
@@ -699,7 +698,15 @@ export default function App({
         void sendDraftMessage(task).catch((error) => toast.error(String(error)));
       }
     },
-    [api, sessionId, t, sendDraftMessage]
+    [api, sessionId, sendDraftMessage]
+  );
+
+  /** 行内指令（§8.5 / S2 / T8）：选区上下文组装后直接发送当前项目会话。 */
+  const sendInline = useCallback(
+    (instruction: string, target: InlineTarget) => {
+      sendTaskText(buildInlineTask(instruction, target, t));
+    },
+    [t, sendTaskText]
   );
 
   const switchProject = useCallback(async (project: ProjectSummary) => {
@@ -1520,6 +1527,7 @@ export default function App({
               RUNNING_STATES.has(agentState) ? t("review.running") : t("review.idle")
             }
             onClose={() => setReviewManual(false)}
+            onFeedback={sendTaskText}
           />
         )}
         {/* 编辑器应用内浮层（§7.2 v1.139 / v1.110 形态回归）：侧栏源码区 / 模糊 / 搜索 /

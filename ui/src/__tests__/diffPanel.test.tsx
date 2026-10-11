@@ -101,3 +101,53 @@ describe("DiffPanel ResizeObserver", () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe("DiffPanel 行点选（v2.7 diff 级反馈回路）", () => {
+  const DIFF = "--- a/f\n+++ b/f\n@@ -1,3 +1,3 @@\n a\n-b\n+c\n d";
+
+  it("selectable：单击选中 → Shift 扩区 → 再点唯一选中行取消", () => {
+    const onSelectionChange = vi.fn();
+    render(<DiffPanel diff={DIFF} selectable onSelectionChange={onSelectionChange} />);
+    const rows = screen.getAllByTestId("diff-line");
+    // 行序：0 --- 1 +++ 2 @@ 3 ctx 4 -b 5 +c 6 d
+    fireEvent.click(rows[4]);
+    expect(onSelectionChange).toHaveBeenLastCalledWith({ start: 4, end: 4 });
+    expect(rows[4].getAttribute("data-selected")).toBe("1");
+    expect(rows[6].getAttribute("data-selected")).toBeNull();
+    fireEvent.click(rows[6], { shiftKey: true });
+    expect(onSelectionChange).toHaveBeenLastCalledWith({ start: 4, end: 6 });
+    expect(rows[5].getAttribute("data-selected")).toBe("1");
+    // 区间中点单点 → 重置为该行单选
+    fireEvent.click(rows[5]);
+    expect(onSelectionChange).toHaveBeenLastCalledWith({ start: 5, end: 5 });
+    // 再点唯一选中行 → 取消
+    fireEvent.click(rows[5]);
+    expect(onSelectionChange).toHaveBeenLastCalledWith(null);
+    expect(rows[5].getAttribute("data-selected")).toBeNull();
+  });
+
+  it("diff 更新选区自动清空（通知 null）", () => {
+    const onSelectionChange = vi.fn();
+    const { rerender } = render(
+      <DiffPanel diff={DIFF} selectable onSelectionChange={onSelectionChange} />
+    );
+    fireEvent.click(screen.getAllByTestId("diff-line")[4]);
+    expect(onSelectionChange).toHaveBeenLastCalledWith({ start: 4, end: 4 });
+    rerender(
+      <DiffPanel
+        diff={"--- a/f\n+++ b/f\n@@ -1,3 +1,3 @@\n a\n-b\n+z\n d"}
+        selectable
+        onSelectionChange={onSelectionChange}
+      />
+    );
+    expect(onSelectionChange).toHaveBeenLastCalledWith(null);
+    expect(screen.getAllByTestId("diff-line")[4].getAttribute("data-selected")).toBeNull();
+  });
+
+  it("非 selectable：行点击不产生选区（仅挂载清空通知）", () => {
+    const onSelectionChange = vi.fn();
+    render(<DiffPanel diff={DIFF} onSelectionChange={onSelectionChange} />);
+    fireEvent.click(screen.getAllByTestId("diff-line")[4]);
+    expect(onSelectionChange.mock.calls.every((c) => c[0] === null)).toBe(true);
+  });
+});

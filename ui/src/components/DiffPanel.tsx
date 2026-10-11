@@ -23,6 +23,9 @@ export function DiffPanel({
   title,
   emptyText = "(no changes)",
   viewportHeight = DEFAULT_VIEWPORT_HEIGHT,
+  selectable = false,
+  selection,
+  onSelectionChange,
 }: {
   diff: string | null;
   title?: string;
@@ -30,11 +33,22 @@ export function DiffPanel({
   emptyText?: string;
   /** 测试 / 嵌入方可显式覆盖；运行态由 ResizeObserver 使用实际容器高度。 */
   viewportHeight?: number;
+  /** v2.7 diff 级反馈回路（design.md §7.2）：启用行点选——单击选中、
+   *  Shift+单击扩区、再点唯一选中行取消；选区随 diff 更新自动清空。 */
+  selectable?: boolean;
+  /** 受控选区（diff 行索引区间，含端点）：传入即以 prop 为准（内部态仅作
+   *  非受控兜底）——审查面发送反馈后由父级清空，避免双份状态漂移。 */
+  selection?: { start: number; end: number } | null;
+  /** 选区变化（diff 行索引区间，含端点）；null = 无选区。 */
+  onSelectionChange?: (range: { start: number; end: number } | null) => void;
 }) {
   const bodyRef = useRef<HTMLPreElement | null>(null);
   const frame = useRef<number | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [measuredHeight, setMeasuredHeight] = useState(viewportHeight);
+  const [anchor, setAnchor] = useState<number | null>(null);
+  const [internalSelected, setSelected] = useState<{ start: number; end: number } | null>(null);
+  const selected = selection !== undefined ? selection : internalSelected;
   const lines = useMemo(() => (diff ? parseDiffLines(diff) : []), [diff]);
   // diff 内容变化（切换回合 / 新 diff 到达）时回到顶部：沿用旧偏移会停在
   // 与新内容无关的位置（更短的新 diff 还会被夹在尾部）
@@ -42,7 +56,30 @@ export function DiffPanel({
     setScrollTop(0);
     const node = bodyRef.current;
     if (node) node.scrollTop = 0;
+    setAnchor(null);
+    setSelected(null);
+    onSelectionChange?.(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 选区随 diff 重置即通知清空
   }, [diff]);
+
+  const handleLineClick = useCallback(
+    (index: number, shiftKey: boolean) => {
+      if (!selectable) return;
+      let next: { start: number; end: number } | null = null;
+      if (shiftKey && anchor !== null) {
+        next = { start: Math.min(anchor, index), end: Math.max(anchor, index) };
+      } else if (selected && selected.start === selected.end && selected.start === index) {
+        next = null; // 再点唯一选中行 = 取消
+        setAnchor(null);
+      } else {
+        setAnchor(index);
+        next = { start: index, end: index };
+      }
+      setSelected(next);
+      onSelectionChange?.(next);
+    },
+    [anchor, onSelectionChange, selectable, selected]
+  );
   const height = Math.max(1, measuredHeight || DEFAULT_VIEWPORT_HEIGHT);
   const visibleCount = Math.ceil(height / LINE_HEIGHT);
   const start = Math.max(0, Math.floor(scrollTop / LINE_HEIGHT) - OVERSCAN_LINES);
@@ -80,7 +117,7 @@ export function DiffPanel({
   );
 
   return (
-    <div className="diff-panel" data-testid="diff-panel">
+    <div className={`diff-panel${selectable ? " selectable" : ""}`} data-testid="diff-panel">
       <div className="diff-title">
         <span>{title ?? "diff"}</span>
         {diff && <output className="diff-range">{start + 1}–{end} / {lines.length}</output>}
@@ -99,16 +136,25 @@ export function DiffPanel({
             className="diff-window"
             style={{ transform: `translateY(${start * LINE_HEIGHT}px)` }}
           >
-            {windowed.map((line, index) => (
-              <div
-                key={`${start + index}:${line}`}
-                className={diffLineClass(line)}
-                data-testid="diff-line"
-                style={{ height: LINE_HEIGHT }}
-              >
-                {line || " "}
-              </div>
-            ))}
+            {windowed.map((line, index) => {
+              const lineIndex = start + index;
+              const isSelected =
+                selected !== null && lineIndex >= selected.start && lineIndex <= selected.end;
+              return (
+                <div
+                  key={`${lineIndex}:${line}`}
+                  className={diffLineClass(line) + (isSelected ? " selected" : "")}
+                  data-testid="diff-line"
+                  data-selected={isSelected ? "1" : undefined}
+                  style={{ height: LINE_HEIGHT }}
+                  onClick={
+                    selectable ? (e) => handleLineClick(lineIndex, e.shiftKey) : undefined
+                  }
+                >
+                  {line || " "}
+                </div>
+              );
+            })}
           </div>
         </pre>
       ) : (

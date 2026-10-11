@@ -3386,3 +3386,67 @@ button:disabled { opacity: 0.45; cursor: default; }
   flex: 1;
   min-height: 0;
 }
+/* v2.7 diff 级反馈回路（design.md §7.2）：行点选光标 + 选中高亮（accent 左缘
+   描边 + 半透底色，叠加在 add/remove 底色之上） */
+.diff-panel.selectable .diff-row {
+  cursor: pointer;
+}
+.diff-row.selected {
+  background: var(--accent-soft-strong);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+/* 审查面反馈卡：选区存在时浮出于 diff 流上方（不参与 flex 拉伸） */
+.review-feedback {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border, #2a2f3a);
+  background: var(--accent-soft);
+}
+.review-fb-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.review-fb-target {
+  font-size: 11px;
+  color: var(--accent-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.review-fb-head .pe-collapse {
+  margin-left: auto;
+}
+.review-feedback textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 40px;
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 8px;
+  color: var(--fg, #e6e8ee);
+  background: var(--bg, #0e1015);
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 6px;
+}
+.review-feedback textarea:focus-visible {
+  outline: 1px solid var(--accent);
+}
+.review-fb-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.review-fb-hint {
+  font-size: 11px;
+  color: var(--fg-muted);
+  flex: 1;
+  min-width: 0;
+}
+[data-theme="light"] .review-feedback textarea {
+  color: var(--fg);
+  background: var(--bg);
+}

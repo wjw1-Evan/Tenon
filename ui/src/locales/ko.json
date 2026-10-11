@@ -501,5 +501,18 @@
   "review.running": "에이전트 실행 중——변경 실시간 표시",
   "review.idle": "대기",
   "review.empty": "변경 사항 없음",
-  "review.empty_running": "에이전트 변경 사항이 여기에 실시간 표시됩니다"
+  "review.empty_running": "에이전트 변경 사항이 여기에 실시간 표시됩니다",
+  "review.fb_title": "리뷰 피드백",
+  "review.fb_target": "{path} {start}-{end}줄 변경",
+  "review.fb_target_file": "{path}의 변경",
+  "review.fb_placeholder": "이 변경에 대한 피드백… (Cmd/Ctrl+Enter로 전송)",
+  "review.fb_send": "피드백 전송",
+  "review.fb_clear": "선택 해제",
+  "review.fb_hint_queued": "실행 중: 피드백이 대기열에 추가되어 이 턴이 끝나면 자동 실행됩니다",
+  "review.fb_hint_now": "피드백이 다음 지시로 전송됩니다",
+  "review.fb_task_prefix": "리뷰 피드백: {path} {range}의 최신 변경에 대해 — {instruction}",
+  "review.fb_task_range": "{start}-{end}줄",
+  "review.fb_task_file": "(파일 전체 변경)",
+  "review.fb_task_excerpt": "변경 발췌:",
+  "review.fb_task_constraint": "제약: 편집 전에 해당 영역의 현재 내용을 다시 읽으세요. 위 피드백만 처리하고 관련 없는 줄은 변경하지 마세요. 완료 후 새 진단이나 회귀가 없는지 확인하세요."
 }

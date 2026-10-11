@@ -501,5 +501,18 @@
   "review.running": "Agent running — changes appear live",
   "review.idle": "Idle",
   "review.empty": "No changes yet",
-  "review.empty_running": "Agent edits appear here in real time"
+  "review.empty_running": "Agent edits appear here in real time",
+  "review.fb_title": "Review feedback",
+  "review.fb_target": "Change in {path}, lines {start}-{end}",
+  "review.fb_target_file": "Change in {path}",
+  "review.fb_placeholder": "Feedback on this change… (Cmd/Ctrl+Enter to send)",
+  "review.fb_send": "Send feedback",
+  "review.fb_clear": "Clear selection",
+  "review.fb_hint_queued": "Running: feedback is queued and runs after this turn",
+  "review.fb_hint_now": "Feedback will be sent as the next instruction",
+  "review.fb_task_prefix": "Review feedback: regarding the latest change at {path} {range} — {instruction}",
+  "review.fb_task_range": "lines {start}-{end}",
+  "review.fb_task_file": "(whole-file change)",
+  "review.fb_task_excerpt": "Change excerpt:",
+  "review.fb_task_constraint": "Constraints: re-read the current content of that region before editing; address only the feedback above and leave unrelated lines unchanged; verify no new diagnostics or regressions when done."
 }

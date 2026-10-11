@@ -501,5 +501,18 @@
   "review.running": "代理运行中——改动实时呈现",
   "review.idle": "空闲",
   "review.empty": "暂无改动",
-  "review.empty_running": "代理改动将实时呈现在这里"
+  "review.empty_running": "代理改动将实时呈现在这里",
+  "review.fb_title": "审查反馈",
+  "review.fb_target": "对 {path} 第 {start}-{end} 行的改动",
+  "review.fb_target_file": "对 {path} 的改动",
+  "review.fb_placeholder": "对这处改动的反馈…（Cmd/Ctrl+Enter 发送）",
+  "review.fb_send": "发送反馈",
+  "review.fb_clear": "取消选区",
+  "review.fb_hint_queued": "运行中：反馈已入队，本回合完成后自动执行",
+  "review.fb_hint_now": "反馈将作为下一指令发送",
+  "review.fb_task_prefix": "审查反馈：针对 {path} {range}的最新改动——{instruction}",
+  "review.fb_task_range": "第 {start}-{end} 行",
+  "review.fb_task_file": "（整文件改动）",
+  "review.fb_task_excerpt": "改动摘录：",
+  "review.fb_task_constraint": "约束：先重读该区域当前内容再动手；只处理上述反馈，与反馈无关的行保持不变；完成后确认无新诊断或回归。"
 }
