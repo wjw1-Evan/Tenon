@@ -1,13 +1,12 @@
-// v2 集成 E2E（design-v2.md §4.1 / §6，真 daemon + 真 UI）：
+// v2 集成 E2E（design-v2.md §6，真 daemon + 真 UI）：
 // ① 常驻审查面（v2.5）：运行中任务自动停靠右栏、diff 内容实时可见、完成自动收起；
-// ② 档位确认卡（v2.1）：D 级 git_commit 被默认档 on_irreversible Hold——
-//    卡片渲染（工具 + 参数预览）→ 拒绝 → 模型收到拒绝继续 → 任务完成、卡片收起；
-// ③ diff 级反馈回路（v2.7）：运行中审查面选中改动行 → 反馈卡发送（运行态入队）→
+// ② diff 级反馈回路（v2.7）：运行中审查面选中改动行 → 反馈卡发送（运行态入队）→
 //    回合完成队列消费 → 第二回合按反馈改码落盘——「边跑边审、审完即改」闭环；
-// ④ 审查摘要卡（v2.8）：运行中审查面呈现子任务进度与改动产物（mock E2E_SUBTASKS
+// ③ 审查摘要卡（v2.8）：运行中审查面呈现子任务进度与改动产物（mock E2E_SUBTASKS
 //    驱动；证据卡在回合尾验证阶段产生、面板随完成收起，由 vitest App 级覆盖）；
-// ⑤ 运行仪表（v2.9）：daemon 每轮模型调用自动发 context_usage（零 mock 改动）——
+// ④ 运行仪表（v2.9）：daemon 每轮模型调用自动发 context_usage（零 mock 改动）——
 //    审查面占比条 + 图例 + 累计成本行真链路可见。
+// （v2.1 档位确认卡场景随 v2.37 档位退役移除——确认卡与安全徽标 UI 已不存在。）
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,7 +29,7 @@ test.beforeAll(async () => {
 
 /** 全新会话入口（message-queue spec 同款纪律）：共享 daemon 下不点会复用
  *  上一 spec 留下的会话——其工具历史使 mock server 首趟直出文本（无
- *  apply_patch / git_commit），档位与审查面断言全部落空。 */
+ *  apply_patch），审查面断言全部落空。 */
 async function openFreshTask(page: import("@playwright/test").Page) {
   await page.goto(runtime.baseUrl);
   await expect(
@@ -54,22 +53,10 @@ test("review pane auto-docks during a running task and collapses when done", asy
   await page.getByTestId("task-input").fill(task);
   await page.getByTestId("send").click();
 
-  // DEBUG v2.17：观察 GET /session 响应的 gate 载荷
   const pane = page.getByTestId("review-pane");
   await expect(pane).toBeVisible({ timeout: 30_000 });
   await expect(pane).toHaveAttribute("data-running", "1");
   await expect(pane).toContainText("e2e-review.txt", { timeout: 20_000 });
-
-  // v2.17 顶栏安全姿态徽标：运行中会话档快照常驻（默认 workspace-write 琥珀），
-  // 点击直达设置 Permissions 节（security 默认档两 select 在位）
-  const badge = page.getByTestId("security-badge");
-  await expect(badge).toBeVisible({ timeout: 15_000 });
-  await expect(badge).toHaveAttribute("data-exec-mode", "workspace_write");
-  await expect(badge).toHaveAttribute("data-approval", "on_irreversible");
-  await badge.click();
-  const settingsExec = page.getByTestId("settings-security-exec");
-  await expect(settingsExec).toBeVisible({ timeout: 10_000 });
-  await page.keyboard.press("Escape");
 
   // v2.11 宽度拖拽记忆：左缘把手左拖 60px → 审查面增宽（boundingBox 实测）
   const before = (await pane.boundingBox())!.width;
@@ -84,27 +71,6 @@ test("review pane auto-docks during a running task and collapses when done", asy
   // 完成后自动收起（reviewManual 未覆盖）
   await expect(page.getByTestId("agent-feed")).toContainText("E2E write complete", { timeout: 60_000 });
   await expect(pane).toBeHidden({ timeout: 15_000 });
-});
-
-test("d-level confirm card holds, deny resolves, task completes", async ({ page }) => {
-  test.setTimeout(90_000);
-  await openFreshTask(page);
-
-  // git_commit 是 D 级：默认档 on_irreversible → Hold 等待确认（v2.1）
-  const task = ["E2E_GIT_COMMIT", "e2e should not land"].join("\n");
-  await page.getByTestId("task-input").fill(task);
-  await page.getByTestId("send").click();
-
-  const card = page.getByTestId("confirm-card");
-  await expect(card).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByTestId("confirm-tool")).toHaveText("git_commit");
-  await expect(card).toContainText("e2e should not land");
-  await expect(page.getByTestId("confirm-level")).toHaveText("D");
-
-  // 拒绝：模型收到拒绝结果继续回合 → 完成、卡片收起
-  await page.getByTestId("confirm-deny").click();
-  await expect(page.getByTestId("agent-feed")).toContainText("E2E write complete", { timeout: 30_000 });
-  await expect(card).toBeHidden({ timeout: 15_000 });
 });
 
 test("diff line feedback loop: review while running, feedback re-edits the file", async ({ page }) => {
@@ -170,6 +136,9 @@ test("review digest cards surface subtask progress and changed files during a ru
   // 审查面停靠 → 摘要区：子任务卡（清单 + n/m）与产物卡（改动文件）实时可见
   const pane = page.getByTestId("review-pane");
   await expect(pane).toBeVisible({ timeout: 30_000 });
+  // v2.38 工具面板 tab 化：摘要五卡 + 运行仪表由 diff 页迁入「概览」页（默认
+  // 仍为 diff 页）——切概览页后断言（与 reviewToolPanel vitest 同法）
+  await page.getByTestId("review-tab-overview").click();
   const subtasks = page.getByTestId("review-subtasks");
   await expect(subtasks).toBeVisible({ timeout: 30_000 });
   await expect(subtasks).toContainText("write the digest fixture");
