@@ -101,7 +101,7 @@ function defineTenonThemes(monaco: Monaco) {
 }
 
 /** 当前解析主题（data-theme 驱动；跟随系统档由 ThemePicker 改属性后联动）。 */
-function useResolvedTheme(): "dark" | "light" {
+export function useResolvedTheme(): "dark" | "light" {
   const [theme, setTheme] = useState<"dark" | "light">(
     () => (document.documentElement.dataset.theme === "light" ? "light" : "dark")
   );

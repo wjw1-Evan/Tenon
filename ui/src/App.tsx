@@ -1628,6 +1628,16 @@ export default function App({
               onFeedback={sendTaskText}
               digest={reviewDigest}
               width={reviewWidth}
+              toolTabs={
+                featureFlags.enabled("toolPanelTabs")
+                  ? {
+                      api,
+                      projectId,
+                      refreshToken: fileTreeVersion,
+                      onOpenEditor: (path) => void openFile(path),
+                    }
+                  : undefined
+              }
             />
           </>
         )}

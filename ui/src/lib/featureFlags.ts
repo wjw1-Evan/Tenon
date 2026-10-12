@@ -16,6 +16,11 @@ export const FEATURE_FLAGS: readonly FeatureFlagDef[] = [
     default: true,
     desc: "常驻审查面（v2.5）——关闭回 v1 无审查面形态",
   },
+  {
+    key: "toolPanelTabs",
+    default: true,
+    desc: "工具面板——审查面 tab 化（v2.38）——关闭回 v2.5 单一 diff 审查面形态",
+  },
 ];
 
 const LS_PREFIX = "tenon:flag:";

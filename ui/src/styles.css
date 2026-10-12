@@ -3724,3 +3724,83 @@ button:disabled { opacity: 0.45; cursor: default; }
 [data-theme="light"] .security-badge.tone-safe { color: #1a7f37; }
 [data-theme="light"] .security-badge.tone-caution { color: #9a6700; }
 [data-theme="light"] .security-badge.tone-risky { color: #cf222e; }
+
+/* v2.38 工具面板（ZCode 式对话工作台，design.md §7.2）：审查面 tab 化——
+   diff / 文件 / 概览三页；页钮 muted 小字 + active accent 底线。 */
+.review-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border, #2a2f3a);
+}
+.review-tab {
+  appearance: none;
+  border: none;
+  background: none;
+  color: var(--fg-muted, #8a8f98);
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 10px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+.review-tab:hover { color: var(--fg, #e6e6e6); }
+.review-tab.active {
+  color: var(--fg, #e6e6e6);
+  border-bottom-color: var(--accent, #4c8dff);
+}
+/* 文件页：树 + 只读预览上下两区 */
+.review-files {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.review-files-tree {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 0;
+}
+.review-files-empty {
+  color: var(--fg-muted, #8a8f98);
+  font-size: 12px;
+  padding: 16px 12px;
+  text-align: center;
+}
+.review-preview {
+  flex: 1.4;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border, #2a2f3a);
+}
+.review-preview-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+}
+.review-preview-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--fg-muted, #8a8f98);
+}
+.review-preview-open {
+  appearance: none;
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 6px;
+  background: none;
+  color: var(--fg-muted, #8a8f98);
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+  flex: none;
+}
+.review-preview-open:hover { color: var(--fg, #e6e6e6); background: var(--accent-soft); }
+.review-preview-open:disabled { opacity: 0.5; cursor: default; }
+.review-preview-body { flex: 1; min-height: 0; }
