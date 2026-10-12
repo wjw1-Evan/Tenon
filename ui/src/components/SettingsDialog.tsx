@@ -15,6 +15,7 @@ import {
 } from "../lib/theme";
 import { PluginSettings } from "./PluginSettings";
 import { SkillsSettings, type SkillsProjectOption } from "./SkillsSettings";
+import { FEATURE_FLAGS } from "../lib/featureFlags";
 
 export type { SettingsData } from "../lib/api";
 
@@ -96,11 +97,13 @@ interface Props {
   onSaved: (s: SettingsData) => void;
   /** v2.17 §4.6：初始分区（顶栏安全徽标点击直达 Permissions）。 */
   initialSection?: SettingsSection;
+  /** v2.29 §7.0 feature flag（General「实验特性」开关列表消费）。 */
+  featureFlags?: { enabled: (key: string) => boolean; toggle: (key: string) => void };
   /** 免费模型引导重开入口（§7.1 v1.163）：Models 分区 CTA；缺省不渲染。 */
   onOpenOnboarding?: () => void;
 }
 
-export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, projects = [], onClose, onSaved, onOpenOnboarding, initialSection }: Props) {
+export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, projects = [], onClose, onSaved, onOpenOnboarding, initialSection, featureFlags }: Props) {
   const [bufferMs, setBufferMs] = useState(2000);
   const [commandTimeout, setCommandTimeout] = useState(120);
   const [deniedTools, setDeniedTools] = useState("");
@@ -411,6 +414,35 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, p
                   />
                 </div>
                 <p className="muted settings-note">{t("settings.note_new_sessions")}</p>
+                {/* v2.29 §7.0 实验特性（feature flag）：一键回退无需发版 */}
+                {featureFlags && (
+                  <div className="settings-section" data-testid="settings-flags-section">
+                    <div className="settings-section-title">{t("settings.flags.title")}</div>
+                    <div className="settings-grid">
+                      {FEATURE_FLAGS.map((f) => (
+                        <label key={f.key} htmlFor={`flag-${f.key}`}>
+                          {f.desc}
+                        </label>
+                      ))}
+                      {FEATURE_FLAGS.map((f) => (
+                        <select
+                          key={`sel-${f.key}`}
+                          id={`flag-${f.key}`}
+                          data-testid={`settings-flag-${f.key}`}
+                          value={featureFlags.enabled(f.key) ? "on" : "off"}
+                          onChange={(e) => {
+                            const want = e.target.value === "on";
+                            if (want !== featureFlags.enabled(f.key)) featureFlags.toggle(f.key);
+                          }}
+                        >
+                          <option value="on">on</option>
+                          <option value="off">off</option>
+                        </select>
+                      ))}
+                    </div>
+                    <p className="muted settings-note">{t("settings.flags.note")}</p>
+                  </div>
+                )}
               </div>
             )}
 

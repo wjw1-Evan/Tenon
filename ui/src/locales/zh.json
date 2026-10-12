@@ -540,5 +540,9 @@
   "topbar.security": "安全姿态",
   "security.snapshot_downgraded": "快照库不可用——自动档已降级为交互档",
   "settings.security.exec": "默认执行边界（新会话）",
-  "settings.security.approval": "默认确认策略（新会话）"
+  "settings.security.approval": "默认确认策略（新会话）",
+  "palette.flag_on": "开启特性",
+  "palette.flag_off": "关闭特性",
+  "settings.flags.title": "实验特性",
+  "settings.flags.note": "一键回退——即时生效，无需重启"
 }

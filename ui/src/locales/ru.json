@@ -540,5 +540,9 @@
   "topbar.security": "Положение безопасности",
   "security.snapshot_downgraded": "Хранилище снапшотов недоступно — автоматический режим понижен до интерактивного",
   "settings.security.exec": "Режим выполнения по умолчанию (новые сессии)",
-  "settings.security.approval": "Подтверждение по умолчанию (новые сессии)"
+  "settings.security.approval": "Подтверждение по умолчанию (новые сессии)",
+  "palette.flag_on": "Включить функцию",
+  "palette.flag_off": "Отключить функцию",
+  "settings.flags.title": "Экспериментальные функции",
+  "settings.flags.note": "Откат в один клик — мгновенно, без перезапуска"
 }

@@ -540,5 +540,9 @@
   "topbar.security": "Posture de sécurité",
   "security.snapshot_downgraded": "Magasin d'instantanés indisponible — mode auto dégradé en interactif",
   "settings.security.exec": "Mode d'exécution par défaut (nouvelles sessions)",
-  "settings.security.approval": "Approbation par défaut (nouvelles sessions)"
+  "settings.security.approval": "Approbation par défaut (nouvelles sessions)",
+  "palette.flag_on": "Activer la fonction",
+  "palette.flag_off": "Désactiver la fonction",
+  "settings.flags.title": "Fonctions expérimentales",
+  "settings.flags.note": "Retour en un clic — effet immédiat, sans redémarrage"
 }

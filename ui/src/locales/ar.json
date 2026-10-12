@@ -540,5 +540,9 @@
   "topbar.security": "وضع الأمان",
   "security.snapshot_downgraded": "مخزن اللقطات غير متاح — تم تخفيض الوضع التلقائي إلى التفاعلي",
   "settings.security.exec": "حد التنفيذ الافتراضي (جلسات جديدة)",
-  "settings.security.approval": "سياسة التأكيد الافتراضية (جلسات جديدة)"
+  "settings.security.approval": "سياسة التأكيد الافتراضية (جلسات جديدة)",
+  "palette.flag_on": "تمكين الميزة",
+  "palette.flag_off": "تعطيل الميزة",
+  "settings.flags.title": "ميزات تجريبية",
+  "settings.flags.note": "تراجع بنقرة واحدة — فعّال فورًا دون إعادة تشغيل"
 }

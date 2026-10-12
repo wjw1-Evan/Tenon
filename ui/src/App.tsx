@@ -36,6 +36,7 @@ import { InlineInstruction, buildInlineTask, type InlineTarget } from "./compone
 import { AgentPanel } from "./components/AgentPanel";
 import { ReviewPane } from "./components/ReviewPane";
 import { EMPTY_REVIEW_DIGEST, type ReviewDigest } from "./lib/reviewDigest";
+import { FEATURE_FLAGS, useFeatureFlags } from "./lib/featureFlags";
 import { RUNNING_STATES } from "./lib/stateColors";
 import { CheckpointTimeline } from "./components/CheckpointTimeline";
 import { DiffPanel } from "./components/DiffPanel";
@@ -318,6 +319,16 @@ export default function App({
     },
     [api]
   );
+  // v2.29 feature flag（design.md §7.0）：ui_prefs flag.<key> 权威 + localStorage
+  // 快路径；一键回退无需发版（命令面板 toggle.flag_<key> / 设置「实验特性」）。
+  const [flagPrefs, setFlagPrefs] = useState<Record<string, string>>({});
+  useEffect(() => {
+    void api.getUiPrefs().then((prefs) => setFlagPrefs(prefs));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const featureFlags = useFeatureFlags(flagPrefs, (entry) => {
+    void api.setUiPrefs(entry);
+  });
   // 命令面板撤销/重做入口（§8.2 v1.75）：EditorPane 挂载时绑定 active editor。
   const editorApiRef = useRef<{ undo: () => void; redo: () => void } | null>(null);
 
@@ -1054,6 +1065,14 @@ export default function App({
         label: soundDone ? t("palette.sound_done_off") : t("palette.sound_done_on"),
         run: () => changeSoundDone(!soundDone),
       },
+      // v2.29 feature flag 开关（§7.0）：逐注册表 flag 生成，标签显动作语义
+      ...FEATURE_FLAGS.map((f) => ({
+        id: `toggle.flag_${f.key}`,
+        label: featureFlags.enabled(f.key)
+          ? `${t("palette.flag_off")}: ${f.desc}`
+          : `${t("palette.flag_on")}: ${f.desc}`,
+        run: () => featureFlags.toggle(f.key),
+      })),
       ...(agentState === "paused"
         ? [
             {
@@ -1576,7 +1595,7 @@ export default function App({
         {/* v2.4 常驻审查面（design-v2.md §6）：会话运行中自动停靠右栏（用户可手动
             关闭，会话切换重置回自动），实时呈现 latestDiff 改动流——「人改与 AI 改
             实时互见」的默认形态；窄屏不渲染（浮层语义后续演进）。 */}
-        {!narrow && (reviewManual ?? RUNNING_STATES.has(agentState)) && (
+        {!narrow && featureFlags.enabled("reviewPane") && (reviewManual ?? RUNNING_STATES.has(agentState)) && (
           <>
             {/* v2.11 宽度拖拽记忆（design-v2.md §6）：审查面左缘把手——鼠标左移
                 delta 为负增宽（w - d），clamp 280-520 防挤压，双击回默认 340。 */}
@@ -1777,6 +1796,7 @@ export default function App({
       />
       {settingsOpen && (
         <SettingsDialog
+          featureFlags={featureFlags}
           initialSection={settingsJumpSection ?? undefined}
           api={api}
           t={t}

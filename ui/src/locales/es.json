@@ -540,5 +540,9 @@
   "topbar.security": "Postura de seguridad",
   "security.snapshot_downgraded": "Almacén de instantáneas no disponible — modo automático degradado a interactivo",
   "settings.security.exec": "Modo de ejecución predeterminado (nuevas sesiones)",
-  "settings.security.approval": "Aprobación predeterminada (nuevas sesiones)"
+  "settings.security.approval": "Aprobación predeterminada (nuevas sesiones)",
+  "palette.flag_on": "Activar función",
+  "palette.flag_off": "Desactivar función",
+  "settings.flags.title": "Funciones experimentales",
+  "settings.flags.note": "Reversión con un clic: efecto inmediato, sin reiniciar"
 }

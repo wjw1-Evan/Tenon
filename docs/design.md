@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | **v2.28** |
+| 版本 | **v2.29** |
 | 日期 | 2026-10-12 |
 | 状态 | 定稿，M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
@@ -329,6 +329,10 @@ GlobalScheduler（全局并发 / 成本 / 通知）
 ---
 
 ## 7. 桌面端 UI 设计
+
+### 7.0 feature flag 基建与原型门禁（v2.29，design-v2.md §9「流程门禁」）
+
+**flag 注册表与读写**：`lib/featureFlags.ts`——`FEATURE_FLAGS` 单一注册表（`{ key, default: boolean, desc }`），新形态一律注册后挂载；值存 daemon `ui_prefs` 键 `flag.<key>`（`"on"/"off"`，跨启动 / 跨端权威——与 `sound.done` 同轨道），localStorage 快路径防闪烁；`useFeatureFlags()` hook 暴露 `{ enabled(key), toggle(key) }`。**一键回退**：命令面板逐 flag「开启 / 关闭」命令（`toggle.flag_<key>`，标签显动作语义）+ 设置面板 General 分区「实验特性」开关列表——无需发版即时回退。**流程门禁**：布局级 / 方向性 UI 改动须先双参考方案（AGENTS.md 既有裁定）+ 新形态挂 flag 默认值即灰度开关；**首个消费者**：常驻审查面挂 `flag.reviewPane`（默认 on——v2.5 起的既有默认行为不变，关闭即回 v1 无审查面形态，一键回退演示）。
 
 ### 7.1 界面清单
 

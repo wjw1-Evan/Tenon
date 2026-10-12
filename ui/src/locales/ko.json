@@ -540,5 +540,9 @@
   "topbar.security": "보안 태세",
   "security.snapshot_downgraded": "스냅샷 저장소 사용 불가——자동 모드가 대화형으로 강등됨",
   "settings.security.exec": "기본 실행 경계(새 세션)",
-  "settings.security.approval": "기본 확인 정책(새 세션)"
+  "settings.security.approval": "기본 확인 정책(새 세션)",
+  "palette.flag_on": "기능 켜기",
+  "palette.flag_off": "기능 끄기",
+  "settings.flags.title": "실험적 기능",
+  "settings.flags.note": "원클릭 롤백——즉시 적용, 재시작 불필요"
 }

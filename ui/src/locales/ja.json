@@ -540,5 +540,9 @@
   "topbar.security": "セキュリティ姿勢",
   "security.snapshot_downgraded": "スナップショット庫が利用不可——自動モードを対話モードにダウングレード",
   "settings.security.exec": "既定の実行境界（新セッション）",
-  "settings.security.approval": "既定の確認ポリシー（新セッション）"
+  "settings.security.approval": "既定の確認ポリシー（新セッション）",
+  "palette.flag_on": "機能を有効化",
+  "palette.flag_off": "機能を無効化",
+  "settings.flags.title": "実験的機能",
+  "settings.flags.note": "ワンクリックで戻せます——即時反映、再起動不要"
 }

@@ -540,5 +540,9 @@
   "topbar.security": "安全姿態",
   "security.snapshot_downgraded": "快照庫不可用——自動檔已降級為互動檔",
   "settings.security.exec": "預設執行邊界（新會話）",
-  "settings.security.approval": "預設確認策略（新會話）"
+  "settings.security.approval": "預設確認策略（新會話）",
+  "palette.flag_on": "開啟特性",
+  "palette.flag_off": "關閉特性",
+  "settings.flags.title": "實驗特性",
+  "settings.flags.note": "一鍵回退——即時生效，無需重啟"
 }
