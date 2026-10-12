@@ -243,6 +243,25 @@ pub(crate) async fn create_agent_session(
             cfg.and_then(|c| c.compaction_threshold),
         );
     }
+    // v2.20 §9.2 execpolicy 自定义规则（settings 整体替换语义；新会话生效）：
+    // JSON → core CustomRule（pattern/action 已在 settings 校验层把关）。
+    {
+        let ov = state.settings_overrides.lock().unwrap().clone();
+        if let Some(rules) = ov.execpolicy_rules {
+            agent_cfg.exec_rules = rules
+                .into_iter()
+                .filter_map(|r| {
+                    tenon_core::execpolicy::RuleAction::parse(&r.action).map(|a| {
+                        tenon_core::execpolicy::CustomRule {
+                            pattern: r.pattern,
+                            action: a,
+                            reason: r.reason,
+                        }
+                    })
+                })
+                .collect();
+        }
+    }
     // §9.8 v1.92 接线：enabled 时把 Laya 运行时注入会话配置（#1 意图预判 /
     // #2 命令风险补盲区随之生效；未下载 / 未加载由运行时内部回退现状）。
     if state.config.models.laya.enabled {

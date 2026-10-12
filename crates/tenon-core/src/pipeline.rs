@@ -33,6 +33,8 @@ pub struct PolicyInput<'a> {
     pub readonly: bool,
     /// 团队策略工具黑名单（只收窄，§12.2）。
     pub team_denied_tools: &'a [String],
+    /// v2.20 execpolicy 自定义规则（settings 注入；②段 evaluate_with_rules）。
+    pub exec_rules: &'a [execpolicy::CustomRule],
 }
 
 /// Deny 命中段（审计载荷：拒绝来自哪一段）。
@@ -88,7 +90,7 @@ pub fn decide(input: &PolicyInput) -> PolicyDecision {
     // ②命令评估：execpolicy（run_command 三档，v2.18 Hold 覆盖在此承载）
     if input.tool == "run_command" {
         if let Some(cmd) = input.args.get("command").and_then(|c| c.as_str()) {
-            match execpolicy::evaluate(cmd) {
+            match execpolicy::evaluate_with_rules(cmd, input.exec_rules) {
                 Verdict::Block(reason) => {
                     return PolicyDecision::Deny {
                         stage: DenyStage::CommandPolicy,
@@ -155,6 +157,7 @@ mod tests {
             already_allowed: false,
             readonly: false,
             team_denied_tools: &[],
+            exec_rules: &[],
         }
     }
 

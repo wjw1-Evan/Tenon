@@ -192,12 +192,25 @@ impl ProviderOverride {
     }
 }
 
+/// v2.20 execpolicy 自定义规则条目（settings JSON 形态；Claude Code permissions 形态）。
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ExecRuleJson {
+    /// 锚定全匹配 regex（`pnpm .*` 即整条命令匹配）。
+    pub pattern: String,
+    /// allow | hold | deny。
+    pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 /// 设置面板运行时覆盖（§7.2 / §15）：known-keys 子集。
 /// 持久化 `~/.tenon/settings.json`，**新会话**生效（既有会话保持各自配置）。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SettingsOverrides {
     pub first_edit_buffer_ms: Option<u64>,
     pub command_timeout_s: Option<u64>,
+    /// v2.20 §9.2 execpolicy 自定义规则（整体替换；新会话生效；缺省 None = 空集）。
+    pub execpolicy_rules: Option<Vec<ExecRuleJson>>,
     /// v1.40 模型分区：默认 provider 名与 provider 覆盖表（整体替换语义）。
     pub models_default: Option<String>,
     pub models_providers: std::collections::BTreeMap<String, ProviderOverride>,
@@ -294,6 +307,42 @@ impl SettingsOverrides {
                     return Err("exec.command_timeout_s 取值 1-3600s".into());
                 }
                 self.command_timeout_s = Some(v);
+            }
+        }
+        // v2.20 §9.2 execpolicy 自定义规则（整体替换）：action 枚举 + pattern
+        // 合法 regex + ≤64 条；校验失败整体拒绝不发请求。
+        if let Some(ep) = body.get("execpolicy") {
+            if let Some(rules) = ep.get("rules") {
+                let arr = rules
+                    .as_array()
+                    .ok_or("execpolicy.rules 须为数组（整体替换）")?;
+                if arr.len() > 64 {
+                    return Err("execpolicy.rules 上限 64 条".into());
+                }
+                let mut parsed = Vec::with_capacity(arr.len());
+                for (i, r) in arr.iter().enumerate() {
+                    let pattern = r
+                        .get("pattern")
+                        .and_then(|p| p.as_str())
+                        .ok_or_else(|| format!("execpolicy.rules[{i}].pattern 须为字符串"))?;
+                    let action = r
+                        .get("action")
+                        .and_then(|a| a.as_str())
+                        .ok_or_else(|| format!("execpolicy.rules[{i}].action 须为字符串"))?;
+                    if tenon_core::execpolicy::RuleAction::parse(action).is_none() {
+                        return Err(format!(
+                            "execpolicy.rules[{i}].action 仅支持 allow | hold | deny"
+                        ));
+                    }
+                    tenon_core::execpolicy::validate_rule_pattern(pattern)
+                        .map_err(|e| format!("execpolicy.rules[{i}].{e}"))?;
+                    parsed.push(ExecRuleJson {
+                        pattern: pattern.to_string(),
+                        action: action.to_string(),
+                        reason: r.get("reason").and_then(|x| x.as_str()).map(String::from),
+                    });
+                }
+                self.execpolicy_rules = Some(parsed);
             }
         }
         if let Some(security) = body.get("security") {
@@ -489,6 +538,10 @@ impl SettingsOverrides {
         if let Some(v) = self.command_timeout_s {
             exec.insert("command_timeout_s".into(), serde_json::json!(v));
         }
+        let mut execpolicy = serde_json::Map::new();
+        if let Some(rules) = &self.execpolicy_rules {
+            execpolicy.insert("rules".into(), serde_json::json!(rules));
+        }
         let mut security = serde_json::Map::new();
         if let Some(m) = self.security_exec_mode {
             security.insert("exec_mode".into(), serde_json::json!(m.as_str()));
@@ -550,6 +603,7 @@ impl SettingsOverrides {
         serde_json::json!({
             "session": session,
             "exec": exec,
+            "execpolicy": execpolicy,
             "security": security,
             "models": models,
             "skills": skills,
@@ -2090,6 +2144,45 @@ fn boot_recover_orphans(store: Store) -> Store {
         );
     }
     store
+}
+
+#[cfg(test)]
+mod execpolicy_rules_settings_tests {
+    use super::*;
+
+    /// v2.20 settings execpolicy.rules：校验（枚举 / regex / 上限）、回显、
+    /// 拒收非法（整体不发请求语义由 merge Err 承载）。
+    #[test]
+    fn execpolicy_rules_validate_echo_and_reject() {
+        let mut ov = SettingsOverrides::default();
+        ov.merge_json(&serde_json::json!({
+            "execpolicy": { "rules": [
+                {"pattern": "docker .*", "action": "deny", "reason": "团队禁容器"},
+                {"pattern": "git clean.*", "action": "allow"},
+                {"pattern": "kubectl .*", "action": "hold"}
+            ]}
+        }))
+        .unwrap();
+        let echo = ov.to_json()["execpolicy"]["rules"].clone();
+        assert_eq!(echo.as_array().unwrap().len(), 3);
+        assert_eq!(echo[0]["action"], "deny");
+        assert_eq!(echo[0]["reason"], "团队禁容器");
+
+        // 拒收：非法 action / 非法 regex / 超上限
+        let too_many = serde_json::json!({"execpolicy": {"rules":
+            std::iter::repeat_n(serde_json::json!({"pattern": "a", "action": "deny"}), 65)
+                .collect::<Vec<_>>()
+        }});
+        let cases = [
+            serde_json::json!({"execpolicy": {"rules": [{"pattern": "x", "action": "maybe"}]}}),
+            serde_json::json!({"execpolicy": {"rules": [{"pattern": "(bad", "action": "deny"}]}}),
+            too_many,
+        ];
+        for bad in cases {
+            let mut o2 = SettingsOverrides::default();
+            assert!(o2.merge_json(&bad).is_err(), "应拒收: {bad}");
+        }
+    }
 }
 
 #[cfg(test)]

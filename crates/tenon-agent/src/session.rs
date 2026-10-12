@@ -57,6 +57,9 @@ pub struct AgentConfig {
     /// 历史压缩触发阈值（§10.2 v2.13 自适应：daemon 按合并后 provider 配置
     /// `max(24k, context_tokens × 40%)` 或显式覆盖注入；缺省 24k = v1 行为）。
     pub compaction_input_tokens: u64,
+    /// v2.20 execpolicy 自定义规则（design-v2.md §4.2 / Claude Code permissions
+    /// 形态）：settings 注入新会话；策略总线②段 evaluate_with_rules 消费。
+    pub exec_rules: Vec<tenon_core::execpolicy::CustomRule>,
     /// Laya 本地决策模型（§9.8；None = 未启用，各集成点回退现状）。
     pub laya: Option<Arc<tenon_laya::LayaRuntime>>,
     /// daemon 共享 LSP 宿主（§8.5 / §9.2：编辑器与代理同实例）。
@@ -134,6 +137,7 @@ impl AgentConfig {
             command_timeout_s: 120,
             max_tool_rounds: 24,
             compaction_input_tokens: tenon_core::context::MIN_COMPACTION_INPUT_TOKENS,
+            exec_rules: Vec::new(),
             laya: None,
             lsp: None,
             dirty: None,
@@ -2176,6 +2180,7 @@ impl AgentSession {
                         already_allowed,
                         readonly,
                         team_denied_tools: &self.tool_ctx.team_denied_tools,
+                        exec_rules: &self.config.exec_rules,
                     })
                 };
                 if let tenon_core::pipeline::PolicyDecision::Deny { stage: _, reason } = &decision {

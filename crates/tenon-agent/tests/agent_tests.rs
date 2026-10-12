@@ -885,6 +885,86 @@ async fn execpolicy_hold_spares_project_local_commands_v218() {
 }
 
 #[tokio::test]
+async fn execpolicy_custom_rules_deny_and_allow_v220() {
+    use tenon_core::execpolicy::{CustomRule, RuleAction};
+    // v2.20 自定义规则三优先级经策略总线全链：
+    // ①自定义 deny（docker）——拒绝消息回传、命令不执行；
+    // ②自定义 allow（pnpm test 命中内置无、另一命令 hold 升级不在此测）+
+    //   allow 覆盖内置 Hold（git clean -fdx 免确认直执行）。
+    let (_dir, session, store, _p) = setup_with_config(
+        vec![
+            ScriptedReply::Tool {
+                name: "run_command".into(),
+                args: serde_json::json!({"command": "docker ps"}),
+            },
+            ScriptedReply::Text("docker 被规则拒绝，我换方式。".into()),
+        ],
+        |cfg| {
+            cfg.gate.approval = ApprovalGear::OnIrreversible;
+            cfg.exec_rules.push(CustomRule {
+                pattern: "docker .*".into(),
+                action: RuleAction::Deny,
+                reason: Some("团队禁用容器".into()),
+            });
+        },
+    )
+    .await;
+    let outcome = session.run_task("看容器").await;
+    assert!(matches!(outcome, TaskOutcome::Done(_)), "{outcome:?}");
+    let mut st = store.lock().await;
+    let events = st.events(&session.session_id).unwrap();
+    assert!(
+        !events.iter().any(|e| e.kind == EventKind::PatchApplied),
+        "拒绝的命令不得执行"
+    );
+    drop(st);
+
+    // allow 覆盖内置 Hold：git clean -fdx（内置 Hold）被 allow 规则豁免——无确认卡直执行
+    let (dir2, session2, store2, _p2) = setup_with_config(
+        vec![
+            ScriptedReply::Tool {
+                name: "run_command".into(),
+                args: serde_json::json!({"command": "git clean -fdx"}),
+            },
+            ScriptedReply::Text("已清理".into()),
+        ],
+        |cfg| {
+            cfg.gate.approval = ApprovalGear::OnIrreversible;
+            cfg.gate.exec_mode = tenon_core::gates::ExecMode::FullAccess;
+            cfg.exec_rules.push(CustomRule {
+                pattern: "git clean.*".into(),
+                action: RuleAction::Allow,
+                reason: None,
+            });
+        },
+    )
+    .await;
+    let root2 = dir2.path();
+    std::fs::write(root2.join("untracked.txt"), "x").unwrap();
+    for cmd in [
+        vec!["init", "-q", "."],
+        vec!["config", "user.email", "t@t"],
+        vec!["config", "user.name", "t"],
+    ] {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(root2)
+            .args(&cmd)
+            .output()
+            .unwrap();
+    }
+    let outcome2 = session2.run_task("清理").await;
+    assert!(matches!(outcome2, TaskOutcome::Done(_)), "{outcome2:?}");
+    assert!(!root2.join("untracked.txt").exists(), "豁免后应直执行");
+    let mut st2 = store2.lock().await;
+    let events2 = st2.events(&session2.session_id).unwrap();
+    assert!(
+        !events2.iter().any(|e| e.kind == EventKind::ConfirmRequest),
+        "allow 覆盖内置 Hold——不应有确认卡"
+    );
+}
+
+#[tokio::test]
 async fn pipeline_team_blacklist_denies_before_gate_v219() {
     // v2.19 管线①段：team_denied_tools 黑名单在档位前拒绝（mock 直接调黑名单
     // 工具——生产路径该工具不进目录，此为管线纵深验证）；拒绝消息含段语义。
