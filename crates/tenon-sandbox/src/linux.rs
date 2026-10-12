@@ -28,6 +28,25 @@ const LANDLOCK_ADD_RULE: libc::c_long = 445;
 const LANDLOCK_RESTRICT_SELF: libc::c_long = 446;
 
 const LANDLOCK_RULE_PATH_BENEATH: libc::c_int = 1;
+// v2.21 镜像态回环收紧（design-v2.md §4.4 余项 / design.md §12.3）：
+// Landlock 网络 TCP（ABI v4 / 内核 ≥6.7）——CONNECT_TCP handled 默认拒 +
+// NET_PORT 规则按端口放行（对等 macOS Seatbelt「仅 localhost:代理端口」）。
+const LANDLOCK_RULE_NET_PORT: libc::c_int = 2;
+const LANDLOCK_ACCESS_NET_BIND_TCP: u64 = 1 << 0;
+const LANDLOCK_ACCESS_NET_CONNECT_TCP: u64 = 1 << 1;
+
+/// Landlock 网络端口规则载荷（net port 规则的 attr；port 字段为 __be16）。
+#[repr(C)]
+struct LandlockNetPortAttr {
+    allowed_access: u64,
+    port: u16,
+    __pad: [u16; 3],
+}
+
+/// 端口转 Landlock 网络字节序（__be16）。
+fn port_to_be16(port: u16) -> u16 {
+    port.to_be()
+}
 
 const LANDLOCK_ACCESS_FS_EXECUTE: u64 = 1 << 0;
 const LANDLOCK_ACCESS_FS_WRITE_FILE: u64 = 1 << 1;
@@ -92,6 +111,10 @@ struct LandlockPathBeneathAttr {
 pub struct LinuxSandbox {
     /// 断网态：network namespace + seccomp 拦截 inet socket。
     pub offline: bool,
+    /// v2.21 镜像态回环收紧：Some(port) = 镜像代理态（Landlock 网络 TCP 仅放行
+    /// 该端口；不可用降级 fail-closed 全拦）；None 且非 offline = 网络放行
+    ///（域名代理态 / 无沙箱配置——DomainProxy 维持现状）。
+    pub mirror_proxy_port: Option<u16>,
     /// 写入白名单路径（项目根 + 临时目录 + /dev/null）。
     pub write_paths: Vec<std::path::PathBuf>,
 }
@@ -114,9 +137,55 @@ impl LinuxSandbox {
         if self.offline {
             // 层 3：seccomp 拦截 inet socket（防御纵深，覆盖 hooks 子进程）
             apply_seccomp_network_filter()?;
+            return Ok(());
+        }
+        // v2.21 镜像态回环收紧（对等 macOS v2.3）：Landlock 网络 TCP 仅放行
+        // 代理端口（handled CONNECT_TCP 默认拒 + NET_PORT 规则）；AF_UNIX /
+        // 进程内 socket 不受影响（npm 等工具链 unix socket 兼容）。
+        if let Some(port) = self.mirror_proxy_port {
+            if apply_landlock_net_connect_allow(port).is_err() {
+                // 旧内核（<6.7 ENOSYS）/ 受限环境：fail-closed——宁使命令失败
+                // 不放行未过滤网络（对等 macOS「代理缺席全拒」口径）
+                eprintln!(
+                    "[tenon-sandbox] Landlock 网络 TCP 不可用，镜像态 fail-closed（seccomp 全拦 inet connect，代理不可达——仅放行端口的回环收紧无法表达）"
+                );
+                apply_seccomp_network_filter()?;
+            }
         }
         Ok(())
     }
+}
+
+/// Landlock 网络 TCP：handled = CONNECT_TCP（默认拒）+ 仅放行 `port` 的出网
+/// connect。与文件 ruleset 分离安装（网络位与 FS 位在同一 ruleset 时旧内核
+/// create_ruleset 即 ENOSYS——分离安装让 FS 层在旧内核照常生效）。
+fn apply_landlock_net_connect_allow(port: u16) -> Result<(), io::Error> {
+    let handled = LANDLOCK_ACCESS_NET_BIND_TCP | LANDLOCK_ACCESS_NET_CONNECT_TCP;
+    let ruleset = landlock_create_ruleset(handled)?;
+    let mut rule = LandlockNetPortAttr {
+        allowed_access: LANDLOCK_ACCESS_NET_CONNECT_TCP,
+        port: port_to_be16(port),
+        __pad: [0; 3],
+    };
+    let rc = unsafe {
+        libc::syscall(
+            LANDLOCK_ADD_RULE,
+            ruleset,
+            LANDLOCK_RULE_NET_PORT,
+            &mut rule as *mut LandlockNetPortAttr,
+            0u32,
+        )
+    };
+    if rc != 0 {
+        unsafe { libc::close(ruleset) };
+        return Err(io::Error::last_os_error());
+    }
+    let rc = unsafe { libc::syscall(LANDLOCK_RESTRICT_SELF, ruleset, 0u32) };
+    unsafe { libc::close(ruleset) };
+    if rc != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 fn unshare_network() -> Result<(), io::Error> {
@@ -312,6 +381,21 @@ fn apply_seccomp_network_filter() -> Result<(), io::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// v2.21：端口 __be16 字节序 + NET_PORT attr 布局。
+    #[test]
+    fn landlock_net_port_attr_layout() {
+        // 端口 8080 = 0x1F90 → be16 存储高字节在前
+        assert_eq!(port_to_be16(0x1234), 0x1234u16.to_be());
+        assert_eq!(port_to_be16(8080), 8080u16.to_be());
+        let attr = LandlockNetPortAttr {
+            allowed_access: LANDLOCK_ACCESS_NET_CONNECT_TCP,
+            port: port_to_be16(8080),
+            __pad: [0; 3],
+        };
+        assert_eq!(attr.allowed_access, 1 << 1);
+        assert_eq!(std::mem::size_of::<LandlockNetPortAttr>(), 16);
+    }
 
     #[test]
     fn bpf_filter_layout_targets_in_range() {

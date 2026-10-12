@@ -294,8 +294,15 @@ fn build_sandboxed_command(
         .project_root()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "缺项目根"))?
         .to_path_buf();
+    // v2.21 镜像态回环收紧：镜像代理态填代理端口（Linux Landlock 仅放行该端口
+    // connect；缺席 fail-closed）；域名代理态维持网络放行（对等 macOS 现状）。
+    let mirror_proxy_port = match sandbox {
+        SandboxSpec::MirrorProxy { proxy, .. } => proxy.map(|a| a.port()),
+        _ => None,
+    };
     let linux_sandbox = crate::linux::LinuxSandbox {
         offline: sandbox.offline(),
+        mirror_proxy_port,
         write_paths: vec![
             project_root.clone(),
             std::env::temp_dir(),

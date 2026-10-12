@@ -128,8 +128,11 @@ pub fn spawn_external(
         use std::os::unix::process::CommandExt;
         let offline = spec.network == ExternalNetwork::Offline;
         let mut cmd = plain_command(program, args, cwd, envs);
+        // v2.21：外部进程（沙箱总线）网络二态——offline 全拒 / open 放行，
+        // 不进镜像态回环收紧（外部进程无代理通路语义）。
         let linux_sandbox = crate::linux::LinuxSandbox {
             offline,
+            mirror_proxy_port: None,
             write_paths: write_roots,
         };
         unsafe {
