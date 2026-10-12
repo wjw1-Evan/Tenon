@@ -1078,7 +1078,10 @@ export default function App({
             {
               id: "agent.resume",
               label: t("message.resume"),
-              run: () => sessionId && api.control(sessionId, "resume"),
+              // v2.35 恢复双语义：附带本地化继续语——终态暂停时 daemon 转续跑
+              run: () =>
+                sessionId &&
+                api.control(sessionId, "resume", undefined, t("thread.resume_continue")),
             },
           ]
         : [

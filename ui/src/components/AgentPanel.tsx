@@ -692,9 +692,16 @@ export function AgentPanel({
   }
 
   // v1.92：暂停只进不出的修复——paused 时发送钮承担恢复。
+  // v2.35 恢复双语义（§9.1）：daemon 自裁定——运行态挂起为控制命令唤醒；终态
+  // 暂停（熔断 / 回合上限 / 计划批准 / 重启遗留）转「续跑」开新回合，故附带
+  // 本地化继续语；失败此前静默（点击无响应无提示），现显式 toast 上报。
   async function resume() {
     if (!sessionId) return;
-    await api.control(sessionId, "resume");
+    try {
+      await api.control(sessionId, "resume", undefined, t("thread.resume_continue"));
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
   }
 
   // v1.159：选中补全项——@ 前缀整体替换为 `@路径 `（trailing 空格续写），光标落引用之后。
@@ -1853,9 +1860,27 @@ function EventNode({
           </div>
         );
       }
+      // v2.35 错误原因细分（§7.5）：守卫类暂停的错误事件载荷散布于
+      // circuit_tripped / rounds_exhausted / snapshot_unavailable 键——此前仅读
+      // error 键，这些场景全部落到「错误」裸兜底（用户无从处置）；现按键生成
+      // 具体原因文案，error 键（模型调用失败等）仍直显上游原文。
+      const p = ev.payload as {
+        error?: unknown;
+        circuit_tripped?: unknown;
+        rounds_exhausted?: unknown;
+        snapshot_unavailable?: unknown;
+      };
+      const detail =
+        p.circuit_tripped !== undefined
+          ? t("thread.error_circuit", { reason: String(p.circuit_tripped) })
+          : p.rounds_exhausted !== undefined
+            ? t("thread.error_rounds", { rounds: Number(p.rounds_exhausted) })
+            : p.snapshot_unavailable !== undefined
+              ? t("thread.error_snapshot", { detail: String(p.snapshot_unavailable) })
+              : String(p.error ?? "") || t("agent.error_fallback");
       return (
-        <div className="turn-error">
-          ⚠ {String((ev.payload as { error?: string }).error ?? t("agent.error_fallback"))}
+        <div className="turn-error" data-testid="turn-error">
+          ⚠ {detail}
           {/* v1.204 一键重试：重发该回合原始任务文本（运行态经队列入队） */}
           {onRetry && (
             <button

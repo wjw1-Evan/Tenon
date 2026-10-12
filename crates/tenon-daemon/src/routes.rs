@@ -1076,6 +1076,10 @@ struct ControlBody {
     /// v2.0 档位切换（design-v2.md §4.1）：set_approval / set_exec_mode 的目标档值。
     #[serde(default)]
     gear: Option<String>,
+    /// v2.35 恢复双语义：resume 在终态暂停（任务循环已退出）时转为「续跑」——
+    /// 本字段为 UI 传入的本地化继续语（缺省「继续」），随续跑回合入上下文。
+    #[serde(default)]
+    text: Option<String>,
 }
 
 async fn session_control(
@@ -1092,7 +1096,26 @@ async fn session_control(
     };
     match body.action.as_str() {
         "pause" => session.control(ControlCommand::Pause),
-        "resume" => session.control(ControlCommand::Resume),
+        // v2.35 恢复双语义（§9.1）：运行态挂起（任务循环活着的检查点等待）→ 控制
+        // 命令唤醒（v1.92 语义不变）；终态暂停（熔断 / 回合上限 / 计划批准 / 快照降级 /
+        // daemon 重启遗留——任务循环已退出，控制命令入队无人消费，此前点击恢复毫无
+        // 效果）→ 转为「续跑」：复用发送链路开新回合（v1.179 计划批准「发消息续跑」
+        // 同语义），text 为 UI 本地化继续语。
+        "resume" => {
+            if session.is_running() {
+                session.control(ControlCommand::Resume);
+            } else {
+                return send_message(
+                    State(state),
+                    Path(id),
+                    Json(MessageBody {
+                        text: body.text.unwrap_or_else(|| "继续".into()),
+                        attachments: Vec::new(),
+                    }),
+                )
+                .await;
+            }
+        }
         "stop" => session.control(ControlCommand::Stop),
         "set_readonly" => session.control(ControlCommand::SetReadonly(body.value.unwrap_or(true))),
         // v1.161 手动压缩（§10.2）：运行态下一模型回合跳过 24k 阈值强制省略陈旧工具输出

@@ -502,10 +502,11 @@ export class TenonApi {
     });
   }
 
-  control(sessionId: string, action: string, value?: boolean) {
+  /** v2.35 恢复双语义：resume 附带本地化继续语——终态暂停时 daemon 转为续跑回合。 */
+  control(sessionId: string, action: string, value?: boolean, text?: string) {
     return this.request<{ ok: boolean }>(`/session/${sessionId}/control`, {
       method: "POST",
-      json: { action, value },
+      json: { action, value, text },
     });
   }
 
