@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | **v2.20** |
+| 版本 | **v2.22** |
 | 日期 | 2026-10-12 |
 | 状态 | 定稿，M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
@@ -785,7 +785,7 @@ A/B/C/D 仅是风险与执行边界标记，不再是审批门槛；去 Plan 安
 | Linux | namespace + seccomp | 同上 |
 | Windows | daemon 于 WSL2，复用 Linux 沙箱；检测不到 WSL2 时仍启用写守卫与项目边界，完整沙箱经 WSL2 补齐 | 完整沙箱经 WSL2 |
 
-网络三态：**断网**（测试/构建/纯分析）→ **镜像代理**（仅预授权 registry：npm/pypi/nuget/crates…，B 级）→ **域名代理**（请求 URL 的 host 直接放行并入事件，C 级）。**现状标注（v2.3 更新）**：镜像态域过滤**已收口**（design-v2.md §4.4）——macOS Seatbelt 收紧为「deny network\* + 仅放行回环代理端口 `localhost:<port>`」，沙箱内 install_deps 命令唯一出网通路是本地 registry 白名单代理进程（`tenon-sandbox::proxy`，白名单 = `mirror_default()` 扩充集：覆盖 install_policy 全部包管理器官方源 + git 依赖 / SPM 所需 GitHub 域）；代理不可用时工具层 fail-closed 拒绝、代理缺席的 profile 同样全拒（DSH「无后端显式失败、禁止静默透传」口径）。**Linux 镜像态回环收紧（v2.21，对等 macOS v2.3 收口）**：镜像态经 Landlock 网络 TCP 规则（ABI v4 / 内核 ≥6.7，`LANDLOCK_ACCESS_NET_CONNECT_TCP` handled 默认拒 + `LANDLOCK_RULE_NET_PORT` 仅放行代理端口）实现「唯一出网通路 = 回环代理端口」——AF_UNIX / 进程内 socket 不受影响（npm 等工具链 unix socket 兼容）；Landlock 网络面不可用（旧内核 ENOSYS）时 **fail-closed**：seccomp 全拦 inet connect（宁使命令失败不放行未过滤网络，对等 macOS「代理缺席全拒」口径）；代理缺席（`proxy=None`）同样 seccomp 全拦；域名代理态（C 级）维持网络放行现状（生产未消费）；断网态三层（namespace / Landlock FS / seccomp）不变；域名代理态（C 级）域过滤维持现状（生产未消费）。残余风险面收窄为：postinstall / 构建系统任务**仅可触达白名单域**。**层间独立降级（v1.150）**：Linux 断网态的 network namespace（层 1）在受限环境（加固主机 / 托管 CI 禁用非特权 userns）不可用时降级跳过、不致命——网络隔离由层 3 seccomp inet 过滤兜底、写限仍由层 2 Landlock 承担，断网语义不变。系统只读、写限当前会话绑定的项目根 / 显式 worktree、每项目语言服务器隔离。多项目打开时为每个执行进程分别物化 project roots；跨项目路径既不是可写根，也不进入 A 级检索范围。
+网络三态：**断网**（测试/构建/纯分析）→ **镜像代理**（仅预授权 registry：npm/pypi/nuget/crates…，B 级）→ **域名代理**（请求 URL 的 host 直接放行并入事件，C 级）。**现状标注（v2.3 更新）**：镜像态域过滤**已收口**（design-v2.md §4.4）——macOS Seatbelt 收紧为「deny network\* + 仅放行回环代理端口 `localhost:<port>`」，沙箱内 install_deps 命令唯一出网通路是本地 registry 白名单代理进程（`tenon-sandbox::proxy`，白名单 = `mirror_default()` 扩充集：覆盖 install_policy 全部包管理器官方源 + git 依赖 / SPM 所需 GitHub 域）；代理不可用时工具层 fail-closed 拒绝、代理缺席的 profile 同样全拒（DSH「无后端显式失败、禁止静默透传」口径）。**Linux 镜像态回环收紧（v2.21，对等 macOS v2.3 收口）**：镜像态经 Landlock 网络 TCP 规则（ABI v4 / 内核 ≥6.7，`LANDLOCK_ACCESS_NET_CONNECT_TCP` handled 默认拒 + `LANDLOCK_RULE_NET_PORT` 仅放行代理端口）实现「唯一出网通路 = 回环代理端口」——AF_UNIX / 进程内 socket 不受影响（npm 等工具链 unix socket 兼容）；Landlock 网络面不可用（旧内核 ENOSYS）时 **fail-closed**：seccomp 全拦 inet connect（宁使命令失败不放行未过滤网络，对等 macOS「代理缺席全拒」口径）；代理缺席（`proxy=None`）同样 seccomp 全拦；域名代理态（C 级）维持网络放行现状（生产未消费）；断网态三层（namespace / Landlock FS / seccomp）不变；**白名单 settings 可配置（v2.22，design-v2.md §4.4 余项「镜像源自定义」）**：registry 白名单由 `mirror_default()` 硬编码升级为「内置基线 + settings 追加」——settings `execpolicy.registry_hosts`（字符串数组整体替换语义：缺省/空 = 仅内置 23 域；条目经 host 合法性校验（非空、无 scheme / path / 端口、字符白名单）+ 去重排序 + 上限 64 条）与 `execpolicy.rules` 同块 PUT；**追加而非替换内置基线**（企业镜像源 `npm.company.internal` 与官方源并存——只放宽到用户显式声明的域，不丢默认可用性）；新会话生效（AgentConfig 注入）→ executor install_deps 消费（`registry_proxy_with(extra)`：单例以首次启动的并集白名单为准——daemon 生命周期内白名单取并集不收缩，重启后按新 settings 重建，如实标注）；代理进程非白名单 403 拒绝语义不变；域名代理态（C 级）域过滤维持现状（生产未消费）。残余风险面收窄为：postinstall / 构建系统任务**仅可触达白名单域**。**层间独立降级（v1.150）**：Linux 断网态的 network namespace（层 1）在受限环境（加固主机 / 托管 CI 禁用非特权 userns）不可用时降级跳过、不致命——网络隔离由层 3 seccomp inet 过滤兜底、写限仍由层 2 Landlock 承担，断网语义不变。系统只读、写限当前会话绑定的项目根 / 显式 worktree、每项目语言服务器隔离。多项目打开时为每个执行进程分别物化 project roots；跨项目路径既不是可写根，也不进入 A 级检索范围。
 
 ### 12.4 密钥处理
 

@@ -60,6 +60,9 @@ pub struct AgentConfig {
     /// v2.20 execpolicy 自定义规则（design-v2.md §4.2 / Claude Code permissions
     /// 形态）：settings 注入新会话；策略总线②段 evaluate_with_rules 消费。
     pub exec_rules: Vec<tenon_core::execpolicy::CustomRule>,
+    /// v2.22 registry 白名单追加（design-v2.md §4.4 镜像源自定义）：settings
+    /// 注入新会话；executor install_deps 经 registry_proxy_with 并入代理。
+    pub registry_extra_hosts: Vec<String>,
     /// Laya 本地决策模型（§9.8；None = 未启用，各集成点回退现状）。
     pub laya: Option<Arc<tenon_laya::LayaRuntime>>,
     /// daemon 共享 LSP 宿主（§8.5 / §9.2：编辑器与代理同实例）。
@@ -138,6 +141,7 @@ impl AgentConfig {
             max_tool_rounds: 24,
             compaction_input_tokens: tenon_core::context::MIN_COMPACTION_INPUT_TOKENS,
             exec_rules: Vec::new(),
+            registry_extra_hosts: Vec::new(),
             laya: None,
             lsp: None,
             dirty: None,
@@ -849,6 +853,7 @@ impl AgentSession {
         }
         tool_ctx.dirty = config.dirty.clone();
         tool_ctx.team_denied_tools = config.team_denied_tools.clone();
+        tool_ctx.registry_extra_hosts = config.registry_extra_hosts.clone();
         tool_ctx.lsp = config.lsp.clone();
         // §13.4 v1.130：技能全局目录与停用名单（停用经 settings 快照，新会话生效）。
         tool_ctx.skills_global_dir = Some(config.skills_global_dir.clone());

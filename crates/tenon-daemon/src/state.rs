@@ -211,6 +211,8 @@ pub struct SettingsOverrides {
     pub command_timeout_s: Option<u64>,
     /// v2.20 §9.2 execpolicy 自定义规则（整体替换；新会话生效；缺省 None = 空集）。
     pub execpolicy_rules: Option<Vec<ExecRuleJson>>,
+    /// v2.22 §12.3 registry 白名单追加（整体替换；新会话生效；缺省 None = 仅内置）。
+    pub registry_hosts: Option<Vec<String>>,
     /// v1.40 模型分区：默认 provider 名与 provider 覆盖表（整体替换语义）。
     pub models_default: Option<String>,
     pub models_providers: std::collections::BTreeMap<String, ProviderOverride>,
@@ -343,6 +345,30 @@ impl SettingsOverrides {
                     });
                 }
                 self.execpolicy_rules = Some(parsed);
+            }
+            // v2.22 registry 白名单追加：host 合法性（core 同源校验）+ ≤64 + 去重
+            if let Some(hosts) = ep.get("registry_hosts") {
+                let arr = hosts
+                    .as_array()
+                    .ok_or("execpolicy.registry_hosts 须为字符串数组")?;
+                if arr.len() > 64 {
+                    return Err("execpolicy.registry_hosts 上限 64 条".into());
+                }
+                let mut parsed: Vec<String> = Vec::with_capacity(arr.len());
+                for (i, h) in arr.iter().enumerate() {
+                    let host = h
+                        .as_str()
+                        .ok_or_else(|| format!("execpolicy.registry_hosts[{i}] 须为字符串"))?;
+                    if !tenon_sandbox::NetworkState::valid_registry_host(host) {
+                        return Err(format!(
+                            "execpolicy.registry_hosts[{i}] 非法 host（须小写域名、无 scheme/路径/端口）: {host}"
+                        ));
+                    }
+                    parsed.push(host.trim().to_lowercase());
+                }
+                parsed.sort();
+                parsed.dedup();
+                self.registry_hosts = Some(parsed);
             }
         }
         if let Some(security) = body.get("security") {
@@ -541,6 +567,9 @@ impl SettingsOverrides {
         let mut execpolicy = serde_json::Map::new();
         if let Some(rules) = &self.execpolicy_rules {
             execpolicy.insert("rules".into(), serde_json::json!(rules));
+        }
+        if let Some(hosts) = &self.registry_hosts {
+            execpolicy.insert("registry_hosts".into(), serde_json::json!(hosts));
         }
         let mut security = serde_json::Map::new();
         if let Some(m) = self.security_exec_mode {
@@ -2182,6 +2211,39 @@ mod execpolicy_rules_settings_tests {
             let mut o2 = SettingsOverrides::default();
             assert!(o2.merge_json(&bad).is_err(), "应拒收: {bad}");
         }
+    }
+
+    /// v2.22 registry 白名单追加：校验 / 归一去重 / 回显 / 拒收非法 host。
+    #[test]
+    fn registry_hosts_validate_echo_and_reject_v222() {
+        let mut ov = SettingsOverrides::default();
+        ov.merge_json(&serde_json::json!({
+            "execpolicy": {"registry_hosts": ["npm.company.internal", "mirrors.tuna.tsinghua.edu.cn"]}
+        }))
+        .unwrap();
+        let echo = ov.to_json()["execpolicy"]["registry_hosts"].clone();
+        assert_eq!(
+            echo,
+            serde_json::json!(["mirrors.tuna.tsinghua.edu.cn", "npm.company.internal"]),
+            "排序归一: {echo}"
+        );
+
+        for bad in [
+            "https://evil.com",
+            "evil.com:8080",
+            "EVIL.com",
+            "evil.com/x",
+        ] {
+            let mut o2 = SettingsOverrides::default();
+            let body = serde_json::json!({"execpolicy": {"registry_hosts": [bad]}});
+            assert!(o2.merge_json(&body).is_err(), "应拒收: {bad}");
+        }
+        // 65 条超限
+        let many: Vec<String> = (0..65).map(|i| format!("m{i}.internal")).collect();
+        let mut o3 = SettingsOverrides::default();
+        assert!(o3
+            .merge_json(&serde_json::json!({"execpolicy": {"registry_hosts": many}}))
+            .is_err());
     }
 }
 

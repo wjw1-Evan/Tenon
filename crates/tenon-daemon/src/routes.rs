@@ -247,6 +247,9 @@ pub(crate) async fn create_agent_session(
     // JSON → core CustomRule（pattern/action 已在 settings 校验层把关）。
     {
         let ov = state.settings_overrides.lock().unwrap().clone();
+        if let Some(hosts) = ov.registry_hosts {
+            agent_cfg.registry_extra_hosts = hosts;
+        }
         if let Some(rules) = ov.execpolicy_rules {
             agent_cfg.exec_rules = rules
                 .into_iter()

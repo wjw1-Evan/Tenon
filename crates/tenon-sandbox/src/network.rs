@@ -23,6 +23,47 @@ pub enum NetworkState {
 }
 
 impl NetworkState {
+    /// v2.22 白名单可配置（design.md §12.3）：host 合法性——非空、无 scheme /
+    /// path / 端口、字符白名单（字母数字 . - _，小写归一）；内部镜像源常用
+    /// 短横线与下划线子域。非法条目由调用方（settings 校验）整体拒绝。
+    pub fn valid_registry_host(host: &str) -> bool {
+        let h = host.trim();
+        !h.is_empty()
+            && h.len() <= 253
+            && !h.contains("://")
+            && !h.contains('/')
+            && !h.contains(':')
+            && h == h.to_lowercase()
+            && h.split('.').all(|label| {
+                !label.is_empty()
+                    && !label.starts_with('-')
+                    && !label.ends_with('-')
+                    && label
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            })
+            && h.contains('.')
+    }
+
+    /// 内置基线 + settings 追加（并集，去重）——追加不替换：企业镜像源与官方
+    /// 源并存，只放宽到用户显式声明的域。
+    pub fn mirror_with_extra(extra: &[String]) -> Self {
+        let Self::MirrorProxy {
+            mut registries,
+            proxy,
+        } = Self::mirror_default()
+        else {
+            unreachable!("mirror_default 恒为 MirrorProxy")
+        };
+        for host in extra {
+            let h = host.trim().to_lowercase();
+            if Self::valid_registry_host(&h) {
+                registries.insert(h);
+            }
+        }
+        Self::MirrorProxy { registries, proxy }
+    }
+
     pub fn offline() -> Self {
         Self::Offline
     }
@@ -112,5 +153,45 @@ mod tests {
         assert!(n.allows_host("docs.rs"));
         assert!(!n.allows_host("registry.npmjs.org"));
         assert_eq!(n.label(), "domain_proxy");
+    }
+}
+
+#[cfg(test)]
+mod v222_registry_host_tests {
+    use super::*;
+
+    /// v2.22：host 校验矩阵 + 追加并集（内置基线保留）。
+    #[test]
+    fn registry_host_validation_and_union() {
+        for ok in [
+            "npm.company.internal",
+            "mirrors.tuna.tsinghua.edu.cn",
+            "registry.npmjs.org",
+        ] {
+            assert!(NetworkState::valid_registry_host(ok), "应合法: {ok}");
+        }
+        for bad in [
+            "",
+            "https://evil.com",
+            "evil.com/path",
+            "evil.com:8080",
+            "EVIL.com",
+            "evil.com..x",
+            "-lead.internal",
+            "trail-.internal",
+            "spa ce.internal",
+            "no-dot",
+        ] {
+            assert!(!NetworkState::valid_registry_host(bad), "应拒: {bad}");
+        }
+        let union = NetworkState::mirror_with_extra(&[
+            "npm.company.internal".into(),
+            "registry.npmjs.org".into(),
+        ]);
+        let NetworkState::MirrorProxy { registries, .. } = union else {
+            unreachable!()
+        };
+        assert!(registries.contains("npm.company.internal"));
+        assert!(registries.contains("registry.npmjs.org"), "内置基线保留");
     }
 }

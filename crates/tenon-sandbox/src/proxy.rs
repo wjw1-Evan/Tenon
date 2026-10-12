@@ -257,14 +257,21 @@ static GLOBAL: OnceLock<RegistryProxy> = OnceLock::new();
 static GLOBAL_ERR: Mutex<Option<String>> = Mutex::new(None);
 
 pub fn registry_proxy() -> Result<SocketAddr, String> {
+    registry_proxy_with(&[])
+}
+
+/// v2.22 白名单可配置（design.md §12.3）：内置基线 + settings 追加并集。
+/// 单例语义：daemon 生命周期内首次启动的并集为准（后续 settings 变更不收缩
+/// 已在跑的代理白名单——重启后按新 settings 重建，如实标注）。
+pub fn registry_proxy_with(extra_hosts: &[String]) -> Result<SocketAddr, String> {
     if let Some(p) = GLOBAL.get() {
         return Ok(p.addr());
     }
-    let allowlist = match crate::network::NetworkState::mirror_default() {
+    let allowlist = match crate::network::NetworkState::mirror_with_extra(extra_hosts) {
         crate::network::NetworkState::MirrorProxy { registries, .. } => {
             registries.into_iter().collect()
         }
-        _ => unreachable!("mirror_default 恒为 MirrorProxy"),
+        _ => unreachable!("mirror_with_extra 恒为 MirrorProxy"),
     };
     match RegistryProxy::start(allowlist) {
         Ok(p) => {

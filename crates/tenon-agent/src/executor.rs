@@ -209,6 +209,8 @@ pub struct ToolContext {
     pub mcp_policy: tenon_mcp::McpLevelPolicy,
     /// 团队策略工具黑名单（M3：跨会话只收窄；命中即拒绝）。
     pub team_denied_tools: Vec<String>,
+    /// v2.22 registry 白名单追加（settings 注入；install_deps 代理并集消费）。
+    pub registry_extra_hosts: Vec<String>,
     /// 共享 LSP 宿主（§8.5 / §9.2；None = 内核未接入 daemon）。
     pub lsp: Option<std::sync::Arc<tenon_lsp::LspManager>>,
     /// 技能全局目录（§13.4 v1.130；None = daemon 未接入，skill_use 仅项目级可见）。
@@ -236,6 +238,7 @@ impl ToolContext {
             mcp: None,
             mcp_policy: tenon_mcp::McpLevelPolicy::default(),
             team_denied_tools: Vec::new(),
+            registry_extra_hosts: Vec::new(),
             lsp: None,
             skills_global_dir: None,
             skills_disabled: Vec::new(),
@@ -740,10 +743,12 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
             let spec = if ctx.full_access.load(Ordering::Relaxed) {
                 tenon_sandbox::SandboxSpec::None
             } else {
-                let proxy = match tenon_sandbox::proxy::registry_proxy() {
-                    Ok(addr) => addr,
-                    Err(reason) => return ToolOutput::err(reason),
-                };
+                // v2.22：settings 追加镜像源并入代理白名单（并集单例）
+                let proxy =
+                    match tenon_sandbox::proxy::registry_proxy_with(&ctx.registry_extra_hosts) {
+                        Ok(addr) => addr,
+                        Err(reason) => return ToolOutput::err(reason),
+                    };
                 tenon_sandbox::SandboxSpec::MirrorProxy {
                     project_root: ctx.root.clone(),
                     proxy: Some(proxy),
@@ -1807,6 +1812,15 @@ mod tests {
         let out = execute_tool(&c, "run_tests", &serde_json::json!({"command": "echo hi"}));
         assert!(!out.ok);
         assert!(out.content.contains("只读"));
+    }
+
+    #[test]
+    fn registry_extra_hosts_flow_to_proxy_config_v222() {
+        // v2.22：ctx.registry_extra_hosts 透传 registry_proxy_with 的并集语义
+        // 由 network::mirror_with_extra 单测覆盖（并集保留内置基线）；此处验证
+        // ToolContext 字段默认空 + config 注入路径存在（集成由 daemon 层测）。
+        let (_d, c) = ctx();
+        assert!(c.registry_extra_hosts.is_empty(), "默认空 = 仅内置白名单");
     }
 
     #[test]
