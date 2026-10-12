@@ -1,8 +1,8 @@
 //! 动作能力分级与执行判定（设计方案 §12.2 / §12.3，v1.89）。
 //!
 //! v1.89 移除审批门禁：A/B/C/D 只表达只读、沙箱、出网与不可逆风险边界。
-//! 非只读动作直接执行；只读开关是唯一的分级级硬拒绝，工具黑名单由上层过滤。
-//! 沙箱、快照、熔断器和审计不因免审批而省略。
+//! 非只读动作直接执行；只读开关是唯一的分级级硬拒绝（v2.37 工具黑名单
+//! 随 TeamPolicy 移除，ADR-19）。沙箱、快照、熔断器和审计不因免审批而省略。
 
 use serde::{Deserialize, Serialize};
 
@@ -70,29 +70,6 @@ impl Policy {
     }
 }
 
-/// 团队策略（M3 §19 / §12.2）：由团队下发、**只收窄**的全局约束。
-/// v1.89 移除审批后 `force_interactive` 无操作语义，已随 v1.92 删除
-/// （旧 policy.toml 中的该键被 serde 静默忽略）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct TeamPolicy {
-    /// 全局禁用工具（名单，跨会话）
-    #[serde(default)]
-    pub denied_tools: Vec<String>,
-    /// 单任务成本上限（美元；低于配置者生效）
-    #[serde(default)]
-    pub max_cost_usd: Option<f64>,
-}
-
-impl TeamPolicy {
-    /// 熔断上限取更严格者。
-    pub fn clamp_cost(&self, configured: f64) -> f64 {
-        match self.max_cost_usd {
-            Some(team_cap) => configured.min(team_cap),
-            None => configured,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,18 +88,5 @@ mod tests {
                 Decision::Denied("readonly")
             );
         }
-    }
-
-    #[test]
-    fn team_policy_serialization_and_cost_clamp() {
-        let tp: TeamPolicy = serde_json::from_str(r#"{"denied_tools": ["git_push"]}"#).unwrap();
-        assert_eq!(tp.denied_tools, vec!["git_push".to_string()]);
-        assert_eq!(tp.max_cost_usd, None);
-        assert_eq!(tp.clamp_cost(5.0), 5.0);
-        let capped = TeamPolicy {
-            max_cost_usd: Some(2.0),
-            ..TeamPolicy::default()
-        };
-        assert_eq!(capped.clamp_cost(5.0), 2.0);
     }
 }

@@ -29,7 +29,6 @@ async fn main() -> anyhow::Result<()> {
     let mut no_lock = false;
     let mut config_path: Option<std::path::PathBuf> = None;
     let mut settings_path: Option<std::path::PathBuf> = None;
-    let mut policy_path: Option<std::path::PathBuf> = None;
     let mut lan_bind = false;
     let mut bind_port: Option<u16> = None;
     let mut fixed_token: Option<String> = None;
@@ -44,7 +43,6 @@ async fn main() -> anyhow::Result<()> {
             "--provider" => provider = args.next().unwrap_or_default(),
             "--config" => config_path = args.next().map(std::path::PathBuf::from),
             "--settings" => settings_path = args.next().map(std::path::PathBuf::from),
-            "--policy" => policy_path = args.next().map(std::path::PathBuf::from),
             "--generate-keys" => generate_keys = true,
             "--no-lock" => no_lock = true,
             "--lan" => lan_bind = true,
@@ -169,7 +167,6 @@ async fn main() -> anyhow::Result<()> {
         worktrees_root: None,
         endpoint_path: None,
         settings_path,
-        policy_path,
         updates_staging_dir: None,
         bind_port,
         fixed_token,

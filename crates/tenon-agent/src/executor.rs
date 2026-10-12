@@ -207,20 +207,12 @@ pub struct ToolContext {
     pub mcp: Option<std::sync::Arc<tenon_mcp::McpHost>>,
     /// MCP 工具分级策略（默认 D；net:* 服务器工具 → C；list_tools 后按服务器权限构建）。
     pub mcp_policy: tenon_mcp::McpLevelPolicy,
-    /// 团队策略工具黑名单（M3：跨会话只收窄；命中即拒绝）。
-    pub team_denied_tools: Vec<String>,
-    /// v2.22 registry 白名单追加（settings 注入；install_deps 代理并集消费）。
-    pub registry_extra_hosts: Vec<String>,
     /// 共享 LSP 宿主（§8.5 / §9.2；None = 内核未接入 daemon）。
     pub lsp: Option<std::sync::Arc<tenon_lsp::LspManager>>,
     /// 技能全局目录（§13.4 v1.130；None = daemon 未接入，skill_use 仅项目级可见）。
     pub skills_global_dir: Option<PathBuf>,
     /// 停用技能名单（settings.json `skills.disabled`，会话创建时快照）。
     pub skills_disabled: Vec<String>,
-    /// v2.0 档位派生（design-v2.md §4.1）：ExecMode = full_access 时为 true——
-    /// run_tests / run_build / install_deps 的沙箱降为无（用户显式信任，
-    /// 对齐 codex danger-full-access；写守卫与审计路径不变）。
-    pub full_access: std::sync::atomic::AtomicBool,
 }
 
 impl ToolContext {
@@ -237,12 +229,9 @@ impl ToolContext {
             dirty: None,
             mcp: None,
             mcp_policy: tenon_mcp::McpLevelPolicy::default(),
-            team_denied_tools: Vec::new(),
-            registry_extra_hosts: Vec::new(),
             lsp: None,
             skills_global_dir: None,
             skills_disabled: Vec::new(),
-            full_access: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -299,10 +288,6 @@ fn safe_git_branch(branch: &str) -> bool {
 /// Err 变体含三栏冲突预览（§8.6）——尺寸可接受（clippy result_large_err 白名单）。
 #[allow(clippy::result_large_err)]
 pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> ToolOutput {
-    // 团队策略工具黑名单（M3：只收窄；优先级最高，只读开关之前）
-    if ctx.team_denied_tools.iter().any(|t| t == tool) {
-        return ToolOutput::err(format!("团队策略禁用工具: {tool}（只收窄，§19/§12.2）"));
-    }
     match tool {
         // ---------- A 级只读 ----------
         "read_file" => {
@@ -634,7 +619,8 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
             }
         }
         // v2.0（design-v2.md §4.2）：诚实通用命令通道——command 必填（无探测
-        // 缺省），execpolicy 前置拦截高危模式，B 级断网沙箱（full_access 降级）。
+        // 缺省），execpolicy 前置拦截高危模式；v2.37（ADR-19）命令沙箱恒降级
+        // 为无（全对话完整权限）。
         "run_command" => {
             if ctx.readonly.load(Ordering::Relaxed) {
                 return ToolOutput::err("只读会话禁用命令执行");
@@ -652,14 +638,12 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                 .and_then(|t| t.as_u64())
                 .map(|s| Duration::from_secs(s.clamp(1, 3600)))
                 .unwrap_or(ctx.command_timeout);
-            let spec = if ctx.full_access.load(Ordering::Relaxed) {
-                tenon_sandbox::SandboxSpec::None
-            } else {
-                tenon_sandbox::SandboxSpec::Offline {
-                    project_root: ctx.root.clone(),
-                }
-            };
-            match exec_command(cmd, &ctx.command_cwd, timeout, &spec) {
+            match exec_command(
+                cmd,
+                &ctx.command_cwd,
+                timeout,
+                &tenon_sandbox::SandboxSpec::None,
+            ) {
                 Ok(out) => ToolOutput {
                     ok: out.success(),
                     content: truncate_output(&format!(
@@ -696,16 +680,13 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
             else {
                 return ToolOutput::ok("（无可识别的测试/构建命令——走降级验证通道）");
             };
-            // M0：断网态执行（Seatbelt profile 在 macOS 生成并应用；其他平台写守卫兜底）
-            // v2.0 档位（design-v2.md §4.1）：full_access 档沙箱降为无（用户显式信任）
-            let spec = if ctx.full_access.load(Ordering::Relaxed) {
-                tenon_sandbox::SandboxSpec::None
-            } else {
-                tenon_sandbox::SandboxSpec::Offline {
-                    project_root: ctx.root.clone(),
-                }
-            };
-            match exec_command(&cmd, &ctx.command_cwd, ctx.command_timeout, &spec) {
+            // v2.37（ADR-19）：命令沙箱恒降级为无（全对话完整权限，用户显式信任）
+            match exec_command(
+                &cmd,
+                &ctx.command_cwd,
+                ctx.command_timeout,
+                &tenon_sandbox::SandboxSpec::None,
+            ) {
                 Ok(out) => ToolOutput {
                     ok: out.success(),
                     content: truncate_output(&format!(
@@ -735,28 +716,17 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
             if let Err(reason) = tenon_core::install_policy::validate_install_command(cmd) {
                 return ToolOutput::err(reason);
             }
-            // 镜像代理态（§12.3 B 级）+ v2.0 域过滤代理（design-v2.md §4.4）：
-            // 本地 registry 白名单代理强制域过滤，Seatbelt 收紧为仅回环代理——
-            // 代理不可用时 fail-closed 拒绝（不静默回退全网放行）；
-            // 残余风险（postinstall / 构建系统执行项目代码）在代理内仅可触达
-            // 白名单域。full_access 档：沙箱降为无（用户显式信任）。
-            let spec = if ctx.full_access.load(Ordering::Relaxed) {
-                tenon_sandbox::SandboxSpec::None
-            } else {
-                // v2.22：settings 追加镜像源并入代理白名单（并集单例）
-                let proxy =
-                    match tenon_sandbox::proxy::registry_proxy_with(&ctx.registry_extra_hosts) {
-                        Ok(addr) => addr,
-                        Err(reason) => return ToolOutput::err(reason),
-                    };
-                tenon_sandbox::SandboxSpec::MirrorProxy {
-                    project_root: ctx.root.clone(),
-                    proxy: Some(proxy),
-                }
-            };
+            // v2.37（ADR-19）：命令沙箱恒降级为无（全对话完整权限）——镜像代理
+            // 通路随沙箱退役不再生效，白名单校验（上方 install_policy）保留为
+            // 唯一命令级收窄。
             // 与 run_tests/run_build 同口径：在会话 working_dir 执行——
             // monorepo 会话装错工作区（根 lockfile）比失败更糟
-            match exec_command(cmd, &ctx.command_cwd, ctx.command_timeout, &spec) {
+            match exec_command(
+                cmd,
+                &ctx.command_cwd,
+                ctx.command_timeout,
+                &tenon_sandbox::SandboxSpec::None,
+            ) {
                 Ok(out) => ToolOutput {
                     ok: out.success(),
                     content: truncate_output(&format!(
@@ -1632,19 +1602,6 @@ mod tests {
     }
 
     #[test]
-    fn team_denied_tools_block_execution() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        c.team_denied_tools = vec!["bash".into()];
-        let out = execute_tool(
-            &c,
-            "bash",
-            &serde_json::json!({"command": "echo hi", "timeout_s": 5}),
-        );
-        assert!(!out.ok, "denied tool should be blocked");
-    }
-
-    #[test]
     fn unknown_tool_returns_error() {
         let (_d, c) = ctx();
         let out = execute_tool(&c, "nonexistent_tool", &serde_json::json!({}));
@@ -1815,15 +1772,6 @@ mod tests {
     }
 
     #[test]
-    fn registry_extra_hosts_flow_to_proxy_config_v222() {
-        // v2.22：ctx.registry_extra_hosts 透传 registry_proxy_with 的并集语义
-        // 由 network::mirror_with_extra 单测覆盖（并集保留内置基线）；此处验证
-        // ToolContext 字段默认空 + config 注入路径存在（集成由 daemon 层测）。
-        let (_d, c) = ctx();
-        assert!(c.registry_extra_hosts.is_empty(), "默认空 = 仅内置白名单");
-    }
-
-    #[test]
     fn install_deps_rejects_non_manager_command() {
         // v2.0 命令白名单（design-v2.md §4.5）：echo 非包管理器，执行前即拒
         let (_d, c) = ctx();
@@ -1955,25 +1903,6 @@ mod tests {
         );
         assert!(out.ok);
         assert!(!out.changed_files.is_empty());
-    }
-
-    #[test]
-    fn team_denied_multiple_tools() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        c.team_denied_tools = vec!["bash".into(), "run_tests".into(), "read_file".into()];
-        for tool in ["bash", "run_tests", "read_file"] {
-            let out = execute_tool(
-                &c,
-                tool,
-                &serde_json::json!({"command": "echo", "path": "x"}),
-            );
-            assert!(!out.ok, "{} should be denied", tool);
-            assert!(out.content.contains("团队策略"));
-        }
-        // 未列入黑名单的工具正常
-        let out = execute_tool(&c, "list_dir", &serde_json::json!({}));
-        assert!(out.ok);
     }
 
     #[test]
@@ -2153,20 +2082,6 @@ mod tests {
             &serde_json::json!({"path": "nonexistent-dir"}),
         );
         assert!(!out.ok);
-    }
-
-    #[test]
-    fn bash_tool_denied_by_team_policy() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        c.team_denied_tools = vec!["bash".into()];
-        let out = execute_tool(
-            &c,
-            "bash",
-            &serde_json::json!({"command": "echo hi", "timeout_s": 5}),
-        );
-        assert!(!out.ok);
-        assert!(out.content.contains("团队策略禁用"));
     }
 
     #[test]
@@ -2507,17 +2422,6 @@ mod tests {
     }
 
     #[test]
-    fn team_denied_read_file_blocks_read() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("secret.txt"), "classified").unwrap();
-        let mut c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        c.team_denied_tools = vec!["read_file".into()];
-        let out = execute_tool(&c, "read_file", &serde_json::json!({"path": "secret.txt"}));
-        assert!(!out.ok);
-        assert!(out.content.contains("团队策略"));
-    }
-
-    #[test]
     fn apply_patch_overwrites_dotfile() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(".editorconfig"), "old = true").unwrap();
@@ -2802,15 +2706,6 @@ mod tests {
     }
 
     #[test]
-    fn team_denied_list_dir() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        c.team_denied_tools = vec!["list_dir".into()];
-        let out = execute_tool(&c, "list_dir", &serde_json::json!({}));
-        assert!(!out.ok);
-    }
-
-    #[test]
     fn apply_patch_and_list_dir_see_new_file() {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
@@ -2919,33 +2814,6 @@ mod tests {
     }
 
     #[test]
-    fn team_denied_apply_patch() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        c.team_denied_tools = vec!["apply_patch".into()];
-        let out = execute_tool(
-            &c,
-            "apply_patch",
-            &serde_json::json!({
-                "file": "denied.txt", "range": null, "content": "denied content"
-            }),
-        );
-        assert!(!out.ok);
-        assert!(out.content.contains("团队策略禁用"));
-    }
-
-    #[test]
-    fn team_denied_grep_still_allows_others() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("ok.txt"), "searchable content").unwrap();
-        let mut c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        c.team_denied_tools = vec!["bash".into()];
-        // grep is NOT denied
-        let out = execute_tool(&c, "grep", &serde_json::json!({"pattern": "searchable"}));
-        assert!(out.ok);
-    }
-
-    #[test]
     fn apply_patch_read_grep_integration_three_files() {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
@@ -2981,27 +2849,6 @@ mod tests {
                 name
             );
         }
-    }
-
-    #[test]
-    fn readonly_and_team_denied_combined() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        c.readonly.store(true, Ordering::Relaxed);
-        c.team_denied_tools = vec!["bash".into(), "read_file".into()];
-        // readonly + denied bash → denied by team policy first
-        let out = execute_tool(
-            &c,
-            "bash",
-            &serde_json::json!({"command": "echo", "timeout_s": 5}),
-        );
-        assert!(!out.ok);
-        // readonly + denied read_file → denied by team policy
-        let out = execute_tool(&c, "read_file", &serde_json::json!({"path": "any.txt"}));
-        assert!(!out.ok);
-        // readonly + NOT denied list_dir → readonly OK
-        let out = execute_tool(&c, "list_dir", &serde_json::json!({}));
-        assert!(out.ok);
     }
 
     #[test]
@@ -3146,49 +2993,6 @@ mod tests {
     }
 
     #[test]
-    fn readonly_denied_team_and_tool_level_interactions() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("readable.txt"), "safe").unwrap();
-        let mut c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        c.readonly.store(true, Ordering::Relaxed);
-        c.team_denied_tools = vec!["bash".into(), "run_tests".into()];
-
-        // A级（只读）工具 → readonly OK, not denied → works
-        let read = execute_tool(
-            &c,
-            "read_file",
-            &serde_json::json!({"path": "readable.txt"}),
-        );
-        assert!(read.ok);
-
-        // B级工具 + readonly → blocked
-        let patch = execute_tool(
-            &c,
-            "apply_patch",
-            &serde_json::json!({
-                "file": "ro.txt", "range": null, "content": "blocked"
-            }),
-        );
-        assert!(!patch.ok);
-
-        // B级工具 + denied → blocked (readonly check happens after team check for bash)
-        let bash = execute_tool(
-            &c,
-            "bash",
-            &serde_json::json!({"command": "echo", "timeout_s": 5}),
-        );
-        assert!(!bash.ok);
-
-        // NOT denied C级 tool + NOT readonly (install_deps not in denied) → works or sandbox error
-        let deps = execute_tool(
-            &c,
-            "install_deps",
-            &serde_json::json!({"command": "echo deps"}),
-        );
-        let _ = deps; // sandbox may or may not be available
-    }
-
-    #[test]
     fn apply_patch_typescript_project_structure() {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
@@ -3295,20 +3099,6 @@ mod tests {
     }
 
     #[test]
-    fn team_denied_install_deps() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        c.team_denied_tools = vec!["install_deps".into()];
-        let out = execute_tool(
-            &c,
-            "install_deps",
-            &serde_json::json!({"command": "npm install"}),
-        );
-        assert!(!out.ok);
-        assert!(out.content.contains("团队策略禁用"));
-    }
-
-    #[test]
     fn apply_patch_and_read_json_file() {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
@@ -3328,45 +3118,6 @@ mod tests {
         );
         assert!(read.ok);
         assert!(read.content.contains("test"));
-    }
-
-    #[test]
-    fn readonly_denied_and_team_interactions_full() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("data.txt"), "safe to read").unwrap();
-        let mut c = ToolContext::new(dir.path(), Duration::from_secs(30));
-        c.readonly.store(true, Ordering::Relaxed);
-        c.team_denied_tools = vec!["bash".into(), "run_tests".into()];
-
-        // read_file: readonly OK + not denied → works
-        let read = execute_tool(&c, "read_file", &serde_json::json!({"path": "data.txt"}));
-        assert!(read.ok);
-
-        // apply_patch: readonly → blocked
-        let patch = execute_tool(
-            &c,
-            "apply_patch",
-            &serde_json::json!({
-                "file": "new.txt", "range": null, "content": "no"
-            }),
-        );
-        assert!(!patch.ok);
-
-        // bash: denied → blocked
-        let bash = execute_tool(
-            &c,
-            "bash",
-            &serde_json::json!({"command": "echo", "timeout_s": 5}),
-        );
-        assert!(!bash.ok);
-
-        // run_tests: denied → blocked
-        let test = execute_tool(&c, "run_tests", &serde_json::json!({"command": "echo"}));
-        assert!(!test.ok);
-
-        // list_dir: readonly OK + not denied → works
-        let list = execute_tool(&c, "list_dir", &serde_json::json!({}));
-        assert!(list.ok);
     }
 
     #[test]

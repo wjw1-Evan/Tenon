@@ -52,11 +52,11 @@
 
 **3.1 Task / Run 分离**：v1 Session 同时承担「对话线程」与「一次执行」两身份，崩溃只能回滚不能续跑。v2 拆开：Task=持久对话与上下文载体；Run=一次执行尝试（可重试/恢复/分支）。崩溃恢复升级为 Run 级 resume；发送消息队列随 Task 落库（还「daemon 重启队列蒸发」债）。
 
-**3.2 策略总线（Policy Pipeline）**：一切工具调用（内置/MCP/hooks 外部命令）统一过六段管线：`分级判定 → execpolicy 命令评估 → hooks → 档位检查（ExecMode×Approval）→ 单调拒绝（任一环节拒绝后继不可翻案，DSH ToolGuard 同款不变式）→ 执行+审计`。取代 v1「分级即策略」的单薄模型；`tenon-core::install_policy`（v2.0 已落）是其在工具层的第一个消费者。
+**3.2 策略总线（Policy Pipeline）**：一切工具调用（内置/MCP/hooks 外部命令）统一过策略管线：`分级判定 → execpolicy 命令评估 → hooks → 档位检查 → 单调拒绝（任一环节拒绝后继不可翻案，DSH ToolGuard 同款不变式）→ 执行+审计`。取代 v1「分级即策略」的单薄模型；`tenon-core::install_policy`（v2.0 已落）是其在工具层的第一个消费者。**v2.37 简化（ADR-19，design.md §12.2）**：档位检查段随档位系统退役删除，管线收敛为四段——`分级判定（read_only 拒写）→ 命令评估（execpolicy：Block→Deny 硬底线、Hold 恒放行；install_policy 白名单违例→Deny）→ hooks → 执行+审计`；`PolicyDecision` 收敛二态 `{Allow, Deny{stage, reason}}`，单调拒绝不变式保留（序贯短路结构属性）。
 
 ## 4. 安全模型 v2（重心）
 
-**4.1 档位二维正交**（推翻 ADR-17「唯一零审批档」）：
+**4.1 全对话完整权限（v2.37 用户裁定，ADR-19——v2.1 档位系统整体退役）**：所有会话（交互 / headless `--exec` / 子代理 / evals / ACP 轨）固定 **full_access × never** 姿态——零审批（Hold / 确认卡 / 三键决议 / `set_approval` / `set_exec_mode` / settings `security` 默认档 / 顶栏徽标 / 切换器全链移除），命令沙箱降级恒生效（run_tests / run_build / install_deps / run_command 无沙箱直跑）；execpolicy 仅 Block 硬拦（Hold 判定恒放行，内置高危档与自定义 `hold` 同轨）；只读开关独立保留（evals 只读先验轮 / 用户只读模式）。安全兜底 = execpolicy Block + install_policy 白名单 + SSRF 守卫 + 快照回滚 + 熔断 + 审计。以下档位二维正交设计与落地记录留档（v2.1-v2.36 历史规格，已退役）：
 
 ```
 ExecMode（执行边界）：read-only │ workspace-write │ full-access
@@ -67,7 +67,7 @@ Approval（确认策略）：never │ on-irreversible │ on-elevated │ alway
 - `never` = v1 零审批（降为可选档）；`always` = 新手/企业档；
 - 档位输入区旁一键切换 + 顶栏常驻指示；团队策略只能收窄。
 
-**落地状态（v2.1 已收口）**：全链落地——`tenon-core::gates`（Gate / ExecMode / ApprovalGear / ConfirmDecision 纯判定 + 单测矩阵）→ 会话闸门（D / Composite Hold：`confirm_request` 事件 + `AwaitingConfirm` 会话态 + oneshot 决议通道，Esc / Pause / Stop 打断按拒绝处理并回注控制通道，等待中 `set_approval` 即时改档重判）→ daemon（`POST /session/:id/confirm` 三键决议、control `set_approval` / `set_exec_mode`、settings `security.exec_mode / approval` 新会话默认档、GET /session 增 `pending_confirm` + `gate` 载荷）→ UI（输入区上方确认卡：级别徽标 + 工具 + 参数预览 + 本次允许 / 本会话允许 / 拒绝；会话态上下文条双切换器五语言；`awaiting_confirm` 入 RUNNING_STATES 发送转排队）。无人值守链路（headless `--exec` / 子代理 / evals）显式 `never` 防 Hold 永等；既有 D 级直执测试经 harness 默认 never 保持 v1 语义。顶栏常驻安全姿态指示随 P1 后续（统一沙箱总线）一并落。
+**落地状态（v2.1 已收口）**：全链落地——`tenon-core::gates`（Gate / ExecMode / ApprovalGear / ConfirmDecision 纯判定 + 单测矩阵）→ 会话闸门（D / Composite Hold：`confirm_request` 事件 + `AwaitingConfirm` 会话态 + oneshot 决议通道，Esc / Pause / Stop 打断按拒绝处理并回注控制通道，等待中 `set_approval` 即时改档重判）→ daemon（`POST /session/:id/confirm` 三键决议、control `set_approval` / `set_exec_mode`、settings `security.exec_mode / approval` 新会话默认档、GET /session 增 `pending_confirm` + `gate` 载荷）→ UI（输入区上方确认卡：级别徽标 + 工具 + 参数预览 + 本次允许 / 本会话允许 / 拒绝；会话态上下文条双切换器五语言；`awaiting_confirm` 入 RUNNING_STATES 发送转排队）。无人值守链路（headless `--exec` / 子代理 / evals）显式 `never` 防 Hold 永等；既有 D 级直执测试经 harness 默认 never 保持 v1 语义。顶栏常驻安全姿态指示随 P1 后续（统一沙箱总线）一并落。**（v2.37 退役标注，ADR-19：上述档位全链移除，见 §4.1 顶部与 design.md §12.2。）**
 
 **4.2 execpolicy + run_command 正名**：新工具 `run_command`（B 级沙箱）承载诚实的通用命令通道，execpolicy 规则引擎做命令级风险评估（高危模式拦截或触发 Approval；规则库开放用户/团队自定义，Claude Code permissions 形态）；`run_tests`/`run_build` 收敛为语义工具（显式覆盖归入 run_command 语义审计）。
 
@@ -79,11 +79,11 @@ Approval（确认策略）：never │ on-irreversible │ on-elevated │ alway
 
 **4.4 域过滤代理进程**：镜像/域名态的 registry 白名单由本地代理进程强制执行（现状 Seatbelt 放行全网，见 §0.1）；在此之前 install_deps 命令白名单（§4.5）先行收窄任意命令面。
 
-**落地状态（v2.3 已收口·macOS）**：`tenon-sandbox::proxy` 本地 registry 白名单代理（127.0.0.1 随机端口、进程内常驻单例、CONNECT 隧道 + 绝对 URI 转发两形态、非白名单 403 带理由、TLS 不解密零证书面）；Seatbelt MirrorProxy 态收紧为「deny network\* + 仅放行 `localhost:<代理端口>`」（实测Seatbelt 网络地址仅支持 `localhost:*` / `*:port` 形态）；`exec_command` 为镜像态命令注入 HTTP(S)_PROXY / NO_PROXY（大小写双写）；install_deps 接单例代理、不可用 fail-closed 拒绝。白名单扩充至 install_policy 全部包管理器官方源 + git 依赖 / SPM 所需 GitHub 域（面扩大如实列出）。验证：proxy 单测 5 例（隧道放行/拒绝、绝对 URI 双路、相对 URI 拒、单例稳定）+ macOS 真沙箱 2 例（非白名单域双路皆拒、沙箱内代理可达且 403 应答）+ fail-closed profile 1 例。**余项**：Linux 镜像态回环收紧（随统一沙箱总线 §4.3）、白名单 settings 可配置（镜像源自定义）。
+**落地状态（v2.3 已收口·macOS）**：`tenon-sandbox::proxy` 本地 registry 白名单代理（127.0.0.1 随机端口、进程内常驻单例、CONNECT 隧道 + 绝对 URI 转发两形态、非白名单 403 带理由、TLS 不解密零证书面）；Seatbelt MirrorProxy 态收紧为「deny network\* + 仅放行 `localhost:<代理端口>`」（实测Seatbelt 网络地址仅支持 `localhost:*` / `*:port` 形态）；`exec_command` 为镜像态命令注入 HTTP(S)_PROXY / NO_PROXY（大小写双写）；install_deps 接单例代理、不可用 fail-closed 拒绝。白名单扩充至 install_policy 全部包管理器官方源 + git 依赖 / SPM 所需 GitHub 域（面扩大如实列出）。验证：proxy 单测 5 例（隧道放行/拒绝、绝对 URI 双路、相对 URI 拒、单例稳定）+ macOS 真沙箱 2 例（非白名单域双路皆拒、沙箱内代理可达且 403 应答）+ fail-closed profile 1 例。**余项**：Linux 镜像态回环收紧（随统一沙箱总线 §4.3）、白名单 settings 可配置（镜像源自定义）。**v2.37 标注（ADR-19）**：install_deps 命令沙箱随全对话完整权限降级为无，代理通路不再生效；白名单校验（§4.5）保留为唯一命令级收窄。
 
 **4.5 install_deps 命令白名单（v2.0 已收口）**：`tenon-core::install_policy::validate_install_command`——仅接受已知包管理器二进制 + 安装语义子命令（npm/pnpm/yarn/bun/pip/uv/poetry/cargo/go/dotnet/…，拒绝 run/exec/test 类脚本执行子命令与 shell 控制符/命令替换/未知二进制）。残余风险（包 postinstall / 构建系统执行项目代码 + 网络开放）由 §4.4 代理进程收口前如实标注，不静默。
 
-**4.6 安全姿态明示**：顶栏档位指示；Windows 无 WSL2 降级、沙箱初始化失败、快照库不可用统一走「安全姿态条」，降级期间默认收紧一档。
+**4.6 安全姿态明示**：顶栏档位指示随 v2.37 档位退役移除（ADR-19）；Windows 无 WSL2 降级、沙箱初始化失败信号 daemon 尚无暴露端点，统一姿态条的全信号面列余项（如实标注）；快照库不可用走会话终态暂停 + `snapshot_unavailable` 错误事件（design.md §12.2）。
 
 ## 5. 上下文引擎 v2
 
@@ -96,7 +96,6 @@ Approval（确认策略）：never │ on-irreversible │ on-elevated │ alway
 **落地状态（v2.5 首期：常驻审查面）**：`ReviewPane` 组件 + App 三区接线——运行态（RUNNING_STATES 含 awaiting_confirm）自动停靠右栏、空闲自动收起、✕ 手动关闭后本次会话不再自动弹（reviewManual 覆盖，会话切换重置回自动）；窄屏不渲染；复用 DiffPanel 虚拟滚动渲染 latestDiff（onLatestDiff 既有管道，零后端改动）；运行状态点 + 状态标签 + 六语言（review.*）。测试：组件 3 例 + App 接线 2 例（运行中停靠→关闭保持/空闲不渲染）。**余项**：计划/子任务与证据/产物卡、上下文/成本仪表、宽度拖拽记忆、diff 级反馈回路（选中行注入指令）、全局活动视图。
 
 - **diff 级反馈回路**（v1 缺失）：审查面选中 diff 行 → 注入「针对这处改动」的反馈指令（复用行内指令链路）；
-- **档位切换器**：输入区旁 ExecMode×Approval 快捷切换（§4.1）；
 - **全局活动视图**：命令面板 + 侧栏入口的跨项目任务总览（常驻形态尊重 v1.98 克制裁定）；
 - 窄屏浮层 / 快捷键 / i18n 继承 v1 资产；
 - **流程门禁**（治六版本五推翻）：布局级改动强制可点击原型/双形态截图先行；新形态一律 feature flag 上线可一键回退。

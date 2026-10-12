@@ -194,13 +194,6 @@ export interface ProviderSettings {
   [k: string]: unknown;
 }
 
-/** 权限高级策略（v1.89）：工具黑名单与成本上限收窄；无审批。 */
-export interface TeamPolicySettings {
-  denied_tools?: string[];
-  max_cost_usd?: number | null;
-  [k: string]: unknown;
-}
-
 /** 模型试连验证载荷（§15 /models/verify v1.163）：明文 api_key 唯一允许的端点。 */
 export interface VerifyModelPayload {
   kind?: string;
@@ -221,12 +214,6 @@ export interface VerifyModelResult {
 export interface SettingsData {
   session: {
     first_edit_buffer_ms?: number;
-    [k: string]: unknown;
-  };
-  /** v2.17 §4.6：新会话默认安全档（v2.6 起后端已回显，UI 编辑 v2.17 补）。 */
-  security?: {
-    exec_mode?: string;
-    approval?: string;
     [k: string]: unknown;
   };
   exec?: { command_timeout_s?: number; [k: string]: unknown };
@@ -255,7 +242,6 @@ export interface SettingsData {
     servers?: Record<string, McpServerData>;
     [k: string]: unknown;
   };
-  team_policy?: TeamPolicySettings;
   [k: string]: unknown;
 }
 
@@ -370,11 +356,6 @@ export class TenonApi {
     return this.request<SettingsData>("/settings", { method: "PUT", json: body });
   }
 
-  /** 写权限高级策略（v1.85）：全量原子替换，仅对新会话生效。 */
-  putTeamPolicy(body: TeamPolicySettings): Promise<TeamPolicySettings> {
-    return this.request<TeamPolicySettings>("/team-policy", { method: "PUT", json: body });
-  }
-
   /** 试连验证（§15 v1.163）：引导向导贴 Key 后的一次极小测试请求；失败抛 API 4xx。 */
   verifyModel(payload: VerifyModelPayload): Promise<VerifyModelResult> {
     return this.request<VerifyModelResult>("/models/verify", { method: "POST", json: payload });
@@ -479,20 +460,7 @@ export class TenonApi {
       outcome: Record<string, unknown> | null;
       /** v1.147 发送消息队列快照（运行态入队的待发消息，多窗口一致）。 */
       queue?: QueuedMessage[];
-      /** v2.0 档位确认（design-v2.md §4.1）：awaiting_confirm 时的待确认动作
-       *（事件之外的重载兜底；tool + 级别 + 截断参数预览）。 */
-      pending_confirm?: { tool: string; level: string; args: string } | null;
-      /** v2.0 会话当前档位（切换器回显）。 */
-      gate?: { exec_mode: string; approval: string };
     }>(`/session/${sessionId}`);
-  }
-
-  /** v2.0 档位确认决议（design-v2.md §4.1）：allow_once / allow_session / deny。 */
-  resolveConfirm(sessionId: string, decision: "allow_once" | "allow_session" | "deny") {
-    return this.request<{ resolved: boolean }>(`/session/${sessionId}/confirm`, {
-      method: "POST",
-      json: { decision },
-    });
   }
 
   /** v1.147（§9.1）：移除一条排队消息（编辑 = 移除后重新发送）。 */
@@ -507,14 +475,6 @@ export class TenonApi {
     return this.request<{ ok: boolean }>(`/session/${sessionId}/control`, {
       method: "POST",
       json: { action, value, text },
-    });
-  }
-
-  /** v2.0 档位运行中切换（design-v2.md §4.1）：set_approval / set_exec_mode。 */
-  controlGear(sessionId: string, action: "set_approval" | "set_exec_mode", gear: string) {
-    return this.request<{ ok: boolean }>(`/session/${sessionId}/control`, {
-      method: "POST",
-      json: { action, gear },
     });
   }
 

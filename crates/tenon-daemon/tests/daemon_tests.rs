@@ -33,7 +33,6 @@ async fn start_daemon(script: Vec<ScriptedReply>) -> (tempfile::TempDir, u16, St
     options.worktrees_root = Some(dir.path().join("worktrees"));
     options.endpoint_path = Some(dir.path().join("daemon.endpoint"));
     options.settings_path = Some(dir.path().join("settings.json"));
-    options.policy_path = Some(dir.path().join("policy.toml"));
     options.updates_staging_dir = Some(dir.path().join("updates/staged"));
     options.laya_models_dir = Some(dir.path().join("models/laya"));
     let handle = serve(options).await.unwrap();
@@ -429,7 +428,6 @@ async fn start_daemon_with_poll_watcher(
     options.worktrees_root = Some(dir.path().join("worktrees"));
     options.endpoint_path = Some(dir.path().join("daemon.endpoint"));
     options.settings_path = Some(dir.path().join("settings.json"));
-    options.policy_path = Some(dir.path().join("policy.toml"));
     options.updates_staging_dir = Some(dir.path().join("updates/staged"));
     options.laya_models_dir = Some(dir.path().join("models/laya"));
     options.watch_poll_interval = Some(Duration::from_millis(100));
@@ -1065,95 +1063,6 @@ async fn updates_endpoints_removed_since_v154() {
         .await
         .unwrap();
     assert_ne!(resp.status().as_u16(), 200, "GET /updates 应已移除");
-}
-
-#[tokio::test]
-async fn team_policy_api_persists_narrow_only_controls() {
-    let (tmp, port, token) = start_daemon(vec![]).await;
-    let client = client_with_token(&token);
-
-    // v1.92：GET /team-policy 移除，读取走 GET /settings 的 team_policy 字段；
-    // force_interactive 已随 v1.89 审批移除删除。
-    let default: serde_json::Value = client
-        .get(format!("{}/settings", base(port)))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(
-        default["team_policy"]["denied_tools"]
-            .as_array()
-            .unwrap()
-            .len(),
-        0
-    );
-
-    let saved = client
-        .put(format!("{}/team-policy", base(port)))
-        .json(&serde_json::json!({
-            "denied_tools": ["git_push", "apply_patch", "apply_patch"],
-            "max_cost_usd": 0.25,
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(saved.status(), 200);
-    let saved: serde_json::Value = saved.json().await.unwrap();
-    assert_eq!(
-        saved["denied_tools"],
-        serde_json::json!(["apply_patch", "git_push"]),
-        "重复项去重并稳定排序"
-    );
-
-    let settings: serde_json::Value = client
-        .get(format!("{}/settings", base(port)))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(settings["team_policy"]["max_cost_usd"], 0.25);
-
-    let policy_path = tmp.path().join("policy.toml");
-    let persisted = std::fs::read_to_string(&policy_path).unwrap();
-    assert!(persisted.contains("max_cost_usd = 0.25"));
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&policy_path)
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o600);
-    }
-
-    for invalid in [
-        serde_json::json!({"force_interactive": true}),
-        serde_json::json!({"denied_tools": [""]}),
-        serde_json::json!({"max_cost_usd": -1}),
-        serde_json::json!({"unknown": true}),
-    ] {
-        let bad = client
-            .put(format!("{}/team-policy", base(port)))
-            .json(&invalid)
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(bad.status(), 400, "{invalid}");
-    }
-
-    let unchanged: serde_json::Value = client
-        .get(format!("{}/settings", base(port)))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(unchanged["team_policy"]["max_cost_usd"], 0.25);
 }
 
 #[tokio::test]
@@ -3134,18 +3043,6 @@ async fn settings_roundtrip_and_team_policy() {
         .unwrap();
     assert_eq!(r.status(), 200);
 
-    // PUT team-policy
-    let r = client
-        .put(format!("{}/team-policy", base(port)))
-        .json(&serde_json::json!({
-            "denied_tools": ["git_push"],
-            "max_cost_usd": 5.0
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status(), 200);
-
     // GET ui-prefs
     let r = client
         .get(format!("{}/ui-prefs", base(port)))
@@ -4864,26 +4761,6 @@ async fn file_highlight_returns_syntax_tokens() {
 }
 
 #[tokio::test]
-async fn team_policy_put_and_verify_effect() {
-    let (_dir, port, token) = start_daemon(vec![]).await;
-    let client = client_with_token(&token);
-
-    // PUT team policy
-    let r = client
-        .put(format!("{}/team-policy", base(port)))
-        .json(&serde_json::json!({
-            "denied_tools": ["git_push", "create_pr"],
-            "max_cost_usd": 1.0
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status(), 200);
-    let body: serde_json::Value = r.json().await.unwrap();
-    assert!(body.is_object());
-}
-
-#[tokio::test]
 async fn open_project_updates_display_name() {
     let (_dir, port, token) = start_daemon(vec![]).await;
     let client = client_with_token(&token);
@@ -5648,42 +5525,6 @@ async fn multiple_sessions_send_messages_independently() {
 }
 
 #[tokio::test]
-async fn team_policy_denied_tools_effect_on_session() {
-    let (_dir, port, token) = start_daemon(vec![]).await;
-    let client = client_with_token(&token);
-
-    // Set team policy to deny a tool
-    let r = client
-        .put(format!("{}/team-policy", base(port)))
-        .json(&serde_json::json!({ "denied_tools": ["bash", "run_tests"] }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status(), 200);
-
-    // Open project and create session
-    let tmp = tempfile::tempdir().unwrap();
-    let r = client
-        .post(format!("{}/projects/open", base(port)))
-        .json(&serde_json::json!({ "path": tmp.path().to_str().unwrap() }))
-        .send()
-        .await
-        .unwrap();
-    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-
-    let r = client
-        .post(format!("{}/session", base(port)))
-        .json(&serde_json::json!({ "project_id": pid, "provider": "mock" }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status(), 200);
-}
-
-#[tokio::test]
 async fn project_file_write_delete_write_cycle() {
     let (_dir, port, token) = start_daemon(vec![]).await;
     let client = client_with_token(&token);
@@ -6277,39 +6118,6 @@ async fn settings_roundtrip_full_config() {
 }
 
 #[tokio::test]
-async fn team_policy_and_settings_independent() {
-    let (_dir, port, token) = start_daemon(vec![]).await;
-    let client = client_with_token(&token);
-
-    // Set team policy
-    let r = client
-        .put(format!("{}/team-policy", base(port)))
-        .json(&serde_json::json!({ "denied_tools": ["git_push"] }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status(), 200);
-
-    // Settings are independent
-    let r = client
-        .put(format!("{}/settings", base(port)))
-        .json(&serde_json::json!({ "session": { "first_edit_buffer_ms": 1000 } }))
-        .send()
-        .await
-        .unwrap();
-    assert!(r.status().is_success());
-
-    // Team policy still in effect
-    let r = client
-        .put(format!("{}/team-policy", base(port)))
-        .json(&serde_json::json!({ "denied_tools": ["git_push", "bash"] }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status(), 200);
-}
-
-#[tokio::test]
 async fn project_file_and_session_integration() {
     let script = vec![ScriptedReply::Text("project analysis complete".into())];
     let (_dir, port, token) = start_daemon(script).await;
@@ -6575,7 +6383,6 @@ async fn start_skills_daemon() -> (tempfile::TempDir, u16, String) {
     let mut options = DaemonOptions::in_memory();
     options.endpoint_path = Some(dir.path().join("daemon.endpoint"));
     options.settings_path = Some(dir.path().join("settings.json"));
-    options.policy_path = Some(dir.path().join("policy.toml"));
     options.skills_dir = Some(dir.path().join("skills"));
     let handle = tenon_daemon::serve(options).await.unwrap();
     (dir, handle.port, handle.token)

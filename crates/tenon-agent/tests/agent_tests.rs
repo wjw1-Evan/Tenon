@@ -6,7 +6,6 @@ use std::time::Duration;
 use tenon_agent::session::{AgentConfig, ControlCommand, ProjectWriteLock, TaskOutcome};
 use tenon_agent::AgentSession;
 use tenon_core::context::ProjectRules;
-use tenon_core::gates::{ApprovalGear, ConfirmDecision};
 use tenon_fs::l4;
 use tenon_models::{MockProvider, Role, ScriptedReply};
 use tenon_snapshot::SnapshotStore;
@@ -35,9 +34,6 @@ async fn setup(
     let provider = Arc::new(MockProvider::new("mock", "mock-1", script));
     let mut config = AgentConfig::for_project(dir.path().to_path_buf(), &project_id);
     config.first_edit_buffer_ms = 20; // 测试加速
-                                      // v2.0（design-v2.md §4.1）：测试 harness 默认零审批档——既有 D 级直执
-                                      // 用例保持 v1 语义；确认回路用 setup_with_config 显式开 on_irreversible
-    config.gate.approval = tenon_core::gates::ApprovalGear::Never;
     let rules = ProjectRules::default();
     let session = AgentSession::create(
         store.clone(),
@@ -74,9 +70,6 @@ async fn setup_with_config(
     let provider = Arc::new(MockProvider::new("mock", "mock-1", script));
     let mut config = AgentConfig::for_project(dir.path().to_path_buf(), &project_id);
     config.first_edit_buffer_ms = 20; // 测试加速
-                                      // v2.0（design-v2.md §4.1）：测试 harness 默认零审批档——既有 D 级直执
-                                      // 用例保持 v1 语义；确认回路用 setup_with_config 显式开 on_irreversible
-    config.gate.approval = tenon_core::gates::ApprovalGear::Never;
     configure(&mut config);
     let rules = ProjectRules::default();
     let session = AgentSession::create(
@@ -643,254 +636,13 @@ async fn d_level_git_commit_executes_and_audits_directly() {
     assert_eq!(risk.payload["tool"], "git_commit");
 }
 
-/// v2.0 档位（design-v2.md §4.1）：on_irreversible 档 D 级 Hold——确认
-/// allow_session 后执行且本会话记忆（第二次 D 级调用不再 Hold）。
-#[tokio::test]
-async fn gate_on_irreversible_holds_d_level_and_allow_session_memorizes() {
-    let (dir, session, store, _p) = setup_with_config(
-        vec![
-            ScriptedReply::Tool {
-                name: "git_commit".into(),
-                args: serde_json::json!({"message": "gate commit 1"}),
-            },
-            // 两次提交间制造真实变更（B 级不经 Hold），否则第二次 commit 无可提交
-            ScriptedReply::Tool {
-                name: "apply_patch".into(),
-                args: serde_json::json!({
-                    "file": "code2.txt", "range": null, "content": "second\n"
-                }),
-            },
-            ScriptedReply::Tool {
-                name: "git_commit".into(),
-                args: serde_json::json!({"message": "gate commit 2"}),
-            },
-            ScriptedReply::Text("两次均已提交".into()),
-        ],
-        |cfg| {
-            cfg.gate.approval = ApprovalGear::OnIrreversible;
-        },
-    )
-    .await;
-    let root = dir.path();
-    std::fs::write(root.join("code.txt"), "fn main() {}\n").unwrap();
-    for cmd in [
-        vec!["init", "-q", "."],
-        vec!["config", "user.email", "t@t"],
-        vec!["config", "user.name", "t"],
-    ] {
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(root)
-            .args(&cmd)
-            .output()
-            .unwrap();
-    }
-    // 并发决议：待确认出现即 allow_session（模拟 UI 确认卡）
-    let resolver_session = session.clone();
-    let resolver = tokio::spawn(async move {
-        loop {
-            if resolver_session.pending_confirm().await.is_some() {
-                resolver_session
-                    .resolve_confirm(ConfirmDecision::AllowSession)
-                    .await
-                    .expect("应有待确认动作");
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(15)).await;
-        }
-    });
-    let outcome = session.run_task("提交两次").await;
-    resolver.await.unwrap();
-    assert!(matches!(outcome, TaskOutcome::Done(_)), "{outcome:?}");
-    // 两个 commit 均落盘（allow_session 记忆后第二次不再 Hold）
-    let log = std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["log", "--oneline"])
-        .output()
-        .unwrap();
-    let log_text = String::from_utf8_lossy(&log.stdout);
-    assert!(log_text.contains("gate commit 1"), "{log_text}");
-    assert!(log_text.contains("gate commit 2"), "{log_text}");
-    // 确认事件链：请求 1 次（记忆后不再请求）+ 决议 allow_session
-    let mut st = store.lock().await;
-    let events = st.events(&session.session_id).unwrap();
-    let requests = events
-        .iter()
-        .filter(|e| e.kind == EventKind::ConfirmRequest)
-        .count();
-    assert_eq!(requests, 1, "allow_session 记忆后第二次 D 级不再 Hold");
-    let resolved = events
-        .iter()
-        .find(|e| e.kind == EventKind::ConfirmResolved)
-        .expect("应有确认决议事件");
-    assert_eq!(resolved.payload["decision"], "allow_session");
-    assert_eq!(resolved.payload["tool"], "git_commit");
-}
-
-/// v2.0 档位：deny 决议——工具收到拒绝结果，回合继续，D 级副作用不发生。
-#[tokio::test]
-async fn execpolicy_hold_triggers_confirm_card_v218() {
-    // v2.18（design-v2.md §4.2 余项）：execpolicy Hold 高危命令（git clean -f）
-    // 在默认 on_irreversible 档（B 级本不 Hold）被覆盖 Hold——走既有确认卡：
-    // deny → 拒绝消息回传模型、命令不执行；ConfirmRequest 事件在案。
-    let (dir, session, store, _p) = setup_with_config(
-        vec![
-            ScriptedReply::Tool {
-                name: "run_command".into(),
-                args: serde_json::json!({"command": "git clean -fdx"}),
-            },
-            ScriptedReply::Text("好的，用户拒绝清理，我不执行。".into()),
-        ],
-        |cfg| {
-            cfg.gate.approval = ApprovalGear::OnIrreversible;
-        },
-    )
-    .await;
-    // 造一个未跟踪文件（clean -fdx 会删它——deny 后应仍在）
-    std::fs::write(dir.path().join("untracked.txt"), "keep\n").unwrap();
-    let resolver_session = session.clone();
-    let resolver = tokio::spawn(async move {
-        loop {
-            if resolver_session.pending_confirm().await.is_some() {
-                resolver_session
-                    .resolve_confirm(ConfirmDecision::Deny)
-                    .await
-                    .unwrap();
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(15)).await;
-        }
-    });
-    let outcome = session.run_task("清理构建产物").await;
-    resolver.await.unwrap();
-    assert!(matches!(outcome, TaskOutcome::Done(_)), "{outcome:?}");
-    assert!(
-        dir.path().join("untracked.txt").exists(),
-        "deny 后高危命令不得执行"
-    );
-    let mut st = store.lock().await;
-    let events = st.events(&session.session_id).unwrap();
-    let req = events
-        .iter()
-        .find(|e| e.kind == EventKind::ConfirmRequest)
-        .expect("Hold 应发确认请求事件");
-    assert_eq!(req.payload["tool"], "run_command");
-    assert!(
-        req.payload["args"].to_string().contains("git clean"),
-        "args 预览应含命令: {}",
-        req.payload["args"]
-    );
-}
-
-#[tokio::test]
-async fn execpolicy_hold_allow_once_executes_v218() {
-    // v2.18 allow 路径：Hold 命令（git clean -fdx）经 AllowOnce 决议后照常执行
-    //（executor 不拦 Hold——判定单一归 session 闸门）；full_access 档断网沙箱
-    // 降级直跑（测试环境 Seatbelt 沙箱冷启动过慢，§9.2 降级语义本身另行覆盖）。
-    let (dir, session, store, _p) = setup_with_config(
-        vec![
-            ScriptedReply::Tool {
-                name: "run_command".into(),
-                args: serde_json::json!({"command": "git clean -fdx"}),
-            },
-            ScriptedReply::Text("已清理".into()),
-        ],
-        |cfg| {
-            cfg.gate.approval = ApprovalGear::OnIrreversible;
-            cfg.gate.exec_mode = tenon_core::gates::ExecMode::FullAccess;
-        },
-    )
-    .await;
-    let root = dir.path();
-    std::fs::write(root.join("untracked.txt"), "gone after clean\n").unwrap();
-    for cmd in [
-        vec!["init", "-q", "."],
-        vec!["config", "user.email", "t@t"],
-        vec!["config", "user.name", "t"],
-    ] {
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(root)
-            .args(&cmd)
-            .output()
-            .unwrap();
-    }
-    let resolver_session = session.clone();
-    let resolver = tokio::spawn(async move {
-        loop {
-            if resolver_session.pending_confirm().await.is_some() {
-                resolver_session
-                    .resolve_confirm(ConfirmDecision::AllowOnce)
-                    .await
-                    .unwrap();
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(15)).await;
-        }
-    });
-    let outcome = session.run_task("清理").await;
-    resolver.await.unwrap();
-    assert!(matches!(outcome, TaskOutcome::Done(_)), "{outcome:?}");
-    assert!(
-        !root.join("untracked.txt").exists(),
-        "allow 后 Hold 命令应执行"
-    );
-    let mut st = store.lock().await;
-    let events = st.events(&session.session_id).unwrap();
-    assert!(
-        events.iter().any(|e| e.kind == EventKind::ConfirmRequest),
-        "Hold 应发确认请求"
-    );
-}
-
-#[tokio::test]
-async fn execpolicy_hold_spares_project_local_commands_v218() {
-    // v2.18 allow 路径：AllowOnce 决议后命令照常执行（executor 不拦 Hold——
-    // Hold 判定单一归 session 闸门）。用 rm -rf $HOME 形态在隔离 HOME 的临时
-    // 目录内验证执行链（沙箱外直接执行路径，full_access 降级语义不在此测）。
-    let (dir, session, store, _p) = setup_with_config(
-        vec![
-            ScriptedReply::Tool {
-                name: "run_command".into(),
-                args: serde_json::json!({"command": "rm -rf ./safe-dir"}),
-            },
-            ScriptedReply::Text("已清理".into()),
-        ],
-        |cfg| {
-            cfg.gate.approval = ApprovalGear::OnIrreversible;
-            // full_access：run_command 断网沙箱降级为直跑（§9.2）——测试环境
-            // Seatbelt 沙箱 exec rm 曾观察卡死（v2.4 冷启动开销的极端形态），
-            // 本例目标是 Hold 名单外对照而非沙箱行为。
-            cfg.gate.exec_mode = tenon_core::gates::ExecMode::FullAccess;
-        },
-    )
-    .await;
-    std::fs::create_dir_all(dir.path().join("safe-dir")).unwrap();
-    std::fs::write(dir.path().join("safe-dir/junk.txt"), "x").unwrap();
-    // 对照例：相对路径项目内 rm 不在 Hold 名单——无确认卡，直接执行（无 resolver）
-    let outcome = session.run_task("清理").await;
-    assert!(matches!(outcome, TaskOutcome::Done(_)), "{outcome:?}");
-    assert!(
-        !dir.path().join("safe-dir").exists(),
-        "allow 后命令应执行（safe-dir 相对路径不在 Hold 名单，本例验证 Hold 名单外命令正常执行不误伤）"
-    );
-    let mut st = store.lock().await;
-    let events = st.events(&session.session_id).unwrap();
-    // 相对路径项目内 rm -rf 不在 Hold 名单——无确认卡、直接执行（对照：Hold 只覆盖名单内）
-    assert!(
-        !events.iter().any(|e| e.kind == EventKind::ConfirmRequest),
-        "项目内相对路径 rm 不应触发 Hold"
-    );
-}
-
 #[tokio::test]
 async fn execpolicy_custom_rules_deny_and_allow_v220() {
     use tenon_core::execpolicy::{CustomRule, RuleAction};
-    // v2.20 自定义规则三优先级经策略总线全链：
+    // v2.20 自定义规则经策略管线全链（v2.37：Hold 判定恒放行——allow 覆盖
+    // 语义收敛等价；deny 优先不变）：
     // ①自定义 deny（docker）——拒绝消息回传、命令不执行；
-    // ②自定义 allow（pnpm test 命中内置无、另一命令 hold 升级不在此测）+
-    //   allow 覆盖内置 Hold（git clean -fdx 免确认直执行）。
+    // ②自定义 allow（git clean.* 豁免内置高危名单）直执行。
     let (_dir, session, store, _p) = setup_with_config(
         vec![
             ScriptedReply::Tool {
@@ -900,7 +652,6 @@ async fn execpolicy_custom_rules_deny_and_allow_v220() {
             ScriptedReply::Text("docker 被规则拒绝，我换方式。".into()),
         ],
         |cfg| {
-            cfg.gate.approval = ApprovalGear::OnIrreversible;
             cfg.exec_rules.push(CustomRule {
                 pattern: "docker .*".into(),
                 action: RuleAction::Deny,
@@ -919,7 +670,7 @@ async fn execpolicy_custom_rules_deny_and_allow_v220() {
     );
     drop(st);
 
-    // allow 覆盖内置 Hold：git clean -fdx（内置 Hold）被 allow 规则豁免——无确认卡直执行
+    // allow 覆盖内置高危名单：git clean -fdx 被 allow 规则豁免——直执行
     let (dir2, session2, store2, _p2) = setup_with_config(
         vec![
             ScriptedReply::Tool {
@@ -929,8 +680,6 @@ async fn execpolicy_custom_rules_deny_and_allow_v220() {
             ScriptedReply::Text("已清理".into()),
         ],
         |cfg| {
-            cfg.gate.approval = ApprovalGear::OnIrreversible;
-            cfg.gate.exec_mode = tenon_core::gates::ExecMode::FullAccess;
             cfg.exec_rules.push(CustomRule {
                 pattern: "git clean.*".into(),
                 action: RuleAction::Allow,
@@ -1002,40 +751,9 @@ async fn spawn_subagents_provider_param_validated_v224() {
 }
 
 #[tokio::test]
-async fn pipeline_team_blacklist_denies_before_gate_v219() {
-    // v2.19 管线①段：team_denied_tools 黑名单在档位前拒绝（mock 直接调黑名单
-    // 工具——生产路径该工具不进目录，此为管线纵深验证）；拒绝消息含段语义。
-    let (_d, session, store, _p) = setup_with_config(
-        vec![
-            ScriptedReply::Tool {
-                name: "create_pr".into(),
-                args: serde_json::json!({"title": "x"}),
-            },
-            ScriptedReply::Text("好的，该工具被禁用，我换种方式。".into()),
-        ],
-        |cfg| {
-            cfg.gate.approval = ApprovalGear::OnIrreversible;
-            cfg.team_denied_tools.push("create_pr".into());
-        },
-    )
-    .await;
-    let outcome = session.run_task("建 PR").await;
-    assert!(matches!(outcome, TaskOutcome::Done(_)), "{outcome:?}");
-    let mut st = store.lock().await;
-    let events = st.events(&session.session_id).unwrap();
-    // 黑名单拒绝发生在档位前——不发 ConfirmRequest（Hold 未到）
-    assert!(
-        !events.iter().any(|e| e.kind == EventKind::ConfirmRequest),
-        "黑名单在档位段前拒绝，不应 Hold"
-    );
-    // 拒绝消息回传模型（tool result 不可直接断言——以回合完成与零审计为准）
-    drop(events);
-}
-
-#[tokio::test]
-async fn pipeline_pre_tool_hook_blocks_before_gate_hold_v219() {
-    // v2.19 管线③段前移：pre_tool hook block 在档位 Hold 之前——D 级工具
-    //（git_commit 本应 Hold）被 hook 先拒：无 ConfirmRequest、hook_run 记 block。
+async fn pipeline_pre_tool_hook_blocks_before_execute_v237() {
+    // 管线③段：pre_tool hook block 在执行前——D 级工具被 hook 先拒，
+    // hook_run 记 block（v2.37 档位退役后仍为「执行前最后阻断」语义）。
     let (_d, session, store, _p) = setup_with_config(
         vec![
             ScriptedReply::Tool {
@@ -1045,7 +763,6 @@ async fn pipeline_pre_tool_hook_blocks_before_gate_hold_v219() {
             ScriptedReply::Text("hook 拒了，我不提交。".into()),
         ],
         |cfg| {
-            cfg.gate.approval = ApprovalGear::OnIrreversible;
             cfg.hooks.push(tenon_agent::hooks::HookConfig {
                 event: tenon_agent::hooks::HookEvent::PreTool,
                 command: "false".into(), // 非零退出 + Block 策略 = 阻断
@@ -1061,10 +778,6 @@ async fn pipeline_pre_tool_hook_blocks_before_gate_hold_v219() {
     let mut st = store.lock().await;
     let events = st.events(&session.session_id).unwrap();
     assert!(
-        !events.iter().any(|e| e.kind == EventKind::ConfirmRequest),
-        "hook 前置阻断——不应进档位 Hold"
-    );
-    assert!(
         events
             .iter()
             .any(|e| e.kind == EventKind::HookRun && e.payload.to_string().contains("\"block\"")),
@@ -1075,68 +788,6 @@ async fn pipeline_pre_tool_hook_blocks_before_gate_hold_v219() {
             .map(|e| e.payload.to_string())
             .collect::<Vec<_>>()
     );
-}
-
-#[tokio::test]
-async fn gate_deny_blocks_d_level_and_turn_continues() {
-    let (dir, session, store, _p) = setup_with_config(
-        vec![
-            ScriptedReply::Tool {
-                name: "git_commit".into(),
-                args: serde_json::json!({"message": "should not land"}),
-            },
-            ScriptedReply::Text("好的，用户拒绝了提交，我不提交。".into()),
-        ],
-        |cfg| {
-            cfg.gate.approval = ApprovalGear::OnIrreversible;
-        },
-    )
-    .await;
-    let root = dir.path();
-    std::fs::write(root.join("code.txt"), "fn main() {}\n").unwrap();
-    for cmd in [
-        vec!["init", "-q", "."],
-        vec!["config", "user.email", "t@t"],
-        vec!["config", "user.name", "t"],
-    ] {
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(root)
-            .args(&cmd)
-            .output()
-            .unwrap();
-    }
-    let resolver_session = session.clone();
-    let resolver = tokio::spawn(async move {
-        loop {
-            if resolver_session.pending_confirm().await.is_some() {
-                resolver_session
-                    .resolve_confirm(ConfirmDecision::Deny)
-                    .await
-                    .unwrap();
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(15)).await;
-        }
-    });
-    let outcome = session.run_task("提交代码").await;
-    resolver.await.unwrap();
-    assert!(matches!(outcome, TaskOutcome::Done(_)), "{outcome:?}");
-    // 无 commit 落盘
-    let log = std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["log", "--oneline"])
-        .output()
-        .unwrap();
-    assert!(String::from_utf8_lossy(&log.stdout).trim().is_empty());
-    let mut st = store.lock().await;
-    let events = st.events(&session.session_id).unwrap();
-    let resolved = events
-        .iter()
-        .find(|e| e.kind == EventKind::ConfirmResolved)
-        .expect("应有确认决议事件");
-    assert_eq!(resolved.payload["decision"], "deny");
 }
 
 #[tokio::test]

@@ -40,7 +40,6 @@ beforeEach(() => {
     session: { first_edit_buffer_ms: 2000 },
     exec: { command_timeout_s: 120 },
   });
-  responses.set("/team-policy", { denied_tools: [], max_cost_usd: null });
   responses.set("/updates", { current_version: "0.1.0", staged: null });
   responses.set("/models", { models: [{ name: "mock", path: "mock" }], default: "mock", laya: null });
   responses.set("/evals", { runs: [] });

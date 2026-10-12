@@ -549,7 +549,7 @@ fn hex_encode(bytes: [u8; 32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{load_team_policy, validate_team_policy, SettingsOverrides};
+    use crate::state::SettingsOverrides;
 
     #[test]
     fn signing_keypair_self_verifies() {
@@ -695,30 +695,6 @@ mod tests {
         let mut overrides = SettingsOverrides::default();
         let result = overrides.merge_json(&serde_json::json!({
             "update": { "channel": "auto" }
-        }));
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn load_team_policy_default_when_missing() {
-        let dir = tempfile::tempdir().unwrap();
-        let _policy = load_team_policy(&dir.path().join("nonexistent-policy.toml"));
-        // 默认策略加载不崩溃
-    }
-
-    #[test]
-    fn validate_team_policy_valid_input() {
-        let policy = validate_team_policy(&serde_json::json!({
-            "denied_tools": ["git_push"],
-            "max_cost_usd": 10.0
-        }));
-        assert!(policy.is_ok());
-    }
-
-    #[test]
-    fn validate_team_policy_rejects_invalid_cost() {
-        let result = validate_team_policy(&serde_json::json!({
-            "max_cost_usd": -1
         }));
         assert!(result.is_err());
     }

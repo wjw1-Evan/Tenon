@@ -73,13 +73,12 @@ function rowsFromSettings(settings: SettingsData | null): ProviderRow[] {
 
 /** v1.121：Codex 式设置信息架构——左栏分类，右栏只渲染当前分类。
  *  Updates 分类随更新恒自动移除（v1.154）。 */
-type SettingsSection = "general" | "lan" | "models" | "permissions" | "plugins" | "skills";
+type SettingsSection = "general" | "lan" | "models" | "plugins" | "skills";
 
 const SETTINGS_SECTIONS: SettingsSection[] = [
   "general",
   "lan",
   "models",
-  "permissions",
   "plugins",
   "skills",
 ];
@@ -95,19 +94,15 @@ interface Props {
   projects?: SkillsProjectOption[];
   onClose: () => void;
   onSaved: (s: SettingsData) => void;
-  /** v2.17 §4.6：初始分区（顶栏安全徽标点击直达 Permissions）。 */
-  initialSection?: SettingsSection;
   /** v2.29 §7.0 feature flag（General「实验特性」开关列表消费）。 */
   featureFlags?: { enabled: (key: string) => boolean; toggle: (key: string) => void };
   /** 免费模型引导重开入口（§7.1 v1.163）：Models 分区 CTA；缺省不渲染。 */
   onOpenOnboarding?: () => void;
 }
 
-export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, projects = [], onClose, onSaved, onOpenOnboarding, initialSection, featureFlags }: Props) {
+export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, projects = [], onClose, onSaved, onOpenOnboarding, featureFlags }: Props) {
   const [bufferMs, setBufferMs] = useState(2000);
   const [commandTimeout, setCommandTimeout] = useState(120);
-  const [deniedTools, setDeniedTools] = useState("");
-  const [maxCost, setMaxCost] = useState("");
   const [defaultModel, setDefaultModel] = useState("");
   const [providers, setProviders] = useState<ProviderRow[]>([]);
   const [preset, setPreset] = useState("custom");
@@ -119,14 +114,7 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, p
   const [laya, setLaya] = useState<LayaStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [section, setSection] = useState<SettingsSection>(initialSection ?? "general");
-  // v2.17 §4.6：新会话默认安全档（回显 + 保存进 PUT security.*）
-  const [defaultExecMode, setDefaultExecMode] = useState(
-    () => (settings?.security?.exec_mode as string | undefined) ?? "workspace_write"
-  );
-  const [defaultApproval, setDefaultApproval] = useState(
-    () => (settings?.security?.approval as string | undefined) ?? "on_irreversible"
-  );
+  const [section, setSection] = useState<SettingsSection>("general");
   /** 技能停用名单（§13.4 v1.130）：Skills 分区即时 PUT，App 侧经 onSaved 回写。 */
   const [skillsDisabled, setSkillsDisabled] = useState<string[]>([]);
   /** 局域网访问状态（v1.157 §15 /lan/status）：地址 / 配对码 / 已配对设备。 */
@@ -138,9 +126,6 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, p
     if (!settings) return;
     setBufferMs(Number(settings.session?.first_edit_buffer_ms ?? 2000));
     setCommandTimeout(Number(settings.exec?.command_timeout_s ?? 120));
-    const policy = settings.team_policy ?? {};
-    setDeniedTools((policy.denied_tools ?? []).join(", "));
-    setMaxCost(policy.max_cost_usd == null ? "" : String(policy.max_cost_usd));
     setDefaultModel(String(settings.models?.default ?? ""));
     setProviders(rowsFromSettings(settings));
     const fallback = settings.models?.fallback;
@@ -251,20 +236,6 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, p
     setBusy(true);
     setError(null);
     try {
-      let policyMaxCost: number | null = null;
-      if (maxCost.trim()) {
-        policyMaxCost = Number(maxCost);
-        if (!Number.isFinite(policyMaxCost) || policyMaxCost < 0) {
-          throw new Error(t("settings.policy.cost_invalid"));
-        }
-      }
-      await api.putTeamPolicy({
-        denied_tools: deniedTools
-          .split(",")
-          .map((name) => name.trim())
-          .filter(Boolean),
-        max_cost_usd: policyMaxCost,
-      });
       const providerPayload: Record<string, ProviderSettings> = {};
       for (const p of providers) {
         const entry: ProviderSettings = { kind: p.kind || "openai", base_url: p.base_url.trim() };
@@ -321,11 +292,6 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, p
       const next = await api.putSettings({
         session: {
           first_edit_buffer_ms: bufferMs,
-        },
-        // v2.17 §4.6：新会话默认安全档（daemon 校验枚举，新会话生效）
-        security: {
-          exec_mode: defaultExecMode,
-          approval: defaultApproval,
         },
         exec: { command_timeout_s: commandTimeout },
         models: {
@@ -719,60 +685,6 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, p
                 </div>
 
                 <p className="muted settings-note">{t("settings.models.note")}</p>
-              </div>
-            )}
-
-            {section === "permissions" && (
-              <div className="settings-section" data-testid="settings-policy-section">
-                <div className="settings-section-title">{t("settings.policy")}</div>
-                <div className="settings-grid">
-                  {/* v2.17 §4.6：新会话默认安全档（补 v2.1 设置面板欠账） */}
-                  <label htmlFor="set-security-exec">{t("settings.security.exec")}</label>
-                  <select
-                    id="set-security-exec"
-                    data-testid="settings-security-exec"
-                    value={defaultExecMode}
-                    onChange={(e) => setDefaultExecMode(e.target.value)}
-                  >
-                    <option value="read_only">{t("gates.exec_read_only")}</option>
-                    <option value="workspace_write">{t("gates.exec_workspace_write")}</option>
-                    <option value="full_access">{t("gates.exec_full_access")}</option>
-                  </select>
-                  <label htmlFor="set-security-approval">{t("settings.security.approval")}</label>
-                  <select
-                    id="set-security-approval"
-                    data-testid="settings-security-approval"
-                    value={defaultApproval}
-                    onChange={(e) => setDefaultApproval(e.target.value)}
-                  >
-                    <option value="never">{t("gates.approval_never")}</option>
-                    <option value="on_irreversible">{t("gates.approval_on_irreversible")}</option>
-                    <option value="always">{t("gates.approval_always")}</option>
-                  </select>
-                </div>
-                <div className="settings-grid">
-                  <label htmlFor="set-denied-tools">{t("settings.policy.denied_tools")}</label>
-                  <input
-                    id="set-denied-tools"
-                    data-testid="settings-denied-tools"
-                    placeholder="git_push, create_pr"
-                    value={deniedTools}
-                    onChange={(e) => setDeniedTools(e.target.value)}
-                  />
-
-                  <label htmlFor="set-policy-cost">{t("settings.policy.cost")}</label>
-                  <input
-                    id="set-policy-cost"
-                    data-testid="settings-policy-cost"
-                    type="number"
-                    min={0}
-                    max={1000000}
-                    step={0.01}
-                    value={maxCost}
-                    onChange={(e) => setMaxCost(e.target.value)}
-                  />
-                </div>
-                <p className="muted settings-note">{t("settings.policy.note")}</p>
               </div>
             )}
 

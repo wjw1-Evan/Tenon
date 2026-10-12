@@ -105,7 +105,6 @@ impl DaemonSubagents {
             None,
             Some(child_sid.clone()),
             Some(wt.clone()),
-            Some(tenon_core::gates::ApprovalGear::Never),
         )
         .await;
         match registered {
@@ -291,9 +290,6 @@ impl SubagentOrchestrator for DaemonSubagents {
                     None,
                     Some(child_sid),
                     Some(wt.clone()),
-                    // v2.0（design-v2.md §4.1）：子代理为无人值守派生会话，无交互面
-                    // 确认——Approval 收窄 never（D 级动作由主会话执行更可控）
-                    Some(tenon_core::gates::ApprovalGear::Never),
                 )
                 .await
                 {

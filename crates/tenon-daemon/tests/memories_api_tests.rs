@@ -34,7 +34,6 @@ async fn start_daemon(script: Vec<ScriptedReply>) -> (tempfile::TempDir, u16, St
     options.worktrees_root = Some(dir.path().join("worktrees"));
     options.endpoint_path = Some(dir.path().join("daemon.endpoint"));
     options.settings_path = Some(dir.path().join("settings.json"));
-    options.policy_path = Some(dir.path().join("policy.toml"));
     options.updates_staging_dir = Some(dir.path().join("updates/staged"));
     options.laya_models_dir = Some(dir.path().join("models/laya"));
     let handle = serve(options).await.unwrap();

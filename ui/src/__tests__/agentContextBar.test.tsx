@@ -92,7 +92,6 @@ beforeEach(() => {
       if (url.includes("/settings")) {
         return jsonResponse({ session: {}, exec: { command_timeout_s: 120 } });
       }
-      if (url.includes("/team-policy")) return jsonResponse({ denied_tools: [], max_cost_usd: null });
       if (url.includes("/updates")) return jsonResponse({ current_version: "0.1.0", staged: null });
       if (url.includes("/models")) {
         return jsonResponse({ models: [{ name: "mock", path: "mock" }], default: "mock", laya: null });

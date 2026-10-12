@@ -4,7 +4,7 @@
 //! 转移规则由 `tenon_core::machine::StateMachine` 单测覆盖；运行态经
 //! `force_state` 对齐并保留计数（拒绝改案 ≤2、模型重试 ≤2、修复轮次）。
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc as StdArc;
@@ -19,7 +19,6 @@ use tenon_core::circuit::{CircuitBreaker, CircuitLimits, CircuitStatus, PatchFoo
 use tenon_core::context::{
     render_working_set, ContextSlice, ProjectRules, SessionMemory, WorkingSet, MAX_L2_GOALS,
 };
-use tenon_core::gates::{ConfirmDecision, Gate, GateVerdict};
 use tenon_core::machine::{Limits as MachineLimits, State, StateMachine};
 use tenon_core::policy::{Action, Decision, Level, Policy};
 use tenon_core::tools::Tool;
@@ -60,17 +59,12 @@ pub struct AgentConfig {
     /// v2.20 execpolicy 自定义规则（design-v2.md §4.2 / Claude Code permissions
     /// 形态）：settings 注入新会话；策略总线②段 evaluate_with_rules 消费。
     pub exec_rules: Vec<tenon_core::execpolicy::CustomRule>,
-    /// v2.22 registry 白名单追加（design-v2.md §4.4 镜像源自定义）：settings
-    /// 注入新会话；executor install_deps 经 registry_proxy_with 并入代理。
-    pub registry_extra_hosts: Vec<String>,
     /// Laya 本地决策模型（§9.8；None = 未启用，各集成点回退现状）。
     pub laya: Option<Arc<tenon_laya::LayaRuntime>>,
     /// daemon 共享 LSP 宿主（§8.5 / §9.2：编辑器与代理同实例）。
     pub lsp: Option<Arc<tenon_lsp::LspManager>>,
     /// 脏缓冲注册表（§8.6 人机共编；None = daemon 未接入）。
     pub dirty: Option<Arc<tenon_fs::DirtyBufferRegistry>>,
-    /// 团队策略工具黑名单（M3：跨会话只收窄）。
-    pub team_denied_tools: Vec<String>,
     /// 项目内相对 / 绝对 cwd；命令在项目根沙箱内切到这里执行（§6.4）。
     pub working_dir: Option<PathBuf>,
     /// 预生成会话 ID（v1.87 受管 worktree 需先有 id 再建目录；None = store 生成）。
@@ -103,9 +97,6 @@ pub struct AgentConfig {
     /// 子代理编排器（§9.5 v1.190）：daemon 实现注入（worktree 池 + 子会话
     /// 登记 + 批内并发）；None = 工具返回未接入。新会话生效。
     pub subagents: Option<std::sync::Arc<dyn crate::subagents::SubagentOrchestrator>>,
-    /// v2.0 安全档位（design-v2.md §4.1）：ExecMode × Approval——read_only
-    /// 派生会话只读、full_access 派生命令沙箱降级；approval 决定 Hold 面。
-    pub gate: Gate,
 }
 
 impl std::fmt::Debug for AgentConfig {
@@ -141,11 +132,9 @@ impl AgentConfig {
             max_tool_rounds: 24,
             compaction_input_tokens: tenon_core::context::MIN_COMPACTION_INPUT_TOKENS,
             exec_rules: Vec::new(),
-            registry_extra_hosts: Vec::new(),
             laya: None,
             lsp: None,
             dirty: None,
-            team_denied_tools: Vec::new(),
             working_dir: None,
             session_id: None,
             managed_worktree: None,
@@ -160,7 +149,6 @@ impl AgentConfig {
             generation_temperature: 0.2,
             hooks: Vec::new(),
             subagents: None,
-            gate: Gate::default(),
         }
     }
 }
@@ -184,15 +172,6 @@ pub enum TaskOutcome {
     Error(String),
 }
 
-/// v2.0 档位确认：待确认动作（design-v2.md §4.1；UI 确认卡与
-/// `GET /session/:id` 的 `pending_confirm` 载荷）。args 为截断后的参数预览。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PendingConfirm {
-    pub tool: String,
-    pub level: String,
-    pub args: String,
-}
-
 /// v1.171 模型回合自动恢复结果（§9.1）：穷尽落 ERROR，退避中被打断按暂停落地。
 enum ModelTurnError {
     /// 自动恢复全链穷尽（重试 ≤10 + fallback 链），携带末次错误。
@@ -210,12 +189,6 @@ pub enum ControlCommand {
     SetReadonly(bool),
     /// v1.161 手动压缩（§10.2）：运行态下跳过 24k 阈值，下一模型回合立即省略陈旧工具输出。
     Compact,
-    /// v2.0 运行中切换确认档（design-v2.md §4.1）：下一工具步生效；
-    /// Hold 等待期间收到即时重判（改 never/放行即解锁）。
-    SetApproval(tenon_core::gates::ApprovalGear),
-    /// v2.0 运行中切换执行边界档（design-v2.md §4.1）：read_only 置会话
-    /// 只读、full_access 置命令沙箱降级，下一工具步生效。
-    SetExecMode(tenon_core::gates::ExecMode),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -280,14 +253,6 @@ pub struct AgentSession {
     interrupt: Notify,
     /// 任务进行中标志（v1.93 并发守卫）：挂起等待恢复期间同样为 true。
     running: AtomicBool,
-    /// v2.0 档位运行态（design-v2.md §4.1）：初始取 AgentConfig.gate，
-    /// Approval 可经 ControlCommand::SetApproval 运行中切换。
-    gate: Mutex<Gate>,
-    /// v2.0 allow_session 记忆（design-v2.md §4.1）：本会话已放行工具名集合。
-    gate_allowed: Mutex<HashSet<String>>,
-    /// v2.0 确认回路：待确认动作（UI / GET /session 载荷）+ 决议通道。
-    confirm_pending: Mutex<Option<PendingConfirm>>,
-    confirm_tx: Mutex<Option<tokio::sync::oneshot::Sender<ConfirmDecision>>>,
 }
 
 fn tool_specs() -> Vec<ToolSpec> {
@@ -853,8 +818,6 @@ impl AgentSession {
             tool_ctx.command_cwd = canonical;
         }
         tool_ctx.dirty = config.dirty.clone();
-        tool_ctx.team_denied_tools = config.team_denied_tools.clone();
-        tool_ctx.registry_extra_hosts = config.registry_extra_hosts.clone();
         tool_ctx.lsp = config.lsp.clone();
         // §13.4 v1.130：技能全局目录与停用名单（停用经 settings 快照，新会话生效）。
         tool_ctx.skills_global_dir = Some(config.skills_global_dir.clone());
@@ -880,18 +843,6 @@ impl AgentSession {
         let circuit_limits = config.circuit;
         let write_scope = config.write_scope.clone();
         let managed_worktree = config.managed_worktree.clone();
-        // v2.0 档位派生（design-v2.md §4.1）：read_only → 会话只读开关；
-        // full_access → run_tests/run_build/install_deps 沙箱降级（executor 消费）
-        let gate = config.gate;
-        match gate.exec_mode {
-            tenon_core::gates::ExecMode::ReadOnly => {
-                tool_ctx.readonly.store(true, Ordering::SeqCst);
-            }
-            tenon_core::gates::ExecMode::FullAccess => {
-                tool_ctx.full_access.store(true, Ordering::SeqCst);
-            }
-            tenon_core::gates::ExecMode::WorkspaceWrite => {}
-        }
         let machine = StateMachine::with_limits(MachineLimits {
             model_retries: 2,
             fix_rounds: config.fix_rounds,
@@ -920,10 +871,6 @@ impl AgentSession {
             pre_rollback_tree: Mutex::new(None),
             interrupt: Notify::new(),
             mcp_specs,
-            gate: Mutex::new(gate),
-            gate_allowed: Mutex::new(HashSet::new()),
-            confirm_pending: Mutex::new(None),
-            confirm_tx: Mutex::new(None),
         }))
     }
 
@@ -2069,12 +2016,6 @@ impl AgentSession {
                                     Some(ControlCommand::Compact) => {
                                         self.force_compact.store(true, Ordering::SeqCst);
                                     }
-                                    Some(ControlCommand::SetApproval(gear)) => {
-                                        self.gate.lock().await.approval = gear;
-                                    }
-                                    Some(ControlCommand::SetExecMode(mode)) => {
-                                        self.apply_exec_mode(mode).await;
-                                    }
                                     _ => tokio::time::sleep(Duration::from_millis(150)).await,
                                 }
                             }
@@ -2094,14 +2035,6 @@ impl AgentSession {
                         // v1.161 手动压缩：置位标志，下一模型回合跳过阈值强制省略陈旧工具输出
                         ControlCommand::Compact => {
                             self.force_compact.store(true, Ordering::SeqCst);
-                        }
-                        // v2.0 运行中切换确认档（design-v2.md §4.1）：下一工具步生效
-                        ControlCommand::SetApproval(gear) => {
-                            self.gate.lock().await.approval = gear;
-                        }
-                        // v2.0 运行中切换执行边界档：只读 / 命令沙箱降级即时派生
-                        ControlCommand::SetExecMode(mode) => {
-                            self.apply_exec_mode(mode).await;
                         }
                     }
                 }
@@ -2168,24 +2101,17 @@ impl AgentSession {
                 }
 
                 // ---- v2.19 策略总线统一管线（design-v2.md §3.2 / design.md §12）----
-                // 六段判定段单点消费：①分级（team 黑名单 / read_only 拒写）②命令评估
-                //（execpolicy 三档 / install_policy 白名单）③hooks（下一段，按设计
-                // 顺序在档位检查之前——Hold 等待前 hooks 已可阻断）④档位（gate.judge
-                // + execpolicy Hold）⑤单调拒绝（Deny 提前返回，后继段不可翻案）。
-                // 收敛前形态：v2.18 execpolicy 预判块 + v2.0 档位闸门分立；executor
-                // 层 readonly/Block/install 检查保留为防御纵深。
+                // v2.37（ADR-19）四段判定：①分级（read_only 拒写）②命令评估
+                //（execpolicy Block 硬拦 / Hold 放行；install_policy 白名单）
+                // ③hooks（下一段）——单调拒绝：Deny 提前返回，后继段不可翻案。
+                // executor 层 readonly/Block/install 检查保留为防御纵深。
                 let decision = {
-                    let gate = self.gate.lock().await;
-                    let already_allowed = self.gate_allowed.lock().await.contains(&call.name);
                     let readonly = self.tool_ctx.readonly.load(Ordering::SeqCst);
                     tenon_core::pipeline::decide(&tenon_core::pipeline::PolicyInput {
                         tool: &call.name,
                         level,
                         args: &call.arguments,
-                        gate: &gate,
-                        already_allowed,
                         readonly,
-                        team_denied_tools: &self.tool_ctx.team_denied_tools,
                         exec_rules: &self.config.exec_rules,
                     })
                 };
@@ -2193,8 +2119,8 @@ impl AgentSession {
                     tool_messages.push(ChatMessage::tool_result(call.id.clone(), reason.clone()));
                     continue;
                 }
-                // ③ hooks 段（管线序：分级/命令评估后、档位前）：pre_tool block 即拒
-                //（v1.180 语义不变——v2.19 起从档位后前移至此，Hold 等待前已可阻断）
+                // ③ hooks 段（管线序：分级 / 命令评估后、执行前）：pre_tool block 即拒
+                //（v1.180 语义不变——v2.19 起前移至此，执行前已可阻断）
                 if !self.config.hooks.is_empty() {
                     let hook_outcome = crate::hooks::run_hooks(
                         &self.config.hooks,
@@ -2220,31 +2146,6 @@ impl AgentSession {
                         continue;
                     }
                 }
-                // ④档位 Hold（含 execpolicy Hold 覆盖——管线已归一）
-                if decision == tenon_core::pipeline::PolicyDecision::Allow {
-                    // 纯 Allow 快路径（省 borrow）
-                } else if matches!(decision, tenon_core::pipeline::PolicyDecision::Hold { .. }) {
-                    match self
-                        .hold_for_confirm(&call.name, level, &call.arguments)
-                        .await
-                    {
-                        ConfirmDecision::AllowSession => {
-                            self.gate_allowed.lock().await.insert(call.name.clone());
-                        }
-                        ConfirmDecision::AllowOnce => {}
-                        ConfirmDecision::Deny => {
-                            tool_messages.push(ChatMessage::tool_result(
-                                call.id.clone(),
-                                format!(
-                                    "用户拒绝执行 {}（v2.0 审批档：不可逆动作需确认）——请改用其他方式完成，或向用户说明后等待指示",
-                                    call.name
-                                ),
-                            ));
-                            continue;
-                        }
-                    }
-                }
-
                 // ---- 首改缓冲（§9.3：首个 B 级前，Esc 可断）----
                 if level == Level::B && !self.first_edit_done.load(Ordering::SeqCst) {
                     self.emit(
@@ -2669,7 +2570,8 @@ impl AgentSession {
     }
 
     async fn snapshot_unavailable(&self, e: tenon_snapshot::SnapshotError) -> TaskOutcome {
-        // 「自动 = 必可回滚」不变式（§10.3）：快照不可用 → 暂停（交互档）
+        // 快照不可用 → 终态暂停 + 错误事件如实上报（v2.37：无「自动档降级
+        // 交互档」概念——发送消息即续跑，用户显式续跑承担无回滚风险）
         self.emit(
             EventKind::Error,
             &serde_json::json!({"snapshot_unavailable": e.to_string()}),
@@ -2679,7 +2581,7 @@ impl AgentSession {
         self.set_status(SessionStatus::Paused).await;
         TaskOutcome::Paused {
             state: "paused".into(),
-            reason: format!("快照库不可用，自动档降级为交互档：{e}"),
+            reason: format!("快照库不可用：{e}（发送消息即续跑）"),
         }
     }
 
@@ -2689,14 +2591,6 @@ impl AgentSession {
     /// 黑名单与全工具目录同轨检查；未启用 / 未下载 / 超时按「工具暂不可用」
     /// 返回，模型回退自行判断。
     async fn exec_laya_decide(&self, args: &serde_json::Value) -> ToolOutput {
-        if self
-            .tool_ctx
-            .team_denied_tools
-            .iter()
-            .any(|t| t == "laya_decide")
-        {
-            return ToolOutput::err("团队策略禁用工具: laya_decide（只收窄，§19/§12.2）");
-        }
         let Some(laya) = &self.config.laya else {
             return ToolOutput::err("laya_decide 不可用：Laya 未启用");
         };
@@ -2879,14 +2773,6 @@ impl AgentSession {
     }
 
     async fn exec_submit_plan(&self, args: &serde_json::Value) -> ToolOutput {
-        if self
-            .tool_ctx
-            .team_denied_tools
-            .iter()
-            .any(|t| t == "submit_plan")
-        {
-            return ToolOutput::err("团队策略禁用工具: submit_plan（只收窄，§19/§12.2）");
-        }
         let Some(items) = args.get("items").and_then(|v| v.as_array()) else {
             return ToolOutput::err("缺少 items 参数（字符串数组，1-12 项）");
         };
@@ -2916,14 +2802,6 @@ impl AgentSession {
     }
 
     async fn exec_subtasks(&self, args: &serde_json::Value) -> ToolOutput {
-        if self
-            .tool_ctx
-            .team_denied_tools
-            .iter()
-            .any(|t| t == "subtasks")
-        {
-            return ToolOutput::err("团队策略禁用工具: subtasks（只收窄，§19/§12.2）");
-        }
         let Some(items) = parse_subtasks_args(args) else {
             return ToolOutput::err(
                 "参数无效：items 需为 1–12 项的整张清单 [{title(非空≤200字), status: pending|in_progress|done}]",
@@ -2945,153 +2823,6 @@ impl AgentSession {
     async fn drain_control(&self) -> Option<ControlCommand> {
         let mut rx = self.control_rx.lock().await;
         rx.try_recv().ok()
-    }
-
-    /// 首改缓冲等待：true = 被 Esc 打断。
-    /// v2.0 档位确认等待（design-v2.md §4.1）：被 Hold 的动作在此等待用户
-    /// 决议（`POST /session/:id/confirm`）。Esc / Pause / Stop 打断按拒绝
-    /// 处理——Pause / Stop 回注控制通道，由下一工具步检查点执行暂停语义；
-    /// 等待期间收到 `SetApproval` 即时改档重判（改为 never 或记忆命中即放行）。
-    async fn hold_for_confirm(
-        &self,
-        tool: &str,
-        level: Level,
-        args: &serde_json::Value,
-    ) -> ConfirmDecision {
-        // args 截 2k 防事件膨胀（§14.2 payload 治理同口径）
-        let args_text = {
-            let s = args.to_string();
-            if s.chars().count() > 2000 {
-                format!("{}…", s.chars().take(2000).collect::<String>())
-            } else {
-                s
-            }
-        };
-        self.emit(
-            EventKind::ConfirmRequest,
-            &serde_json::json!({
-                "tool": tool,
-                "level": level.as_str(),
-                "args": args_text,
-            }),
-        )
-        .await;
-        self.set_status(SessionStatus::AwaitingConfirm).await;
-        *self.confirm_pending.lock().await = Some(PendingConfirm {
-            tool: tool.to_string(),
-            level: level.as_str().to_string(),
-            args: args_text,
-        });
-        let (tx, mut rx) = tokio::sync::oneshot::channel::<ConfirmDecision>();
-        *self.confirm_tx.lock().await = Some(tx);
-        let interrupt = self.interrupt.notified();
-        tokio::pin!(interrupt);
-        let mut requeue: Option<ControlCommand> = None;
-        let decision = loop {
-            tokio::select! {
-                d = &mut rx => match d {
-                    Ok(d) => break d,
-                    Err(_) => break ConfirmDecision::Deny,
-                },
-                _ = &mut interrupt => break ConfirmDecision::Deny,
-                _ = tokio::time::sleep(Duration::from_millis(150)) => {
-                    match self.drain_control().await {
-                        Some(cmd @ (ControlCommand::Pause | ControlCommand::Stop)) => {
-                            requeue = Some(cmd);
-                            break ConfirmDecision::Deny;
-                        }
-                        Some(ControlCommand::SetApproval(gear)) => {
-                            // 改档即时重判：不再需要确认则直接放行
-                            self.gate.lock().await.approval = gear;
-                        }
-                        Some(ControlCommand::SetExecMode(mode)) => {
-                            self.apply_exec_mode(mode).await;
-                        }
-                        Some(ControlCommand::SetReadonly(v)) => {
-                            self.tool_ctx.readonly.store(v, Ordering::SeqCst);
-                        }
-                        _ => {}
-                    }
-                    // v2.6：外部档位直改（set_gate）即时解锁——150ms 重判，
-                    // 改 never / 记忆补录后无需等控制命令到达
-                    let allowed = self.gate_allowed.lock().await.contains(tool);
-                    if self.gate.lock().await.judge(level, allowed) == GateVerdict::Allow {
-                        break ConfirmDecision::AllowOnce;
-                    }
-                }
-            }
-        };
-        *self.confirm_pending.lock().await = None;
-        *self.confirm_tx.lock().await = None;
-        self.set_status(SessionStatus::Executing).await;
-        self.emit(
-            EventKind::ConfirmResolved,
-            &serde_json::json!({
-                "tool": tool,
-                "decision": decision.as_str(),
-            }),
-        )
-        .await;
-        if let Some(cmd) = requeue {
-            let _ = self.control_tx.send(cmd);
-        }
-        decision
-    }
-
-    /// v2.0 运行中切换执行边界档（design-v2.md §4.1）：read_only 置会话
-    /// 只读、full_access 置命令沙箱降级，下一工具步生效。
-    async fn apply_exec_mode(&self, mode: tenon_core::gates::ExecMode) {
-        match mode {
-            tenon_core::gates::ExecMode::ReadOnly => {
-                self.tool_ctx.readonly.store(true, Ordering::SeqCst);
-                self.tool_ctx.full_access.store(false, Ordering::SeqCst);
-            }
-            tenon_core::gates::ExecMode::WorkspaceWrite => {
-                self.tool_ctx.full_access.store(false, Ordering::SeqCst);
-            }
-            tenon_core::gates::ExecMode::FullAccess => {
-                self.tool_ctx.full_access.store(true, Ordering::SeqCst);
-            }
-        }
-        self.gate.lock().await.exec_mode = mode;
-    }
-
-    /// v2.0 档位直改（daemon control 路由调用，design-v2.md §4.1）：空闲 /
-    /// 运行 / Hold 等待态均即时生效——gate 每工具步现读、Hold 循环 150ms
-    /// 重判（hold_for_confirm tick 分支），无需等控制检查点。
-    pub async fn set_gate(
-        &self,
-        exec_mode: Option<tenon_core::gates::ExecMode>,
-        approval: Option<tenon_core::gates::ApprovalGear>,
-    ) {
-        if let Some(mode) = exec_mode {
-            self.apply_exec_mode(mode).await;
-        }
-        if let Some(gear) = approval {
-            self.gate.lock().await.approval = gear;
-        }
-    }
-
-    /// v2.0 决议入口（daemon `POST /session/:id/confirm` 调用）。
-    pub async fn resolve_confirm(&self, decision: ConfirmDecision) -> Result<(), String> {
-        let tx = self.confirm_tx.lock().await.take();
-        match tx {
-            Some(tx) => {
-                let _ = tx.send(decision);
-                Ok(())
-            }
-            None => Err("当前没有等待确认的动作".to_string()),
-        }
-    }
-
-    /// v2.0 待确认动作快照（`GET /session/:id` 的 `pending_confirm` 载荷）。
-    pub async fn pending_confirm(&self) -> Option<PendingConfirm> {
-        self.confirm_pending.lock().await.clone()
-    }
-
-    /// v2.0 当前档位快照（`GET /session/:id` 的 `gate` 载荷，切换器回显）。
-    pub async fn gate_snapshot(&self) -> Gate {
-        *self.gate.lock().await
     }
 
     async fn wait_first_edit_buffer(&self, ms: u64) -> bool {

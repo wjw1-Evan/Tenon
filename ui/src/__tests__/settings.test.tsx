@@ -17,7 +17,6 @@ function makeApi(
 ) {
   return {
     putSettings: put,
-    putTeamPolicy: vi.fn().mockResolvedValue({}),
     listPlugins: vi.fn().mockResolvedValue({ installed: [] }),
     models: vi.fn().mockResolvedValue(models),
   } as unknown as TenonApi;
@@ -378,66 +377,6 @@ describe("SettingsDialog", () => {
     expect(put.mock.calls[0][0].update).toBeUndefined();
   });
 
-  it("权限策略分区：回填收窄配置并原子保存", async () => {
-    const withPolicy: SettingsData = {
-      ...settings,
-      team_policy: {
-        force_interactive: true,
-        denied_tools: ["git_push", "create_pr"],
-        max_cost_usd: 1.5,
-      },
-    };
-    const put = vi.fn().mockResolvedValue(withPolicy);
-    const putPolicy = vi.fn().mockResolvedValue(withPolicy.team_policy);
-    const api = {
-      putSettings: put,
-      putTeamPolicy: putPolicy,
-      listPlugins: vi.fn().mockResolvedValue({ installed: [] }),
-      models: vi.fn().mockResolvedValue({ models: [], default: "", laya: null }),
-    } as unknown as TenonApi;
-    render(
-      <SettingsDialog api={api} t={t} settings={withPolicy} saveMode="auto" onSaveModeChange={() => {}} onClose={() => {}} onSaved={() => {}} />
-    );
-    openSection("permissions");
-    expect(screen.queryByTestId("settings-force-interactive")).toBeNull();
-    expect((screen.getByTestId("settings-denied-tools") as HTMLInputElement).value).toBe(
-      "git_push, create_pr"
-    );
-    expect((screen.getByTestId("settings-policy-cost") as HTMLInputElement).value).toBe("1.5");
-
-    fireEvent.change(screen.getByTestId("settings-denied-tools"), {
-      target: { value: " git_push , mcp:* , " },
-    });
-    fireEvent.change(screen.getByTestId("settings-policy-cost"), { target: { value: "2" } });
-    fireEvent.click(screen.getByTestId("settings-save"));
-    await waitFor(() => expect(putPolicy).toHaveBeenCalled());
-    expect(putPolicy).toHaveBeenCalledWith({
-      denied_tools: ["git_push", "mcp:*"],
-      max_cost_usd: 2,
-    });
-    await waitFor(() => expect(put).toHaveBeenCalled());
-  });
-
-  it("权限策略分区：非法成本不提交", async () => {
-    const put = vi.fn().mockResolvedValue(settings);
-    const putPolicy = vi.fn().mockResolvedValue({});
-    const api = {
-      putSettings: put,
-      putTeamPolicy: putPolicy,
-      listPlugins: vi.fn().mockResolvedValue({ installed: [] }),
-      models: vi.fn().mockResolvedValue({ models: [], default: "", laya: null }),
-    } as unknown as TenonApi;
-    render(
-      <SettingsDialog api={api} t={t} settings={settings} saveMode="auto" onSaveModeChange={() => {}} onClose={() => {}} onSaved={() => {}} />
-    );
-    openSection("permissions");
-    fireEvent.change(screen.getByTestId("settings-policy-cost"), { target: { value: "-1" } });
-    fireEvent.click(screen.getByTestId("settings-save"));
-    await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
-    expect(putPolicy).not.toHaveBeenCalled();
-    expect(put).not.toHaveBeenCalled();
-  });
-
   it("v1.157 局域网分区：状态 / 配对码 / 刷新 / 吊销", async () => {
     const lanStatus = vi
       .fn()
@@ -465,8 +404,7 @@ describe("SettingsDialog", () => {
     const lanRevoke = vi.fn().mockResolvedValue({ revoked: true });
     const api = {
       putSettings: vi.fn().mockResolvedValue(settings),
-      putTeamPolicy: vi.fn().mockResolvedValue({}),
-      listPlugins: vi.fn().mockResolvedValue({ installed: [] }),
+        listPlugins: vi.fn().mockResolvedValue({ installed: [] }),
       models: vi.fn().mockResolvedValue({ models: [], default: "", laya: null }),
       lanStatus,
       lanEnable,

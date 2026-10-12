@@ -27,12 +27,11 @@ export const STATE_COLORS: Record<AgentStateName, string> = {
 };
 
 // 代理循环正在推进的状态：发送按钮此时显示「停止」（v1.59）。
-// awaiting_confirm 属在途（v2.0）：发送入队不拒绝（§9.1 队列），停止可打断 Hold。
+// awaiting_confirm（v2.0）随 v2.37 档位退役移出运行态；类型与色保留供旧库会话回显。
 export const RUNNING_STATES: ReadonlySet<AgentStateName> = new Set([
   "sensing",
   "deciding",
   "executing",
   "verifying",
   "fixing",
-  "awaiting_confirm",
 ]);

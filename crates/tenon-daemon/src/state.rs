@@ -221,8 +221,6 @@ pub struct SettingsOverrides {
     pub command_timeout_s: Option<u64>,
     /// v2.20 §9.2 execpolicy 自定义规则（整体替换；新会话生效；缺省 None = 空集）。
     pub execpolicy_rules: Option<Vec<ExecRuleJson>>,
-    /// v2.22 §12.3 registry 白名单追加（整体替换；新会话生效；缺省 None = 仅内置）。
-    pub registry_hosts: Option<Vec<String>>,
     /// v2.23 §13.3 ACP 外部 agent（整体替换；命令白名单同 MCP 启动器约束）。
     pub acp_agents: Option<Vec<AcpAgentJson>>,
     /// v1.40 模型分区：默认 provider 名与 provider 覆盖表（整体替换语义）。
@@ -242,10 +240,6 @@ pub struct SettingsOverrides {
     pub models_generation_temperature: Option<f32>,
     /// v1.180 用户 hooks（§13.6）：数组整体替换，新会话生效。
     pub hooks: Option<Vec<tenon_agent::hooks::HookConfig>>,
-    /// v2.0 安全档位（design-v2.md §4.1）：security.exec_mode / security.approval
-    ///（新会话默认档；运行中切换走 /session/:id/control set_approval|set_exec_mode）。
-    pub security_exec_mode: Option<tenon_core::gates::ExecMode>,
-    pub security_approval: Option<tenon_core::gates::ApprovalGear>,
 }
 
 /// mcp.servers 单条校验（§13.5 安装期硬约束；settings PUT 与市场安装共用）。
@@ -358,30 +352,6 @@ impl SettingsOverrides {
                 }
                 self.execpolicy_rules = Some(parsed);
             }
-            // v2.22 registry 白名单追加：host 合法性（core 同源校验）+ ≤64 + 去重
-            if let Some(hosts) = ep.get("registry_hosts") {
-                let arr = hosts
-                    .as_array()
-                    .ok_or("execpolicy.registry_hosts 须为字符串数组")?;
-                if arr.len() > 64 {
-                    return Err("execpolicy.registry_hosts 上限 64 条".into());
-                }
-                let mut parsed: Vec<String> = Vec::with_capacity(arr.len());
-                for (i, h) in arr.iter().enumerate() {
-                    let host = h
-                        .as_str()
-                        .ok_or_else(|| format!("execpolicy.registry_hosts[{i}] 须为字符串"))?;
-                    if !tenon_sandbox::NetworkState::valid_registry_host(host) {
-                        return Err(format!(
-                            "execpolicy.registry_hosts[{i}] 非法 host（须小写域名、无 scheme/路径/端口）: {host}"
-                        ));
-                    }
-                    parsed.push(host.trim().to_lowercase());
-                }
-                parsed.sort();
-                parsed.dedup();
-                self.registry_hosts = Some(parsed);
-            }
         }
         // v2.23 §13.3 ACP agents：name/command 必填 + 命令白名单（MCP 同源）+ ≤8 个
         if let Some(acp) = body.get("acp") {
@@ -424,21 +394,6 @@ impl SettingsOverrides {
                     });
                 }
                 self.acp_agents = Some(parsed);
-            }
-        }
-        if let Some(security) = body.get("security") {
-            // v2.0 档位默认（design-v2.md §4.1）：新会话生效
-            if let Some(v) = security.get("exec_mode") {
-                let s = v.as_str().ok_or("security.exec_mode 须为字符串")?;
-                let mode = tenon_core::gates::ExecMode::parse(s)
-                    .ok_or("security.exec_mode ∈ read_only | workspace_write | full_access")?;
-                self.security_exec_mode = Some(mode);
-            }
-            if let Some(v) = security.get("approval") {
-                let s = v.as_str().ok_or("security.approval 须为字符串")?;
-                let gear = tenon_core::gates::ApprovalGear::parse(s)
-                    .ok_or("security.approval ∈ never | on_irreversible | always")?;
-                self.security_approval = Some(gear);
             }
         }
         if let Some(privacy) = body.get("privacy") {
@@ -623,19 +578,9 @@ impl SettingsOverrides {
         if let Some(rules) = &self.execpolicy_rules {
             execpolicy.insert("rules".into(), serde_json::json!(rules));
         }
-        if let Some(hosts) = &self.registry_hosts {
-            execpolicy.insert("registry_hosts".into(), serde_json::json!(hosts));
-        }
         let mut acp = serde_json::Map::new();
         if let Some(agents) = &self.acp_agents {
             acp.insert("agents".into(), serde_json::json!(agents));
-        }
-        let mut security = serde_json::Map::new();
-        if let Some(m) = self.security_exec_mode {
-            security.insert("exec_mode".into(), serde_json::json!(m.as_str()));
-        }
-        if let Some(g) = self.security_approval {
-            security.insert("approval".into(), serde_json::json!(g.as_str()));
         }
         let mut models = serde_json::Map::new();
         if let Some(d) = &self.models_default {
@@ -693,7 +638,6 @@ impl SettingsOverrides {
             "exec": exec,
             "execpolicy": execpolicy,
             "acp": acp,
-            "security": security,
             "models": models,
             "skills": skills,
             "market": market,
@@ -813,8 +757,6 @@ pub struct DaemonOptions {
     pub endpoint_path: Option<std::path::PathBuf>,
     /// 设置覆盖文件；None = `~/.tenon/settings.json`（测试必须覆盖避免并行竞争）。
     pub settings_path: Option<std::path::PathBuf>,
-    /// 权限策略文件；None = `~/.tenon/policy.toml`（测试必须覆盖避免并行竞争）。
-    pub policy_path: Option<std::path::PathBuf>,
     /// 更新 staging 目录；None = `~/.tenon/updates/staged`（v1.86）。
     pub updates_staging_dir: Option<std::path::PathBuf>,
     /// 固定端口（开发热重载 `--port`）；None = 随机端口（默认，§12.6）。
@@ -856,7 +798,6 @@ impl DaemonOptions {
             project: None,
             endpoint_path: None,
             settings_path: None,
-            policy_path: None,
             updates_staging_dir: None,
             bind_port: None,
             fixed_token: None,
@@ -1332,8 +1273,6 @@ pub struct DaemonState {
     pub force_lan_peer: bool,
     /// daemon 监听端口（/pairing 自发现回传给 UI）。
     pub port: std::sync::atomic::AtomicU16,
-    /// 权限高级策略（v1.85：只收窄；运行时热更新，仅新会话生效）。
-    pub team_policy: std::sync::RwLock<tenon_core::policy::TeamPolicy>,
     pub config: Config,
     pub token: String,
     pub tickets: TicketStore,
@@ -1374,8 +1313,6 @@ pub struct DaemonState {
     pub settings_overrides: std::sync::Mutex<SettingsOverrides>,
     /// 设置覆盖权威文件；测试显式隔离。
     pub settings_path: std::path::PathBuf,
-    /// 权限高级策略权威文件（v1.85）；测试显式隔离。
-    pub policy_path: std::path::PathBuf,
     /// 更新 staging 目录（v1.86）；测试显式隔离。
     pub updates_staging_dir: std::path::PathBuf,
     /// L4 增量索引队列（§10.1）；ProjectRuntime 激活 / watcher 变化入队。
@@ -1400,75 +1337,6 @@ struct PendingL4Index {
     root: PathBuf,
     full: bool,
     files: HashSet<(String, bool)>,
-}
-
-/// 团队策略加载（M3）：`~/.tenon/policy.toml`（只收窄字段）。
-pub fn load_team_policy(path: &std::path::Path) -> tenon_core::policy::TeamPolicy {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|text| toml::from_str(&text).ok())
-        .unwrap_or_default()
-}
-
-/// 校验权限高级策略（v1.85）。PUT 是全量原子替换：缺失字段回落默认值，
-/// 禁止未知字段避免 UI 与后端演进时静默丢约束。
-pub fn validate_team_policy(
-    body: &serde_json::Value,
-) -> Result<tenon_core::policy::TeamPolicy, String> {
-    let obj = body.as_object().ok_or("team policy 须为对象")?;
-    for key in obj.keys() {
-        if !matches!(key.as_str(), "denied_tools" | "max_cost_usd") {
-            return Err(format!("team policy 不支持字段: {key}"));
-        }
-    }
-    let mut policy = tenon_core::policy::TeamPolicy::default();
-    if let Some(v) = obj.get("denied_tools") {
-        let values = v.as_array().ok_or("denied_tools 须为字符串数组")?;
-        let mut names = std::collections::BTreeSet::new();
-        for value in values {
-            let name = value.as_str().ok_or("denied_tools 须为字符串数组")?;
-            let name = name.trim();
-            if name.is_empty() || name.len() > 128 {
-                return Err("denied_tools 名称须为 1-128 字符".into());
-            }
-            names.insert(name.to_string());
-        }
-        policy.denied_tools = names.into_iter().collect();
-    }
-    if let Some(v) = obj.get("max_cost_usd") {
-        if v.is_null() {
-            policy.max_cost_usd = None;
-        } else {
-            let limit = v.as_f64().ok_or("max_cost_usd 须为非负数字或 null")?;
-            if !limit.is_finite() || !(0.0..=1_000_000.0).contains(&limit) {
-                return Err("max_cost_usd 取值须为 0-1000000".into());
-            }
-            policy.max_cost_usd = Some(limit);
-        }
-    }
-    Ok(policy)
-}
-
-/// 策略文件原子持久化；权限错误不使 daemon 崩溃，但请求返回失败。
-pub fn persist_team_policy(
-    policy: &tenon_core::policy::TeamPolicy,
-    path: &std::path::Path,
-) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("创建策略目录失败: {e}"))?;
-    }
-    let text = toml::to_string_pretty(policy).map_err(|e| format!("序列化策略失败: {e}"))?;
-    let temp = path.with_extension("toml.tmp");
-    std::fs::write(&temp, text).map_err(|e| format!("写入策略失败: {e}"))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Err(e) = std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600)) {
-            let _ = std::fs::remove_file(&temp);
-            return Err(format!("设置策略文件权限失败: {e}"));
-        }
-    }
-    std::fs::rename(&temp, path).map_err(|e| format!("替换策略文件失败: {e}"))
 }
 
 impl DaemonState {
@@ -1513,15 +1381,10 @@ impl DaemonState {
             .clone()
             .unwrap_or_else(|| Config::data_dir().join("settings.json"));
         let settings_overrides = SettingsOverrides::load_from_path(&settings_path);
-        let policy_path = options
-            .policy_path
-            .clone()
-            .unwrap_or_else(|| Config::data_dir().join("policy.toml"));
         let updates_staging_dir = options
             .updates_staging_dir
             .clone()
             .unwrap_or_else(|| Config::data_dir().join("updates/staged"));
-        let team_policy = load_team_policy(&policy_path);
         // `--lan`（v1.157 §12.6）：绑定 0.0.0.0 的同时自动启用配对——桌面壳 spawn
         // 即传 `--lan`，局域网设备凭一次性码换设备令牌；配对码经 /lan/status 取，
         // 不入日志（随机 token 不入日志的同款口径）
@@ -1565,7 +1428,6 @@ impl DaemonState {
             lan_bind: options.lan_bind,
             force_lan_peer: options.force_lan_peer,
             port: std::sync::atomic::AtomicU16::new(0),
-            team_policy: std::sync::RwLock::new(team_policy),
             dirty_buffers: Mutex::new(HashMap::new()),
             laya: Arc::new(LayaRuntime::open(
                 &laya_dir,
@@ -1596,7 +1458,6 @@ impl DaemonState {
             market_cache,
             market_client_base: options.market_base.clone(),
             settings_path,
-            policy_path,
             updates_staging_dir,
             settings_overrides: std::sync::Mutex::new(settings_overrides),
             l4_index_tx,
@@ -2271,39 +2132,6 @@ mod execpolicy_rules_settings_tests {
             let mut o2 = SettingsOverrides::default();
             assert!(o2.merge_json(&bad).is_err(), "应拒收: {bad}");
         }
-    }
-
-    /// v2.22 registry 白名单追加：校验 / 归一去重 / 回显 / 拒收非法 host。
-    #[test]
-    fn registry_hosts_validate_echo_and_reject_v222() {
-        let mut ov = SettingsOverrides::default();
-        ov.merge_json(&serde_json::json!({
-            "execpolicy": {"registry_hosts": ["npm.company.internal", "mirrors.tuna.tsinghua.edu.cn"]}
-        }))
-        .unwrap();
-        let echo = ov.to_json()["execpolicy"]["registry_hosts"].clone();
-        assert_eq!(
-            echo,
-            serde_json::json!(["mirrors.tuna.tsinghua.edu.cn", "npm.company.internal"]),
-            "排序归一: {echo}"
-        );
-
-        for bad in [
-            "https://evil.com",
-            "evil.com:8080",
-            "EVIL.com",
-            "evil.com/x",
-        ] {
-            let mut o2 = SettingsOverrides::default();
-            let body = serde_json::json!({"execpolicy": {"registry_hosts": [bad]}});
-            assert!(o2.merge_json(&body).is_err(), "应拒收: {bad}");
-        }
-        // 65 条超限
-        let many: Vec<String> = (0..65).map(|i| format!("m{i}.internal")).collect();
-        let mut o3 = SettingsOverrides::default();
-        assert!(o3
-            .merge_json(&serde_json::json!({"execpolicy": {"registry_hosts": many}}))
-            .is_err());
     }
 }
 

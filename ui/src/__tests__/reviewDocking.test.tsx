@@ -59,7 +59,6 @@ beforeEach(() => {
       if (url.includes("/pairing")) return jsonResponse({ port: 9876, token: "dev" });
       if (url.includes("/ui-prefs")) return jsonResponse({});
       if (url.includes("/settings")) return jsonResponse({});
-      if (url.includes("/team-policy")) return jsonResponse({ denied_tools: [], max_cost_usd: null });
       if (url.includes("/updates")) return jsonResponse({ current_version: "0.1.0", staged: null });
       if (url.includes("/models"))
         return jsonResponse({ models: [{ name: "mock", path: "mock" }], default: "mock", laya: null });

@@ -18,16 +18,12 @@ use tenon_agent::session::{
     sanitize_title, AgentConfig, AgentSession, ControlCommand, TaskOutcome,
 };
 use tenon_core::context::ProjectRules;
-use tenon_core::gates::{ApprovalGear, ConfirmDecision, ExecMode, Gate};
 use tenon_models::ModelProvider;
 use tenon_snapshot::SnapshotStore;
 use tenon_store::{EventKind, SessionStatus};
 
 use crate::auth::auth_middleware;
-use crate::state::{
-    persist_team_policy, validate_team_policy, DaemonState, L4IndexRequest, SessionEntry,
-    MESSAGE_QUEUE_MAX,
-};
+use crate::state::{DaemonState, L4IndexRequest, SessionEntry, MESSAGE_QUEUE_MAX};
 
 pub fn build_router(state: Arc<DaemonState>) -> Router {
     let auth_state = crate::auth::AuthState {
@@ -54,7 +50,6 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
         )
         .route("/session/{id}/control", post(session_control))
         // v2.0 档位确认决议（design-v2.md §4.1：D 级 Hold 等待用户三选一）
-        .route("/session/{id}/confirm", post(session_confirm))
         .route("/session/{id}/worktree/merge", post(merge_session_worktree))
         .route(
             "/session/{id}/worktree/discard",
@@ -133,7 +128,6 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
         .route("/project/{id}/l4/rebuild", post(l4_rebuild))
         .route("/costs", get(costs))
         .route("/settings", get(get_settings).put(put_settings))
-        .route("/team-policy", put(put_team_policy))
         // 对话记忆（L5，§10.1 v1.104）：项目层 + global preference 层的
         // 列表 / 手动写入 / 删除
         .route(
@@ -165,9 +159,6 @@ pub(crate) async fn create_agent_session(
     working_dir: Option<String>,
     session_id: Option<String>,
     managed_worktree: Option<std::path::PathBuf>,
-    // v2.0（design-v2.md §4.1）：无人值守派生会话（headless / 子代理）传
-    // `Some(Never)`——无交互面可确认，Hold 会永等；None = settings 默认档。
-    approval_override: Option<ApprovalGear>,
 ) -> Result<Arc<tenon_agent::session::AgentSession>, (StatusCode, String)> {
     // v1.87 §9.7：受管 worktree 会话的快照分片 / 写边界 / 命令 cwd 均按 worktree
     // 隔离；L4 索引、脏缓冲与事件仍按 project_id 归属（project_root 不变）。
@@ -192,20 +183,8 @@ pub(crate) async fn create_agent_session(
         if let Some(v) = ov.command_timeout_s {
             agent_cfg.command_timeout_s = v;
         }
-        // v2.0 安全档位默认（design-v2.md §4.1）：settings security.* 注入新会话；
-        // 无人值守派生会话（headless / 子代理）显式 never——无交互面，Hold 永等
-        if let Some(mode) = ov.security_exec_mode {
-            agent_cfg.gate.exec_mode = mode;
-        }
-        agent_cfg.gate.approval = match (approval_override, ov.security_approval) {
-            (Some(o), _) => o,
-            (None, Some(g)) => g,
-            (None, None) => agent_cfg.gate.approval,
-        };
     }
     agent_cfg.circuit = (&state.config.agent.circuit).into();
-    let team_policy = state.team_policy.read().expect("team policy lock").clone();
-    agent_cfg.circuit.max_cost_usd = team_policy.clamp_cost(agent_cfg.circuit.max_cost_usd);
     agent_cfg.fix_rounds = state.config.agent.fix_loop.max_rounds;
     agent_cfg.command_timeout_s = state.config.agent.exec.command_timeout_s;
     agent_cfg.snapshots_root.clone_from(&state.snapshots_root);
@@ -218,7 +197,6 @@ pub(crate) async fn create_agent_session(
         .unwrap_or_else(|| "root".to_string());
     agent_cfg.dirty = Some(state.dirty_buffers_for(&project.id).await);
     agent_cfg.lsp = Some(state.lsp.clone());
-    agent_cfg.team_denied_tools = team_policy.denied_tools;
     // §11 v1.93：按 provider 配置单价构建价格表（设置覆盖优先于 config），
     // 会话每回合计价入 model_usage.cost_usd 并作为熔断预算输入（§9.3）。
     // v2.13 起本块改读 effective_models 合并视图——顺带修复 v1.199 缺口：
@@ -249,9 +227,6 @@ pub(crate) async fn create_agent_session(
     // JSON → core CustomRule（pattern/action 已在 settings 校验层把关）。
     {
         let ov = state.settings_overrides.lock().unwrap().clone();
-        if let Some(hosts) = ov.registry_hosts {
-            agent_cfg.registry_extra_hosts = hosts;
-        }
         if let Some(rules) = ov.execpolicy_rules {
             agent_cfg.exec_rules = rules
                 .into_iter()
@@ -701,7 +676,6 @@ async fn create_session(
         body.working_dir.clone(),
         managed_session_id.clone(),
         managed_worktree.clone(),
-        None,
     )
     .await
     {
@@ -1034,24 +1008,11 @@ async fn get_session(State(state): State<Arc<DaemonState>>, Path(id): Path<Strin
         SessionStatus::Verifying => "verifying",
         SessionStatus::Fixing => "fixing",
         SessionStatus::Paused => "paused",
-        // v2.0 档位确认（design-v2.md §4.1）：D 级 Hold 等待用户决议
+        // v2.0 档位遗留态：v2.37 档位退役后不再产生，旧库会话如实回显
         SessionStatus::AwaitingConfirm => "awaiting_confirm",
         SessionStatus::Error => "error",
         SessionStatus::Done => "done",
         SessionStatus::RolledBack => "rolled_back",
-    };
-    // v2.0：待确认动作随状态下发（UI 确认卡数据源，事件之外的重载兜底）；
-    // 档位快照供切换器回显
-    let (pending_confirm, gate) = {
-        let sessions = state.sessions.lock().await;
-        match sessions.get(&id) {
-            Some(e) => {
-                let pc = e.session.pending_confirm().await;
-                let gate = e.session.gate_snapshot().await;
-                (pc, gate)
-            }
-            None => (None, Gate::default()),
-        }
     };
     Json(json!({
         "session_id": id,
@@ -1059,11 +1020,6 @@ async fn get_session(State(state): State<Arc<DaemonState>>, Path(id): Path<Strin
         "latest_seq": seq,
         "outcome": last_outcome.flatten(),
         "queue": queue,
-        "pending_confirm": pending_confirm,
-        "gate": {
-            "exec_mode": gate.exec_mode.as_str(),
-            "approval": gate.approval.as_str(),
-        },
     }))
     .into_response()
 }
@@ -1073,9 +1029,6 @@ struct ControlBody {
     action: String,
     #[serde(default)]
     value: Option<bool>,
-    /// v2.0 档位切换（design-v2.md §4.1）：set_approval / set_exec_mode 的目标档值。
-    #[serde(default)]
-    gear: Option<String>,
     /// v2.35 恢复双语义：resume 在终态暂停（任务循环已退出）时转为「续跑」——
     /// 本字段为 UI 传入的本地化继续语（缺省「继续」），随续跑回合入上下文。
     #[serde(default)]
@@ -1120,29 +1073,6 @@ async fn session_control(
         "set_readonly" => session.control(ControlCommand::SetReadonly(body.value.unwrap_or(true))),
         // v1.161 手动压缩（§10.2）：运行态下一模型回合跳过 24k 阈值强制省略陈旧工具输出
         "compact" => session.control(ControlCommand::Compact),
-        // v2.0 档位运行中切换（design-v2.md §4.1）：直改即时生效（空闲 /
-        // 运行 / Hold 等待——gate 每工具步现读、Hold 150ms 重判），控制命令
-        // 并发入队覆盖 v1.93 挂起循环的消费路径（幂等）
-        "set_approval" => {
-            let Some(gear) = body.gear.as_deref().and_then(ApprovalGear::parse) else {
-                return api_err(
-                    StatusCode::BAD_REQUEST,
-                    "gear ∈ never | on_irreversible | always",
-                );
-            };
-            session.set_gate(None, Some(gear)).await;
-            session.control(ControlCommand::SetApproval(gear));
-        }
-        "set_exec_mode" => {
-            let Some(mode) = body.gear.as_deref().and_then(ExecMode::parse) else {
-                return api_err(
-                    StatusCode::BAD_REQUEST,
-                    "gear ∈ read_only | workspace_write | full_access",
-                );
-            };
-            session.set_gate(Some(mode), None).await;
-            session.control(ControlCommand::SetExecMode(mode));
-        }
         "rollback" => {
             return match session.rollback_last().await {
                 Ok(files) => Json(json!({"rolled_back": files})).into_response(),
@@ -1163,37 +1093,6 @@ async fn session_control(
         other => return api_err(StatusCode::BAD_REQUEST, format!("未知 action: {other}")),
     }
     Json(json!({"ok": true})).into_response()
-}
-
-/// v2.0 档位确认决议（design-v2.md §4.1）：`POST /session/:id/confirm`
-/// body `{decision: allow_once | allow_session | deny}`——会话无待确认动作 409。
-#[derive(Deserialize)]
-struct ConfirmBody {
-    decision: String,
-}
-
-async fn session_confirm(
-    State(state): State<Arc<DaemonState>>,
-    Path(id): Path<String>,
-    Json(body): Json<ConfirmBody>,
-) -> Response {
-    let session = {
-        let sessions = state.sessions.lock().await;
-        match sessions.get(&id) {
-            Some(e) => e.session.clone(),
-            None => return api_err(StatusCode::NOT_FOUND, "session not found"),
-        }
-    };
-    let Some(decision) = ConfirmDecision::parse(&body.decision) else {
-        return api_err(
-            StatusCode::BAD_REQUEST,
-            "decision ∈ allow_once | allow_session | deny",
-        );
-    };
-    match session.resolve_confirm(decision).await {
-        Ok(()) => Json(json!({"resolved": true, "decision": decision.as_str()})).into_response(),
-        Err(e) => api_err(StatusCode::CONFLICT, e),
-    }
 }
 
 // ---------- 受管 worktree 收尾（v1.87 §9.7） ----------
@@ -3741,14 +3640,6 @@ async fn get_settings(State(state): State<Arc<DaemonState>>) -> Response {
             obj.insert("command_timeout_s".into(), serde_json::json!(v));
         }
     }
-    // v2.0 档位默认回显（design-v2.md §4.1）：覆盖优先，未配置回 Gate::default
-    let default_gate = tenon_core::gates::Gate::default();
-    let security = json!({
-        "exec_mode": ov.security_exec_mode.map(|m| m.as_str().to_string())
-            .unwrap_or_else(|| default_gate.exec_mode.as_str().to_string()),
-        "approval": ov.security_approval.map(|g| g.as_str().to_string())
-            .unwrap_or_else(|| default_gate.approval.as_str().to_string()),
-    });
     // skills 合并视图（§13.4 v1.130）：停用名单回显（启停经 PUT /settings）
     let skills = json!({
         "disabled": ov.skills_disabled.clone().unwrap_or_default(),
@@ -3763,7 +3654,6 @@ async fn get_settings(State(state): State<Arc<DaemonState>>) -> Response {
     Json(json!({
         "session": session,
         "exec": exec,
-        "security": security,
         "models": models,
         "agent": state.config.agent,
         "checkpoint": state.config.checkpoint,
@@ -3771,7 +3661,6 @@ async fn get_settings(State(state): State<Arc<DaemonState>>) -> Response {
         "market": market,
         "mcp": mcp,
         "hooks": ov.hooks.clone().unwrap_or_default(),
-        "team_policy": state.team_policy.read().expect("team policy lock").clone(),
     }))
     .into_response()
 }
@@ -3807,28 +3696,6 @@ async fn put_settings(State(state): State<Arc<DaemonState>>, Json(body): Json<Va
         state.rebuild_providers();
     }
     get_settings(State(state)).await
-}
-
-async fn put_team_policy(
-    State(state): State<Arc<DaemonState>>,
-    Json(body): Json<Value>,
-) -> Response {
-    // 高级策略是全量原子配置：先完整校验，再运行时切换并持久化；
-    // 失败时不污染旧策略，避免出现“半收窄”配置。
-    let policy = match validate_team_policy(&body) {
-        Ok(p) => p,
-        Err(e) => return api_err(StatusCode::BAD_REQUEST, e),
-    };
-    if let Err(e) = persist_team_policy(&policy, &state.policy_path) {
-        return api_err(StatusCode::INTERNAL_SERVER_ERROR, e);
-    }
-    *state.team_policy.write().expect("team policy lock") = policy;
-    let policy = state.team_policy.read().expect("team policy lock").clone();
-    Json(json!({
-        "denied_tools": policy.denied_tools,
-        "max_cost_usd": policy.max_cost_usd,
-    }))
-    .into_response()
 }
 
 // v1.154：/updates 手动检查与应用端点随更新恒自动移除；daemon-only auto

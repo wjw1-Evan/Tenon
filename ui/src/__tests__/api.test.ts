@@ -85,19 +85,6 @@ describe("TenonApi（§15 客户端）", () => {
     expect(result.disk_contents_deleted).toBe(false);
   });
 
-  it("权限策略使用专用收窄配置端点", async () => {
-    fetchMock.mockResolvedValue(new Response(JSON.stringify({}), { status: 200 }));
-    const api = new TenonApi({ port: 9999, token: "t" });
-    await api.putTeamPolicy({ denied_tools: ["git_push"], max_cost_usd: 2 });
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe("http://127.0.0.1:9999/team-policy");
-    expect(init.method).toBe("PUT");
-    expect(JSON.parse(init.body)).toEqual({
-      denied_tools: ["git_push"],
-      max_cost_usd: 2,
-    });
-  });
-
   it("connectEvents 先换票、首帧携带 ticket（ADR-10）", async () => {
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ ticket: "one-time", expires_in_s: 60 }), { status: 200 })
