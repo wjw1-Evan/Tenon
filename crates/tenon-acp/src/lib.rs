@@ -8,6 +8,10 @@
 //! 显式失败。外部 agent 作为子代理提供方与审查面全链列后续单元——接线时
 //! 工具执行必经 Tenon 策略总线与沙箱（design-v2 §11 安全不变式）。
 
+pub mod server;
+
+pub use server::{AcpBackend, AcpServer};
+
 use std::io::{BufReader, Write};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::time::Duration;

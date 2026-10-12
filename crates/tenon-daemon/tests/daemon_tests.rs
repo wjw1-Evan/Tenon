@@ -7430,6 +7430,40 @@ async fn acp_subagent_track_full_chain_v224() {
         output.contains("无测试命令，未验收") || output.contains("tests"),
         "验收证据: {output}"
     );
+    // v2.26 子会话行登记：结果行 "[done] sub-xxx <session_id>" 含非空 id
+    //（登记型会话）→ 终态 done + 标题 [ACP] 前缀入项目任务列表
+    let acp_sid = output
+        .lines()
+        .find(|l| l.starts_with("[done]"))
+        .and_then(|l| l.split_whitespace().nth(2))
+        .unwrap_or_default()
+        .to_string();
+    assert!(!acp_sid.is_empty(), "ACP 子会话 id 应随结果回传: {output}");
+    let child = client
+        .get(format!("{}/session/{acp_sid}", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(child["status"], "done", "登记型会话终态: {child}");
+    let projects = client
+        .get(format!("{}/projects", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    let sessions = projects["projects"][0]["sessions"].as_array().unwrap();
+    assert!(
+        sessions.iter().any(|sess| sess["title"]
+            .as_str()
+            .map(|t| t.starts_with("[ACP]"))
+            .unwrap_or(false)),
+        "[ACP] 标题入项目任务列表: {projects}"
+    );
 }
 
 #[tokio::test]

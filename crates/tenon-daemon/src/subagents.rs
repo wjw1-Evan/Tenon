@@ -70,6 +70,7 @@ impl DaemonSubagents {
         pool: &WorktreePool,
         task: &SubTask,
     ) -> tenon_agent::subagents::SubagentResult {
+        let mut registered_session: Option<String> = None;
         let err_result = |answer: String| tenon_agent::subagents::SubagentResult {
             task_id: task.id.clone(),
             session_id: String::new(),
@@ -94,6 +95,51 @@ impl DaemonSubagents {
             Ok(wt) => wt,
             Err(e) => return err_result(format!("受管 worktree 创建失败: {e}")),
         };
+        // v2.26 子会话行登记（收口 v2.24 余项）：登记型 Tenon 会话——合并 /
+        // 丢弃端点与全局活动视图对 ACP 轨子任务可达；标题 [ACP] 前缀可辨识。
+        let child_sid = uuid::Uuid::now_v7().to_string();
+        let registered = crate::routes::create_agent_session(
+            &self.state,
+            &self.project,
+            self.provider.clone(),
+            None,
+            Some(child_sid.clone()),
+            Some(wt.clone()),
+            Some(tenon_core::gates::ApprovalGear::Never),
+        )
+        .await;
+        match registered {
+            Ok(child) => {
+                let mut sessions = self.state.sessions.lock().await;
+                sessions.insert(
+                    child.session_id.clone(),
+                    crate::state::SessionEntry {
+                        session: child.clone(),
+                        project_root: PathBuf::from(&self.project.path),
+                        project_id: self.project.id.clone(),
+                        managed_worktree: Some(wt.clone()),
+                        last_outcome: Mutex::new(None),
+                        busy: AtomicBool::new(false),
+                        last_seq: 0,
+                    },
+                );
+                drop(sessions);
+                // 登记型会话标题与终态回写（不跑任务——执行在外部 ACP agent）
+                let title = format!(
+                    "[ACP] {}",
+                    task.instruction.chars().take(40).collect::<String>()
+                );
+                {
+                    let mut st = self.state.store.lock().await;
+                    let _ = st.set_session_title(&child.session_id, &title);
+                }
+                registered_session = Some(child.session_id.clone());
+            }
+            Err((_, message)) => {
+                // 登记失败不阻断执行——worktree 路径仍随结果回传（降级语义）
+                let _ = message;
+            }
+        }
         // 沙箱包装外部 agent 进程（写根 = worktree；网络 offline）
         let spec = tenon_sandbox::external::ExternalSpec {
             write_roots: vec![wt.clone()],
@@ -148,9 +194,14 @@ impl DaemonSubagents {
         };
         // 验收同规（v1.211：Done 任务在 worktree 内沙箱跑测试）
         let verification = verify_child_worktree(&wt);
+        // 登记型会话终态回写（done）——全局活动视图呈现
+        if let Some(sid) = &registered_session {
+            let mut st = self.state.store.lock().await;
+            let _ = st.set_session_status(sid, tenon_store::SessionStatus::Done);
+        }
         tenon_agent::subagents::SubagentResult {
             task_id: task.id.clone(),
-            session_id: String::new(),
+            session_id: registered_session.unwrap_or_default(),
             status: "done".into(),
             answer,
             worktree: wt.to_string_lossy().into_owned(),
