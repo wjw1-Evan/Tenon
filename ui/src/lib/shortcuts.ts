@@ -33,7 +33,7 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroupSpec[] = [
     titleKey: "shortcuts.group_task",
     items: [
       { id: "new_task", keys: "mod+alt+n", labelKey: "shortcuts.new_task" },
-      { id: "send", keys: "mod+enter", labelKey: "shortcuts.send" },
+      { id: "send", keys: "enter", labelKey: "shortcuts.send" },
       { id: "pause", keys: "escape", labelKey: "shortcuts.pause" },
       { id: "stop", keys: "mod+.", labelKey: "shortcuts.stop" },
     ],

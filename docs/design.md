@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | **v2.32** |
+| 版本 | **v2.33** |
 | 日期 | 2026-10-12 |
 | 状态 | 定稿，M0 已验收（附录 D 基线 v2.32 起 glm-5.3-flash 9/10=90%，violation=0；历史最高），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
@@ -395,7 +395,7 @@ GlobalScheduler（全局并发 / 成本 / 通知）
 | Cmd/Ctrl+P | 模糊打开（文件 / 符号 / 行） |
 | Cmd/Ctrl+Shift+P | 命令面板 |
 | Cmd/Ctrl+I | 行内 AI 指令（选中代码） |
-| Cmd/Ctrl+Enter | 发送会话消息 |
+| Enter | 发送会话消息（主通道，v2.33：Enter 直发对齐 Codex/ChatGPT 通行约定，任务 / 行内指令 / 审查反馈三输入框统一；Shift+Enter 换行；IME 组合态 Enter 仅确认候选不发送；@ 与 / 补全浮层开启时 Enter 优先选补全；Cmd/Ctrl+Enter 同语义保留兼容） |
 | Esc | 暂停代理 / 关闭卡片（暂停 = 任务挂起，发送钮或命令面板恢复继续原任务，v1.93 实装） |
 | Cmd/Ctrl+. | 停止当前任务 |
 | Cmd/Ctrl+B / J / ` | 侧栏 / 面板 / 终端区（终端区 = 底部面板第四 tab，v1.197 落地：项目级用户 shell PTY + xterm.js，开 tab 即开、关 tab 仅断流不杀进程，杀进程走 DELETE 端点 / 项目运行时关闭回收） |

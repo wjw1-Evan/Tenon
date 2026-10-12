@@ -1360,6 +1360,22 @@ export function AgentPanel({
                 return;
               }
             }
+            // v2.33：Enter 直发（Shift+Enter 保留换行；Cmd/Ctrl+Enter 同语义分支已在前）。
+            // IME 组合态 Enter 仅确认候选不发送（isComposing，keyCode 229 兜底旧 WebView）；
+            // @ 与 / 浮层开启时 Enter 选补全的优先分支已在上方处理。
+            if (
+              e.key === "Enter" &&
+              !e.shiftKey &&
+              !e.metaKey &&
+              !e.ctrlKey &&
+              !e.altKey &&
+              !e.nativeEvent.isComposing &&
+              e.keyCode !== 229
+            ) {
+              e.preventDefault();
+              send();
+              return;
+            }
             if (e.key === "Escape") {
               // 输入框 Esc 只收键盘，不触发全局「暂停代理」
               e.preventDefault();

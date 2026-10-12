@@ -271,6 +271,18 @@ export function ReviewPane({
                 if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
                   e.preventDefault();
                   submit();
+                  return;
+                }
+                // v2.33：Enter 直发（Shift+Enter 换行；IME 组合态仅确认候选不发送）。
+                if (
+                  e.key === "Enter" &&
+                  !e.shiftKey &&
+                  !e.altKey &&
+                  !e.nativeEvent.isComposing &&
+                  e.keyCode !== 229
+                ) {
+                  e.preventDefault();
+                  submit();
                 }
               }}
             />
