@@ -7241,3 +7241,57 @@ async fn session_runs_endpoint_lists_run_history() {
     assert!(list[0]["last_seq"].as_i64().unwrap_or(0) > 0);
     assert!(list[0]["resumed_from"].is_null());
 }
+
+#[tokio::test]
+async fn acp_agents_probe_endpoint_v223() {
+    // v2.23 §13.3：GET /acp/agents——空配置返回空列表；配置 python3 mock agent
+    //（tenon-acp 测试脚本）后探测 ok=true（initialize 握手探活全链）。
+    let script = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../tenon-acp/tests/mock_acp_agent.py");
+    if !script.exists() {
+        eprintln!("mock agent 脚本缺席，跳过");
+        return;
+    }
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    // 空配置
+    let empty = client
+        .get(format!("{}/acp/agents", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(empty["agents"].as_array().map(Vec::len), Some(0));
+
+    // PUT 配置 mock agent（python3 在启动器白名单）
+    let put = client
+        .put(format!("{}/settings", base(port)))
+        .json(&serde_json::json!({
+            "acp": {"agents": [{
+                "name": "mock-acp",
+                "command": "python3",
+                "args": [script.to_string_lossy()]
+            }]}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(put.status().is_success(), "PUT settings: {put:?}");
+
+    // 探测：initialize 握手成功 → ok=true + protocolVersion 1
+    let probe = client
+        .get(format!("{}/acp/agents", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    let agents = probe["agents"].as_array().unwrap();
+    assert_eq!(agents.len(), 1);
+    assert_eq!(agents[0]["name"], "mock-acp");
+    assert_eq!(agents[0]["ok"], true, "探测失败: {probe}");
+    assert_eq!(agents[0]["protocolVersion"], 1);
+}

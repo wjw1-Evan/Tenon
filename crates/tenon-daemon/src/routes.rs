@@ -64,6 +64,7 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
         .route("/session/{id}/unarchive", post(unarchive_session))
         .route("/session/{id}", delete(delete_session))
         .route("/session/{id}/trace", get(session_trace))
+        .route("/acp/agents", get(acp_agents_probe))
         .route("/session/{id}/runs", get(session_runs))
         .route("/session/{id}/checkpoints", get(session_checkpoints))
         .route("/checkpoint/{id}/rollback", post(checkpoint_rollback))
@@ -1676,6 +1677,30 @@ async fn session_checkpoints(
         Ok(cps) => Json(json!({"checkpoints": cps})).into_response(),
         Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
+}
+
+/// v2.23 ACP 探测端点（design-v2.md §8①）：逐配置 agent 拉起 initialize 握手
+/// 探活（agentCapabilities 概要回显；失败带原因——显式失败不静默）。
+async fn acp_agents_probe(State(state): State<Arc<DaemonState>>) -> Response {
+    let ov = state.settings_overrides.lock().unwrap().clone();
+    let agents = ov.acp_agents.unwrap_or_default();
+    let mut out = Vec::with_capacity(agents.len());
+    for a in agents {
+        let probe = match tenon_acp::AcpAgent::spawn(&a.command, &a.args) {
+            Ok(mut agent) => match agent.initialize() {
+                Ok(result) => serde_json::json!({
+                    "name": a.name,
+                    "ok": true,
+                    "protocolVersion": result.get("protocolVersion"),
+                    "capabilities": result.get("agentCapabilities"),
+                }),
+                Err(e) => serde_json::json!({"name": a.name, "ok": false, "error": e.to_string()}),
+            },
+            Err(e) => serde_json::json!({"name": a.name, "ok": false, "error": e.to_string()}),
+        };
+        out.push(probe);
+    }
+    Json(json!({"agents": out})).into_response()
 }
 
 /// v2.15 Task/Run 分离（design-v2.md §3.1）：会话的 Run 列表（执行尝试审计）。

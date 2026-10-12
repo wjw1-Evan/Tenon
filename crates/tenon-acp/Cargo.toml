@@ -1,0 +1,10 @@
+[package]
+name = "tenon-acp"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tenon-lsp = { workspace = true }
+thiserror = { workspace = true }

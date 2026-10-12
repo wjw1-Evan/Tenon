@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | **v2.22** |
+| 版本 | **v2.23** |
 | 日期 | 2026-10-12 |
 | 状态 | 定稿，M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
@@ -835,9 +835,12 @@ signature: "<sig>"
 
 **MCP 客户端能力面（v1.187）**：① **按 id 分发器**——连接内建单读者线程：响应按 id 路由至各自等待者（替代 v1.145 起的整回合串行化——v1.166 暂缓项落地）；服务器发起的请求（带 method + id）统一回 METHOD_NOT_FOUND（-32601）、通知丢弃；请求超时 / 连接断开时 pending 表清理，看门狗语义不变；② **resources / prompts**——四个 A 级元工具（见 §9.2）枚举 / 读取各 enabled 服务器的 resources 与 prompts，内容截 20k + redact、作为工具输出进上下文（不自动注入系统提示）；③ **sampling 暂缓**——服务器发起的 `sampling/createMessage` 需要将会话 provider 注入 MCP 宿主（依赖倒置 + 预算封顶），与循环内核耦合面大，本版统一回 METHOD_NOT_FOUND、行为与其他服务器发起请求一致，日后按需另行立项。
 
+**ACP 客户端（v2.23 首期，design-v2.md §8① P4 先行）**：`tenon-acp` crate——外部 agent（Claude Code / Gemini CLI 的 ACP 适配等）经 ACP 协议（JSON-RPC 2.0 over stdio、LSP 式 Content-Length 帧）接入：`AcpAgent::spawn(command)` 拉起外部进程 → `initialize` 握手（protocolVersion 1、客户端能力 declare 静态）→ `session/new`（cwd 作用域）→ `session/prompt`（流式收 `session/update` 通知——agent_message_chunk / tool_call / plan 载荷类型化解析，文本块拼接为收尾回答）→ `session/stop` / 进程回收；超时 / 进程退出 / 协议错误显式失败（不静默半结果）；**首期范围**：协议层 + settings `acp.agents` 配置（`{name, command, args?}` 命令白名单复用 MCP 启动器约束）+ `GET /acp/agents` 探测端点（逐 agent initialize 握手探活）——外部 agent 作为子代理提供方（spawn_subagents 的 ACP 轨）与审查面全链列后续单元；**安全边界不变式（§11 v2 立项裁定）**：ACP agent 在 Tenon 内受同一策略总线约束——后续接线时外部 agent 的工具执行必须经 Tenon 沙箱与档位，本首期纯客户端协议层不触碰执行面。
+
 | 来源 | 策略 |
 |---|---|
 | MCP | 外部进程插件直连（v1.145 接线：daemon 按会话注入 McpHost 多服务器管理、工具以 `mcp_{server}_{tool}` 进会话目录、分级默认 D / `net:*` → C、只读会话拒绝）；安装经 GitHub 市场（§13.5） |
+| ACP | 外部 agent 进程接入（v2.23 首期：协议层 + 配置 + 探测端点；JSON-RPC stdio，`tenon-acp` crate） |
 | AGENTS.md | 直读，只能收窄权限（v1.92 接线：会话创建读取项目根 `<!-- tenon:rules -->` 块） |
 | Skills | 代理技能（SKILL.md）：双作用域目录 + 技能目录注入 + `skill_use` 按需加载，管理与安全边界见 §13.4（v1.130 落地第一期） |
 

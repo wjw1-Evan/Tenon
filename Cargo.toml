@@ -8,6 +8,7 @@ members = [
     "crates/tenon-sandbox",
     "crates/tenon-models",
     "crates/tenon-lsp",
+    "crates/tenon-acp",
     "crates/tenon-fs",
     "crates/tenon-daemon",
     "crates/tenon-agent",
@@ -32,6 +33,7 @@ tenon-snapshot = { path = "crates/tenon-snapshot" }
 tenon-sandbox = { path = "crates/tenon-sandbox" }
 tenon-models = { path = "crates/tenon-models" }
 tenon-lsp = { path = "crates/tenon-lsp" }
+tenon-acp = { path = "crates/tenon-acp" }
 tenon-fs = { path = "crates/tenon-fs" }
 tenon-agent = { path = "crates/tenon-agent" }
 tenon-evals = { path = "crates/tenon-evals" }

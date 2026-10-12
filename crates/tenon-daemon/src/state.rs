@@ -192,6 +192,16 @@ impl ProviderOverride {
     }
 }
 
+/// v2.23 ACP 外部 agent 条目（design-v2.md §8①）。
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AcpAgentJson {
+    pub name: String,
+    /// 启动器（MCP 启动器白名单同约束）。
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
 /// v2.20 execpolicy 自定义规则条目（settings JSON 形态；Claude Code permissions 形态）。
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ExecRuleJson {
@@ -213,6 +223,8 @@ pub struct SettingsOverrides {
     pub execpolicy_rules: Option<Vec<ExecRuleJson>>,
     /// v2.22 §12.3 registry 白名单追加（整体替换；新会话生效；缺省 None = 仅内置）。
     pub registry_hosts: Option<Vec<String>>,
+    /// v2.23 §13.3 ACP 外部 agent（整体替换；命令白名单同 MCP 启动器约束）。
+    pub acp_agents: Option<Vec<AcpAgentJson>>,
     /// v1.40 模型分区：默认 provider 名与 provider 覆盖表（整体替换语义）。
     pub models_default: Option<String>,
     pub models_providers: std::collections::BTreeMap<String, ProviderOverride>,
@@ -369,6 +381,49 @@ impl SettingsOverrides {
                 parsed.sort();
                 parsed.dedup();
                 self.registry_hosts = Some(parsed);
+            }
+        }
+        // v2.23 §13.3 ACP agents：name/command 必填 + 命令白名单（MCP 同源）+ ≤8 个
+        if let Some(acp) = body.get("acp") {
+            if let Some(agents) = acp.get("agents") {
+                let arr = agents.as_array().ok_or("acp.agents 须为数组（整体替换）")?;
+                if arr.len() > 8 {
+                    return Err("acp.agents 上限 8 个".into());
+                }
+                let mut parsed = Vec::with_capacity(arr.len());
+                for (i, a) in arr.iter().enumerate() {
+                    let name = a
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .ok_or_else(|| format!("acp.agents[{i}].name 须为字符串"))?;
+                    if name.is_empty() || name.len() > 64 {
+                        return Err(format!("acp.agents[{i}].name 须 1-64 字符"));
+                    }
+                    let command = a
+                        .get("command")
+                        .and_then(|c| c.as_str())
+                        .ok_or_else(|| format!("acp.agents[{i}].command 须为字符串"))?;
+                    if !tenon_registry::market::LAUNCHER_WHITELIST.contains(&command) {
+                        return Err(format!(
+                            "acp.agents[{i}].command 启动器不在白名单 {:?}",
+                            tenon_registry::market::LAUNCHER_WHITELIST
+                        ));
+                    }
+                    parsed.push(AcpAgentJson {
+                        name: name.to_string(),
+                        command: command.to_string(),
+                        args: a
+                            .get("args")
+                            .and_then(|x| x.as_array())
+                            .map(|xs| {
+                                xs.iter()
+                                    .filter_map(|v| v.as_str().map(String::from))
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                    });
+                }
+                self.acp_agents = Some(parsed);
             }
         }
         if let Some(security) = body.get("security") {
@@ -571,6 +626,10 @@ impl SettingsOverrides {
         if let Some(hosts) = &self.registry_hosts {
             execpolicy.insert("registry_hosts".into(), serde_json::json!(hosts));
         }
+        let mut acp = serde_json::Map::new();
+        if let Some(agents) = &self.acp_agents {
+            acp.insert("agents".into(), serde_json::json!(agents));
+        }
         let mut security = serde_json::Map::new();
         if let Some(m) = self.security_exec_mode {
             security.insert("exec_mode".into(), serde_json::json!(m.as_str()));
@@ -633,6 +692,7 @@ impl SettingsOverrides {
             "session": session,
             "exec": exec,
             "execpolicy": execpolicy,
+            "acp": acp,
             "security": security,
             "models": models,
             "skills": skills,
@@ -2243,6 +2303,42 @@ mod execpolicy_rules_settings_tests {
         let mut o3 = SettingsOverrides::default();
         assert!(o3
             .merge_json(&serde_json::json!({"execpolicy": {"registry_hosts": many}}))
+            .is_err());
+    }
+}
+
+#[cfg(test)]
+mod acp_settings_tests {
+    use super::*;
+
+    /// v2.23 acp.agents：校验（name/command 必填、启动器白名单、≤8）+ 回显 + 拒收。
+    #[test]
+    fn acp_agents_validate_echo_reject_v223() {
+        let mut ov = SettingsOverrides::default();
+        let whitelisted = tenon_registry::market::LAUNCHER_WHITELIST
+            .first()
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        ov.merge_json(&serde_json::json!({
+            "acp": {"agents": [{"name": "gemini", "command": whitelisted, "args": ["--acp"]}]}
+        }))
+        .unwrap();
+        let echo = ov.to_json()["acp"]["agents"].clone();
+        assert_eq!(echo[0]["name"], "gemini");
+        assert_eq!(echo[0]["args"], serde_json::json!(["--acp"]));
+
+        // 拒收：白名单外启动器 / 空 name
+        let mut bad1 = SettingsOverrides::default();
+        assert!(bad1
+            .merge_json(
+                &serde_json::json!({"acp": {"agents": [{"name": "x", "command": "/bin/sh"}]}})
+            )
+            .is_err());
+        let mut bad2 = SettingsOverrides::default();
+        assert!(bad2
+            .merge_json(
+                &serde_json::json!({"acp": {"agents": [{"name": "", "command": whitelisted}]}})
+            )
             .is_err());
     }
 }
