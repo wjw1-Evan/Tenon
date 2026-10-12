@@ -244,6 +244,98 @@ pub fn validate_hook_configs(value: &serde_json::Value) -> Result<Vec<HookConfig
     Ok(out)
 }
 
+/// Claude Code hooks.json 导入（v2.25，design-v2.md §8④ / design.md §13.6）：
+/// Claude Code settings.json 的 `hooks` 对象 → Tenon HookConfig 扁平数组。
+/// 返回 (转换后待校验的 JSON 数组, 跳过报告)——不支持的事件 / 非 command 类型
+/// 跳过并报告（不静默丢配置）；调用方再经 `validate_hook_configs` 整体校验。
+pub fn import_claude_hooks(
+    value: &serde_json::Value,
+) -> Result<(Vec<HookConfig>, Vec<String>), String> {
+    let obj = value
+        .as_object()
+        .ok_or("hooks.json 须为对象（事件名 → matcher 组数组）")?;
+    // 事件名映射：UserPromptSubmit→pre_turn / Stop→post_turn 为语义近似（如实标注）
+    let event_map: &[(&str, HookEvent)] = &[
+        ("PreToolUse", HookEvent::PreTool),
+        ("PostToolUse", HookEvent::PostTool),
+        ("UserPromptSubmit", HookEvent::PreTurn),
+        ("Stop", HookEvent::PostTurn),
+    ];
+    let mut out: Vec<HookConfig> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+    for (cc_name, tenon_event) in event_map {
+        let Some(groups) = obj.get(*cc_name).and_then(|g| g.as_array()) else {
+            continue;
+        };
+        for (gi, group) in groups.iter().enumerate() {
+            // matcher：工具名 / "*" / 正则——Tenon tools 为 glob 形态，字面工具名
+            // 与 "*" 可直接映射；正则形态（含元字符）保守跳过并报告
+            let matcher = group.get("matcher").and_then(|m| m.as_str()).unwrap_or("*");
+            let tools: Vec<String> = if matcher == "*" || matcher.is_empty() {
+                Vec::new()
+            } else if matcher
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+            {
+                vec![matcher.to_string()]
+            } else {
+                skipped.push(format!(
+                    "{cc_name}[{gi}].matcher=\"{matcher}\"：正则形态暂不支持（tools 过滤为 glob），请改包装脚本内自行过滤"
+                ));
+                continue;
+            };
+            let Some(hooks_arr) = group.get("hooks").and_then(|h| h.as_array()) else {
+                skipped.push(format!("{cc_name}[{gi}]：无 hooks 数组"));
+                continue;
+            };
+            for (hi, h) in hooks_arr.iter().enumerate() {
+                let htype = h.get("type").and_then(|t| t.as_str()).unwrap_or("command");
+                if htype != "command" {
+                    skipped.push(format!(
+                        "{cc_name}[{gi}].hooks[{hi}].type={htype}：仅支持 command"
+                    ));
+                    continue;
+                }
+                let Some(command) = h.get("command").and_then(|c| c.as_str()) else {
+                    skipped.push(format!("{cc_name}[{gi}].hooks[{hi}]：缺 command"));
+                    continue;
+                };
+                // timeout 秒 → ms（钳 100–30000；缺省 Tenon 默认 5000）
+                let timeout_ms = h
+                    .get("timeout")
+                    .and_then(|t| t.as_u64())
+                    .map(|secs| (secs.saturating_mul(1000)).clamp(100, 30_000))
+                    .unwrap_or(5000);
+                out.push(HookConfig {
+                    event: *tenon_event,
+                    command: command.to_string(),
+                    timeout_ms,
+                    on_fail: HookOnFail::default(),
+                    tools: tools.clone(),
+                });
+            }
+        }
+    }
+    // Claude Code 独有事件（无 Tenon 对应）：显式报告
+    for unsupported in [
+        "Notification",
+        "SessionStart",
+        "SessionEnd",
+        "PreCompact",
+        "SubagentStop",
+    ] {
+        if obj.contains_key(unsupported) {
+            skipped.push(format!(
+                "{unsupported}：Claude Code 独有事件，Tenon 无对应（不导入）"
+            ));
+        }
+    }
+    // 复用既有校验（超 16 条 / 命令非法等——在副本上校验再返回）
+    let json_arr = serde_json::to_value(&out).map_err(|e| e.to_string())?;
+    let validated = validate_hook_configs(&json_arr)?;
+    Ok((validated, skipped))
+}
+
 /// 工作目录解析兜底（测试 / 无根场景）。
 pub fn default_root() -> PathBuf {
     PathBuf::from(".")
@@ -380,5 +472,103 @@ mod tests {
         assert!(validate_hook_configs(&serde_json::json!([]))
             .unwrap()
             .is_empty());
+    }
+}
+
+#[cfg(test)]
+mod claude_import_tests {
+    use super::*;
+
+    /// v2.25：Claude Code hooks.json 导入矩阵。
+    #[test]
+    fn claude_import_maps_events_matcher_timeout() {
+        let cc = serde_json::json!({
+            "hooks": {
+                "PreToolUse": [
+                    {"matcher": "Bash", "hooks": [
+                        {"type": "command", "command": "guard.sh", "timeout": 30}
+                    ]}
+                ],
+                "PostToolUse": [
+                    {"hooks": [{"type": "command", "command": "log.sh"}]}
+                ],
+                "UserPromptSubmit": [
+                    {"hooks": [{"type": "command", "command": "prompt.sh", "timeout": 1}]}
+                ],
+                "Stop": [
+                    {"hooks": [{"type": "command", "command": "stop.sh"}]}
+                ],
+                "Notification": [
+                    {"hooks": [{"type": "command", "command": "notify.sh"}]}
+                ]
+            }
+        });
+        let hooks_obj = cc.get("hooks").unwrap();
+        let (configs, skipped) = import_claude_hooks(hooks_obj).unwrap();
+        // 四事件映射（timeout 30s→30000ms、1s→1000ms、缺省 5000）
+        assert_eq!(configs.len(), 4);
+        assert_eq!(configs[0].event, HookEvent::PreTool);
+        assert_eq!(configs[0].tools, vec!["Bash".to_string()]);
+        assert_eq!(configs[0].timeout_ms, 30_000);
+        assert_eq!(configs[1].event, HookEvent::PostTool);
+        assert!(configs[1].tools.is_empty(), "无 matcher = 全部工具");
+        assert_eq!(configs[2].event, HookEvent::PreTurn);
+        assert_eq!(configs[2].timeout_ms, 1000);
+        assert_eq!(configs[3].event, HookEvent::PostTurn);
+        // Notification 独有事件被报告
+        assert!(
+            skipped.iter().any(|s| s.contains("Notification")),
+            "{skipped:?}"
+        );
+    }
+
+    #[test]
+    fn claude_import_reports_unsupported_shapes() {
+        // 正则 matcher / 非 command type / 缺 command / 无 hooks 数组
+        let cc = serde_json::json!({
+            "PreToolUse": [
+                {"matcher": "Bash|Edit", "hooks": [{"type": "command", "command": "a.sh"}]},
+                {"matcher": "Edit", "hooks": [{"type": "prompt", "command": "b.sh"}]},
+                {"matcher": "Edit", "hooks": [{"type": "command"}]},
+                {"matcher": "Edit"}
+            ],
+            "SessionStart": [{"hooks": [{"type": "command", "command": "c.sh"}]}]
+        });
+        let (configs, skipped) = import_claude_hooks(&cc).unwrap();
+        assert!(configs.is_empty(), "全部不可导入: {configs:?}");
+        assert!(
+            skipped.iter().any(|s| s.contains("正则形态")),
+            "{skipped:?}"
+        );
+        assert!(
+            skipped.iter().any(|s| s.contains("type=prompt")),
+            "{skipped:?}"
+        );
+        assert!(
+            skipped.iter().any(|s| s.contains("缺 command")),
+            "{skipped:?}"
+        );
+        assert!(
+            skipped.iter().any(|s| s.contains("无 hooks 数组")),
+            "{skipped:?}"
+        );
+        assert!(
+            skipped.iter().any(|s| s.contains("SessionStart")),
+            "{skipped:?}"
+        );
+    }
+
+    #[test]
+    fn claude_import_over_limit_rejected_wholesale() {
+        // 17 条合法命令 → 超上限整体拒绝（复用 validate_hook_configs）
+        let mut groups = Vec::new();
+        for i in 0..17 {
+            groups.push(serde_json::json!({
+                "hooks": [{"type": "command", "command": format!("h{i}.sh")}]
+            }));
+        }
+        let cc = serde_json::json!({"Stop": groups});
+        let err = import_claude_hooks(&cc);
+        assert!(err.is_err(), "超 16 条应整体拒绝");
     }
 }

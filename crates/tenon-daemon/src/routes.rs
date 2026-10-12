@@ -65,6 +65,7 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
         .route("/session/{id}", delete(delete_session))
         .route("/session/{id}/trace", get(session_trace))
         .route("/acp/agents", get(acp_agents_probe))
+        .route("/hooks/import-claude", post(hooks_import_claude))
         .route("/session/{id}/runs", get(session_runs))
         .route("/session/{id}/checkpoints", get(session_checkpoints))
         .route("/checkpoint/{id}/rollback", post(checkpoint_rollback))
@@ -1677,6 +1678,44 @@ async fn session_checkpoints(
         Ok(cps) => Json(json!({"checkpoints": cps})).into_response(),
         Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
+}
+
+/// v2.25 Claude Code hooks.json 导入（design-v2.md §8④）：body 取 `.hooks`
+/// 字段（完整 settings.json）或整体作为 hooks 对象 → import_claude_hooks 转换
+/// → 既有校验 → settings hooks 整体替换 + imported/skipped 报告（不静默丢配置）。
+async fn hooks_import_claude(
+    State(state): State<Arc<DaemonState>>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let hooks_obj = body.get("hooks").unwrap_or(&body);
+    if !hooks_obj.is_object() {
+        return api_err(
+            StatusCode::BAD_REQUEST,
+            "hooks 导入：body 须为对象或含 hooks 字段",
+        );
+    }
+    let (configs, skipped) = match tenon_agent::hooks::import_claude_hooks(hooks_obj) {
+        Ok(r) => r,
+        Err(e) => return api_err(StatusCode::BAD_REQUEST, format!("导入失败: {e}")),
+    };
+    let imported = configs.len();
+    // 写入 settings hooks（整体替换）：经 SettingsOverrides merge 语义——直接
+    // 持久化到 settings.json 的 hooks 键（与 PUT /settings 同轨道）
+    {
+        let mut ov = state.settings_overrides.lock().unwrap();
+        ov.hooks = Some(configs.clone());
+    }
+    {
+        let ov = state.settings_overrides.lock().unwrap();
+        ov.persist_to(&state.settings_path);
+    }
+    Json(json!({
+        "imported": imported,
+        "skipped": skipped,
+        "replaced": true,
+        "note": "新会话生效；skipped 列出未导入项（不支持的事件/类型/正则 matcher）"
+    }))
+    .into_response()
 }
 
 /// v2.23 ACP 探测端点（design-v2.md §8①）：逐配置 agent 拉起 initialize 握手
@@ -3708,6 +3747,7 @@ async fn get_settings(State(state): State<Arc<DaemonState>>) -> Response {
         "skills": skills,
         "market": market,
         "mcp": mcp,
+        "hooks": ov.hooks.clone().unwrap_or_default(),
         "team_policy": state.team_policy.read().expect("team policy lock").clone(),
     }))
     .into_response()

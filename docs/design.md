@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | **v2.24** |
+| 版本 | **v2.25** |
 | 日期 | 2026-10-12 |
 | 状态 | 定稿，M0 已验收（附录 D 基线 8/10=80%），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
@@ -927,6 +927,8 @@ signature: "<sig>"
 环境变量：`TENON_HOOK_EVENT` / `TENON_TOOL` / `TENON_ARGS`（工具参数 JSON，截 32k）/ `TENON_SESSION` / `TENON_OUTPUT`（仅 post_tool，工具输出截 2k）。每次调用发 `hook_run` 事件入 Trace（`{event, command, exit_code, duration_ms, action: pass|block|error}`，不含参数原文）；配置校验随 `PUT /settings` 原子提交（数组整体替换、≤16 条、新会话生效）。
 
 ---
+
+**Claude Code hooks.json 导入（v2.25，design-v2.md §8④）**：`tenon_agent::hooks::import_claude_hooks` 转换器——Claude Code `settings.json` 的 `hooks` 对象（事件 → matcher 组数组 → hooks 数组 `{type: command, command, timeout?}`）映射为 Tenon HookConfig 扁平数组：事件名映射 `PreToolUse→pre_tool`、`PostToolUse→post_tool`、`UserPromptSubmit→pre_turn`、`Stop→post_turn`（语义近似如实标注）；`matcher`（工具名 / `*` / 正则）→ `tools` 过滤（`*` 与缺席 = 全部工具→空数组）；`timeout` 秒 → `timeout_ms`（钳 100–30000）；type≠command 跳过；无对应事件（Notification / SessionStart / SessionEnd / PreCompact / SubagentStop）**跳过并报告**（返回 `(configs, skipped)` 双值——导入不静默丢配置）；转换结果经既有 `validate_hook_configs` 校验（超 16 条 / 非法命令拒绝整体导入）；daemon `POST /hooks/import-claude`（body = 任意 JSON，取其 `hooks` 字段或整体作为 hooks 对象）→ 转换 + 校验 + 写入 settings `hooks`（整体替换语义）+ 返回 `{imported, skipped[], replaced}`；导入面不执行——执行语义仍走 v1.180 §13.6 用户信任边界（hooks 不过沙箱，风险提示既有）。
 
 ## 14. 数据与存储设计
 

@@ -7431,3 +7431,54 @@ async fn acp_subagent_track_full_chain_v224() {
         "验收证据: {output}"
     );
 }
+
+#[tokio::test]
+async fn hooks_import_claude_endpoint_v225() {
+    // v2.25（design-v2.md §8④）：POST /hooks/import-claude——合法 Claude Code
+    // hooks.json（完整 settings 形态）→ imported=2 + Notification 跳过报告 +
+    // settings 回显已替换；非法（超 16 条）→ 400 整体拒绝。
+    let (_dir, port, token) = start_daemon(vec![]).await;
+    let client = client_with_token(&token);
+    let r = client
+        .post(format!("{}/hooks/import-claude", base(port)))
+        .json(&serde_json::json!({
+            "hooks": {
+                "PreToolUse": [
+                    {"matcher": "Bash", "hooks": [{"type": "command", "command": "guard.sh", "timeout": 2}]}
+                ],
+                "PostToolUse": [
+                    {"hooks": [{"type": "command", "command": "log.sh"}]}
+                ],
+                "Notification": [
+                    {"hooks": [{"type": "command", "command": "notify.sh"}]}
+                ]
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_success(), "导入应成功: {r:?}");
+    let body = r.json::<serde_json::Value>().await.unwrap();
+    assert_eq!(body["imported"], 2, "{body}");
+    let skipped = body["skipped"].as_array().unwrap();
+    assert!(
+        skipped
+            .iter()
+            .any(|s| s.as_str().unwrap().contains("Notification")),
+        "{body}"
+    );
+    // settings 回显已替换
+    let st = client
+        .get(format!("{}/settings", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    let hooks = st["hooks"].as_array().unwrap();
+    assert_eq!(hooks.len(), 2, "{st}");
+    assert_eq!(hooks[0]["event"], "pre_tool");
+    assert_eq!(hooks[0]["tools"], serde_json::json!(["Bash"]));
+    assert_eq!(hooks[0]["timeout_ms"], 2000);
+}
