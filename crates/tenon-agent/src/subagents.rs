@@ -32,6 +32,9 @@ pub struct SubTask {
     pub instruction: String,
     /// 计划触碰的文件集（不相交调度的静态依据）
     pub files: Vec<String>,
+    /// v2.24 提供方轨：Some("acp") = 外部 ACP agent（daemon 侧分轨消费）。
+    #[serde(default)]
+    pub provider: Option<String>,
 }
 
 /// 调度计划：不相交的分组并行（每批 ≤ max_concurrency），相交者拒绝。
@@ -153,6 +156,9 @@ pub struct SubagentSpawn {
     pub instruction: String,
     /// 计划触碰的文件集（不相交调度依据；§9.5）
     pub files: Vec<String>,
+    /// v2.24 提供方轨（design-v2.md §8①）：缺省 / "in_process" = 既有 Tenon 子
+    /// 会话轨；"acp" = 外部 ACP agent 轨（daemon 侧消费）。
+    pub provider: Option<String>,
 }
 
 /// v1.190 §9.5：单个子代理运行结果（子会话已登记，worktree 留待用户合并/丢弃）。
@@ -272,6 +278,7 @@ mod tests {
             id: id.into(),
             instruction: format!("task {id}"),
             files: files.iter().map(|s| s.to_string()).collect(),
+            provider: None,
         }
     }
 

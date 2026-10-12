@@ -5070,6 +5070,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tenon-acp"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tenon-lsp",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "tenon-agent"
 version = "0.2.0"
 dependencies = [
@@ -5156,6 +5166,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "tenon-acp",
  "tenon-agent",
  "tenon-config",
  "tenon-core",

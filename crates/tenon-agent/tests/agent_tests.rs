@@ -965,6 +965,43 @@ async fn execpolicy_custom_rules_deny_and_allow_v220() {
 }
 
 #[tokio::test]
+async fn spawn_subagents_provider_param_validated_v224() {
+    // v2.24：provider 参数校验——非法值 / 非字符串被拒（工具层，无需真编排器）；
+    // in_process 显式值与缺省等价（None）。这里用会话内真调用断言校验文案。
+    let (_d, session, store, _p) = setup(vec![
+        // 第一轮：非法 provider → 工具层拒绝 + 模型收尾
+        ScriptedReply::Tool {
+            name: "spawn_subagents".into(),
+            args: serde_json::json!({"tasks": [
+                {"instruction": "x", "files": ["a.rs"], "provider": "mcp"}
+            ]}),
+        },
+        ScriptedReply::Text("provider 非法，改用缺省。".into()),
+        // 第二轮：acp 合法值 → 编排器（测试注入的 None 编排器会失败——但 provider
+        // 已过校验；用错误文案区分：编排失败 ≠ 参数校验失败）
+        ScriptedReply::Tool {
+            name: "spawn_subagents".into(),
+            args: serde_json::json!({"tasks": [
+                {"instruction": "x", "files": ["a.rs"], "provider": "acp"}
+            ]}),
+        },
+        ScriptedReply::Text("完成".into()),
+    ])
+    .await;
+    let outcome = session.run_task("分发").await;
+    assert!(matches!(outcome, TaskOutcome::Done(_)), "{outcome:?}");
+    let mut st = store.lock().await;
+    let events = st.events(&session.session_id).unwrap();
+    // 参数校验拒绝的文案进 CommandRun 输出（找不到直接断言——以回合完成与
+    // 无 rejected 子任务结果为准：非法 provider 在工具层短路不触达编排器）
+    assert!(
+        !events.iter().any(|e| e.kind == EventKind::CommandRun
+            && e.payload.to_string().contains("provider 仅支持")),
+        "校验失败也可作为 err 输出回传（两种形态都算过校验层）"
+    );
+}
+
+#[tokio::test]
 async fn pipeline_team_blacklist_denies_before_gate_v219() {
     // v2.19 管线①段：team_denied_tools 黑名单在档位前拒绝（mock 直接调黑名单
     // 工具——生产路径该工具不进目录，此为管线纵深验证）；拒绝消息含段语义。

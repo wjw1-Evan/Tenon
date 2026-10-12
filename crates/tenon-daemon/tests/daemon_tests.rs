@@ -6961,11 +6961,13 @@ async fn subagent_orchestrator_runs_children_in_worktrees() {
                 tenon_agent::subagents::SubagentSpawn {
                     instruction: "改 a.rs 加注释".into(),
                     files: vec!["a.rs".into()],
+                    provider: None,
                 },
                 // 与任务 0 文件集相交 → §9.5 调度拒绝（不运行）
                 tenon_agent::subagents::SubagentSpawn {
                     instruction: "再改 a.rs".into(),
                     files: vec!["a.rs".into()],
+                    provider: None,
                 },
             ],
         )
@@ -7294,4 +7296,138 @@ async fn acp_agents_probe_endpoint_v223() {
     assert_eq!(agents[0]["name"], "mock-acp");
     assert_eq!(agents[0]["ok"], true, "探测失败: {probe}");
     assert_eq!(agents[0]["protocolVersion"], 1);
+}
+
+#[tokio::test]
+async fn acp_subagent_track_full_chain_v224() {
+    // v2.24（design-v2.md §8①）：spawn_subagents provider=acp——外部 mock agent
+    // 经 sandbox external 包装在受管 worktree 内跑协议链，answer 回传 + worktree
+    // 保留 + 验收证据；无 Tenon 子会话（session_id 空串）。
+    let script = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../tenon-acp/tests/mock_acp_agent.py");
+    if !script.exists() {
+        eprintln!("mock agent 脚本缺席，跳过");
+        return;
+    }
+    // mock 模型脚本：spawn_subagents(acp) → 收到批次摘要后收尾
+    let (_dir, port, token) = start_daemon(vec![
+        ScriptedReply::Tool {
+            name: "spawn_subagents".into(),
+            args: serde_json::json!({"tasks": [
+                {"instruction": "打个招呼", "files": ["hello.txt"], "provider": "acp"}
+            ]}),
+        },
+        ScriptedReply::Text("批次完成".into()),
+    ])
+    .await;
+    // worktree 隔离要求 git——项目根须为 git 仓库（与 in-process 轨测试同规）
+    let repo = _dir.path().join("proj");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("readme.md"), "base\n").unwrap();
+    for args in [
+        vec!["init", "-q", "."],
+        vec!["config", "user.email", "t@t"],
+        vec!["config", "user.name", "t"],
+        vec!["add", "-A"],
+        vec!["commit", "-qm", "init"],
+    ] {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(&args)
+            .output()
+            .unwrap();
+    }
+    let client = client_with_token(&token);
+    let pid = client
+        .post(format!("{}/projects/open", base(port)))
+        .json(&serde_json::json!({ "path": repo.to_str().unwrap() }))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // 配置 mock ACP agent
+    let put = client
+        .put(format!("{}/settings", base(port)))
+        .json(&serde_json::json!({
+            "acp": {"agents": [{
+                "name": "mock-acp",
+                "command": "python3",
+                "args": [script.to_string_lossy()]
+            }]}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(put.status().is_success(), "PUT acp agents: {put:?}");
+    let sid = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({ "project_id": pid }))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap()["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    client
+        .post(format!("{}/session/{sid}/message", base(port)))
+        .json(&serde_json::json!({ "text": "分发" }))
+        .send()
+        .await
+        .unwrap();
+    // 轮询至终态
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+    loop {
+        assert!(std::time::Instant::now() < deadline, "任务 90s 未完成");
+        let s = client
+            .get(format!("{}/session/{sid}", base(port)))
+            .send()
+            .await
+            .unwrap()
+            .json::<serde_json::Value>()
+            .await
+            .unwrap();
+        if s["status"].as_str() == Some("done") || s["status"].as_str() == Some("error") {
+            assert_eq!(s["status"], "done", "ACP 轨任务应完成: {s}");
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    // spawn_subagents 的 CommandRun 输出含 mock answer + stopReason（ACP 协议链
+    // 全程真实发生）+ 验收证据 + 空会话 id 标注
+    let trace = client
+        .get(format!("{}/session/{sid}/trace?after=0", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    let spawn_run = trace["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["type"] == "command_run" && e["payload"]["tool"] == "spawn_subagents")
+        .expect("spawn_subagents 应有 CommandRun");
+    let output = spawn_run["payload"]["output"]["content"].as_str().unwrap();
+    assert!(
+        output.contains("你好，任务已完成。"),
+        "mock answer 回传: {output}"
+    );
+    assert!(
+        output.contains("stopReason: end_turn"),
+        "stopReason 回传: {output}"
+    );
+    assert!(
+        output.contains("无测试命令，未验收") || output.contains("tests"),
+        "验收证据: {output}"
+    );
 }

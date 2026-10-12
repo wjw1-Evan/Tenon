@@ -63,6 +63,102 @@ fn verify_child_worktree(wt: &Path) -> String {
     }
 }
 
+impl DaemonSubagents {
+    /// v2.24 ACP 轨单任务执行（design-v2.md §8①）。
+    async fn run_acp_task(
+        &self,
+        pool: &WorktreePool,
+        task: &SubTask,
+    ) -> tenon_agent::subagents::SubagentResult {
+        let err_result = |answer: String| tenon_agent::subagents::SubagentResult {
+            task_id: task.id.clone(),
+            session_id: String::new(),
+            status: "error".into(),
+            answer,
+            worktree: String::new(),
+            verification: "任务未执行，跳过验收".into(),
+        };
+        // settings 取首个配置 agent
+        let agent_cfg = {
+            let ov = self.state.settings_overrides.lock().unwrap().clone();
+            let picked = ov.acp_agents.unwrap_or_default().into_iter().next();
+            match picked {
+                Some(a) => a,
+                None => {
+                    return err_result("ACP 轨不可用：settings acp.agents 未配置任何 agent".into())
+                }
+            }
+        };
+        // 受管 worktree（与 in-process 轨同池）
+        let wt = match pool.create(std::path::Path::new(&self.project.path), &task.id) {
+            Ok(wt) => wt,
+            Err(e) => return err_result(format!("受管 worktree 创建失败: {e}")),
+        };
+        // 沙箱包装外部 agent 进程（写根 = worktree；网络 offline）
+        let spec = tenon_sandbox::external::ExternalSpec {
+            write_roots: vec![wt.clone()],
+            network: tenon_sandbox::external::ExternalNetwork::Offline,
+        };
+        let args: Vec<&str> = agent_cfg.args.iter().map(String::as_str).collect();
+        let spawned = match tenon_sandbox::external::spawn_external(
+            &agent_cfg.command,
+            &args,
+            &wt,
+            &spec,
+            &[],
+        ) {
+            Ok(sp) => sp,
+            Err(e) => {
+                let _ = pool.remove(std::path::Path::new(&self.project.path), &task.id);
+                return err_result(format!("ACP agent 进程启动失败: {e}"));
+            }
+        };
+        // 协议链（阻塞 IO 在 spawn_blocking——stdin/stdout 是同步管道）
+        let instruction = task.instruction.clone();
+        let wt_path = wt.clone();
+        let proto = tokio::task::spawn_blocking(move || {
+            let mut agent = match tenon_acp::AcpAgent::attach(spawned.child) {
+                Ok(a) => a,
+                Err(e) => return Err(format!("ACP attach 失败: {e}")),
+            };
+            let run = (|| -> Result<(String, String), String> {
+                agent.initialize().map_err(|e| format!("initialize: {e}"))?;
+                let sid = agent
+                    .new_session(&wt_path)
+                    .map_err(|e| format!("session/new: {e}"))?;
+                let result = agent
+                    .prompt(&sid, &instruction)
+                    .map_err(|e| format!("prompt: {e}"))?;
+                Ok((result.answer, result.stop_reason))
+            })();
+            agent.shutdown();
+            run
+        })
+        .await;
+        let answer = match proto {
+            Ok(Ok((answer, stop_reason))) => format!("{answer}（stopReason: {stop_reason}）"),
+            Ok(Err(e)) => {
+                let _ = pool.remove(std::path::Path::new(&self.project.path), &task.id);
+                return err_result(format!("ACP 协议失败: {e}"));
+            }
+            Err(e) => {
+                let _ = pool.remove(std::path::Path::new(&self.project.path), &task.id);
+                return err_result(format!("ACP 任务 join 失败: {e}"));
+            }
+        };
+        // 验收同规（v1.211：Done 任务在 worktree 内沙箱跑测试）
+        let verification = verify_child_worktree(&wt);
+        tenon_agent::subagents::SubagentResult {
+            task_id: task.id.clone(),
+            session_id: String::new(),
+            status: "done".into(),
+            answer,
+            worktree: wt.to_string_lossy().into_owned(),
+            verification,
+        }
+    }
+}
+
 #[async_trait::async_trait]
 impl SubagentOrchestrator for DaemonSubagents {
     async fn run_batch(
@@ -77,6 +173,7 @@ impl SubagentOrchestrator for DaemonSubagents {
                 id: child_task_id(parent_session_id, i),
                 instruction: t.instruction.clone(),
                 files: t.files.clone(),
+                provider: t.provider.clone(),
             })
             .collect();
         // §9.5：不相交调度（批 ≤3 并发；相交任务拒绝并回传）
@@ -94,6 +191,28 @@ impl SubagentOrchestrator for DaemonSubagents {
                 verification: String::new(),
             });
         }
+
+        // v2.24 ACP 提供方轨（design-v2.md §8①）：provider=acp 的任务在受管
+        // worktree 内由外部 ACP agent 执行——进程经 sandbox external 包装（写根
+        // = worktree + 缓存目录、网络 offline：外部 agent 全部工具执行受进程级
+        // 沙箱约束）；协议链 initialize → session/new → prompt；验收同规；无
+        // Tenon 子会话（session_id 空串，合并经 worktree 路径——登记形态列后续）。
+        for task in &subtasks {
+            if task.provider.as_deref() != Some("acp") {
+                continue;
+            }
+            let pool_acp = WorktreePool::new(self.state.worktrees_root.join(&self.project.id));
+            let result = self.run_acp_task(&pool_acp, task).await;
+            results.push(result);
+        }
+
+        let in_process: Vec<SubTask> = subtasks
+            .iter()
+            .filter(|t| t.provider.as_deref() != Some("acp"))
+            .cloned()
+            .collect();
+        // §9.5：不相交调度重算（仅 in-process 集）
+        let schedule = tenon_agent::subagents::plan_parallel(&in_process, 3);
 
         for batch in &schedule.batches {
             // 建 worktree + 子会话 + 登记（合并 / 丢弃端点由此可达）

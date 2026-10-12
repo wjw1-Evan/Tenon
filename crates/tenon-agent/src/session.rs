@@ -323,7 +323,7 @@ fn tool_specs() -> Vec<ToolSpec> {
             },
             "required": ["items"]
         })),
-        ("spawn_subagents", "并行分发独立子任务（§9.5：worktree 隔离的子代理，B 级）：tasks 为 1-3 项 {instruction, files}——instruction 一句话完整自洽的子任务指令，files 为该任务计划触碰的文件集（相对路径；各任务文件集不得相交，相交者被拒绝）；每个子代理在独立受管 worktree 内运行并登记为独立会话，完成后返回各自摘要，合并 / 丢弃在子会话行处置；需要多文件并行改造且各文件归属清晰时使用", serde_json::json!({
+        ("spawn_subagents", "并行分发独立子任务（§9.5：worktree 隔离的子代理，B 级）：tasks 为 1-3 项 {instruction, files}——instruction 一句话完整自洽的子任务指令，files 为该任务计划触碰的文件集（相对路径；各任务文件集不得相交，相交者被拒绝）；每个子代理在独立受管 worktree 内运行并登记为独立会话，完成后返回各自摘要，合并 / 丢弃在子会话行处置；provider 可选（缺省 in_process；acp = 外部 ACP agent 在沙箱内执行——结果回传但无 Tenon 子会话行）；需要多文件并行改造且各文件归属清晰时使用", serde_json::json!({
             "type": "object",
             "properties": {
                 "tasks": {
@@ -332,7 +332,8 @@ fn tool_specs() -> Vec<ToolSpec> {
                         "type": "object",
                         "properties": {
                             "instruction": {"type": "string"},
-                            "files": {"type": "array", "items": {"type": "string"}}
+                            "files": {"type": "array", "items": {"type": "string"}},
+                            "provider": {"type": "string", "enum": ["in_process", "acp"]}
                         },
                         "required": ["instruction", "files"]
                     },
@@ -2813,9 +2814,29 @@ impl AgentSession {
                 }
                 set.push(f.to_string());
             }
+            // v2.24 提供方轨（design-v2.md §8①）：provider 可选，缺省 in_process
+            let provider = match t.get("provider") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(serde_json::Value::String(p)) => {
+                    let p = p.trim();
+                    if p.is_empty() || p == "in_process" {
+                        None
+                    } else if p == "acp" {
+                        Some("acp".to_string())
+                    } else {
+                        return ToolOutput::err(format!(
+                            "tasks[{i}].provider 仅支持 in_process | acp（收到 {p}）"
+                        ));
+                    }
+                }
+                Some(_) => {
+                    return ToolOutput::err(format!("tasks[{i}].provider 须为字符串"));
+                }
+            };
             spawns.push(crate::subagents::SubagentSpawn {
                 instruction: instruction.to_string(),
                 files: set,
+                provider,
             });
         }
         let results = match orchestrator.run_batch(&self.session_id, spawns).await {

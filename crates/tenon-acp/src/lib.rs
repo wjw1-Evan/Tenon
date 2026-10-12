@@ -59,7 +59,13 @@ impl AcpAgent {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        let mut child = cmd.spawn()?;
+        let child = cmd.spawn()?;
+        Self::attach(child)
+    }
+
+    /// 接管已启动的 piped 子进程（v2.24 子代理轨：进程可先经
+    /// tenon-sandbox external 沙箱包装，再交由本连接跑 ACP 协议）。
+    pub fn attach(mut child: Child) -> Result<Self, AcpError> {
         let reader = child
             .stdout
             .take()

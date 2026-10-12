@@ -139,11 +139,13 @@ async fn parallel_subagents_worktree_isolation() {
             id: "t1".into(),
             instruction: "改 a.rs".into(),
             files: vec!["a.rs".into()],
+            provider: None,
         },
         SubTask {
             id: "t2".into(),
             instruction: "改 b.rs".into(),
             files: vec!["b.rs".into()],
+            provider: None,
         },
     ];
     let schedule = plan_parallel(&subtasks, 3);
@@ -225,11 +227,13 @@ async fn intersecting_subtasks_rejected_not_raced() {
             id: "t1".into(),
             instruction: "改共享文件".into(),
             files: vec!["shared.rs".into()],
+            provider: None,
         },
         SubTask {
             id: "t2".into(),
             instruction: "也改共享文件".into(),
             files: vec!["shared.rs".into()],
+            provider: None,
         },
     ];
     let schedule = plan_parallel(&subtasks, 3);
