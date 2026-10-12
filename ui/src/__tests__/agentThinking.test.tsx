@@ -54,4 +54,19 @@ describe("思考过程显示（v1.210 §7.2）", () => {
     await screen.findByTestId("agent-panel");
     expect(screen.queryByTestId("turn-thinking")).toBeNull();
   });
+
+  it("运行中实时思考流默认折叠，点击头部展开（v2.36）", async () => {
+    const events = [
+      { id: 1, seq: 1, type: "user_input", payload: { text: "任务" } },
+      { id: 2, seq: 2, type: "reasoning_delta", payload: { text: "实时思考内容" } },
+    ];
+    render(<AgentPanel api={mockApi(events, "running")} t={t} sessionId="s1" />);
+    const live = await screen.findByTestId("thinking-live");
+    // 默认折叠：实时思考文本不可见
+    expect(live.textContent).not.toContain("实时思考内容");
+    expect(live.textContent).toContain("thread.thinking");
+    // 点击头部展开
+    fireEvent.click(screen.getByTestId("thinking-live-toggle"));
+    expect(live.textContent).toContain("实时思考内容");
+  });
 });

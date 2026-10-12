@@ -241,7 +241,9 @@ export function AgentPanel({
   // v1.210 §7.2：思考过程（推理模型的 reasoning 流），正文开始后自动收起
   const [thinkingText, setThinkingText] = useState("");
   const [thinkingActive, setThinkingActive] = useState(false);
-  const [thinkingCollapsed, setThinkingCollapsed] = useState(false);
+  // v2.36 用户令「思考过程默认折叠」：实时思考流默认收起（可点开），正文开始
+  // 自动收起（v1.210 本意，thinkingCollapsed 此前从未被渲染消费）。
+  const [thinkingCollapsed, setThinkingCollapsed] = useState(true);
   const [status, setStatus] = useState<AgentStateName>("idle");
   const [input, setInput] = useState("");
   // v1.135：撤销截断后整流重载（递增触发轮询 effect 以 after=0 重拉）。
@@ -498,6 +500,8 @@ export function AgentPanel({
               setStreamText("");
               setThinkingText("");
               setThinkingActive(false);
+              // 新回合复位默认折叠（上一回合用户手动展开态不带入）
+              setThinkingCollapsed(true);
             }
             if (ev.type === "model_delta") {
               setStreamText((prev) => prev + String(ev.payload.text ?? ""));
@@ -1015,11 +1019,19 @@ export function AgentPanel({
                     className="turn-thinking live"
                     data-testid="thinking-live"
                   >
-                    <button type="button" className="turn-thinking-head" aria-live="polite">
+                    <button
+                      type="button"
+                      className="turn-thinking-head"
+                      aria-live="polite"
+                      aria-expanded={!thinkingCollapsed}
+                      data-testid="thinking-live-toggle"
+                      onClick={() => setThinkingCollapsed((c) => !c)}
+                    >
                       <span className="turn-spinner" aria-hidden="true" />
+                      <span aria-hidden="true">{thinkingCollapsed ? "▸" : "▾"}</span>
                       {t("thread.thinking")}
                     </button>
-                    {thinkingText && (
+                    {!thinkingCollapsed && thinkingText && (
                       <div className="turn-thinking-body">{thinkingText}</div>
                     )}
                   </div>
