@@ -1,5 +1,19 @@
 import { createServer } from "node:http";
 
+// v2.35 恢复双语义 E2E 相位状态机（模块级；Playwright 单 worker 串行执行，
+// 无并发串扰）：E2E_TOOL_LOOP 任务的回合推进为 loop → written → 复位——
+//   loop    = 循环任务本体：每轮发 read_file 只读调用撑满 24 轮上限 →
+//             回合上限暂停（TaskOutcome::Paused + error{rounds_exhausted}）；
+//   written = 续跑回合首轮（lastUser 为本地化继续语、无标记）：转写入相，
+//             复用 apply_patch 管线真实落盘（恢复效果断言）；
+//   复位    = 写入后的下一请求文本收尾（E2E resume continuation complete）。
+// 关键事实：daemon 每个任务都是全新对话（system + user，session.rs run_task）
+// ——续跑回合不携带前回合工具历史（任务文本经 L2 goals 进系统提示），故相位
+// 不能跨回合按工具结果数推算，须按「标记 → 无标记」的回合状态机推进。
+let loopPhase = null; // null | "loop" | "written"
+let loopFile = null;
+let loopContent = null;
+
 const server = createServer(async (request, response) => {
   if (request.method !== "POST" || !request.url?.endsWith("/chat/completions")) {
     response.statusCode = 404;
@@ -41,7 +55,8 @@ const server = createServer(async (request, response) => {
       // apply_patch 落 diff 后撑出确定的运行窗口（供审查面内容断言）
       const slowAllMatch = task.match(/E2E_SLOW_ALL_MS=(\d+)/);
       const afterToolDelay = !isMetaCall && slowAllMatch ? Number(slowAllMatch[1]) : 0;
-      const match = task.match(/E2E_WRITE\n(.+?)\n([A-Za-z0-9+/=]+)/s);
+      // v2.35 E2E：相 W 需要改写 match（写入载荷来自循环标记而非最后一条 user 消息）
+      let match = task.match(/E2E_WRITE\n(.+?)\n([A-Za-z0-9+/=]+)/s);
       // v2.1 档位确认 E2E（design-v2.md §4.1）：D 级 git_commit 触发 Hold
       const commitMatch = task.match(/E2E_GIT_COMMIT\n(.+)/);
       // v2.8 审查摘要卡 E2E：E2E_SUBTASKS\n[{"title","status"}] 两腿脚本——
@@ -51,7 +66,30 @@ const server = createServer(async (request, response) => {
       const toolResultCount = messages.filter((message) => message.role === "tool").length;
       const wantSubtasks = Boolean(subtasksMatch) && toolResultCount === 0;
       const subtasksSecondLeg = Boolean(subtasksMatch) && toolResultCount === 1 && Boolean(match);
-      if (!match && !commitMatch && !wantSubtasks) {
+      // v2.35 恢复双语义 E2E：回合状态机推进（详见文件头注释）
+      let loopRead = false;
+      let finalText = null;
+      if (!isMetaCall) {
+        const loopTask = String(task).match(/E2E_TOOL_LOOP\n(.+?)\n([A-Za-z0-9+/=]+)/s);
+        if (loopTask) {
+          loopPhase = "loop";
+          loopFile = loopTask[1];
+          loopContent = Buffer.from(loopTask[2], "base64").toString("utf8");
+          // 相 loop：0..23 号模型调用每轮发只读调用，第 24 轮后回合达上限暂停
+          if (toolResultCount < 24) loopRead = true;
+        } else if (loopPhase === "loop") {
+          // 相 written：续跑回合首轮——转写入，复用 apply_patch 管线
+          loopPhase = "written";
+          match = ["", loopFile, Buffer.from(loopContent, "utf8").toString("base64")];
+        } else if (loopPhase === "written") {
+          // 相复位：写入后的下一请求文本收尾
+          loopPhase = null;
+          loopFile = null;
+          loopContent = null;
+          finalText = "E2E resume continuation complete";
+        }
+      }
+      if (!match && !commitMatch && !wantSubtasks && !loopRead) {
         if (payload.stream) {
           const turnWait = hasToolResult ? afterToolDelay : turnDelay;
       if (turnWait) await new Promise((r) => setTimeout(r, turnWait));
@@ -59,7 +97,7 @@ const server = createServer(async (request, response) => {
           response.setHeader("Content-Type", "text/event-stream");
           response.write(`data: ${JSON.stringify({
             model: "mock-1",
-            choices: [{ delta: { content: "E2E task missing write directive" } }],
+            choices: [{ delta: { content: finalText ?? "E2E task missing write directive" } }],
           })}\n\n`);
           response.write(`data: ${JSON.stringify({
             model: "mock-1",
@@ -74,23 +112,34 @@ const server = createServer(async (request, response) => {
         const turnWait = hasToolResult ? afterToolDelay : turnDelay;
       if (turnWait) await new Promise((r) => setTimeout(r, turnWait));
         response.end(JSON.stringify({
-          choices: [{ message: { role: "assistant", content: "E2E task missing write directive" }, finish_reason: "stop" }],
+          choices: [{ message: { role: "assistant", content: finalText ?? "E2E task missing write directive" }, finish_reason: "stop" }],
           usage: { prompt_tokens: 1, completion_tokens: 1 },
         }));
         return;
       }
       const [, file, encoded] = match ?? [];
       const content = match ? Buffer.from(encoded, "base64").toString("utf8") : "";
-      const toolName = wantSubtasks ? "subtasks" : commitMatch ? "git_commit" : "apply_patch";
-      const toolArguments = wantSubtasks
-        ? JSON.stringify({ items: JSON.parse(subtasksMatch[1]) })
-        : commitMatch
-          ? JSON.stringify({ message: commitMatch[1] })
-          : JSON.stringify({ file, range: null, content });
+      // v2.35 E2E：循环相必须发工具调用——既有 hasToolResult「有结果即收尾」
+      // 启发式会让第 2 轮起直出文本，撑不满 24 轮
+      const forceToolCall = loopRead;
+      const toolName = loopRead
+        ? "read_file"
+        : wantSubtasks
+          ? "subtasks"
+          : commitMatch
+            ? "git_commit"
+            : "apply_patch";
+      const toolArguments = loopRead
+        ? JSON.stringify({ path: "a.txt" })
+        : wantSubtasks
+          ? JSON.stringify({ items: JSON.parse(subtasksMatch[1]) })
+          : commitMatch
+            ? JSON.stringify({ message: commitMatch[1] })
+            : JSON.stringify({ file, range: null, content });
       const turnWait = hasToolResult ? afterToolDelay : turnDelay;
       if (turnWait) await new Promise((r) => setTimeout(r, turnWait));
       if (!payload.stream) {
-        const message = hasToolResult && !subtasksSecondLeg
+        const message = hasToolResult && !subtasksSecondLeg && !forceToolCall
           ? { role: "assistant", content: "E2E write complete" }
           : {
               role: "assistant",
@@ -105,14 +154,14 @@ const server = createServer(async (request, response) => {
             };
         response.setHeader("Content-Type", "application/json");
         response.end(JSON.stringify({
-          choices: [{ message, finish_reason: hasToolResult && !subtasksSecondLeg ? "stop" : "tool_use" }],
+          choices: [{ message, finish_reason: hasToolResult && !subtasksSecondLeg && !forceToolCall ? "stop" : "tool_use" }],
           usage: { prompt_tokens: 1, completion_tokens: 1 },
         }));
         return;
       }
 
       const callId = `call-${Date.now()}`;
-      const delta = hasToolResult && !subtasksSecondLeg
+      const delta = hasToolResult && !subtasksSecondLeg && !forceToolCall
         ? { content: "E2E write complete" }
         : {
             tool_calls: [{
@@ -130,7 +179,7 @@ const server = createServer(async (request, response) => {
       response.write(`data: ${JSON.stringify({ model: "mock-1", choices: [{ delta }] })}\n\n`);
       response.write(`data: ${JSON.stringify({
         model: "mock-1",
-        choices: [{ delta: {}, finish_reason: hasToolResult && !subtasksSecondLeg ? "stop" : "tool_use" }],
+        choices: [{ delta: {}, finish_reason: hasToolResult && !subtasksSecondLeg && !forceToolCall ? "stop" : "tool_use" }],
       })}\n\n`);
       response.write(`data: ${JSON.stringify({ model: "mock-1", choices: [], usage })}\n\n`);
       response.write("data: [DONE]\n\n");

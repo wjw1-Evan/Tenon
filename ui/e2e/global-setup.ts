@@ -98,10 +98,12 @@ model = "mock-1"
   {
     let newestSrc = "";
     try {
-      newestSrc = execSync(
-        "find crates -name '*.rs' -newer target/debug/tenon-daemon -print -quit",
-        { cwd: path.resolve(__dirname, "../.."), encoding: "utf8", timeout: 30_000 },
-      ).trim();
+    newestSrc = execSync(
+      // 只比对 src 树——tests/ / benches/ 源不进 daemon 二进制，纳入比对会对
+      // 纯测试新增永久误报陈旧（v2.37 permissions_v237_tests 实录）
+      "find crates -path '*/src/*.rs' -newer target/debug/tenon-daemon -print -quit",
+      { cwd: path.resolve(__dirname, "../.."), encoding: "utf8", timeout: 30_000 },
+    ).trim();
     } catch {
       // find 不可用：跳过自检（构建已保证语义新鲜）
     }
