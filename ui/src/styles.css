@@ -1336,7 +1336,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   gap: 6px;
 }
 .turn-user {
-  /* v1.109 用户消息居右；v1.162 去气泡：居右纯文本按侧别与 AI 内容区分 */
+  /* v1.109 用户消息居右；v1.162 曾去气泡改纯文本；v2.34 用户令恢复气泡样式 */
   align-self: flex-end;
   max-width: 85%;
   display: flex;
@@ -1345,14 +1345,20 @@ button:disabled { opacity: 0.45; cursor: default; }
   gap: 3px;
 }
 .turn-task {
+  /* v2.34 用户消息气泡：accent-soft 底色 + 圆角（右下角收窄指向发送侧），
+   * 气泡内文本左对齐保多行长句阅读性，整体仍居右；功能按钮组 hover 显现不变 */
+  background: var(--accent-soft);
+  border-radius: var(--radius-m) var(--radius-m) var(--radius-s) var(--radius-m);
+  padding: 6px 11px;
   font-size: 12.5px;
   line-height: 1.55;
   color: var(--fg-strong);
   white-space: pre-wrap;
   word-break: break-word;
+  text-align: left;
 }
-/* 发送消息队列（v1.147 §9.1）：运行态入队的排队气泡——居右纯文本 + 虚线描边表达
-   「未投递」态（v1.162 去底色），点击回填输入框编辑 */
+/* 发送消息队列（v1.147 §9.1）：运行态入队的排队气泡——用户气泡同款底色
+   （v2.34 恢复）+ 虚线描边表达「未投递」态，点击回填输入框编辑 */
 .queue-block {
   display: flex;
   flex-direction: column;
@@ -1361,9 +1367,10 @@ button:disabled { opacity: 0.45; cursor: default; }
 }
 .queue-item .queue-text {
   color: var(--fg-strong);
+  background: var(--accent-soft);
   border: 1px dashed var(--border-strong);
-  border-radius: var(--radius-m);
-  padding: 5px 10px;
+  border-radius: var(--radius-m) var(--radius-m) var(--radius-s) var(--radius-m);
+  padding: 5px 11px;
   font-size: 12.5px;
   line-height: 1.55;
   white-space: pre-wrap;
