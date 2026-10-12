@@ -1,6 +1,6 @@
 // Playwright 真 daemon 环境（§18.1）：本地 mock OpenAI server + 隔离 SQLite +
 // 静态 UI 由 daemon 托管；不访问外网、不使用全局 ~/.tenon 状态。
-import { spawn, type ChildProcess } from "node:child_process";
+import { execSync, spawn, type ChildProcess } from "node:child_process";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -85,6 +85,32 @@ model = "mock-1"
 `);
 
   const daemonPath = path.resolve(__dirname, "../../target/debug/tenon-daemon");
+  // v2.28 新鲜度加固（v2.17 实录：spawn 10-07 陈旧二进制致 gate 字段缺失、
+  // 徽标断言落空且无任何报错）：先增量构建（幂等，秒级命中缓存），再校验
+  // 二进制 mtime 晚于 crates 最新源——cargo 偶发「Finished 而产物未更新」
+  // （sccache / 中断残留）时 fail fast 给出可行动错误。
+  try {
+    const repoRoot = path.resolve(__dirname, "../..");
+    execSync("cargo build -p tenon-daemon", { cwd: repoRoot, stdio: "pipe", timeout: 300_000 });
+  } catch (e) {
+    throw new Error(`E2E 前置构建 daemon 失败：${e}`);
+  }
+  {
+    let newestSrc = "";
+    try {
+      newestSrc = execSync(
+        "find crates -name '*.rs' -newer target/debug/tenon-daemon -print -quit",
+        { cwd: path.resolve(__dirname, "../.."), encoding: "utf8", timeout: 30_000 },
+      ).trim();
+    } catch {
+      // find 不可用：跳过自检（构建已保证语义新鲜）
+    }
+    if (newestSrc) {
+      throw new Error(
+        `daemon 二进制陈旧（构建后仍早于源 ${newestSrc}）——请 cargo clean -p tenon-daemon 后重试`,
+      );
+    }
+  }
   daemon = spawn(daemonPath, [
     "--db", path.join(workspace, "db.sqlite"),
     "--project", projectA,
