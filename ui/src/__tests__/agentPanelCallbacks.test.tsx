@@ -74,7 +74,10 @@ describe("AgentPanel callbacks", () => {
     render(<AgentPanel api={api} t={t} sessionId="s1" />);
     const resumeBtn = await screen.findByTestId("resume");
     fireEvent.click(resumeBtn);
-    await waitFor(() => expect(api.control).toHaveBeenCalledWith("s1", "resume"));
+    // v2.35 恢复双语义：resume 附带第四参继续语（identity-t 下为键名），本地化值路径由 agentResume 六例覆盖。
+    await waitFor(() =>
+      expect(api.control).toHaveBeenCalledWith("s1", "resume", undefined, "thread.resume_continue"),
+    );
   });
 
   it("decision 后流式文本清空显示空态", async () => {
