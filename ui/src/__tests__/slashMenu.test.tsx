@@ -39,7 +39,7 @@ describe("extractSlashCommand 触发词提取（纯函数）", () => {
 });
 
 describe("AgentPanel 斜杠命令菜单（v1.161）", () => {
-  it("键入 / 弹命令浮层（会话态双命令）；过滤 /re 只剩 review", async () => {
+  it("键入 / 弹命令浮层（会话态三命令）；过滤 /re 只剩 review", async () => {
     const api = mockApi();
     render(<AgentPanel api={api} t={t} sessionId="s1" />);
     const input = screen.getByTestId("task-input") as HTMLTextAreaElement;
@@ -47,6 +47,7 @@ describe("AgentPanel 斜杠命令菜单（v1.161）", () => {
     await screen.findByTestId("slash-menu");
     expect(screen.getByTestId("slash-item-compact")).toBeTruthy();
     expect(screen.getByTestId("slash-item-review")).toBeTruthy();
+    expect(screen.getByTestId("slash-item-init")).toBeTruthy();
     fireEvent.change(input, { target: { value: "/re" } });
     await waitFor(() => expect(screen.queryByTestId("slash-item-compact")).toBeNull());
     expect(screen.getByTestId("slash-item-review")).toBeTruthy();
@@ -81,6 +82,22 @@ describe("AgentPanel 斜杠命令菜单（v1.161）", () => {
     );
   });
 
+  it("Enter 执行 /init（v2.65）：清空输入并注入项目规则生成任务走 sendMessage", async () => {
+    const api = mockApi();
+    render(<AgentPanel api={api} t={t} sessionId="s1" />);
+    const input = screen.getByTestId("task-input") as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "/init" } });
+    await screen.findByTestId("slash-menu");
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(input.value).toBe("");
+    await waitFor(() =>
+      expect((api.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([
+        "s1",
+        "slash.init_task",
+      ]),
+    );
+  });
+
   it("Esc 仅收浮层不 blur；草稿无会话不提供 /compact", async () => {
     const api = mockApi();
     const { unmount } = render(
@@ -95,7 +112,7 @@ describe("AgentPanel 斜杠命令菜单（v1.161）", () => {
     expect(document.activeElement).toBe(input);
     unmount();
 
-    // 草稿态：无会话只有 review 可用
+    // 草稿态：无会话只有 review / init 可用
     const api2 = mockApi();
     render(
       <AgentPanel
@@ -111,5 +128,6 @@ describe("AgentPanel 斜杠命令菜单（v1.161）", () => {
     await screen.findByTestId("slash-menu");
     expect(screen.queryByTestId("slash-item-compact")).toBeNull();
     expect(screen.getByTestId("slash-item-review")).toBeTruthy();
+    expect(screen.getByTestId("slash-item-init")).toBeTruthy();
   });
 });

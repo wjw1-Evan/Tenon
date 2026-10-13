@@ -373,11 +373,12 @@ export function AgentPanel({
   };
 
   // v1.161 斜杠命令表：可用性随会话 / 草稿链路；compact 需既有会话（control 语义），
-  // review 任务注入会话态与草稿首发态均可（运行态经 v1.147 队列入队）。
+  // review / init（v2.65）任务注入会话态与草稿首发态均可（运行态经 v1.147 队列入队）。
   const slashCommands = useMemo(
     () => [
       { name: "compact", available: Boolean(sessionId) },
       { name: "review", available: Boolean(sessionId) || (isDraft && Boolean(onDraftSend)) },
+      { name: "init", available: Boolean(sessionId) || (isDraft && Boolean(onDraftSend)) },
     ],
     [sessionId, isDraft, onDraftSend],
   );
@@ -405,6 +406,12 @@ export function AgentPanel({
       if (busy) return;
       setInputValue("");
       void sendText(t("slash.review_task").trim());
+    }
+    if (cmd.name === "init") {
+      // v2.65 §7.3：项目规则生成（Codex /init 对齐）——同 review 链路注入任务
+      if (busy) return;
+      setInputValue("");
+      void sendText(t("slash.init_task").trim());
     }
   }
 

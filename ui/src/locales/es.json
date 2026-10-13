@@ -469,6 +469,8 @@
   "slash.compact": "Compactar historial: omite de inmediato las salidas de herramientas obsoletas (mientras se ejecuta)",
   "slash.review": "Revisar cambios: inyecta una tarea de revisión de código",
   "slash.review_task": "Revisa los cambios sin confirmar del espacio de trabajo actual: enumera los problemas uno por uno (archivo:línea), clasifícalos por riesgo y sugiere correcciones; prioriza las comprobaciones de solo lectura y no modifiques archivos directamente.",
+  "slash.init": "Reglas de proyecto: examinar el repo para generar o actualizar AGENTS.md",
+  "slash.init_task": "Genera o actualiza las reglas de proyecto AGENTS.md de este repositorio: primero examina la estructura (directorios, manifiestos, configuración de CI, documentación existente) y resume los comandos de build, test y lint junto con las convenciones de código; si ya existe un AGENTS.md en la raíz, refínalo conservando el contenido escrito a mano y sin invalidar conclusiones existentes; si no, créalo; antes de escribir el archivo, resume en tu respuesta los puntos clave.",
   "shortcuts.open": "Atajos de teclado",
   "shortcuts.title": "Atajos de teclado",
   "shortcuts.group_global": "Global",

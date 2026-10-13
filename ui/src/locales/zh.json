@@ -469,6 +469,8 @@
   "slash.compact": "压缩历史：立即省略陈旧工具输出（运行中生效）",
   "slash.review": "审查改动：注入代码审查任务",
   "slash.review_task": "审查当前工作区未提交的改动：逐一列出问题（文件:行号）、按风险分级，并给出修复建议；以只读检查为主，不要直接修改文件。",
+  "slash.init": "项目规则：扫描仓库生成 / 更新 AGENTS.md",
+  "slash.init_task": "为本仓库生成或更新 AGENTS.md 项目规则：先扫描仓库结构（目录布局、清单文件、CI 配置、既有文档），归纳构建、测试、lint 命令与代码约定；仓库根已有 AGENTS.md 则在其基础上补充修正（保留用户手写内容，不推翻既有结论），没有则新建；写盘前先在回复里概述拟写入的要点。",
   "shortcuts.open": "快捷键速查表",
   "shortcuts.title": "快捷键速查",
   "shortcuts.group_global": "全局",

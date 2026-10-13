@@ -469,6 +469,8 @@
   "slash.compact": "Compact history: immediately elide stale tool outputs (while running)",
   "slash.review": "Review changes: inject a code review task",
   "slash.review_task": "Review the uncommitted changes in the current workspace: list issues one by one (file:line), grade them by risk, and suggest fixes; prefer read-only checks and do not modify files directly.",
+  "slash.init": "Project rules: scan the repo to generate / update AGENTS.md",
+  "slash.init_task": "Generate or update this repository's AGENTS.md project rules: first scan the repo structure (directory layout, manifests, CI config, existing docs) and summarize build, test and lint commands plus code conventions; if AGENTS.md already exists at the repo root, refine it in place (preserve hand-written content, don't overturn existing conclusions), otherwise create it; outline the key points in your reply before writing the file.",
   "shortcuts.open": "Keyboard shortcuts",
   "shortcuts.title": "Keyboard Shortcuts",
   "shortcuts.group_global": "Global",
