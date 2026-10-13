@@ -13,7 +13,7 @@ pub mod network;
 pub mod proxy;
 pub mod seatbelt;
 
-pub use exec::{exec_argv, exec_command, ExecOutcome, SandboxSpec};
+pub use exec::{exec_argv, exec_command, spawn_command_background, ExecOutcome, SandboxSpec};
 pub use external::{spawn_external, ExternalNetwork, ExternalSpec, SpawnedExternal};
 pub use guard::WriteGuard;
 pub use network::NetworkState;

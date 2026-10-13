@@ -50,6 +50,11 @@ pub enum Tool {
     /// 通用命令执行（design-v2.md §4.2 v2.0）：run_command——诚实的任意命令
     /// 通道（B 级沙箱断网），execpolicy 命令级风险评估前置拦截（高危模式拒绝）。
     RunCommand,
+    /// 后台任务查询（§9.2，v2.64）：run_command background=true 启动的任务
+    /// 状态与输出读取，只读零副作用。
+    TaskOutput,
+    /// 后台任务终止（§9.2，v2.64）：杀进程树，B 级。
+    TaskKill,
     HttpFetch,
     GitCommit,
     GitPush,
@@ -80,6 +85,8 @@ impl Tool {
             Tool::RunBuild => "run_build",
             Tool::InstallDeps => "install_deps",
             Tool::RunCommand => "run_command",
+            Tool::TaskOutput => "task_output",
+            Tool::TaskKill => "task_kill",
             Tool::HttpFetch => "http_fetch",
             Tool::GitCommit => "git_commit",
             Tool::GitPush => "git_push",
@@ -97,6 +104,7 @@ impl Tool {
             | Tool::Grep
             | Tool::Glob
             | Tool::RunCode
+            | Tool::TaskOutput
             | Tool::GitRead
             | Tool::LspQuery
             | Tool::LayaDecide
@@ -109,6 +117,7 @@ impl Tool {
             | Tool::RunBuild
             | Tool::InstallDeps
             | Tool::RunCommand
+            | Tool::TaskKill
             | Tool::SpawnSubagents => Level::B,
             Tool::HttpFetch | Tool::WebSearch => Level::C,
             Tool::GitCommit | Tool::GitPush => Level::D,
@@ -140,6 +149,8 @@ impl Tool {
             "run_build" => Tool::RunBuild,
             "install_deps" => Tool::InstallDeps,
             "run_command" => Tool::RunCommand,
+            "task_output" => Tool::TaskOutput,
+            "task_kill" => Tool::TaskKill,
             "http_fetch" => Tool::HttpFetch,
             "git_commit" => Tool::GitCommit,
             "git_push" => Tool::GitPush,
@@ -207,6 +218,16 @@ mod tests {
             Some(Level::A),
             "v2.63 §9.2 PTC 首期只读（内层仅四只读工具）"
         );
+        assert_eq!(
+            Tool::TaskOutput.level(),
+            Some(Level::A),
+            "v2.64 §9.2 后台任务查询只读"
+        );
+        assert_eq!(
+            Tool::TaskKill.level(),
+            Some(Level::B),
+            "v2.64 §9.2 终止写级"
+        );
         assert_eq!(Tool::GitRead.level(), Some(Level::A));
         assert_eq!(Tool::LspQuery.level(), Some(Level::A));
         assert_eq!(Tool::SkillUse.level(), Some(Level::A), "v1.130 §13.4");
@@ -235,6 +256,7 @@ mod tests {
             Tool::Grep,
             Tool::Glob,
             Tool::RunCode,
+            Tool::TaskOutput,
             Tool::GitRead,
             Tool::LspQuery,
             Tool::SkillUse,
@@ -243,6 +265,8 @@ mod tests {
             Tool::RunTests,
             Tool::RunBuild,
             Tool::InstallDeps,
+            Tool::RunCommand,
+            Tool::TaskKill,
             Tool::HttpFetch,
             Tool::WebSearch,
             Tool::GitCommit,

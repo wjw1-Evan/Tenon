@@ -7,6 +7,7 @@
 //! 安全联动：B 级写前自动快照（先快照后写入，§10.3）；写守卫收敛项目内；
 //! 只读开关禁写；C/D 直执并审计。
 
+pub mod bgtask;
 pub mod evals;
 pub mod executor;
 pub mod hooks;

@@ -145,7 +145,9 @@ pub fn tool_catalog() -> String {
         (Tool::RunTests, "沙箱内运行测试（断网）"),
         (Tool::RunBuild, "沙箱内构建（断网）"),
         (Tool::InstallDeps, "沙箱内经镜像代理安装依赖（仅包管理器安装命令，如 npm/pnpm/yarn/pip/uv/cargo/go/dotnet … install；禁 shell 控制符与脚本执行子命令）"),
-        (Tool::RunCommand, "通用命令执行（B 级沙箱断网；execpolicy 前置拦截高危命令——破坏性 git（reset --hard / clean -f / checkout --）、系统级 rm、管道注入解释器（curl|sh）、提权与设备覆写直接拒绝）：测试优先 run_tests、构建优先 run_build、装依赖用 install_deps，其余任意命令用本工具"),
+        (Tool::RunCommand, "通用命令执行（B 级沙箱断网；execpolicy 前置拦截高危命令——破坏性 git（reset --hard / clean -f / checkout --）、系统级 rm、管道注入解释器（curl|sh）、提权与设备覆写直接拒绝）：测试优先 run_tests、构建优先 run_build、装依赖用 install_deps，其余任意命令用本工具；长命令（dev server / 长构建）加 background=true 后台启动"),
+        (Tool::TaskOutput, "查询后台任务输出与状态（run_command background=true 启动）：id + 可选 wait_s（0-120s 阻塞等完成）——启动后台命令后用它轮询"),
+        (Tool::TaskKill, "终止后台任务（id）"),
         (Tool::HttpFetch, "抓取 URL（C 级：直执并审计目标）"),
         (
             Tool::WebSearch,

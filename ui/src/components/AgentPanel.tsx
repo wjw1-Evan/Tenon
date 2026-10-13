@@ -134,6 +134,8 @@ const KNOWN_TOOLS = new Set([
   "list_dir",
   "grep",
   "glob",
+  "task_output",
+  "task_kill",
   "git_read",
   "lsp_query",
   "laya_decide",

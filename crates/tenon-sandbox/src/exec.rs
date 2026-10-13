@@ -155,6 +155,26 @@ pub fn exec_command(
         timed_out,
     })
 }
+
+/// 后台启动 shell 命令（§9.2 v2.64）：与 exec_command 同 shell 与最小环境
+/// （`/bin/sh -c` + PATH/HOME/LANG），不等待——stdout/stderr 各自管道，
+/// 由调用方（agent bgtask 注册表）托管读取、终止与生命周期。
+pub fn spawn_command_background(command: &str, cwd: &Path) -> std::io::Result<std::process::Child> {
+    let mut c = std::process::Command::new("/bin/sh");
+    c.arg("-c").arg(command);
+    c.current_dir(cwd);
+    c.env_clear();
+    // 与 exec_command 同最小环境：命令工具链需要 PATH / HOME / LANG
+    c.env("PATH", std::env::var("PATH").unwrap_or_default());
+    c.env("HOME", std::env::var("HOME").unwrap_or_default());
+    c.env("LANG", "C.UTF-8");
+    c.stdin(Stdio::null());
+    c.stdout(Stdio::piped());
+    c.stderr(Stdio::piped());
+    set_own_process_group(&mut c);
+    c.spawn()
+}
+
 /// argv 直执版本：用于代理侧 `gh` / 平台 CLI，不经 shell 解释。
 /// `extra_env` 只追加最小环境；凭证来自用户本机 CLI 配置或注入环境。
 pub fn exec_argv(

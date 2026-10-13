@@ -376,13 +376,27 @@ fn tool_specs() -> Vec<ToolSpec> {
         ("install_deps", "安装依赖（沙箱镜像代理，如 npm install）", serde_json::json!({
             "type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]
         })),
-        ("run_command", "通用命令执行（B 级沙箱断网；execpolicy 前置拦截高危命令：破坏性 git / 系统级 rm / 管道注入解释器 / 提权 / 设备覆写直接拒绝）——测试优先 run_tests、构建优先 run_build、装依赖用 install_deps", serde_json::json!({
+        ("run_command", "通用命令执行（B 级；execpolicy 前置拦截高危命令：破坏性 git / 系统级 rm / 管道注入解释器 / 提权 / 设备覆写直接拒绝）——测试优先 run_tests、构建优先 run_build、装依赖用 install_deps；长命令（dev server / 长构建 / 长测试）加 background=true 后台启动不阻塞回合，用 task_output 轮询、task_kill 终止", serde_json::json!({
             "type": "object",
             "properties": {
                 "command": {"type": "string"},
-                "timeout_s": {"type": "integer", "minimum": 1, "maximum": 3600}
+                "timeout_s": {"type": "integer", "minimum": 1, "maximum": 3600},
+                "background": {"type": "boolean", "description": "后台执行：立即返回任务号，timeout_s 为最长运行时限（缺省 3600s）"}
             },
             "required": ["command"]
+        })),
+        ("task_output", "查询后台任务的状态与输出（run_command background=true 启动的任务）：id 为任务号；wait_s 可选（0-120s）阻塞等待完成——启动 dev server / 长构建后用它轮询，输出返回末尾 ≤20k 字符", serde_json::json!({
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer", "description": "后台任务号"},
+                "wait_s": {"type": "integer", "minimum": 0, "maximum": 120, "description": "阻塞等待完成的最长秒数（缺省 0 非阻塞）"}
+            },
+            "required": ["id"]
+        })),
+        ("task_kill", "终止后台任务（task_output 查状态，已结束者如实回报）", serde_json::json!({
+            "type": "object",
+            "properties": {"id": {"type": "integer", "description": "后台任务号"}},
+            "required": ["id"]
         })),
         ("http_fetch", "抓取 URL（C 级直执并审计）", serde_json::json!({
             "type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]
