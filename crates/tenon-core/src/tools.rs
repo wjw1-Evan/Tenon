@@ -2,7 +2,7 @@
 //!
 //! | 级 | 工具 |
 //! |---|---|
-//! | A | read_file / list_dir / grep / git_read / lsp_query / laya_decide（v1.124）/ skill_use（v1.130 §13.4）/ subtasks（v1.146） |
+//! | A | read_file / list_dir / grep / glob（v2.61）/ git_read / lsp_query / laya_decide（v1.124）/ skill_use（v1.130 §13.4）/ subtasks（v1.146） |
 //! | B | apply_patch / run_tests / run_build / install_deps |
 //! | C | http_fetch / web_search（v1.182） |
 //! | D | git_commit / git_push / create_pr |
@@ -16,6 +16,9 @@ pub enum Tool {
     ReadFile,
     ListDir,
     Grep,
+    /// 文件名模式定位（§9.2，v2.61）：ignore overrides 白名单 glob，
+    /// 尊重 .gitignore、跳过隐藏文件，只读零副作用。
+    Glob,
     GitRead,
     LspQuery,
     /// Laya 本地判定（§9.8 #4，v1.124）：本地 CPU 推理，只读零副作用。
@@ -57,6 +60,7 @@ impl Tool {
             Tool::ReadFile => "read_file",
             Tool::ListDir => "list_dir",
             Tool::Grep => "grep",
+            Tool::Glob => "glob",
             Tool::GitRead => "git_read",
             Tool::LspQuery => "lsp_query",
             Tool::LayaDecide => "laya_decide",
@@ -86,6 +90,7 @@ impl Tool {
             Tool::ReadFile
             | Tool::ListDir
             | Tool::Grep
+            | Tool::Glob
             | Tool::GitRead
             | Tool::LspQuery
             | Tool::LayaDecide
@@ -111,6 +116,7 @@ impl Tool {
             "read_file" => Tool::ReadFile,
             "list_dir" => Tool::ListDir,
             "grep" => Tool::Grep,
+            "glob" => Tool::Glob,
             "git_read" => Tool::GitRead,
             "lsp_query" => Tool::LspQuery,
             "laya_decide" => Tool::LayaDecide,
@@ -184,6 +190,11 @@ mod tests {
     fn builtin_levels_match_design_table() {
         assert_eq!(Tool::ReadFile.level(), Some(Level::A));
         assert_eq!(Tool::Grep.level(), Some(Level::A));
+        assert_eq!(
+            Tool::Glob.level(),
+            Some(Level::A),
+            "v2.61 §9.2 文件名定位只读"
+        );
         assert_eq!(Tool::GitRead.level(), Some(Level::A));
         assert_eq!(Tool::LspQuery.level(), Some(Level::A));
         assert_eq!(Tool::SkillUse.level(), Some(Level::A), "v1.130 §13.4");
@@ -210,6 +221,7 @@ mod tests {
             Tool::ReadFile,
             Tool::ListDir,
             Tool::Grep,
+            Tool::Glob,
             Tool::GitRead,
             Tool::LspQuery,
             Tool::SkillUse,

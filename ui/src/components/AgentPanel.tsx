@@ -133,6 +133,7 @@ const KNOWN_TOOLS = new Set([
   "read_file",
   "list_dir",
   "grep",
+  "glob",
   "git_read",
   "lsp_query",
   "laya_decide",

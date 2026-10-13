@@ -340,6 +340,7 @@
   "toast.save_failed": "فشل الحفظ: {path}",
   "tool.list_dir": "سرد",
   "tool.grep": "بحث",
+  "tool.glob": "بحث الملفات",
   "tool.git_read": "قراءة Git",
   "tool.lsp_query": "استعلام رموز",
   "tool.laya_decide": "قرار Laya",

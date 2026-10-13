@@ -340,6 +340,7 @@
   "toast.save_failed": "Error al guardar: {path}",
   "tool.list_dir": "Listar",
   "tool.grep": "Buscar",
+  "tool.glob": "Buscar archivos",
   "tool.git_read": "Lectura de Git",
   "tool.lsp_query": "Consulta de símbolos",
   "tool.laya_decide": "Decisión de Laya",

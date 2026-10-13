@@ -124,6 +124,46 @@ pub fn within_dot_git(path: &Path) -> bool {
     path.components().any(|c| c.as_os_str() == ".git")
 }
 
+/// 文件名模式定位（§9.2 v2.61）：globset 全路径匹配，walker 与 `search`
+/// 同一配置（尊重 .gitignore、滤 .git、含隐藏文件）——grep 与 glob 看到同一
+/// 文件宇宙。返回相对 root 的路径（正斜杠、排序去重）。
+pub fn glob_files(root: &Path, pattern: &str) -> Result<Vec<String>> {
+    if pattern.trim().is_empty() {
+        return Err(FsError::Io(std::io::Error::other("pattern 不可为空")));
+    }
+    let mut builder = globset::GlobSetBuilder::new();
+    builder.add(
+        globset::Glob::new(pattern.trim())
+            .map_err(|e| FsError::Io(std::io::Error::other(format!("非法 glob 模式: {e}"))))?,
+    );
+    let globs = builder
+        .build()
+        .map_err(|e| FsError::Io(std::io::Error::other(format!("非法 glob 模式: {e}"))))?;
+    let walker = ignore::WalkBuilder::new(root)
+        .hidden(false)
+        .require_git(false)
+        .filter_entry(|e| !within_dot_git(e.path()))
+        .build();
+    let mut paths: Vec<String> = Vec::new();
+    for item in walker {
+        let entry = item.map_err(|e| FsError::Io(std::io::Error::other(e.to_string())))?;
+        if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            continue;
+        }
+        let path = entry.path();
+        let rel = path
+            .strip_prefix(root)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|_| path.to_string_lossy().into_owned());
+        if globs.is_match(&rel) {
+            paths.push(rel);
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
 /// 列号计算兜底用的永不匹配正则。
 static NEVER_REGEX: std::sync::LazyLock<Regex> =
     std::sync::LazyLock::new(|| Regex::new(r"[^\s\S]").expect("never regex"));
@@ -322,6 +362,29 @@ mod tests {
         };
         let hits = search(d.path(), "beta", &opts).unwrap();
         assert_eq!(hits.len(), 1);
+    }
+
+    /// v2.61 §9.2：glob_files——模式匹配、.gitignore 生效、排序、空模式拒绝。
+    #[test]
+    fn glob_files_matches_respecting_gitignore() {
+        let d = setup();
+        let files = glob_files(d.path(), "**/*.txt").unwrap();
+        assert_eq!(
+            files,
+            vec!["a.txt", "sub/b.txt"],
+            "匹配 + 排序 + gitignore 生效"
+        );
+
+        let all = glob_files(d.path(), "*").unwrap();
+        assert!(all.contains(&"a.txt".to_string()), "根层文件命中");
+        assert!(
+            !all.iter().any(|p| p.contains("ignored")),
+            ".gitignore 文件不被列出"
+        );
+
+        assert!(glob_files(d.path(), "**/*.nope").unwrap().is_empty());
+        assert!(glob_files(d.path(), "  ").is_err(), "空模式拒绝");
+        assert!(glob_files(d.path(), "[").is_err(), "非法模式拒绝");
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | **v2.60** |
+| 版本 | **v2.61** |
 | 日期 | 2026-10-13 |
 | 状态 | 定稿，M0 已验收（附录 D 基线 v2.32 起 glm-5.3-flash 9/10=90%，violation=0；历史最高），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
@@ -568,14 +568,14 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 
 | 工具 | 级 | 说明 |
 |---|---|---|
-| `read_file` / `list_dir` / `grep` | A | 只读；核心服务 rg；`read_file` 超 10MB 拒读（LLM 上下文预算，agent 侧承担，与编辑器无大小限制无关，v1.69） |
+| `read_file` / `list_dir` / `grep` / `glob`（v2.61） | A | 只读；核心服务 rg；`read_file` 超 10MB 拒整读（LLM 上下文预算，agent 侧承担，与编辑器无大小限制无关，v1.69），可选 `offset`（1-based 起始行）/ `limit`（1–2000 行，缺省 2000）分段读取——输出 `行号\t` 前缀（cat -n 口径，行号即 `apply_patch` range 编辑锚点；单行 2000 字符截断，分段读不受 10MB 整读预算约束，v2.61 Claude Code Read 对齐）；`glob` 按文件名模式定位文件（与 grep 同一文件宇宙：尊重 .gitignore、滤 .git、globset 全路径匹配；返回项目根相对路径列表，上限 500 条带尾注——补 grep 只搜内容的文件名检索缺口，v2.61） |
 | `git_read`（status/log/diff） | A | 只读 git |
 | `lsp_query`（定义/引用/符号/hover） | A | 共享 LSP 多路复用 |
 | `skill_use`（读取技能全文） | A | 技能目录注入系统提示，正文按需加载进上下文（§13.4，v1.130） |
 | `subtasks`（子任务清单，v1.146） | A | 多步任务主动分解与状态维护：`{items:[{title,status}]}` 全量状态替换（幂等；1–12 项，status ∈ `pending / in_progress / done`）；分发与边界见下文 |
 | `submit_plan`（计划提交，v1.179 Codex 形态计划模式） | A | 复杂任务先计划后执行：`{items:[string]}`（1–12 项、每项 ≤200 字符）→ `plan_submitted` 事件 + 会话转 PAUSED 等待批准；边界见下文 |
 | `mcp_meta_resources_list / mcp_meta_resources_read / mcp_meta_prompts_list / mcp_meta_prompts_get`（MCP 资源与提示，v1.187） | A | 跨服务器枚举 / 读取 MCP resources（URI）与 prompts（渲染后消息文本）；内容按不可信数据处理（§12.1）、输出截 20k + redact；只读会话仍拒（与 MCP 工具既有语义一致——调用即拉起外部进程）；名字与 `mcp_{server}_{tool}` 形式重叠时精确名优先 |
-| `apply_patch` | B | 结构化编辑：① range 形式（file + range + content）；② search/replace 块格式（v1.188：file + search + replace，目标片段全文唯一匹配——精确优先、降级逐行空白归一序列匹配；零/多命中报错，与 range 互斥），产生事件与 checkpoint |
+| `apply_patch` | B | 结构化编辑：① range 形式（file + range + content）；② search/replace 块格式（v1.188：file + search + replace，目标片段全文唯一匹配——精确优先、降级逐行空白归一序列匹配；零/多命中报错，与 range 互斥），`replace_all: true` 替换全部命中（精确优先非重叠全量、降级逐行空白归一滑窗全量、倒序套用保持行号有效；零命中报错、缺省维持唯一命中语义，v2.61 Claude Code Edit 对齐），产生事件与 checkpoint |
 | `spawn_subagents`（并行子代理，v1.190） | B | 分发 1–3 个独立子任务（`{tasks:[{instruction, files}]}`，文件集不相交——相交拒绝回传）；子代理各自运行于受管 worktree 并登记为独立会话，完成后回传摘要、合并/丢弃在子会话行处置；边界见 §9.5 |
 | `run_tests` / `run_build` | B | 沙箱内，断网态；单命令超时默认 120s（附录 E）；接受可选 `command` 覆盖（缺省按项目清单探测）——任意命令面经断网沙箱收敛，通用命令经 `run_command` 正名承载（v2.2） |
 | `install_deps` | B | **v2.0 命令白名单**（design-v2.md §4.5）：仅接受已知包管理器与安装语义子命令（`tenon-core::install_policy`，管线②违例→Deny）；**v2.3 域过滤收口**（design-v2.md §4.4）：本地 registry 白名单代理 + Seatbelt 仅回环——**v2.37 起命令沙箱随全对话完整权限降级为无（ADR-19），代理通路不再生效，安装命令无沙箱直跑**；白名单校验保留（零审批下唯一命令级收窄） |

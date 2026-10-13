@@ -340,6 +340,7 @@
   "toast.save_failed": "Save failed: {path}",
   "tool.list_dir": "List",
   "tool.grep": "Search",
+  "tool.glob": "Find files",
   "tool.git_read": "Git read",
   "tool.lsp_query": "Symbol query",
   "tool.laya_decide": "Laya decision",

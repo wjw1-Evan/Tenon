@@ -108,9 +108,13 @@ pub const FINAL_ANSWER_RULES: &str = "\
 /// 工具 schema 摘要（进提示词的工具目录）。
 pub fn tool_catalog() -> String {
     let entries = [
-        (Tool::ReadFile, "读取文本文件（可指定行区间）"),
+        (Tool::ReadFile, "读取文本文件；大文件用 offset（1-based 起始行）/ limit（≤2000 行）分段读取——分段输出带行号前缀，行号可直接用作 apply_patch 的 range"),
         (Tool::ListDir, "列出目录内容"),
         (Tool::Grep, "正则全局搜索（ripgrep 语义）"),
+        (
+            Tool::Glob,
+            "按文件名模式查找文件（如 **/*.rs，尊重 .gitignore）——「找全部 X 文件」用它，内容搜索用 grep",
+        ),
         (Tool::GitRead, "只读 git：status / log / diff"),
         (Tool::LspQuery, "语言服务查询：定义 / 引用 / 符号 / hover"),
         (
@@ -133,7 +137,7 @@ pub fn tool_catalog() -> String {
             Tool::SpawnSubagents,
             "并行分发独立子任务（worktree 隔离子代理，1-3 项、文件集不相交）：返回各子代理摘要，合并 / 丢弃在子会话行处置",
         ),
-        (Tool::ApplyPatch, "结构化编辑：定向替换用 file + search + replace（search 全文唯一）；整段改写用 file + range + content"),
+        (Tool::ApplyPatch, "结构化编辑：定向替换用 file + search + replace（search 全文唯一，replace_all=true 替换全部命中）；整段改写用 file + range + content"),
         (Tool::RunTests, "沙箱内运行测试（断网）"),
         (Tool::RunBuild, "沙箱内构建（断网）"),
         (Tool::InstallDeps, "沙箱内经镜像代理安装依赖（仅包管理器安装命令，如 npm/pnpm/yarn/pip/uv/cargo/go/dotnet … install；禁 shell 控制符与脚本执行子命令）"),

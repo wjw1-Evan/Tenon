@@ -340,6 +340,7 @@
   "toast.save_failed": "Не удалось сохранить: {path}",
   "tool.list_dir": "Список",
   "tool.grep": "Поиск",
+  "tool.glob": "Поиск файлов",
   "tool.git_read": "Git: чтение",
   "tool.lsp_query": "Запрос символа",
   "tool.laya_decide": "Решение Laya",

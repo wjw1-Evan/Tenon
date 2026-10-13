@@ -340,6 +340,7 @@
   "toast.save_failed": "Échec de l'enregistrement : {path}",
   "tool.list_dir": "Lister",
   "tool.grep": "Rechercher",
+  "tool.glob": "Trouver des fichiers",
   "tool.git_read": "Lecture Git",
   "tool.lsp_query": "Requête de symbole",
   "tool.laya_decide": "Décision Laya",

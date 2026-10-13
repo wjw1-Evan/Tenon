@@ -340,6 +340,7 @@
   "toast.save_failed": "儲存失敗：{path}",
   "tool.list_dir": "列出",
   "tool.grep": "搜尋",
+  "tool.glob": "檔案定位",
   "tool.git_read": "查看 git",
   "tool.lsp_query": "符號查詢",
   "tool.laya_decide": "Laya 判定",

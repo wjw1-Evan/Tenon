@@ -249,8 +249,14 @@ pub struct AgentSession {
 
 fn tool_specs() -> Vec<ToolSpec> {
     [
-        ("read_file", "读取文本文件", serde_json::json!({
-            "type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]
+        ("read_file", "读取文本文件；大文件用 offset（1-based 起始行）/ limit（行数，≤2000）分段读取——分段输出带行号前缀，行号可直接用于 apply_patch 的 range 编辑", serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "offset": {"type": "integer", "minimum": 1, "description": "1-based 起始行"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 2000, "description": "读取行数，缺省 2000"}
+            },
+            "required": ["path"]
         })),
         ("laya_decide", "本地决策器结构化判定（Laya，零 token、毫秒级；结果未校准，仅作排序/预筛/提示参考，不作事实结论、不替代测试与验证）：kind=intent 文本→意图标签（pure_qa/needs_change/read_only_analysis/needs_network）｜kind=risk 命令→0..1 风险分｜kind=route 任务文本→是否建议轻模型；仅结构化判定，非开放问答与生成", serde_json::json!({
             "type": "object",
@@ -318,15 +324,26 @@ fn tool_specs() -> Vec<ToolSpec> {
         ("grep", "正则搜索代码", serde_json::json!({
             "type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"]
         })),
+        ("glob", "按文件名模式查找文件（返回相对路径列表；尊重 .gitignore）——需要「找出全部 X 文件」类定位时使用，内容搜索用 grep", serde_json::json!({
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "glob 模式，如 **/*.rs 或 src/*.ts"},
+                "path": {"type": "string", "description": "限定目录（相对路径，缺省项目根）"}
+            },
+            "required": ["pattern"]
+        })),
         ("git_read", "只读 git：status/log/diff", serde_json::json!({
             "type": "object", "properties": {"sub": {"type": "string", "enum": ["status", "log", "diff"]}}
         })),
-        ("apply_patch", "编辑文件（二选一）：① file + range(1-based 行区间含端点，缺省追加) + content；② 定向替换 file + search + replace（search 须在文件中唯一，空白不一致可容忍）——定向编辑优先用 ②", serde_json::json!({
+        ("apply_patch", "编辑文件（三选一）：① file + range(1-based 行区间含端点，缺省追加) + content；② 定向替换 file + search + replace（search 须在文件中唯一，空白不一致可容忍）——定向编辑优先用 ②；③ ②加 replace_all=true 替换全部命中（同文案多处修改时用）", serde_json::json!({
             "type": "object",
             "properties": {
                 "file": {"type": "string"},
                 "range": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
-                "content": {"type": "string"}
+                "content": {"type": "string"},
+                "search": {"type": "string"},
+                "replace": {"type": "string"},
+                "replace_all": {"type": "boolean", "description": "search/replace 形态下替换全部命中（缺省要求唯一）"}
             },
             "required": ["file", "content"]
         })),
@@ -402,6 +419,7 @@ fn tool_specs_read_only() -> Vec<ToolSpec> {
                 "read_file"
                     | "list_dir"
                     | "grep"
+                    | "glob"
                     | "git_read"
                     | "laya_decide"
                     | "skill_use"
@@ -3131,6 +3149,17 @@ mod agent_config_tests {
         );
         assert!(tool_specs().iter().any(|t| t.name == "skill_use"));
         assert!(tool_specs_read_only().iter().any(|t| t.name == "skill_use"));
+    }
+
+    #[test]
+    fn glob_graded_a_and_in_tool_directory() {
+        // §9.2 v2.61：A 级只读（文件名定位零副作用），进全目录与只读收窄目录
+        assert_eq!(
+            tenon_core::Tool::from_name("glob").and_then(|t| t.level()),
+            Some(tenon_core::policy::Level::A)
+        );
+        assert!(tool_specs().iter().any(|t| t.name == "glob"));
+        assert!(tool_specs_read_only().iter().any(|t| t.name == "glob"));
     }
 
     #[test]

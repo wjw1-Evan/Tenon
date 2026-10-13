@@ -340,6 +340,7 @@
   "toast.save_failed": "저장 실패: {path}",
   "tool.list_dir": "나열",
   "tool.grep": "검색",
+  "tool.glob": "파일 찾기",
   "tool.git_read": "git 조회",
   "tool.lsp_query": "심볼 조회",
   "tool.laya_decide": "Laya 판정",

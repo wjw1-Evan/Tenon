@@ -80,25 +80,28 @@ fn run_mcp_meta(
 /// v1.188 §9.2：search/replace 块格式的行区间解析——search 须在全文唯一
 /// （精确匹配优先；未命中降级为逐行 trim 归一的滑窗序列匹配）；零命中 /
 /// 多命中报错（防歧义写入）。返回 1-based 闭区间 (start, end)。
-fn search_replace_span(before: &str, search: &str) -> Result<(usize, usize), String> {
-    if search.is_empty() {
-        return Err("search 不可为空".into());
-    }
-    if let Some(first) = before.find(search) {
-        if before[first + search.len()..].contains(search) {
-            return Err("search 在文件中命中多处（须唯一——请扩大上下文片段）".into());
-        }
-        let start = before[..first].matches('\n').count() + 1;
+/// 精确命中全量区间（非重叠；1-based 行区间含端点）。
+fn exact_hits(before: &str, search: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut from = 0;
+    while let Some(pos) = before[from..].find(search) {
+        let abs = from + pos;
+        let start = before[..abs].matches('\n').count() + 1;
         let end = start + search.matches('\n').count();
-        return Ok((start, end));
+        spans.push((start, end));
+        from = abs + search.len();
     }
-    // 降级：逐行 trim 归一滑窗（模型常给出缩进不一致的片段）
+    spans
+}
+
+/// 降级：逐行 trim 归一滑窗全量命中（模型常给出缩进不一致的片段）。
+fn normalized_hits(before: &str, search: &str) -> Vec<(usize, usize)> {
     let hay: Vec<Option<String>> = before.lines().map(|l| Some(l.trim().to_string())).collect();
     let needle: Vec<String> = search.lines().map(|l| l.trim().to_string()).collect();
+    let mut spans = Vec::new();
     if needle.is_empty() || hay.len() < needle.len() {
-        return Err("search 未在文件中命中（精确与空白归一均未命中）".into());
+        return spans;
     }
-    let mut hits: Vec<usize> = Vec::new();
     for start in 0..=(hay.len() - needle.len()) {
         let window = &hay[start..start + needle.len()];
         let matched = window
@@ -106,16 +109,49 @@ fn search_replace_span(before: &str, search: &str) -> Result<(usize, usize), Str
             .zip(needle.iter())
             .all(|(a, b)| a.as_deref() == Some(b.as_str()));
         if matched {
-            hits.push(start);
+            spans.push((start + 1, start + needle.len()));
         }
     }
+    spans
+}
+
+fn search_replace_span(before: &str, search: &str) -> Result<(usize, usize), String> {
+    if search.is_empty() {
+        return Err("search 不可为空".into());
+    }
+    let exact = exact_hits(before, search);
+    match exact.len() {
+        1 => return Ok(exact[0]),
+        n if n > 1 => {
+            return Err("search 在文件中命中多处（须唯一——请扩大上下文片段）".into());
+        }
+        _ => {}
+    }
+    let hits = normalized_hits(before, search);
     match hits.len() {
-        1 => Ok((hits[0] + 1, hits[0] + needle.len())),
+        1 => Ok(hits[0]),
         0 => Err("search 未在文件中命中（精确与空白归一均未命中）".into()),
         n => Err(format!(
             "search 空白归一后命中 {n} 处（须唯一——请扩大上下文片段）"
         )),
     }
+}
+
+/// v2.61 §9.2：replace_all 全量命中区间——精确非重叠全量优先，降级空白归一
+/// 滑窗全量；零命中报错（调用方倒序套用保持行号有效）。
+fn search_replace_spans(before: &str, search: &str) -> Result<Vec<(usize, usize)>, String> {
+    if search.is_empty() {
+        return Err("search 不可为空".into());
+    }
+    let exact = exact_hits(before, search);
+    if !exact.is_empty() {
+        return Ok(exact);
+    }
+    let hits = normalized_hits(before, search);
+    if hits.is_empty() {
+        return Err("search 未在文件中命中（精确与空白归一均未命中）".into());
+    }
+    Ok(hits)
 }
 
 /// 截断工具输出（trim 后按字符截断，尾注写明丢弃量与重取建议）。
@@ -237,6 +273,115 @@ fn project_rel(ctx: &ToolContext, path: &str) -> Result<String, ToolOutput> {
         .map_err(|e| ToolOutput::err(format!("路径越界: {e}")))
 }
 
+/// v2.61 §9.2：read_file 分段读取——`行号\t` 前缀（cat -n 口径），行号即
+/// apply_patch range 编辑锚点；单行 2000 字符截断；尾注给续读锚点。
+fn read_file_segmented(
+    rel: &str,
+    content: &str,
+    offset: Option<u64>,
+    limit: Option<u64>,
+) -> ToolOutput {
+    const MAX_SEGMENT_LINES: u64 = 2000;
+    const MAX_LINE_CHARS: usize = 2000;
+    if offset.is_some_and(|o| o < 1) {
+        return ToolOutput::err("offset 为 1-based 起始行（≥1）");
+    }
+    let start = offset.unwrap_or(1) as usize;
+    let limit = limit
+        .unwrap_or(MAX_SEGMENT_LINES)
+        .clamp(1, MAX_SEGMENT_LINES) as usize;
+    let lines: Vec<&str> = content.lines().collect();
+    let total = lines.len();
+    if start > total {
+        return ToolOutput::err(format!("offset 超出文件行数（{rel} 共 {total} 行）"));
+    }
+    let end = (start + limit - 1).min(total);
+    let width = end.to_string().len();
+    let mut out = String::new();
+    for (i, line) in lines[start - 1..end].iter().enumerate() {
+        let n = start + i;
+        let text: String = if line.chars().count() > MAX_LINE_CHARS {
+            let head: String = line.chars().take(MAX_LINE_CHARS).collect();
+            format!("{head} …（行截断）")
+        } else {
+            (*line).to_string()
+        };
+        out.push_str(&format!("{n:>width$}\t{text}\n"));
+    }
+    let tail = if end < total {
+        "——可调整 offset 续读"
+    } else {
+        ""
+    };
+    out.push_str(&format!("（第 {start}-{end} 行 / 共 {total} 行{tail}）"));
+    ToolOutput::ok(out)
+}
+
+/// apply_patch 公共写入尾段：脏缓冲三方合并（§8.6）→ 写盘 → 统一 diff。
+/// 泛型 range 路径与 v2.61 replace_all 多命中路径共用。
+fn write_patch_result(ctx: &ToolContext, rel: String, before: &str, after: String) -> ToolOutput {
+    // ---- 人机共编（§8.6）：目标文件有用户脏缓冲 → 三方合并；
+    // 合并冲突 → 阻断写入并出三栏预览（你的改动 / 代理改动 / base）----
+    if let Some(registry) = &ctx.dirty {
+        if let Some(buffer) = registry.get(&rel) {
+            let merged = tenon_core::merge::merge_three_way(&buffer.base, &after, &buffer.dirty);
+            match merged {
+                Ok(merged_text) => {
+                    let write_result = ctx.files.write_file(&rel, &merged_text);
+                    if let Err(e) = write_result {
+                        return ToolOutput::err(format!("写入失败: {e}"));
+                    }
+                    // 合并后的内容成为脏缓冲的新基线（用户编辑继续保留）
+                    registry.update_base(&rel, &merged_text);
+                    let diff = tenon_core::tools::unified_diff(before, &merged_text, &rel);
+                    return ToolOutput {
+                        ok: true,
+                        content: format!(
+                            "已写入 {rel}（人机共编：与未保存的用户改动三方合并）\n{diff}"
+                        ),
+                        changed_files: vec![rel.clone()],
+                        exit_code: None,
+                        dirty_conflict: None,
+                        dirty_merged: Some(true),
+                    };
+                }
+                Err(conflict) => {
+                    return ToolOutput {
+                        ok: false,
+                        content: format!(
+                            "人机共编冲突：{rel} 存在未保存的用户改动，与代理改动冲突。                                     写入已阻断，等待用户在三栏预览中处置（§8.6）。"
+                        ),
+                        changed_files: vec![],
+                        exit_code: None,
+                        dirty_conflict: Some(DirtConflictView {
+                            path: rel,
+                            base: conflict.base,
+                            ours: conflict.ours,
+                            theirs: conflict.theirs,
+                        }),
+                        dirty_merged: None,
+                    };
+                }
+            }
+        }
+    }
+
+    match ctx.files.write_file(&rel, &after) {
+        Ok(_) => {
+            let diff = tenon_core::tools::unified_diff(before, &after, &rel);
+            ToolOutput {
+                ok: true,
+                content: format!("已写入 {rel}\n{diff}"),
+                changed_files: vec![rel.clone()],
+                exit_code: None,
+                dirty_conflict: None,
+                dirty_merged: None,
+            }
+        }
+        Err(e) => ToolOutput::err(format!("写入失败: {e}")),
+    }
+}
+
 /// 远端名只能是 Git remote 短名；不允许 option 前缀、refspec 或 shell 空白。
 fn safe_git_remote(remote: &str) -> bool {
     !remote.is_empty()
@@ -291,14 +436,21 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                 Ok(r) => r,
                 Err(e) => return e,
             };
+            // v2.61 §9.2：分段读取参数——offset 1-based 起始行 / limit 1-2000 行。
+            let offset = args.get("offset").and_then(|v| v.as_u64());
+            let limit = args.get("limit").and_then(|v| v.as_u64());
             match ctx.files.read_file(&rel) {
                 Ok(content) => {
+                    if offset.is_some() || limit.is_some() {
+                        return read_file_segmented(&rel, &content, offset, limit);
+                    }
                     // LLM 上下文预算（v1.69）：读入模型上下文的文件仍限 10MB；
                     // 编辑器无大小限制与此无关，apply_patch 内部读不受此限。
+                    // v2.61：分段读取（offset/limit）不受整读预算约束。
                     const CONTEXT_BUDGET_BYTES: usize = 10 * 1024 * 1024;
                     if content.len() > CONTEXT_BUDGET_BYTES {
                         return ToolOutput::err(format!(
-                            "文件过大（>{mb}MB），超出 Agent 上下文预算；可用 grep / list_dir 定位后按行读取",
+                            "文件过大（>{mb}MB），超出 Agent 上下文整读预算；可用 grep / glob 定位后以 offset/limit 分段读取",
                             mb = CONTEXT_BUDGET_BYTES / 1024 / 1024
                         ));
                     }
@@ -400,6 +552,46 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                 Err(e) => ToolOutput::err(format!("搜索失败: {e}")),
             }
         }
+        // 文件名模式定位（§9.2 v2.61）：globset 全路径匹配，与 grep 同一文件
+        // 宇宙（尊重 .gitignore、滤 .git）。
+        "glob" => {
+            let Some(pattern) = args.get("pattern").and_then(|p| p.as_str()) else {
+                return ToolOutput::err("缺少 pattern 参数");
+            };
+            // path 可选限定子目录作用域——仍过作用域校验防越界（list_dir 同款）
+            let scope = args.get("path").and_then(|p| p.as_str()).unwrap_or(".");
+            let rel = match project_rel(ctx, scope) {
+                Ok(r) => r,
+                Err(e) => return e,
+            };
+            let walk_root = ctx.root.join(&rel);
+            match tenon_fs::search::glob_files(&walk_root, pattern) {
+                Ok(paths) => {
+                    if paths.is_empty() {
+                        return ToolOutput::ok("（无匹配）");
+                    }
+                    const GLOB_MAX: usize = 500;
+                    let prefix = if rel == "." {
+                        String::new()
+                    } else {
+                        format!("{rel}/")
+                    };
+                    let truncated = paths.len() > GLOB_MAX;
+                    let mut out: Vec<String> = paths
+                        .into_iter()
+                        .take(GLOB_MAX)
+                        .map(|p| format!("{prefix}{p}"))
+                        .collect();
+                    if truncated {
+                        out.push(format!(
+                            "（仅显示前 {GLOB_MAX} 条——请用更窄 pattern 或 path 缩小范围）"
+                        ));
+                    }
+                    ToolOutput::ok(out.join("\n"))
+                }
+                Err(e) => ToolOutput::err(format!("glob 失败: {e}")),
+            }
+        }
         "git_read" => {
             let sub = args.get("sub").and_then(|s| s.as_str()).unwrap_or("status");
             let kind = match sub {
@@ -483,24 +675,68 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                             return ToolOutput::err(format!("读取原文件失败（{rel_probe}）: {e}"));
                         }
                     };
-                    let (start, end) = match search_replace_span(&before_probe, search) {
-                        Ok(span) => span,
-                        Err(e) => return ToolOutput::err(e),
+                    let spans = {
+                        // v2.61 §9.2：replace_all——全部命中替换（倒序套用保持
+                        // 行号有效）；单命中与唯一语义等价，走既有链路。
+                        let replace_all = args
+                            .get("replace_all")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        if replace_all {
+                            match search_replace_spans(&before_probe, search) {
+                                Ok(s) => s,
+                                Err(e) => return ToolOutput::err(e),
+                            }
+                        } else {
+                            match search_replace_span(&before_probe, search) {
+                                Ok(span) => vec![span],
+                                Err(e) => return ToolOutput::err(e),
+                            }
+                        }
                     };
+                    if spans.len() > 1 {
+                        let mut lines: Vec<String> =
+                            before_probe.lines().map(String::from).collect();
+                        for (start, end) in spans.iter().rev() {
+                            let end_clamped = (*end).min(lines.len());
+                            let new_lines: Vec<String> =
+                                replace.lines().map(String::from).collect();
+                            lines.splice(start - 1..end_clamped, new_lines);
+                        }
+                        let after = if lines.is_empty() {
+                            String::new()
+                        } else {
+                            let mut s = lines.join("\n");
+                            if before_probe.ends_with('\n') || before_probe.is_empty() {
+                                s.push('\n');
+                            }
+                            s
+                        };
+                        return write_patch_result(ctx, rel_probe, &before_probe, after);
+                    }
                     PatchOp {
                         file: file.to_string(),
-                        range: Some((start, end)),
+                        range: Some(spans[0]),
                         content: replace.to_string(),
                     }
                 }
-                _ => match serde_json::from_value::<PatchOp>(args.clone()) {
-                    Ok(op) => op,
-                    Err(_) => {
-                        return ToolOutput::err(
-                            "apply_patch 参数非法（需 file/range/content 或 file/search/replace）",
-                        );
+                _ => {
+                    if args
+                        .get("replace_all")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                    {
+                        return ToolOutput::err("replace_all 仅用于 search/replace 形态");
                     }
-                },
+                    match serde_json::from_value::<PatchOp>(args.clone()) {
+                        Ok(op) => op,
+                        Err(_) => {
+                            return ToolOutput::err(
+                                "apply_patch 参数非法（需 file/range/content 或 file/search/replace）",
+                            );
+                        }
+                    }
+                }
             };
             let rel = match project_rel(ctx, &op.file) {
                 Ok(r) => r,
@@ -549,67 +785,8 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                 }
                 s
             };
-            // ---- 人机共编（§8.6）：目标文件有用户脏缓冲 → 三方合并；
-            // 合并冲突 → 阻断写入并出三栏预览（你的改动 / 代理改动 / base）----
-            if let Some(registry) = &ctx.dirty {
-                if let Some(buffer) = registry.get(&rel) {
-                    let merged =
-                        tenon_core::merge::merge_three_way(&buffer.base, &after, &buffer.dirty);
-                    match merged {
-                        Ok(merged_text) => {
-                            let write_result = ctx.files.write_file(&rel, &merged_text);
-                            if let Err(e) = write_result {
-                                return ToolOutput::err(format!("写入失败: {e}"));
-                            }
-                            // 合并后的内容成为脏缓冲的新基线（用户编辑继续保留）
-                            registry.update_base(&rel, &merged_text);
-                            let diff = tenon_core::tools::unified_diff(&before, &merged_text, &rel);
-                            return ToolOutput {
-                                ok: true,
-                                content: format!(
-                                    "已写入 {rel}（人机共编：与未保存的用户改动三方合并）\n{diff}"
-                                ),
-                                changed_files: vec![rel.clone()],
-                                exit_code: None,
-                                dirty_conflict: None,
-                                dirty_merged: Some(true),
-                            };
-                        }
-                        Err(conflict) => {
-                            return ToolOutput {
-                                ok: false,
-                                content: format!(
-                                    "人机共编冲突：{rel} 存在未保存的用户改动，与代理改动冲突。                                     写入已阻断，等待用户在三栏预览中处置（§8.6）。"
-                                ),
-                                changed_files: vec![],
-                                exit_code: None,
-                                dirty_conflict: Some(DirtConflictView {
-                                    path: rel,
-                                    base: conflict.base,
-                                    ours: conflict.ours,
-                                    theirs: conflict.theirs,
-                                }),
-                                dirty_merged: None,
-                            };
-                        }
-                    }
-                }
-            }
-
-            match ctx.files.write_file(&rel, &after) {
-                Ok(_) => {
-                    let diff = tenon_core::tools::unified_diff(&before, &after, &rel);
-                    ToolOutput {
-                        ok: true,
-                        content: format!("已写入 {rel}\n{diff}"),
-                        changed_files: vec![rel.clone()],
-                        exit_code: None,
-                        dirty_conflict: None,
-                        dirty_merged: None,
-                    }
-                }
-                Err(e) => ToolOutput::err(format!("写入失败: {e}")),
-            }
+            // ---- 写入尾段：人机共编三方合并 / 冲突阻断 / 落盘 + diff（公共函数）
+            write_patch_result(ctx, rel, &before, after)
         }
         // v2.0（design-v2.md §4.2）：诚实通用命令通道——command 必填（无探测
         // 缺省），execpolicy 前置拦截高危模式；v2.37（ADR-19）命令沙箱恒降级
@@ -1179,6 +1356,219 @@ mod tests {
         );
         assert!(!out.ok);
         assert!(out.content.contains("不可同给"));
+    }
+
+    /// v2.61 §9.2：search_replace_spans 全量命中区间——精确全量 / 空白归一全量 / 零命中。
+    #[test]
+    fn search_replace_spans_semantics() {
+        let file = "l1\nl2 target\nl3\nl2 target\nl5\n";
+        // 精确多命中全量返回
+        assert_eq!(
+            search_replace_spans(file, "l2 target").unwrap(),
+            vec![(2, 2), (4, 4)]
+        );
+        // 空白归一降级全量（缩进不一致）
+        let indented = "let x = 1;\nfn f() {\n    let x = 1;\n}\n";
+        assert_eq!(
+            search_replace_spans(indented, "let x = 1;").unwrap(),
+            vec![(1, 1), (3, 3)]
+        );
+        // 未找到报错
+        assert!(search_replace_spans(file, "nope").is_err());
+        assert!(search_replace_spans(file, "").is_err());
+    }
+
+    /// v2.61 §9.2：replace_all——全部命中替换落盘（行粒度：命中区间整行替换，
+    /// v1.188 既有语义）；零命中报错；缺省维持唯一语义。
+    #[test]
+    fn apply_patch_replace_all_writes() {
+        let (dir, c) = ctx();
+        std::fs::write(
+            dir.path().join("f.txt"),
+            "MARK a\nkeep\nMARK a\nkeep\nMARK a\n",
+        )
+        .unwrap();
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "f.txt", "search": "MARK a", "replace": "DONE x",
+                "replace_all": true
+            }),
+        );
+        assert!(out.ok, "{}", out.content);
+        let content = std::fs::read_to_string(dir.path().join("f.txt")).unwrap();
+        assert_eq!(content, "DONE x\nkeep\nDONE x\nkeep\nDONE x\n");
+
+        // 零命中 + replace_all → 报错
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "file": "f.txt", "search": "不存在", "replace": "x", "replace_all": true
+            }),
+        );
+        assert!(!out.ok);
+        assert!(out.content.contains("未在文件中命中"), "{}", out.content);
+
+        // range 形态带 replace_all → 拒绝
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({"file": "f.txt", "range": [1, 1], "content": "x", "replace_all": true}),
+        );
+        assert!(!out.ok);
+        assert!(
+            out.content.contains("replace_all 仅用于"),
+            "{}",
+            out.content
+        );
+
+        // 缺省（无 replace_all）多命中仍拒绝——唯一语义不回退
+        std::fs::write(dir.path().join("g.txt"), "dup\ndup\n").unwrap();
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({"file": "g.txt", "search": "dup", "replace": "x"}),
+        );
+        assert!(!out.ok);
+        assert!(out.content.contains("命中多处"), "{}", out.content);
+
+        // replace_all 单命中与唯一语义等价
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({"file": "g.txt", "search": "dup", "replace": "x", "replace_all": true}),
+        );
+        assert!(out.ok, "{}", out.content);
+        let content = std::fs::read_to_string(dir.path().join("g.txt")).unwrap();
+        assert_eq!(content, "x\nx\n");
+    }
+
+    /// v2.61 §9.2：read_file 分段读取——行号前缀 / 尾注续读锚点 / offset 越界。
+    #[test]
+    fn read_file_segmented_with_line_numbers() {
+        let (dir, c) = ctx();
+        let body: String = (1..=30).map(|i| format!("line{i}\n")).collect();
+        std::fs::write(dir.path().join("f.txt"), &body).unwrap();
+
+        // 中段读取：行号右对齐 + tab 前缀 + 续读尾注
+        let out = execute_tool(
+            &c,
+            "read_file",
+            &serde_json::json!({"path": "f.txt", "offset": 5, "limit": 3}),
+        );
+        assert!(out.ok, "{}", out.content);
+        assert!(out.content.contains("5\tline5\n"), "{}", out.content);
+        assert!(out.content.contains("7\tline7\n"), "{}", out.content);
+        assert!(
+            out.content
+                .ends_with("（第 5-7 行 / 共 30 行——可调整 offset 续读）"),
+            "{}",
+            out.content
+        );
+        assert!(!out.content.contains("line8"), "{}", out.content);
+
+        // 读取至文件尾：limit 越过 EOF 时钳制，无续读尾注
+        let out = execute_tool(
+            &c,
+            "read_file",
+            &serde_json::json!({"path": "f.txt", "offset": 28, "limit": 5}),
+        );
+        assert!(out.ok, "{}", out.content);
+        assert!(out.content.contains("28\tline28\n"), "{}", out.content);
+        assert!(out.content.contains("30\tline30\n"), "{}", out.content);
+        assert!(
+            out.content.ends_with("（第 28-30 行 / 共 30 行）"),
+            "{}",
+            out.content
+        );
+        assert!(!out.content.contains("line31"), "{}", out.content);
+
+        // 只给 offset：缺省 limit 2000 直读到尾，无续读尾注
+        let out = execute_tool(
+            &c,
+            "read_file",
+            &serde_json::json!({"path": "f.txt", "offset": 29}),
+        );
+        assert!(out.ok, "{}", out.content);
+        assert!(out.content.contains("29\tline29\n"), "{}", out.content);
+        assert!(
+            out.content.ends_with("（第 29-30 行 / 共 30 行）"),
+            "{}",
+            out.content
+        );
+
+        // offset 越界 → 报错带总行数
+        let out = execute_tool(
+            &c,
+            "read_file",
+            &serde_json::json!({"path": "f.txt", "offset": 31}),
+        );
+        assert!(!out.ok);
+        assert!(out.content.contains("共 30 行"), "{}", out.content);
+
+        // offset=0 非法
+        let out = execute_tool(
+            &c,
+            "read_file",
+            &serde_json::json!({"path": "f.txt", "offset": 0}),
+        );
+        assert!(!out.ok);
+
+        // 无参数读取保持整读原样（不带行号）
+        let out = execute_tool(&c, "read_file", &serde_json::json!({"path": "f.txt"}));
+        assert_eq!(out.content, body);
+
+        // 空文件分段读取 → 明确报错
+        std::fs::write(dir.path().join("empty.txt"), "").unwrap();
+        let out = execute_tool(
+            &c,
+            "read_file",
+            &serde_json::json!({"path": "empty.txt", "offset": 1}),
+        );
+        assert!(!out.ok);
+        assert!(out.content.contains("共 0 行"), "{}", out.content);
+    }
+
+    /// v2.61 §9.2：glob——模式匹配、.gitignore 生效、子目录 scope 前缀、无匹配。
+    #[test]
+    fn glob_finds_files_respecting_gitignore() {
+        let (dir, c) = ctx();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::create_dir_all(dir.path().join("vendor")).unwrap();
+        std::fs::write(dir.path().join("main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(dir.path().join("src/lib.rs"), "pub fn f() {}\n").unwrap();
+        std::fs::write(dir.path().join("vendor/dep.rs"), "fn dep() {}\n").unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "vendor/\n").unwrap();
+
+        let out = execute_tool(&c, "glob", &serde_json::json!({"pattern": "**/*.rs"}));
+        assert!(out.ok, "{}", out.content);
+        assert!(out.content.contains("main.rs"), "{}", out.content);
+        assert!(out.content.contains("src/lib.rs"), "{}", out.content);
+        assert!(
+            !out.content.contains("vendor"),
+            ".gitignore 生效: {}",
+            out.content
+        );
+
+        // 子目录 scope：返回项目根相对路径（可直接喂 read_file）
+        let out = execute_tool(
+            &c,
+            "glob",
+            &serde_json::json!({"pattern": "*.rs", "path": "src"}),
+        );
+        assert!(out.ok, "{}", out.content);
+        assert_eq!(out.content, "src/lib.rs");
+
+        // 无匹配
+        let out = execute_tool(&c, "glob", &serde_json::json!({"pattern": "**/*.nope"}));
+        assert!(out.ok);
+        assert_eq!(out.content, "（无匹配）");
+
+        // 缺 pattern
+        let out = execute_tool(&c, "glob", &serde_json::json!({}));
+        assert!(!out.ok);
     }
 
     #[test]

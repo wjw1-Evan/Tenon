@@ -9,6 +9,7 @@ repository.workspace = true
 tenon-sandbox = { workspace = true }
 tenon-core = { workspace = true }
 ignore = { workspace = true }
+globset = "0.4"
 grep-searcher = { workspace = true }
 grep-regex = { workspace = true }
 notify = { workspace = true }

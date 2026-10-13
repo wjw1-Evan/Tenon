@@ -5213,6 +5213,7 @@ dependencies = [
 name = "tenon-fs"
 version = "0.3.0"
 dependencies = [
+ "globset",
  "grep-regex",
  "grep-searcher",
  "ignore",
