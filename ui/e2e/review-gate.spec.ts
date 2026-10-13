@@ -58,6 +58,13 @@ test("review pane auto-docks during a running task and collapses when done", asy
   await expect(pane).toHaveAttribute("data-running", "1");
   await expect(pane).toContainText("e2e-review.txt", { timeout: 20_000 });
 
+  // v2.51 回归：diff 正文容器内容自适应高——spacer 若回退 absolute 定位，
+  // 父级 auto 高塌缩为 padding+border=18px 单行（审查面 / 时间线 diff 同病）
+  const diffBody = pane.getByTestId("diff-body");
+  await expect
+    .poll(async () => (await diffBody.boundingBox())?.height ?? 0, { timeout: 5_000 })
+    .toBeGreaterThanOrEqual(4 * 18);
+
   // v2.11 宽度拖拽记忆：左缘把手左拖 60px → 审查面增宽（boundingBox 实测）
   const before = (await pane.boundingBox())!.width;
   const hb = (await page.getByTestId("resize-review").boundingBox())!;

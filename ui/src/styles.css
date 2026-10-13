@@ -2219,15 +2219,18 @@ button:disabled { opacity: 0.45; cursor: default; }
   text-transform: none;
   letter-spacing: normal;
 }
-.diff-spacer,
+/* v2.51 修：spacer 改常规流——absolute 子盒不撑父级 auto 高，diff 容器塌缩为
+   padding+border=18px 单行（审查面 / 底部时间线 diff 同病，用户报「内容未显示完整」）；
+   static 后 spacer 以内容总高撑出 scrollHeight（≤240px 自适应完整展示、超出滚动），
+   滚动与虚拟化数学不变（window 维持 absolute 叠放 + translateY 定位）。 */
+.diff-spacer {
+  pointer-events: none;
+}
 .diff-window {
   position: absolute;
   left: 10px;
   right: 10px;
   top: 8px;
-  pointer-events: none;
-}
-.diff-window {
   pointer-events: auto;
   contain: layout paint style;
 }
