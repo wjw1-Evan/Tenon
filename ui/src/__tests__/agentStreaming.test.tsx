@@ -35,7 +35,7 @@ describe("AgentPanel streaming", () => {
   });
 });
 
-describe("发送按钮状态化（v1.59）", () => {
+describe("发送/停止按钮状态化（v1.59；v2.50 互斥单钮）", () => {
   function mockApi(status: string) {
     return {
       models: vi.fn().mockResolvedValue(models),
@@ -57,6 +57,8 @@ describe("发送按钮状态化（v1.59）", () => {
     render(<AgentPanel api={api} t={t} sessionId="s1" />);
     const stopBtn = await screen.findByTestId("stop");
     expect(stopBtn).toHaveTextContent("message.stop_short");
+    // v2.50 互斥单钮：空输入运行态仅「停止」，「发送」不并列。
+    expect(screen.queryByTestId("send")).toBeNull();
     fireEvent.click(stopBtn);
     await waitFor(() => expect(api.control).toHaveBeenCalledWith("s1", "stop"));
     expect(stopBtn).toBeDisabled();
@@ -67,9 +69,21 @@ describe("发送按钮状态化（v1.59）", () => {
     render(<AgentPanel api={api} t={t} sessionId="s1" />);
     const sendBtn = await screen.findByTestId("send");
     expect(sendBtn).toHaveTextContent("message.send");
+    expect(screen.queryByTestId("stop")).toBeNull();
     fireEvent.change(screen.getByTestId("task-input"), { target: { value: "hi" } });
     fireEvent.click(sendBtn);
     await waitFor(() => expect(api.sendMessage).toHaveBeenCalledWith("s1", "hi"));
+  });
+
+  it("v2.50 互斥：运行态键入草稿后停止隐藏、仅「发送」，点击照常入队", async () => {
+    const api = mockApi("executing");
+    render(<AgentPanel api={api} t={t} sessionId="s1" />);
+    await screen.findByTestId("stop");
+    fireEvent.change(screen.getByTestId("task-input"), { target: { value: "排队任务" } });
+    expect(screen.queryByTestId("stop")).toBeNull();
+    const sendBtn = screen.getByTestId("send");
+    fireEvent.click(sendBtn);
+    await waitFor(() => expect(api.sendMessage).toHaveBeenCalledWith("s1", "排队任务"));
   });
 });
 
