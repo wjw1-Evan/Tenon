@@ -485,6 +485,7 @@
   "onboarding.daemon_unreachable": "No se puede conectar con el servicio local de Tenon (puede estar reiniciándose) — reintenta en un momento.",
   "review.title": "Revisión",
   "review.close": "Cerrar el panel de revisión",
+  "review.toggle": "Panel de revisión",
   "review.tab_diff": "Diff",
   "review.tab_files": "Archivos",
   "review.tab_overview": "Resumen",

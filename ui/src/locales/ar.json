@@ -485,6 +485,7 @@
   "onboarding.daemon_unreachable": "تعذّر الوصول إلى خدمة Tenon المحلية (ربما تكون قيد إعادة التشغيل) — يرجى إعادة المحاولة بعد قليل.",
   "review.title": "المراجعة",
   "review.close": "إغلاق لوحة المراجعة",
+  "review.toggle": "لوحة المراجعة",
   "review.tab_diff": "الفرق",
   "review.tab_files": "الملفات",
   "review.tab_overview": "نظرة عامة",

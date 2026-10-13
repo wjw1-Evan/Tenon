@@ -485,6 +485,7 @@
   "onboarding.daemon_unreachable": "无法连接本地 Tenon 服务（可能正在重启），请稍候重试。",
   "review.title": "审查",
   "review.close": "关闭审查面",
+  "review.toggle": "审查面板",
   "review.tab_diff": "差异",
   "review.tab_files": "文件",
   "review.tab_overview": "概览",

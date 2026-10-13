@@ -1569,6 +1569,15 @@ export default function App({
             }}
             followMode={followMode}
             onToggleFollow={toggleFollow}
+            reviewToggle={
+              !narrow && featureFlags.enabled("reviewPane")
+                ? {
+                    open: reviewManual ?? RUNNING_STATES.has(agentState),
+                    onToggle: () =>
+                      setReviewManual((v) => !(v ?? RUNNING_STATES.has(agentState))),
+                  }
+                : undefined
+            }
             injectedTask={injectedTask ?? undefined}
             onOpenOnboarding={openOnboarding}
             onModelSwitched={(m) => {

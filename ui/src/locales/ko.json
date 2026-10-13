@@ -485,6 +485,7 @@
   "onboarding.daemon_unreachable": "로컬 Tenon 서비스에 연결할 수 없습니다(재시작 중일 수 있음). 잠시 후 다시 시도하세요.",
   "review.title": "검토",
   "review.close": "검토 창 닫기",
+  "review.toggle": "검토 패널",
   "review.tab_diff": "diff",
   "review.tab_files": "파일",
   "review.tab_overview": "개요",

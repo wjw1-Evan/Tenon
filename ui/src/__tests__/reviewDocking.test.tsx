@@ -104,6 +104,21 @@ describe("常驻审查面 App 接线（design-v2.md §6）", () => {
     expect(screen.queryByTestId("review-pane")).toBeNull();
   });
 
+  it("v2.47 审查手动开关：空闲态 toggle 开面板、✕ 关、再开", async () => {
+    currentStatus = "done";
+    render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/proj-a" />);
+    await waitFor(() => expect((screen.getByTestId("send") as HTMLButtonElement).disabled).toBe(false));
+    // 空闲态默认不渲染面板
+    expect(screen.queryByTestId("review-pane")).toBeNull();
+    // 「审查」pill：开 → ✕ 关 → 再开
+    fireEvent.click(screen.getByTestId("review-toggle"));
+    await waitFor(() => expect(screen.getByTestId("review-pane")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("review-close"));
+    await waitFor(() => expect(screen.queryByTestId("review-pane")).toBeNull());
+    fireEvent.click(screen.getByTestId("review-toggle"));
+    await waitFor(() => expect(screen.getByTestId("review-pane")).toBeTruthy());
+  });
+
   it("idle session does not render the review pane", async () => {
     currentStatus = "done";
     render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/proj-a" />);

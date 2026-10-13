@@ -87,6 +87,8 @@ interface Props {
   /** 跟随模式（§8.5）：代理写入时编辑器自动滚动到改动处；App 持有状态，此处仅展示开关。 */
   followMode?: boolean;
   onToggleFollow?: () => void;
+  /** v2.47 审查面手动开关（§7.2）：App 持有 reviewManual；缺席 = 窄屏 / flag off 不渲染钮。 */
+  reviewToggle?: { open: boolean; onToggle: () => void };
   /** 外部一键入口（诊断修复）注入任务；token 变化即发送。 */
   injectedTask?: { token: number; text: string };
   /** 会话级模型热切换回调（§11：上下文随迁提示由 App 呈现）。 */
@@ -227,6 +229,7 @@ export function AgentPanel({
   onDirtyConflict,
   onPatchLines,
   followMode,
+  reviewToggle,
   onToggleFollow,
   injectedTask,
   onModelSwitched,
@@ -905,11 +908,28 @@ export function AgentPanel({
         >
           {t("follow.toggle")}
         </button>
+        {reviewToggle && (
+          <button
+            type="button"
+            className={reviewToggle.open ? "agent-review-toggle on" : "agent-review-toggle"}
+            aria-pressed={reviewToggle.open}
+            title={t("review.toggle")}
+            aria-label={t("review.toggle")}
+            data-testid="review-toggle"
+            onClick={reviewToggle.onToggle}
+          >
+            {t("review.title")}
+          </button>
+        )}
       </div>
 
       <div className="agent-feed" ref={feedRef} data-testid="agent-feed">
         {empty && (
           <div className="agent-empty" data-testid="agent-empty">
+            {/* v2.47 排版精雕：muted 对话气泡轮廓图标——纯装饰点缀，文案不变 */}
+            <svg className="agent-empty-icon" width={28} height={28} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M21 11.5a8.38 8.38 0 0 1-8.5 8.5 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 8.5-8.5 8.38 8.38 0 0 1 8.5 8.5z" />
+            </svg>
             {sessionId || draft ? t("thread.empty") : t("thread.no_session")}
           </div>
         )}

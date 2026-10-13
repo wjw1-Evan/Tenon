@@ -485,6 +485,7 @@
   "onboarding.daemon_unreachable": "無法連線本機 Tenon 服務（可能正在重啟），請稍候再試。",
   "review.title": "審查",
   "review.close": "關閉審查面",
+  "review.toggle": "審查面板",
   "review.tab_diff": "差異",
   "review.tab_files": "檔案",
   "review.tab_overview": "總覽",

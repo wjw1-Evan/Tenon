@@ -485,6 +485,7 @@
   "onboarding.daemon_unreachable": "ローカルの Tenon サービスに接続できません（再起動中の可能性）。しばらく待ってから再試行してください。",
   "review.title": "レビュー",
   "review.close": "レビュー面を閉じる",
+  "review.toggle": "レビューパネル",
   "review.tab_diff": "差分",
   "review.tab_files": "ファイル",
   "review.tab_overview": "概要",

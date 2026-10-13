@@ -289,3 +289,33 @@ describe("AgentPanel additional", () => {
     expect(resumeBtn).toBeTruthy();
   });
 });
+
+// v2.47 审查面手动开关（§7.2）：AgentPanel 头部「审查」pill——App 持有 reviewManual。
+describe("审查面手动开关（v2.47）", () => {
+  it("传 reviewToggle 渲染 pill 钮：active 态类 + aria-pressed + 点击回调", async () => {
+    const onToggle = vi.fn();
+    render(
+      <AgentPanel api={mockApi([])} t={t} sessionId="s1" reviewToggle={{ open: true, onToggle }} />,
+    );
+    const btn = await screen.findByTestId("review-toggle");
+    expect(btn.className).toContain("on");
+    expect(btn.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(btn);
+    expect(onToggle).toHaveBeenCalledTimes(1);
+  });
+
+  it("open=false 非 active；不传 reviewToggle 不渲染钮", () => {
+    const onToggle = vi.fn();
+    const { rerender } = render(
+      <AgentPanel api={mockApi([])} t={t} sessionId="s1" reviewToggle={{ open: false, onToggle }} />,
+    );
+    expect(screen.getByTestId("review-toggle").className).not.toContain("on");
+    rerender(<AgentPanel api={mockApi([])} t={t} sessionId="s1" />);
+    expect(screen.queryByTestId("review-toggle")).toBeNull();
+  });
+
+  it("空态渲染对话气泡轮廓图标（v2.47 排版精雕）", () => {
+    render(<AgentPanel api={mockApi([])} t={t} sessionId={null} />);
+    expect(document.querySelector(".agent-empty-icon")).toBeTruthy();
+  });
+});

@@ -485,6 +485,7 @@
   "onboarding.daemon_unreachable": "Не удается подключиться к локальной службе Tenon (возможно, она перезапускается) — повторите попытку чуть позже.",
   "review.title": "Ревью",
   "review.close": "Закрыть панель ревью",
+  "review.toggle": "Панель обзора",
   "review.tab_diff": "Diff",
   "review.tab_files": "Файлы",
   "review.tab_overview": "Обзор",

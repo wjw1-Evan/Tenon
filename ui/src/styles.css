@@ -1327,12 +1327,18 @@ button:disabled { opacity: 0.45; cursor: default; }
 .agent-empty {
   flex: 1;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 10px;
   color: var(--muted);
   font-size: 12.5px;
   text-align: center;
   padding: 24px;
+}
+/* v2.47 排版精雕：空态对话气泡轮廓图标——muted 弱化点缀 */
+.agent-empty-icon {
+  opacity: 0.45;
 }
 
 /* 会话过程流（v1.109 Codex 形态；v1.162 纯文本化）：回合分组 + 单行折叠步骤 + markdown
@@ -1590,6 +1596,8 @@ button:disabled { opacity: 0.45; cursor: default; }
   line-height: 1.6;
   color: var(--fg);
   word-break: break-word;
+  /* v2.47 排版精雕：超宽屏行长约束（46em ≈ 中文 46 字/行），代码块横向滚动不受限 */
+  max-width: 46em;
 }
 .turn-answer p {
   margin: 0 0 6px;
@@ -3024,6 +3032,20 @@ button:disabled { opacity: 0.45; cursor: default; }
   color: var(--muted);
 }
 .agent-follow.on {
+  color: var(--accent-text);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+/* v2.47 审查面手动开关（§7.2）：线程头部「审查」pill——active 态与面板渲染同源 */
+.agent-review-toggle {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+}
+.agent-review-toggle.on {
   color: var(--accent-text);
   border-color: var(--accent);
   background: var(--accent-soft);

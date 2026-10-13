@@ -485,6 +485,7 @@
   "onboarding.daemon_unreachable": "Impossible de joindre le service Tenon local (il redémarre peut-être) — réessayez dans un instant.",
   "review.title": "Revue",
   "review.close": "Fermer le volet de revue",
+  "review.toggle": "Panneau de révision",
   "review.tab_diff": "Diff",
   "review.tab_files": "Fichiers",
   "review.tab_overview": "Aperçu",
