@@ -3461,6 +3461,10 @@ button:disabled { opacity: 0.45; cursor: default; }
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  /* v2.55 用户令「上面缺少间距」——tab 栏（padding 0 8px）与首个内容行
+     （diff-title 等微标题只有 margin-bottom）之间零纵向间距，顶 8px 呼吸位
+     对齐 .diff-title 的 margin-bottom 节奏；v2.5 无 tab 回退形态同理受益。 */
+  padding-top: 8px;
 }
 
 .review-body > * {
