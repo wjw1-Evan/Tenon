@@ -2724,6 +2724,9 @@ button:disabled { opacity: 0.45; cursor: default; }
 }
 .zone-left.zone-float { left: 46px; border-right: 1px solid var(--border-strong); }
 .zone-center.zone-float { right: 0; border-left: 1px solid var(--border-strong); }
+/* v2.52 窄屏审查面浮层（用户令「小屏幕下 review 按钮不要隐藏」）：手动开启时
+   右缘锚定，同侧栏浮层语言；.zone-float 的 max-width 82vw 与阴影 / 动画沿用。 */
+.zone-review.zone-float { right: 0; border-left: 1px solid var(--border-strong); }
 
 /* 顶栏编辑器浮层切换按钮：仅 narrow 且有打开 tab 时由 App 渲染，样式对齐 rail-btn。 */
 .editor-float-toggle {

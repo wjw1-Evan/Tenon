@@ -119,6 +119,24 @@ describe("常驻审查面 App 接线（design-v2.md §6）", () => {
     await waitFor(() => expect(screen.getByTestId("review-pane")).toBeTruthy());
   });
 
+  it("v2.52 窄屏：审查钮恒渲染、运行态不自动停靠，手动开为浮层（zone-float）", async () => {
+    currentStatus = "executing";
+    window.innerWidth = 700; // narrow < 800（§7.2 三档布局）
+    render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/proj-a" />);
+    // 窄屏运行态不自动停靠，但「审查」pill 恒渲染
+    await waitFor(() => expect(screen.getByTestId("review-toggle")).toBeTruthy(), { timeout: 4000 });
+    await new Promise((r) => setTimeout(r, 600));
+    expect(screen.queryByTestId("review-pane")).toBeNull();
+    // 手动开启 → 右缘浮层；✕ 关闭
+    fireEvent.click(screen.getByTestId("review-toggle"));
+    await waitFor(() => expect(screen.getByTestId("review-pane")).toBeTruthy());
+    expect(screen.getByTestId("review-pane").className).toContain("zone-float");
+    fireEvent.click(screen.getByTestId("review-close"));
+    await waitFor(() => expect(screen.queryByTestId("review-pane")).toBeNull());
+    window.innerWidth = 1440; // 复位，防污染后续用例
+    window.dispatchEvent(new Event("resize"));
+  });
+
   it("idle session does not render the review pane", async () => {
     currentStatus = "done";
     render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/proj-a" />);

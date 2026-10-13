@@ -322,6 +322,7 @@ export function ReviewPane({
   onFeedback,
   digest,
   width,
+  floating,
   toolTabs,
 }: {
   t: Translate;
@@ -335,6 +336,8 @@ export function ReviewPane({
   digest?: ReviewDigest;
   /** v2.11 宽度拖拽记忆（design-v2.md §6）：App 持有并持久化的像素宽（280-520）。 */
   width?: number;
+  /** v2.52 窄屏手动开启：渲染为右缘浮层（zone-float，同侧栏浮层语言）。 */
+  floating?: boolean;
   /** v2.38 工具面板（flag toolPanelTabs）：缺席 = v2.5 单一 diff 审查面回退形态。 */
   toolTabs?: ToolTabsProps;
 }) {
@@ -447,7 +450,7 @@ export function ReviewPane({
 
   return (
     <aside
-      className="zone zone-review"
+      className={`zone zone-review${floating ? " zone-float" : ""}`}
       data-testid="review-pane"
       data-running={running ? "1" : "0"}
       style={width !== undefined ? { width } : undefined}

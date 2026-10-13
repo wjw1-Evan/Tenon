@@ -1570,11 +1570,18 @@ export default function App({
             followMode={followMode}
             onToggleFollow={toggleFollow}
             reviewToggle={
-              !narrow && featureFlags.enabled("reviewPane")
+              featureFlags.enabled("reviewPane")
                 ? {
-                    open: reviewManual ?? RUNNING_STATES.has(agentState),
+                    // v2.52：窄屏恒渲染（用户令「小屏幕下 review 按钮不要隐藏」）——
+                    // 窄屏运行态不自动停靠，pill active 态仅跟随手动开关，
+                    // toggle 以「关」为基态（宽屏 null 随运行态语义窄屏不适用）。
+                    open: narrow
+                      ? reviewManual === true
+                      : reviewManual ?? RUNNING_STATES.has(agentState),
                     onToggle: () =>
-                      setReviewManual((v) => !(v ?? RUNNING_STATES.has(agentState))),
+                      setReviewManual((v) =>
+                        !(v ?? (narrow ? false : RUNNING_STATES.has(agentState))),
+                      ),
                   }
                 : undefined
             }
@@ -1589,29 +1596,38 @@ export default function App({
         </section>
         {/* v2.4 常驻审查面（design-v2.md §6）：会话运行中自动停靠右栏（用户可手动
             关闭，会话切换重置回自动），实时呈现 latestDiff 改动流——「人改与 AI 改
-            实时互见」的默认形态；窄屏不渲染（浮层语义后续演进）。 */}
-        {!narrow && featureFlags.enabled("reviewPane") && (reviewManual ?? RUNNING_STATES.has(agentState)) && (
+            实时互见」的默认形态；窄屏不自动停靠（不抢小屏），仅手动开启——
+            v2.52 转右缘浮层（zone-float，同侧栏浮层语言），✕ 关闭。 */}
+        {featureFlags.enabled("reviewPane") &&
+          (narrow
+            ? reviewManual === true
+            : (reviewManual ?? RUNNING_STATES.has(agentState))) && (
           <>
             {/* v2.11 宽度拖拽记忆（design-v2.md §6）：审查面左缘把手——鼠标左移
-                delta 为负增宽（w - d），clamp 280-520 防挤压，双击回默认 340。 */}
-            <ResizeHandle
-              dir="horizontal"
-              testId="resize-review"
-              onResize={(d) =>
-                setReviewWidth((w) => {
-                  const v = Math.min(520, Math.max(280, w - d));
-                  localStorage.setItem("tenon:reviewWidth", String(v));
-                  return v;
-                })
-              }
-              onDoubleClick={() => {
-                setReviewWidth(340);
-                localStorage.setItem("tenon:reviewWidth", "340");
-              }}
-            />
+                delta 为负增宽（w - d），clamp 280-520 防挤压，双击回默认 340；
+                窄屏浮层宽由 effectiveFloatWidth 82vw 封顶，拖拽把手不渲染。 */}
+            {!narrow && (
+              <ResizeHandle
+                dir="horizontal"
+                testId="resize-review"
+                onResize={(d) =>
+                  setReviewWidth((w) => {
+                    const v = Math.min(520, Math.max(280, w - d));
+                    localStorage.setItem("tenon:reviewWidth", String(v));
+                    return v;
+                  })
+                }
+                onDoubleClick={() => {
+                  setReviewWidth(340);
+                  localStorage.setItem("tenon:reviewWidth", "340");
+                }}
+              />
+            )}
             <ReviewPane
               t={t}
               diff={latestDiff}
+              floating={narrow}
+              width={narrow ? effectiveFloatWidth(reviewWidth, viewport.width) : reviewWidth}
               running={RUNNING_STATES.has(agentState)}
               statusLabel={
                 RUNNING_STATES.has(agentState) ? t("review.running") : t("review.idle")
@@ -1619,7 +1635,6 @@ export default function App({
               onClose={() => setReviewManual(false)}
               onFeedback={sendTaskText}
               digest={reviewDigest}
-              width={reviewWidth}
               toolTabs={
                 featureFlags.enabled("toolPanelTabs")
                   ? {
