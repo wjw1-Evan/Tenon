@@ -73,8 +73,12 @@ if [ "$MODE" = "head" ]; then
     trap 'cleanup; exit 143' TERM
     git worktree add --detach "$WT" "$HEAD_SHA" >/dev/null
     echo "== HEAD 干净 worktree 门禁 @ ${HEAD_SHA}（提交内容本身，而非共享工作树现状）=="
-    CARGO_TARGET_DIR="$(pwd)/target"
-    export CARGO_TARGET_DIR
+    # CARGO_TARGET_DIR 由调用方决定（见文件头注释）：未预设时共享主 target
+    # 缓存避免全量重编；但并行会话在途构建同抢主 target 时，同名 crate 的
+    # 工件会互相覆盖（-C metadata 不含源路径），doctest 可能链到对方半成品
+    # （v2.46 实测 tenon-agent --doc 误红：链到对面已删 circuit 的 tenon-core）
+    # ——预设私有 CARGO_TARGET_DIR 即可隔离。
+    export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$(pwd)/target}"
     run_cargo_gates "$WT"
     echo "HEAD @ ${HEAD_SHA} 门禁全过——提交内容与验证内容一致"
     exit 0
