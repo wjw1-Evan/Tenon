@@ -11,6 +11,7 @@ pub mod evals;
 pub mod executor;
 pub mod hooks;
 pub mod recovery;
+pub mod runcode;
 pub mod session;
 pub mod subagents;
 pub mod webfetch;

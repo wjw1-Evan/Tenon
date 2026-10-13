@@ -821,7 +821,8 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                         return ToolOutput::ok("（无匹配）");
                     }
                     const GLOB_MAX: usize = 500;
-                    let prefix = if rel == "." {
+                    // 守卫对 "." 可能返回空串（规范化后即项目根本身）——与 "." 同为无前缀
+                    let prefix = if rel.is_empty() || rel == "." {
                         String::new()
                     } else {
                         format!("{rel}/")
@@ -841,6 +842,14 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                 }
                 Err(e) => ToolOutput::err(format!("glob 失败: {e}")),
             }
+        }
+        // PTC 程序化工具调用首期（§9.2 v2.63，DSH §3.3 对标）：内嵌 JS 引擎
+        // 一次回合批量调用只读工具（内层复用 execute_tool=同作用域守卫）。
+        "run_code" => {
+            let Some(code) = args.get("code").and_then(|v| v.as_str()) else {
+                return ToolOutput::err("缺少 code 参数");
+            };
+            crate::runcode::run_code_script(ctx, code)
         }
         "git_read" => {
             let sub = args.get("sub").and_then(|s| s.as_str()).unwrap_or("status");
@@ -1842,13 +1851,8 @@ mod tests {
 
         let out = execute_tool(&c, "glob", &serde_json::json!({"pattern": "**/*.rs"}));
         assert!(out.ok, "{}", out.content);
-        assert!(out.content.contains("main.rs"), "{}", out.content);
-        assert!(out.content.contains("src/lib.rs"), "{}", out.content);
-        assert!(
-            !out.content.contains("vendor"),
-            ".gitignore 生效: {}",
-            out.content
-        );
+        // 精确断言（防前导斜杠 / 前缀误拼回归——空 rel 前缀 bug 曾被 contains 掩盖）
+        assert_eq!(out.content, "main.rs\nsrc/lib.rs");
 
         // 子目录 scope：返回项目根相对路径（可直接喂 read_file）
         let out = execute_tool(

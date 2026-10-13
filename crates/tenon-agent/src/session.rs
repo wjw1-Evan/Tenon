@@ -332,6 +332,11 @@ fn tool_specs() -> Vec<ToolSpec> {
             },
             "required": ["pattern"]
         })),
+        ("run_code", "PTC 批处理（JS 脚本一次回合内程序化调用只读工具）：code 为 JS 源码，tool(\"read_file\"|\"glob\"|\"grep\"|\"list_dir\", 参数…) 返回工具输出文本、log(...) 输出中间结果，脚本返回值回流；典型用法=先 glob 定位再循环 read_file 汇总（预算：tool ≤500 次、循环/递归上限）；多文件批量检索汇总时用，写文件仍用 apply_patch", serde_json::json!({
+            "type": "object",
+            "properties": {"code": {"type": "string", "description": "JS 脚本源码"}},
+            "required": ["code"]
+        })),
         ("git_read", "只读 git：status/log/diff", serde_json::json!({
             "type": "object", "properties": {"sub": {"type": "string", "enum": ["status", "log", "diff"]}}
         })),

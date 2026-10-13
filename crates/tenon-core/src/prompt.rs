@@ -115,6 +115,10 @@ pub fn tool_catalog() -> String {
             Tool::Glob,
             "按文件名模式查找文件（如 **/*.rs，尊重 .gitignore）——「找全部 X 文件」用它，内容搜索用 grep",
         ),
+        (
+            Tool::RunCode,
+            "PTC 批处理（JS 脚本一次回合批量调用只读工具）：code 内用 tool(\"read_file\"|\"glob\"|\"grep\"|\"list_dir\", 参数…) 程序化调用、log(...) 输出中间结果——多文件批量「搜索→读→汇总」用它省回合",
+        ),
         (Tool::GitRead, "只读 git：status / log / diff"),
         (Tool::LspQuery, "语言服务查询：定义 / 引用 / 符号 / hover"),
         (
