@@ -330,6 +330,8 @@
   "thread.undo_failed": "撤销失败：未找到对应快照",
   "thread.copy": "复制",
   "thread.code_copy": "复制代码",
+  "thread.view_image": "查看图片",
+  "thread.close_image": "关闭图片",
   "thread.edit": "编辑",
   "thread.jump_bottom": "回到底部",
   "thread.copied": "已复制",

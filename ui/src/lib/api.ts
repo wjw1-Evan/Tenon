@@ -307,15 +307,20 @@ export class TenonApi {
     this.token = handshake.token ?? "";
   }
 
+  /** 鉴权头（v2.60 抽公共）：局域网已配对设备（v1.157）主 token 缺失时凭设备令牌过中间件。 */
+  private authHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {};
+    const paired = readPairedToken();
+    if (paired) headers["X-Tenon-Paired"] = paired;
+    if (this.token) headers["X-Tenon-Token"] = this.token;
+    return headers;
+  }
+
   private async request<T>(
     path: string,
     init?: RequestInit & { json?: unknown }
   ): Promise<T> {
-    const headers: Record<string, string> = {};
-    // 局域网已配对设备（v1.157）：主 token 缺失时凭设备令牌过中间件
-    const paired = readPairedToken();
-    if (paired) headers["X-Tenon-Paired"] = paired;
-    if (this.token) headers["X-Tenon-Token"] = this.token;
+    const headers = this.authHeaders();
     let body = init?.body;
     if (init?.json !== undefined) {
       headers["Content-Type"] = "application/json";
@@ -450,6 +455,22 @@ export class TenonApi {
         json: attachments && attachments.length > 0 ? { text, attachments } : { text },
       },
     );
+  }
+
+  /** v2.60 消息图片回显：会话附件 → 对象 URL（token 走请求头不进 URL）。失败抛 ApiError。 */
+  async attachmentObjectUrl(sessionId: string, name: string): Promise<string> {
+    const resp = await fetch(
+      `${this.base}/session/${sessionId}/attachment/${encodeURIComponent(name)}`,
+      { headers: this.authHeaders() },
+    );
+    if (!resp.ok) {
+      const text = await resp.text();
+      const error = new Error(`API ${resp.status}: ${daemonErrorMessage(text)}`) as ApiError;
+      const code = daemonErrorCode(text);
+      if (code) error.code = code;
+      throw error;
+    }
+    return URL.createObjectURL(await resp.blob());
   }
 
   getSession(sessionId: string) {

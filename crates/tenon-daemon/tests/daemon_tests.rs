@@ -3697,6 +3697,128 @@ async fn file_ops_endpoint() {
 }
 
 #[tokio::test]
+async fn message_attachment_echo_endpoints() {
+    // v2.60 图片回显端到端：带图消息 → user_input 载荷 attachments 文件名清单；
+    // 附件端点 200 原始字节 / 400 非法名 / 404 缺失 / 401 无 token。
+    // attachments_dir 注入临时目录——防 cargo test 直写真实 ~/.tenon。
+    const PNG_1PX: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    let dir = tempfile::tempdir().unwrap();
+    let proj = dir.path().join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let mut options = DaemonOptions::in_memory();
+    options.attachments_dir = Some(dir.path().join("att"));
+    options.providers = vec![Arc::new(MockProvider::new(
+        "mock",
+        "mock-1",
+        vec![ScriptedReply::Text("done".into())],
+    ))];
+    options.default_provider = "mock".into();
+    options.snapshots_root = Some(dir.path().join("snapshots"));
+    options.worktrees_root = Some(dir.path().join("worktrees"));
+    options.endpoint_path = Some(dir.path().join("daemon.endpoint"));
+    options.settings_path = Some(dir.path().join("settings.json"));
+    let handle = serve(options).await.unwrap();
+    let port = handle.port;
+    let token = handle.token;
+    let client = client_with_token(&token);
+
+    let r = client
+        .post(format!("{base}/projects/open", base = base(port)))
+        .json(&serde_json::json!({ "path": proj }))
+        .send()
+        .await
+        .unwrap();
+    let pid = r.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let r = client
+        .post(format!("{}/session", base(port)))
+        .json(&serde_json::json!({ "project_id": pid, "provider": "mock" }))
+        .send()
+        .await
+        .unwrap();
+    let sid = r.json::<serde_json::Value>().await.unwrap()["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // 带图消息：任务跑完（mock "done"），user_input 载荷带 attachments 文件名
+    let r = client
+        .post(format!("{}/session/{sid}/message", base(port)))
+        .json(&serde_json::json!({
+            "text": "看图",
+            "attachments": [{ "media_type": "image/png", "data_base64": PNG_1PX }]
+        }))
+        .send()
+        .await
+        .unwrap();
+    // 受理即成功（200/202）：任务后台执行，结果经 trace 轮询断言
+    assert!(r.status().is_success());
+
+    let mut attachments: Vec<String> = Vec::new();
+    for _ in 0..100 {
+        let trace: serde_json::Value = client
+            .get(format!("{}/session/{sid}/trace", base(port)))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        if let Some(events) = trace["events"].as_array() {
+            for ev in events {
+                if ev["type"] == "user_input" {
+                    if let Some(list) = ev["payload"]["attachments"].as_array() {
+                        attachments = list
+                            .iter()
+                            .map(|v| v.as_str().unwrap_or("").to_string())
+                            .collect();
+                    }
+                }
+            }
+        }
+        if !attachments.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(attachments, vec!["0.png".to_string()]);
+
+    // 附件端点：200 原始字节 + image/png
+    let r = client
+        .get(format!("{}/session/{sid}/attachment/0.png", base(port)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.headers()["content-type"], "image/png");
+    let bytes = r.bytes().await.unwrap();
+    assert_eq!(bytes.len(), 70); // 1x1 PNG 常量解码后 70 字节
+
+    // 404：文件不存在；400：非白名单文件名；401：无 token
+    let r = client
+        .get(format!("{}/session/{sid}/attachment/9.png", base(port)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
+    let r = client
+        .get(format!("{}/session/{sid}/attachment/x.txt", base(port)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
+    let r = reqwest::Client::new()
+        .get(format!("{}/session/{sid}/attachment/0.png", base(port)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401);
+}
+
+#[tokio::test]
 async fn search_replace_endpoint() {
     let (_dir, port, token, proj) = start_daemon_with_project(vec![]).await;
     let client = client_with_token(&token);

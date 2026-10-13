@@ -1456,7 +1456,8 @@ impl AgentSession {
     /// 此前 Executing 中再发消息会并发跑两个任务循环，竞态改写会话消息历史。
     /// 兼容入口：无图片任务（全库既有调用零改动）。
     pub async fn run_task(&self, user_text: &str) -> TaskOutcome {
-        self.run_task_guarded(user_text, Vec::new()).await
+        self.run_task_guarded(user_text, Vec::new(), Vec::new())
+            .await
     }
 
     /// v1.191 §11 多模态任务入口：user 消息携带图片（base64 内联，
@@ -1465,14 +1466,18 @@ impl AgentSession {
         &self,
         user_text: &str,
         images: Vec<tenon_models::ImagePart>,
+        // v2.60 图片回显：附件落盘文件名（0.png…），随 user_input 事件载荷下发。
+        attachment_names: Vec<String>,
     ) -> TaskOutcome {
-        self.run_task_guarded(user_text, images).await
+        self.run_task_guarded(user_text, images, attachment_names)
+            .await
     }
 
     async fn run_task_guarded(
         &self,
         user_text: &str,
         task_images: Vec<tenon_models::ImagePart>,
+        attachment_names: Vec<String>,
     ) -> TaskOutcome {
         if self.running.swap(true, Ordering::SeqCst) {
             return TaskOutcome::Error(
@@ -1487,7 +1492,9 @@ impl AgentSession {
             .await
             .begin_run(&self.session_id, None)
             .ok();
-        let outcome = self.run_task_inner(user_text, task_images).await;
+        let outcome = self
+            .run_task_inner(user_text, task_images, attachment_names)
+            .await;
         // 任务收尾后排空残留控制命令（v1.166）：Stop/Pause 发出时任务可能恰好
         // 在最后一段无检查点的流式回答/验证中收尾，命令滞留通道会让下一个任务
         // 的首个检查点误暂停/误停（SetReadonly 延一拍生效同理）——它们指向的是
@@ -1534,6 +1541,7 @@ impl AgentSession {
         &self,
         user_text: &str,
         task_images: Vec<tenon_models::ImagePart>,
+        attachment_names: Vec<String>,
     ) -> TaskOutcome {
         // §9.7 v1.87 并行写锁：按 (project_id, worktree_scope) 计——主根会话互斥，
         // 不同受管 worktree 会话可与主根及彼此并行；全局配额由 daemon 控制。
@@ -1553,7 +1561,12 @@ impl AgentSession {
         // ---- IDLE → SENSING ----
         self.emit(
             EventKind::UserInput,
-            &serde_json::json!({"text": user_text, "images": task_images.len()}),
+            &serde_json::json!({
+                "text": user_text,
+                "images": task_images.len(),
+                // v2.60 图片回显：附件文件名清单（GET /session/{sid}/attachment/{name} 拉取）
+                "attachments": attachment_names,
+            }),
         )
         .await;
         self.force_state(State::Sensing).await;

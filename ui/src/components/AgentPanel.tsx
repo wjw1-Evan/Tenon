@@ -109,6 +109,8 @@ interface EventItem {
 interface Turn {
   id: number;
   task: string | null;
+  /** v2.60 图片回显：user_input 事件载荷的附件文件名清单（0.png…；旧会话无字段为空）。 */
+  attachments: string[];
   items: EventItem[];
   /** v1.111 消息级撤销：回合内首个 patch_applied 事件 seq（对应该步写前 checkpoint）。 */
   firstPatchSeq: number | null;
@@ -284,6 +286,16 @@ export function AgentPanel({
   // 自动跟随阈值同源）；feedNew = 离底期间内容继续增长（流式增量 / 新事件）出徽点。
   const [feedAway, setFeedAway] = useState(false);
   const [feedNew, setFeedNew] = useState(false);
+  // v2.60 图片回显：灯箱（全屏看图），Esc 关闭
+  const [lightbox, setLightbox] = useState<string | null>(null);
+  useEffect(() => {
+    if (!lightbox) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setLightbox(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [lightbox]);
   const patchLinesCb = useRef<Props["onPatchLines"]>(undefined);
 
   useEffect(() => {
@@ -856,6 +868,7 @@ export function AgentPanel({
     const blank = (): Turn => ({
       id: 0,
       task: null,
+      attachments: [],
       items: [],
       firstPatchSeq: null,
       usage: { input: 0, output: 0, cached: 0, durationMs: 0 },
@@ -866,6 +879,9 @@ export function AgentPanel({
         cur = {
           id: ev.id,
           task: String(ev.payload.text ?? ""),
+          attachments: Array.isArray(ev.payload.attachments)
+            ? (ev.payload.attachments as unknown[]).map(String)
+            : [],
           items: [],
           firstPatchSeq: null,
           usage: { input: 0, output: 0, cached: 0, durationMs: 0 },
@@ -995,6 +1011,15 @@ export function AgentPanel({
               {turn.task !== null && (
                 <div className="turn-user" data-testid="turn-user">
                   <div className="turn-task">{turn.task}</div>
+                  {sessionId && turn.attachments.length > 0 && (
+                    <TurnImages
+                      api={api}
+                      sessionId={sessionId}
+                      names={turn.attachments}
+                      onOpen={setLightbox}
+                      t={t}
+                    />
+                  )}
                   {/* v1.127 气泡下功能按钮组：复制（恒可用）/ 撤销（每个含改动回合）；v1.135 重做改挂「已撤销」提示条 */}
                   <div className="turn-actions">
                     <button
@@ -1498,6 +1523,28 @@ export function AgentPanel({
           )}
         </div>
       </div>
+      {lightbox && (
+        <div
+          className="image-lightbox"
+          data-testid="image-lightbox"
+          onClick={() => setLightbox(null)}
+        >
+          <img src={lightbox} alt={t("thread.view_image")} />
+          <button
+            type="button"
+            className="image-lightbox-close"
+            data-testid="image-lightbox-close"
+            aria-label={t("thread.close_image")}
+            title={t("thread.close_image")}
+            onClick={(e) => {
+              e.stopPropagation();
+              setLightbox(null);
+            }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1761,6 +1808,73 @@ function ThinkingCard({ text, t }: { text: string; t: Translate }) {
         {t("thread.thinking")}
       </button>
       {open && <div className="turn-thinking-body">{text}</div>}
+    </div>
+  );
+}
+
+/** v2.60 图片回显：用户气泡下缩略图行——api 经请求头拉 blob 对象 URL（token 不进
+ * URL），卸载/名单变化时回收旧 URL；点击交由父级开灯箱。名单以 join 键做依赖，
+ * 防事件流每轮重算出的新数组引用触发重复拉取。 */
+function TurnImages({
+  api,
+  sessionId,
+  names,
+  onOpen,
+  t,
+}: {
+  api: TenonApi;
+  sessionId: string;
+  names: string[];
+  onOpen: (url: string) => void;
+  t: Translate;
+}) {
+  const key = names.join("|");
+  const [urls, setUrls] = useState<(string | null)[]>(() => key.split("|").map(() => null));
+  useEffect(() => {
+    const list = key ? key.split("|") : [];
+    if (list.length === 0) return;
+    let alive = true;
+    const loaded: Array<string | null> = list.map(() => null);
+    setUrls(list.map(() => null));
+    void Promise.all(
+      list.map((n, i) =>
+        api.attachmentObjectUrl(sessionId, n).then(
+          (url) => {
+            loaded[i] = url;
+            return url;
+          },
+          () => null,
+        ),
+      ),
+    ).then(() => {
+      if (alive) setUrls([...loaded]);
+    });
+    return () => {
+      alive = false;
+      for (const u of loaded) if (u) URL.revokeObjectURL(u);
+    };
+  }, [api, sessionId, key]);
+  return (
+    <div className="turn-images" data-testid="turn-images">
+      {key
+        .split("|")
+        .map((_, i) =>
+          urls[i] ? (
+            <button
+              key={i}
+              type="button"
+              className="turn-image"
+              data-testid={`turn-image-${i}`}
+              title={t("thread.view_image")}
+              aria-label={t("thread.view_image")}
+              onClick={() => onOpen(urls[i] as string)}
+            >
+              <img src={urls[i] as string} alt={t("thread.view_image")} />
+            </button>
+          ) : (
+            <span key={i} className="turn-image turn-image-loading" aria-hidden="true" />
+          ),
+        )}
     </div>
   );
 }

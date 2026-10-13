@@ -330,6 +330,8 @@
   "thread.undo_failed": "Échec de l'annulation : instantané correspondant introuvable",
   "thread.copy": "Copier",
   "thread.code_copy": "Copier le code",
+  "thread.view_image": "Voir l'image",
+  "thread.close_image": "Fermer l'image",
   "thread.edit": "Modifier",
   "thread.jump_bottom": "Revenir en bas",
   "thread.copied": "Copié",

@@ -330,6 +330,8 @@
   "thread.undo_failed": "فشل التراجع: لم يُعثر على اللقطة المطابقة",
   "thread.copy": "نسخ",
   "thread.code_copy": "نسخ الكود",
+  "thread.view_image": "عرض الصورة",
+  "thread.close_image": "إغلاق الصورة",
   "thread.edit": "تحرير",
   "thread.jump_bottom": "إلى الأسفل",
   "thread.copied": "تم النسخ",

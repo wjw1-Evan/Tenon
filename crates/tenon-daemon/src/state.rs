@@ -771,6 +771,9 @@ pub struct DaemonOptions {
     pub laya_models_dir: Option<std::path::PathBuf>,
     /// 技能全局目录覆盖（§13.4 v1.130；None = ~/.tenon/skills；测试注入临时目录）。
     pub skills_dir: Option<std::path::PathBuf>,
+    /// 消息附件目录覆盖（v2.60；None = ~/.tenon/attachments；测试注入临时目录，
+    /// 防 cargo test 直写真实用户数据目录）。
+    pub attachments_dir: Option<std::path::PathBuf>,
     /// 市场镜像链 base 覆盖（§13.5 v1.145；None = jsDelivr/raw 官方链；测试注入本地 mock）。
     pub market_base: Option<String>,
     /// 文件监听轮询后端间隔（v1.128 测试确定性通道）；None = 原生后端
@@ -794,6 +797,7 @@ impl DaemonOptions {
             providers: vec![],
             default_provider: String::new(),
             snapshots_root: None,
+            attachments_dir: None,
             worktrees_root: None,
             project: None,
             endpoint_path: None,
@@ -1300,6 +1304,8 @@ pub struct DaemonState {
     /// L4 状态变化进程内广播；WS 订阅者可全量或按 project_id 过滤。
     pub l4_status_events: tokio::sync::broadcast::Sender<L4StatusEvent>,
     pub snapshots_root: std::path::PathBuf,
+    /// 消息附件根目录（v2.60：attachments/<sid>/<name>）。
+    pub attachments_root: std::path::PathBuf,
     /// 技能全局目录（§13.4 v1.130：`~/.tenon/skills/`；测试隔离注入）。
     pub skills_root: std::path::PathBuf,
     /// 市场清单缓存（§13.5 v1.145：source@ref → (时间, 清单)，5 分钟 TTL；
@@ -1357,6 +1363,10 @@ impl DaemonState {
         let snapshots_root = options
             .snapshots_root
             .unwrap_or_else(|| Config::data_dir().join("snapshots"));
+        let attachments_root = options
+            .attachments_dir
+            .clone()
+            .unwrap_or_else(|| Config::data_dir().join("attachments"));
         let skills_root = options
             .skills_dir
             .clone()
@@ -1454,6 +1464,7 @@ impl DaemonState {
             file_events,
             l4_status_events,
             snapshots_root,
+            attachments_root,
             skills_root,
             market_cache,
             market_client_base: options.market_base.clone(),

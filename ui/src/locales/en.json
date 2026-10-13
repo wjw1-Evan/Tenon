@@ -330,6 +330,8 @@
   "thread.undo_failed": "Undo failed: matching snapshot not found",
   "thread.copy": "Copy",
   "thread.code_copy": "Copy code",
+  "thread.view_image": "View image",
+  "thread.close_image": "Close image",
   "thread.edit": "Edit",
   "thread.jump_bottom": "Back to bottom",
   "thread.copied": "Copied",

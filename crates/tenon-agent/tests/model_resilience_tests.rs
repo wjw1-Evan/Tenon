@@ -308,6 +308,7 @@ async fn task_with_images_reaches_provider_and_event() {
                 media_type: "image/png".into(),
                 data_base64: "aGVsbG8=".into(),
             }],
+            vec!["0.png".into()],
         )
         .await;
     assert!(matches!(outcome, TaskOutcome::Done(_)));

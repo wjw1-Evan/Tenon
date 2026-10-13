@@ -330,6 +330,8 @@
   "thread.undo_failed": "실행 취소 실패: 일치하는 스냅샷을 찾을 수 없습니다",
   "thread.copy": "복사",
   "thread.code_copy": "코드 복사",
+  "thread.view_image": "이미지 보기",
+  "thread.close_image": "이미지 닫기",
   "thread.edit": "편집",
   "thread.jump_bottom": "맨 아래로",
   "thread.copied": "복사됨",

@@ -1790,6 +1790,60 @@ button:disabled { opacity: 0.45; cursor: default; }
   }
 }
 
+/* v2.60 用户消息图片回显：气泡下缩略图行 + 全屏灯箱（z 层高于侧栏浮层） */
+.turn-images {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+.turn-image {
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: none;
+  overflow: hidden;
+  cursor: zoom-in;
+}
+.turn-image img {
+  display: block;
+  max-height: 96px;
+  max-width: 160px;
+}
+.turn-image-loading {
+  width: 72px;
+  height: 48px;
+  background: var(--raised);
+}
+.image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.72);
+  cursor: zoom-out;
+}
+.image-lightbox img {
+  max-width: 92vw;
+  max-height: 92vh;
+  border-radius: var(--radius-m);
+}
+.image-lightbox-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 32px;
+  height: 32px;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--raised);
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
 /* 工具步骤行（v1.162 去卡片装饰）：折叠单行 muted，点击展开明细；失败红显 */
 .turn-step-head {
   display: flex;

@@ -330,6 +330,8 @@
   "thread.undo_failed": "No se pudo deshacer: no se encontró la instantánea correspondiente",
   "thread.copy": "Copiar",
   "thread.code_copy": "Copiar código",
+  "thread.view_image": "Ver imagen",
+  "thread.close_image": "Cerrar imagen",
   "thread.edit": "Editar",
   "thread.jump_bottom": "Ir al final",
   "thread.copied": "Copiado",

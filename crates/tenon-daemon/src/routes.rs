@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{Path, Query, State, WebSocketUpgrade};
-use axum::http::StatusCode;
+use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
@@ -59,6 +59,7 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
         .route("/session/{id}/unarchive", post(unarchive_session))
         .route("/session/{id}", delete(delete_session))
         .route("/session/{id}/trace", get(session_trace))
+        .route("/session/{id}/attachment/{name}", get(session_attachment))
         .route("/acp/agents", get(acp_agents_probe))
         .route("/hooks/import-claude", post(hooks_import_claude))
         .route("/session/{id}/runs", get(session_runs))
@@ -143,6 +144,48 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
             auth_middleware,
         ))
         .with_state(state)
+}
+
+/// v2.60 图片回显：GET /session/{sid}/attachment/{name}——会话附件原始字节
+/// （v1.191 落盘于 data_dir/attachments/<sid>/）。文件名白名单（数字序号.图片
+/// 扩展名）+ 会话 id 分隔符拒绝，双重防目录穿越；token 中间件覆盖（非豁免路径）。
+async fn session_attachment(
+    State(state): State<Arc<DaemonState>>,
+    Path((sid, name)): Path<(String, String)>,
+) -> Response {
+    let name_ok = name
+        .split_once('.')
+        .map(|(num, ext)| {
+            !num.is_empty()
+                && num.bytes().all(|b| b.is_ascii_digit())
+                && matches!(ext, "png" | "jpg" | "jpeg" | "gif" | "webp")
+        })
+        .unwrap_or(false);
+    let sid_ok =
+        !sid.is_empty() && !sid.contains('/') && !sid.contains('\\') && sid != "." && sid != "..";
+    if !name_ok || !sid_ok {
+        return api_err(StatusCode::BAD_REQUEST, "非法附件标识");
+    }
+    let path = state.attachments_root.join(&sid).join(&name);
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => {
+            let mime = match name.rsplit('.').next() {
+                Some("png") => "image/png",
+                Some("jpg") | Some("jpeg") => "image/jpeg",
+                Some("gif") => "image/gif",
+                _ => "image/webp",
+            };
+            (
+                [
+                    (header::CONTENT_TYPE, mime),
+                    (header::CACHE_CONTROL, "private, max-age=3600"),
+                ],
+                bytes,
+            )
+                .into_response()
+        }
+        Err(_) => api_err(StatusCode::NOT_FOUND, "附件不存在"),
+    }
 }
 
 fn api_err(status: StatusCode, msg: impl Into<String>) -> Response {
@@ -821,6 +864,7 @@ struct MessageAttachment {
 /// v1.191 §11：附件校验 + 落盘（`~/.tenon/attachments/<session>/`）。
 /// 返回供 run_task_with_images 的 ImagePart 列表与落盘路径。
 fn validate_and_store_attachments(
+    attachments_root: &std::path::Path,
     session_id: &str,
     attachments: &[MessageAttachment],
 ) -> Result<(Vec<tenon_models::ImagePart>, Vec<String>), String> {
@@ -831,9 +875,7 @@ fn validate_and_store_attachments(
             tenon_models::IMAGES_PER_MESSAGE_MAX
         ));
     }
-    let dir = tenon_config::Config::data_dir()
-        .join("attachments")
-        .join(session_id);
+    let dir = attachments_root.join(session_id);
     std::fs::create_dir_all(&dir).map_err(|e| format!("附件目录创建失败: {e}"))?;
     let mut parts = Vec::with_capacity(attachments.len());
     let mut paths = Vec::with_capacity(attachments.len());
@@ -934,7 +976,7 @@ async fn send_message(
     };
     // v1.191 §11：附件校验 + 落盘（在 spawn 前——校验失败同步 400）
     let (task_images, attachment_paths) =
-        match validate_and_store_attachments(&id, &body.attachments) {
+        match validate_and_store_attachments(&state.attachments_root, &id, &body.attachments) {
             Ok(pair) => pair,
             Err(e) => return api_err(StatusCode::BAD_REQUEST, e),
         };
@@ -942,6 +984,11 @@ async fn send_message(
     if !attachment_paths.is_empty() {
         tracing::info!("消息附件已落盘：{:?}", attachment_paths);
     }
+    // v2.60 图片回显：附件文件名随 user_input 事件载荷下发（UI 经附件端点拉取）
+    let attachment_names: Vec<String> = attachment_paths
+        .iter()
+        .map(|p| p.rsplit('/').next().unwrap_or(p).to_string())
+        .collect();
 
     // 后台执行任务；状态经 GET /session/{id} 轮询
     let state2 = state.clone();
@@ -959,12 +1006,18 @@ async fn send_message(
             .map_err(|e| eprintln!("execution permit: {e}"));
         let mut text = text;
         let mut images = task_images;
+        // 附件名只在首轮消费（队列续跑均为纯文本），take 进调用与 images 同法
+        let mut attachment_names = attachment_names;
         let mut first_run = true;
         loop {
             let outcome = if first_run {
                 first_run = false;
                 run_session
-                    .run_task_with_images(&text, std::mem::take(&mut images))
+                    .run_task_with_images(
+                        &text,
+                        std::mem::take(&mut images),
+                        std::mem::take(&mut attachment_names),
+                    )
                     .await
             } else {
                 // 队列续跑的后续消息均为纯文本（附件不随队列）
