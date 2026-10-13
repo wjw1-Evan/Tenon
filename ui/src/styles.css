@@ -2207,7 +2207,8 @@ button:disabled { opacity: 0.45; cursor: default; }
   margin: 0;
   white-space: pre;
   background: var(--bg);
-  border: 1px solid var(--border);
+  /* v2.54 用户令「移除边框」——diff 正文去描边（v1.162 简洁哲学：底色同页面
+     背景，本就靠内容呈现，描边是纯装饰）；padding 8/10 与 spacer/window 定位常量耦合勿动。 */
   border-radius: var(--radius-m);
   padding: 8px 10px;
   color: var(--fg);
