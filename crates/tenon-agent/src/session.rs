@@ -786,7 +786,9 @@ impl AgentSession {
         let session = {
             let mut st = store.lock().await;
             match &config.session_id {
-                Some(id) => st.create_session_with_id(id, &config.project_id, &model),
+                // v2.48 懒重建：id 已存在（daemon 重启后按 store 行重建 runtime）
+                // 原样返回，不产生重复行、不重置状态
+                Some(id) => st.ensure_session_with_id(id, &config.project_id, &model),
                 None => st.create_session(&config.project_id, &model),
             }
             .map_err(|e| AgentError::Store(e.to_string()))?
@@ -989,6 +991,17 @@ impl AgentSession {
     }
 
     /// 标题落库并广播 `session_title` 事件（WS 即时刷新对话列表，§14.2）。
+    /// v2.48 懒重建配套：daemon 重启后按 store 历史 user_input 回填 L2 goals
+    /// （内存态随原 runtime 蒸发，续跑的系统提示依赖 goals 携带任务上下文）。
+    pub async fn seed_memory_goals(&self, mut goals: Vec<String>) {
+        let mut mem = self.memory.lock().await;
+        if goals.len() > MAX_L2_GOALS {
+            let drop = goals.len() - MAX_L2_GOALS;
+            goals.drain(0..drop);
+        }
+        mem.goals = goals;
+    }
+
     pub async fn set_title(&self, title: &str) -> Result<(), AgentError> {
         {
             let mut st = self.store.lock().await;

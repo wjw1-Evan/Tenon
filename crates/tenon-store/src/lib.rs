@@ -956,6 +956,21 @@ impl Store {
         Ok(s)
     }
 
+    /// v2.48 懒重建：id 已存在即原样返回（不新建行、不改状态），否则同
+    /// create_session_with_id。AgentSession::create 借此对既有会话幂等——
+    /// daemon 重启后按 store 行重建 runtime 不产生重复行、不重置状态。
+    pub fn ensure_session_with_id(
+        &mut self,
+        id: &str,
+        project_id: &str,
+        model: &str,
+    ) -> Result<Session> {
+        if let Some(s) = self.session(id)? {
+            return Ok(s);
+        }
+        self.create_session_with_id(id, project_id, model)
+    }
+
     /// 登记会话级受管 worktree 路径（v1.87 §9.7）；空串回退主根。
     pub fn set_session_worktree(&mut self, id: &str, worktree_path: &str) -> Result<()> {
         self.conn.execute(

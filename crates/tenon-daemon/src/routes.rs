@@ -333,6 +333,102 @@ async fn register_session_entry(
     sid
 }
 
+/// v2.48 懒重建（§10.3）：daemon 重启后 sessions 内存表为空——store 里的会话
+/// 列表 / 详情照常可读（直读 store），但恢复 / 发消息按内存表查找即 404，
+/// 表现为「恢复按钮无法继续」（v2.15/v2.16「用户下一条消息重建会话 runtime」
+/// 承诺的实现此前缺失）。首次触达时按 store 行重建 runtime 并登记；已存活
+/// 则直接复用。行内 model 反查 provider（default_model 匹配，未命中回退默认）；
+/// 受管 worktree 会话按行内路径重建（worktree 完成后保留语义不变，§9.5）；
+/// AgentSession::create 对既有 id 幂等（ensure_session_with_id），并发重建
+/// 窗口后插入者检测到已有 entry 即复用、不覆盖（busy 标志不可回卷）。
+async fn ensure_session_runtime(
+    state: &Arc<DaemonState>,
+    id: &str,
+) -> Result<Arc<tenon_agent::session::AgentSession>, (StatusCode, String)> {
+    if let Some(e) = state.sessions.lock().await.get(id) {
+        return Ok(e.session.clone());
+    }
+    let (row, project_row) = {
+        let mut st = state.store.lock().await;
+        let row = st
+            .session(id)
+            .ok()
+            .flatten()
+            .ok_or((StatusCode::NOT_FOUND, "session not found".to_string()))?;
+        let project_row = st
+            .project(&row.project_id)
+            .ok()
+            .flatten()
+            .ok_or((StatusCode::NOT_FOUND, "project not found".to_string()))?;
+        (row, project_row)
+    };
+    let project = ensure_open_project(state, &project_row.path, None).await?;
+    let provider = {
+        let providers = state.providers.read().unwrap();
+        providers
+            .values()
+            .find(|p| p.default_model() == row.model)
+            .cloned()
+    };
+    let provider = match provider {
+        Some(p) => p,
+        None => state
+            .provider_or_default("")
+            .await
+            .map_err(|e| (StatusCode::BAD_REQUEST, e))?,
+    };
+    let managed_worktree = if row.worktree_path.is_empty() {
+        None
+    } else {
+        Some(std::path::PathBuf::from(&row.worktree_path))
+    };
+    let session = create_agent_session(
+        state,
+        &project,
+        provider,
+        None,
+        Some(id.to_string()),
+        managed_worktree.clone(),
+    )
+    .await?;
+    {
+        let mut sessions = state.sessions.lock().await;
+        if let Some(e) = sessions.get(id) {
+            return Ok(e.session.clone());
+        }
+        sessions.insert(
+            id.to_string(),
+            SessionEntry {
+                session: session.clone(),
+                project_root: std::path::PathBuf::from(&project.path),
+                project_id: project.id.clone(),
+                managed_worktree,
+                last_outcome: Mutex::new(None),
+                busy: std::sync::atomic::AtomicBool::new(false),
+                last_seq: 0,
+            },
+        );
+    }
+    // L2 goals 按历史 user_input 回填（最近 MAX_L2_GOALS 条，事件序）——
+    // 内存态随原 runtime 蒸发，续跑的系统提示依赖它携带任务上下文。
+    let goals: Vec<String> = {
+        let mut st = state.store.lock().await;
+        st.events(id)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|e| e.kind == tenon_store::EventKind::UserInput)
+            .filter_map(|e| {
+                e.payload
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .map(String::from)
+            })
+            .collect()
+    };
+    session.seed_memory_goals(goals).await;
+    Ok(session)
+}
+
 /// 打开项目前 canonicalize、去重、检查嵌套根并维护 ProjectRuntime 表（§6.4）。
 async fn ensure_open_project(
     state: &Arc<DaemonState>,
@@ -781,6 +877,13 @@ async fn send_message(
     Path(id): Path<String>,
     Json(body): Json<MessageBody>,
 ) -> Response {
+    // v2.48 懒重建：daemon 重启后 store 孤儿会话首次触达按行重建 runtime
+    //（§10.3；此前发送 / 恢复 404）。重建后走既有入队判定不变。
+    if !state.sessions.lock().await.contains_key(&id) {
+        if let Err((s, m)) = ensure_session_runtime(&state, &id).await {
+            return api_err(s, m);
+        }
+    }
     // v1.147 发送消息队列（§9.1）：入队判定在 sessions 锁内同步完成——运行态
     //（busy 标志或 AgentSession::running，后者覆盖暂停真挂起窗口）转 FIFO 队列
     //（≤10 条，满 409），空闲置 busy 后直发；v1.93 run_task 重入守卫降为兜底。
@@ -1039,6 +1142,13 @@ async fn session_control(
     Path(id): Path<String>,
     Json(body): Json<ControlBody>,
 ) -> Response {
+    // v2.48 懒重建：恢复（终态暂停续跑）/ rollback 等动作同样依赖 runtime——
+    // daemon 重启后孤儿会话此前一律 404（「恢复按钮无法继续」的直接根因）。
+    if !state.sessions.lock().await.contains_key(&id) {
+        if let Err((s, m)) = ensure_session_runtime(&state, &id).await {
+            return api_err(s, m);
+        }
+    }
     let session = {
         let sessions = state.sessions.lock().await;
         match sessions.get(&id) {

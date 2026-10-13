@@ -40,6 +40,166 @@ async fn start_daemon(script: Vec<ScriptedReply>) -> (tempfile::TempDir, u16, St
 }
 
 #[tokio::test]
+async fn resume_and_message_store_orphan_session_after_restart() {
+    // v2.48 懒重建（§10.3）：daemon 重启后 sessions 内存表为空，store 里的会话
+    // 列表 / 详情照常可读（直读 store），但恢复 / 发消息此前按内存表查找一律
+    // 404——「恢复按钮无法继续」根因。重建后应照常（计划暂停 → 恢复续跑 → Done）。
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("tenon.db");
+    let project = dir.path().join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    // git 仓库 + 初始提交：快照链不降级（避免 snapshot_unavailable 终态暂停干扰）
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&project)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    assert!(git(&["init", "-qb", "main"]).status.success());
+    std::fs::write(project.join("a.txt"), "hello\n").unwrap();
+    assert!(git(&["add", "."]).status.success());
+    assert!(git(&[
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "-qm",
+        "init"
+    ])
+    .status
+    .success());
+
+    let daemon_opts = |endpoint: &str, script: Vec<ScriptedReply>| {
+        let mut options = DaemonOptions::in_memory();
+        options.db_path = Some(db.clone());
+        options.providers = vec![Arc::new(MockProvider::new("mock", "mock-1", script))];
+        options.default_provider = "mock".into();
+        options.snapshots_root = Some(dir.path().join("snapshots"));
+        options.worktrees_root = Some(dir.path().join("worktrees"));
+        options.endpoint_path = Some(dir.path().join(endpoint));
+        options.settings_path = Some(dir.path().join("settings.json"));
+        options
+    };
+
+    // —— 进程 A：建会话 → 提交计划（计划暂停 = 终态 paused）——
+    let ha = serve(daemon_opts(
+        "a.endpoint",
+        vec![ScriptedReply::Mixed {
+            text: "这是方向性改动，先提交计划".into(),
+            tool: (
+                "submit_plan".to_string(),
+                serde_json::json!({"items": ["改 A 文件支持 X", "补测试并跑通"]}),
+            ),
+        }],
+    ))
+    .await
+    .unwrap();
+    let client = client_with_token(&ha.token);
+    let reg: serde_json::Value = client
+        .post(format!("{}/projects/open", base(ha.port)))
+        .json(&serde_json::json!({"path": project.to_string_lossy()}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let pid = reg["id"].as_str().unwrap().to_string();
+    client
+        .put(format!("{}/project/trust", base(ha.port)))
+        .json(&serde_json::json!({"project_id": pid, "trusted": true}))
+        .send()
+        .await
+        .unwrap();
+    let created: serde_json::Value = client
+        .post(format!("{}/session", base(ha.port)))
+        .json(&serde_json::json!({"project_id": pid, "provider": "mock"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let sid = created["session_id"].as_str().unwrap().to_string();
+    client
+        .post(format!("{}/session/{sid}/message", base(ha.port)))
+        .json(&serde_json::json!({"text": "复杂任务"}))
+        .send()
+        .await
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        let st: serde_json::Value = client
+            .get(format!("{}/session/{sid}", base(ha.port)))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        if st["status"] == "paused" {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "进程 A 应在计划提交后暂停，实际 {st}"
+        );
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+
+    // —— 进程 B：同库重启（sessions 内存表为空 = store 孤儿会话）——
+    let hb = serve(daemon_opts(
+        "b.endpoint",
+        vec![ScriptedReply::Text("计划已执行完成".into())],
+    ))
+    .await
+    .unwrap();
+    let client_b = client_with_token(&hb.token);
+    let st: serde_json::Value = client_b
+        .get(format!("{}/session/{sid}", base(hb.port)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(st["status"], "paused", "重启后 paused 会话应可见");
+    let r = client_b
+        .post(format!("{}/session/{sid}/control", base(hb.port)))
+        .json(&serde_json::json!({"action": "resume", "text": "按计划执行"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        r.status().is_success(),
+        "孤儿会话恢复应成功，实际 {}",
+        r.status()
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        let st: serde_json::Value = client_b
+            .get(format!("{}/session/{sid}", base(hb.port)))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        if st["status"] == "done" {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "恢复续跑应收尾完成，实际 {st}"
+        );
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+}
+
+#[tokio::test]
 async fn fixed_port_and_token_serve_dev_hot_reload() {
     // 开发热重载（v1.65）：`--port` 固定绑定端口、`--token` 固定握手 token
     //（UI DEV 回落约定 127.0.0.1:9876 + token "dev"）；默认随机路径不受影响
