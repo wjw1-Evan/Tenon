@@ -1016,6 +1016,15 @@ export function AgentPanel({
         )}
         {turns.map((turn, idx) => {
           const active = idx === turns.length - 1;
+          // v2.66：审查回合识别 + 发现修复一键后续（⚠️daemon 每任务全新对话——
+          // 修复指令必须自包含：模板 + 审查回复全文内嵌，指代上文模型不可见）
+          const isReviewTurn = turn.task?.trim() === t("slash.review_task").trim();
+          const reviewDecision = isReviewTurn
+            ? [...turn.items].reverse().find((e) => e.type === "decision")
+            : undefined;
+          const reviewAnswer = reviewDecision
+            ? decisionDisplayText(String(reviewDecision.payload.intent ?? ""))
+            : "";
           return (
             <section className="turn" key={turn.id} data-testid="turn">
               {turn.task !== null && (
@@ -1057,6 +1066,24 @@ export function AgentPanel({
                     >
                       {t("thread.edit")}
                     </button>
+                    {/* v2.66：审查发现一键修复——自包含修复任务（模板 + 审查回复全文） */}
+                    {sessionId && isReviewTurn && reviewAnswer && (
+                      <button
+                        type="button"
+                        className="turn-action"
+                        data-testid={`turn-fix-${turn.id}`}
+                        disabled={running}
+                        title={t("thread.fix_findings")}
+                        aria-label={t("thread.fix_findings")}
+                        onClick={() =>
+                          void sendText(
+                            `${t("slash.fix_findings_task").trim()}\n\n${reviewAnswer}`,
+                          )
+                        }
+                      >
+                        {t("thread.fix_findings")}
+                      </button>
+                    )}
                     {turn.firstPatchSeq !== null && (
                       <button
                         type="button"
