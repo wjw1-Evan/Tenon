@@ -311,7 +311,13 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                     }
                     ToolOutput::ok(content)
                 }
-                Err(e) => ToolOutput::err(format!("读取失败: {e}")),
+                Err(e) => ToolOutput::err(match &e {
+                    // v2.41 §8.1：目录命中专用错误时附恢复指引，模型可自纠
+                    tenon_fs::FsError::IsDirectory(_) => {
+                        format!("读取失败: {e}；可改用 list_dir 列出目录内容")
+                    }
+                    _ => format!("读取失败: {e}"),
+                }),
             }
         }
         // 代理技能读取（§13.4 v1.130）：A 级只读——项目同名覆盖全局，停用即拒。
@@ -1212,6 +1218,19 @@ mod tests {
 
         let out = execute_tool(&c, "list_dir", &serde_json::json!({"path": "."}));
         assert!(out.content.contains("a.txt"));
+    }
+
+    /// v2.41 §8.1：read_file 打在目录上——专用错误 + list_dir 恢复指引，
+    /// 不再冒裸「Is a directory (os error 21)」。
+    #[test]
+    fn read_file_on_directory_hints_list_dir() {
+        let (dir, c) = ctx();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let out = execute_tool(&c, "read_file", &serde_json::json!({"path": "sub"}));
+        assert!(!out.ok);
+        assert!(out.content.contains("路径是目录"), "{}", out.content);
+        assert!(out.content.contains("list_dir"), "{}", out.content);
+        assert!(!out.content.contains("os error"), "{}", out.content);
     }
 
     #[test]

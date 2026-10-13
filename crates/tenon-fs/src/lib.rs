@@ -28,6 +28,8 @@ pub enum FsError {
     Binary(String),
     #[error("路径越界或非法: {0}")]
     BadPath(String),
+    #[error("路径是目录，无法按文件读取: {0}")]
+    IsDirectory(String),
     #[error("IO 错误: {0}")]
     Io(#[from] std::io::Error),
     #[error("沙箱拒绝: {0}")]
@@ -80,9 +82,12 @@ impl FileService {
         String::from_utf8(bytes).map_err(|_| FsError::Binary(rel.to_string()))
     }
 
-    /// 读取文本文件（UTF-8；二进制报错；无大小上限，§8.1）。
+    /// 读取文本文件（UTF-8；二进制报错；目录报专用错误，§8.1 v2.41；无大小上限）。
     pub fn read_file(&self, rel: &str) -> Result<String> {
         let path = self.resolve(rel)?;
+        if path.is_dir() {
+            return Err(FsError::IsDirectory(rel.to_string()));
+        }
         let bytes = std::fs::read(&path)?;
         Self::decode_text(rel, bytes)
     }
@@ -93,9 +98,12 @@ impl FileService {
         Ok(std::fs::metadata(&path)?.len())
     }
 
-    /// 全量读取文本文件并返回字节总数（§8.1：任意大小可打开可编辑）。
+    /// 全量读取文本文件并返回字节总数（§8.1：任意大小可打开可编辑；目录报专用错误）。
     pub fn read_file_view(&self, rel: &str) -> Result<FileView> {
         let path = self.resolve(rel)?;
+        if path.is_dir() {
+            return Err(FsError::IsDirectory(rel.to_string()));
+        }
         let total_bytes = std::fs::metadata(&path)?.len();
         let bytes = std::fs::read(&path)?;
         let content = Self::decode_text(rel, bytes)?;
@@ -144,6 +152,18 @@ mod tests {
         // 二进制（含 NUL）
         std::fs::write(d.path().join("bin.dat"), [0u8, 1, 2, 3]).unwrap();
         assert!(matches!(s.read_file("bin.dat"), Err(FsError::Binary(_))));
+    }
+
+    /// v2.41 §8.1：目录不作文件读取——专用错误而非裸 EISDIR IO 错误。
+    #[test]
+    fn directory_read_rejected() {
+        let (_d, s) = svc();
+        std::fs::create_dir(s.root().join("sub")).unwrap();
+        assert!(matches!(s.read_file("sub"), Err(FsError::IsDirectory(_))));
+        assert!(matches!(
+            s.read_file_view("sub"),
+            Err(FsError::IsDirectory(_))
+        ));
     }
 
     #[test]
