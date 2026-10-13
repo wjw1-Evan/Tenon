@@ -1,10 +1,10 @@
 import { createServer } from "node:http";
 
-// v2.35 恢复双语义 E2E 相位状态机（模块级；Playwright 单 worker 串行执行，
-// 无并发串扰）：E2E_TOOL_LOOP 任务的回合推进为 loop → written → 复位——
-//   loop    = 循环任务本体：每轮发 read_file 只读调用撑满 24 轮上限 →
-//             回合上限暂停（TaskOutcome::Paused + error{rounds_exhausted}）；
-//   written = 续跑回合首轮（lastUser 为本地化继续语、无标记）：转写入相，
+// v2.49 持续运行 E2E 相位状态机（模块级；Playwright 单 worker 串行执行，
+// 无并发串扰）：E2E_PLAN_RESUME 任务的回合推进为 plan → written → 复位——
+//   plan    = 首轮发 submit_plan → 计划暂停（终态 paused，v2.49 起交互会话
+//             无回合上限，计划批准是仅存的脚本可控暂停源）；
+//   written = 恢复续跑回合首轮（lastUser 为本地化继续语、无标记）：转写入相，
 //             复用 apply_patch 管线真实落盘（恢复效果断言）；
 //   复位    = 写入后的下一请求文本收尾（E2E resume continuation complete）。
 // 关键事实：daemon 每个任务都是全新对话（system + user，session.rs run_task）
@@ -66,20 +66,20 @@ const server = createServer(async (request, response) => {
       const toolResultCount = messages.filter((message) => message.role === "tool").length;
       const wantSubtasks = Boolean(subtasksMatch) && toolResultCount === 0;
       const subtasksSecondLeg = Boolean(subtasksMatch) && toolResultCount === 1 && Boolean(match);
-      // v2.35 恢复双语义 E2E：回合状态机推进（详见文件头注释）
-      let loopRead = false;
+      // v2.49 持续运行 E2E：回合状态机推进（详见文件头注释）
+      let planCall = false;
+      let writtenLeg = false;
       let finalText = null;
       if (!isMetaCall) {
-        const loopTask = String(task).match(/E2E_TOOL_LOOP\n(.+?)\n([A-Za-z0-9+/=]+)/s);
+        const loopTask = String(task).match(/E2E_PLAN_RESUME\n(.+?)\n([A-Za-z0-9+/=]+)/s);
         if (loopTask) {
-          loopPhase = "loop";
+          loopPhase = "plan";
           loopFile = loopTask[1];
           loopContent = Buffer.from(loopTask[2], "base64").toString("utf8");
-          // 相 loop：0..23 号模型调用每轮发只读调用，第 24 轮后回合达上限暂停
-          if (toolResultCount < 24) loopRead = true;
-        } else if (loopPhase === "loop") {
-          // 相 written：续跑回合首轮——转写入，复用 apply_patch 管线
+        } else if (loopPhase === "plan") {
+          // 相 written：恢复续跑回合首轮——转写入，复用 apply_patch 管线
           loopPhase = "written";
+          writtenLeg = true;
           match = ["", loopFile, Buffer.from(loopContent, "utf8").toString("base64")];
         } else if (loopPhase === "written") {
           // 相复位：写入后的下一请求文本收尾
@@ -88,8 +88,9 @@ const server = createServer(async (request, response) => {
           loopContent = null;
           finalText = "E2E resume continuation complete";
         }
+        planCall = loopPhase === "plan";
       }
-      if (!match && !commitMatch && !wantSubtasks && !loopRead) {
+      if (!match && !commitMatch && !wantSubtasks && !(planCall || writtenLeg)) {
         if (payload.stream) {
           const turnWait = hasToolResult ? afterToolDelay : turnDelay;
       if (turnWait) await new Promise((r) => setTimeout(r, turnWait));
@@ -119,18 +120,18 @@ const server = createServer(async (request, response) => {
       }
       const [, file, encoded] = match ?? [];
       const content = match ? Buffer.from(encoded, "base64").toString("utf8") : "";
-      // v2.35 E2E：循环相必须发工具调用——既有 hasToolResult「有结果即收尾」
-      // 启发式会让第 2 轮起直出文本，撑不满 24 轮
-      const forceToolCall = loopRead;
-      const toolName = loopRead
-        ? "read_file"
+      // 计划相 / 写入相必须发工具调用——既有 hasToolResult「有结果即收尾」
+      // 启发式会让下一请求直出文本
+      const forceToolCall = planCall || writtenLeg;
+      const toolName = planCall
+        ? "submit_plan"
         : wantSubtasks
           ? "subtasks"
           : commitMatch
             ? "git_commit"
             : "apply_patch";
-      const toolArguments = loopRead
-        ? JSON.stringify({ path: "a.txt" })
+      const toolArguments = planCall
+        ? JSON.stringify({ items: ["改 A 文件支持 X", "补测试并跑通"] })
         : wantSubtasks
           ? JSON.stringify({ items: JSON.parse(subtasksMatch[1]) })
           : commitMatch

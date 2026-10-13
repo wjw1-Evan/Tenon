@@ -49,7 +49,9 @@ pub struct AgentConfig {
     pub fix_rounds: u32,
     /// 单命令超时秒（§9.2）。
     pub command_timeout_s: u64,
-    /// 每任务最大模型回合数（防失控；收敛条件之一）。
+    /// 回合预算（§9.1 v2.49 ADR-21）：0 = 无上限（新默认——交互会话持续运行
+    /// 至收尾 / 错误 / 用户停止）；非零 = 预算上限，达限转 Paused（evals 按
+    /// 附录 D budget.max_steps×2/×3 显式设置判负；headless / 显式配置同理）。
     pub max_tool_rounds: u32,
     /// 历史压缩触发阈值（§10.2 v2.13 自适应：daemon 按合并后 provider 配置
     /// `max(24k, context_tokens × 40%)` 或显式覆盖注入；缺省 24k = v1 行为）。
@@ -126,7 +128,8 @@ impl AgentConfig {
             first_edit_buffer_ms: 2000,
             fix_rounds: 3,
             command_timeout_s: 120,
-            max_tool_rounds: 24,
+            // v2.49 ADR-21：0 = 无回合上限——对话持续运行（§9.1）
+            max_tool_rounds: 0,
             compaction_input_tokens: tenon_core::context::MIN_COMPACTION_INPUT_TOKENS,
             exec_rules: Vec::new(),
             laya: None,
@@ -699,7 +702,7 @@ pub(crate) struct EarlyRoundsPrune {
 /// （成对移除，配对完整性不变式）；system 与首条 user（任务 + L1）恒保留；
 /// 已含 `[历史摘要]` 前导的上一轮摘要并入被移除区间（幂等——摘要消息不堆积）。
 /// 无可移除对象（历史过短 / 保留尾已达标）返回 None。
-fn summarize_prune_early_rounds(
+fn summarize_prune_earlyrounds(
     messages: &[ChatMessage],
     target_tokens: u64,
 ) -> Option<EarlyRoundsPrune> {
@@ -1710,7 +1713,15 @@ impl AgentSession {
         self.run_turn_hooks(crate::hooks::HookEvent::PreTurn).await;
 
         // ---- 模型回合循环（SENSING / DECIDING / EXECUTING 在回合内展开）----
-        'rounds: for _round in 0..self.config.max_tool_rounds {
+        // v2.49 ADR-21：对话持续运行——预算 0（交互默认）无上限；非零为回合
+        // 预算（evals / 显式配置），达限走循环后的回合预算耗尽暂停。
+        let rounds_budget =
+            (self.config.max_tool_rounds != 0).then_some(self.config.max_tool_rounds);
+        let mut round: u32 = 0;
+        'rounds: loop {
+            if rounds_budget.is_some_and(|n| round >= n) {
+                break 'rounds;
+            }
             self.force_state(State::Deciding).await;
             self.set_status(SessionStatus::Deciding).await;
 
@@ -1740,7 +1751,7 @@ impl AgentSession {
                                 > self.config.compaction_input_tokens
                         {
                             let target = self.config.compaction_input_tokens / 5 * 4; // 保留尾 ≤ 阈值 ×80%
-                            if let Some(prune) = summarize_prune_early_rounds(&compacted, target) {
+                            if let Some(prune) = summarize_prune_earlyrounds(&compacted, target) {
                                 let provider_now = self.provider.read().await.clone();
                                 match self.summarize_history(&provider_now, &prune.raw).await {
                                     Ok(summary) => {
@@ -1767,7 +1778,7 @@ impl AgentSession {
                         self.emit(
                             EventKind::Compaction,
                             &serde_json::json!({
-                                "round": _round,
+                                "round": round,
                                 "before_est_tokens": est_tokens,
                                 "after_est_tokens": after_tokens,
                                 "elided_tool_results": elided,
@@ -1787,7 +1798,7 @@ impl AgentSession {
                     self.emit(
                         EventKind::Compaction,
                         &serde_json::json!({
-                            "round": _round,
+                            "round": round,
                             "before_est_tokens": est_tokens,
                             "after_est_tokens": est_tokens,
                             "elided_tool_results": 0,
@@ -1800,7 +1811,7 @@ impl AgentSession {
 
             // 只读先验：首轮仅开放 A 级工具（§9.8 预筛语义，只收窄不放宽）；
             // 模型判断确需改动 → 后续回合恢复全目录（含 MCP 工具，§13.5）
-            let tools = if read_only_prior && _round == 0 {
+            let tools = if read_only_prior && round == 0 {
                 tool_specs_read_only()
             } else {
                 let mut all = tool_specs();
@@ -1847,7 +1858,7 @@ impl AgentSession {
                                     self.emit(
                                         EventKind::Compaction,
                                         &serde_json::json!({
-                                            "round": _round,
+                                            "round": round,
                                             "before_est_tokens": before,
                                             "after_est_tokens": estimate_messages_tokens(&messages),
                                             "elided_tool_results": elided,
@@ -1952,6 +1963,7 @@ impl AgentSession {
                 messages.push(ChatMessage::user(
                     "上一条回复因达到输出长度上限被截断。请从中断处直接继续：只输出剩余内容或发起工具调用，不要重复已输出的部分。",
                 ));
+                round += 1;
                 continue 'rounds;
             }
             consecutive_truncations = 0;
@@ -2398,16 +2410,17 @@ impl AgentSession {
                     Some("计划已提交，等待批准（批准 = 发送消息「按计划执行」）".into());
                 break 'rounds;
             }
+            round += 1;
         }
 
-        // ---- 回合上限耗尽：无收尾回答 ≠ 任务完成 ----
-        // 模型 24 轮持续只发工具调用时，此前静默走「Done + 空答案 + 发送队列
-        // 继续出队」；应转 Paused 交用户处置（续跑 / 停止）
+        // ---- 回合预算耗尽：无收尾回答 ≠ 任务完成 ----
+        // 仅非零回合预算可达（evals / 显式配置；v2.49 起交互会话无上限）。
+        // 预算内模型持续只发工具调用未收敛 → Paused 交用户 / 评测判负处置
         if paused_reason.is_none() && error_msg.is_none() && final_answer.is_none() {
             self.force_state(State::Paused).await;
             self.set_status(SessionStatus::Paused).await;
             paused_reason = Some(format!(
-                "达到回合上限（{} 轮）仍未产出收尾回答；可再发消息续跑或停止",
+                "回合预算耗尽（{} 轮）仍未产出收尾回答；可再发消息续跑或停止",
                 self.config.max_tool_rounds
             ));
             self.emit(
@@ -3215,7 +3228,7 @@ mod compaction_tests {
     use tenon_models::ToolCallReq;
 
     /// assistant(工具调用) + tool(结果) 一对。
-    fn tool_round(id: &str, name: &str, output: &str) -> Vec<ChatMessage> {
+    fn toolround(id: &str, name: &str, output: &str) -> Vec<ChatMessage> {
         let mut assistant = ChatMessage::assistant(format!("意图：{name}"));
         assistant.tool_calls = vec![ToolCallReq {
             id: id.to_string(),
@@ -3234,7 +3247,7 @@ mod compaction_tests {
             ChatMessage::user("任务 + L1 工作集"),
         ];
         for i in 0..rounds {
-            messages.extend(tool_round(
+            messages.extend(toolround(
                 &format!("call_{i}"),
                 "read_file",
                 &format!("out-{i}"),
@@ -3249,7 +3262,7 @@ mod compaction_tests {
         // 6 轮小历史 + 极小 target：从首条 user 后成对移除，保留尾起点的
         // tool 结果触发向前扩展（其 assistant 一并保留），配对完整。
         let messages = base_history(6);
-        let prune = summarize_prune_early_rounds(&messages, 1).expect("可剪枝");
+        let prune = summarize_prune_earlyrounds(&messages, 1).expect("可剪枝");
         assert!(tool_call_pairs_intact(&prune.messages));
         assert_eq!(prune.messages[0].content, "sys");
         assert_eq!(prune.messages[1].content, "任务 + L1 工作集");
@@ -3260,14 +3273,14 @@ mod compaction_tests {
         assert_ne!(prune.messages[3].role, Role::Tool);
 
         // target 巨大（保留尾需覆盖全部）→ 无可移除 → None
-        assert!(summarize_prune_early_rounds(&messages, u64::MAX / 2).is_none());
+        assert!(summarize_prune_earlyrounds(&messages, u64::MAX / 2).is_none());
 
         // 历史过短（<3 条）→ None
         let short = vec![
             ChatMessage::system(String::from("s")),
             ChatMessage::user(String::from("u")),
         ];
-        assert!(summarize_prune_early_rounds(&short, 1).is_none());
+        assert!(summarize_prune_earlyrounds(&short, 1).is_none());
     }
 
     #[test]

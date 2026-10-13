@@ -1,7 +1,8 @@
-// v2.35 恢复双语义 E2E（§9.1 / §7.5，真 daemon + 真 UI）：回合上限暂停 →
-// 错误卡显示具体原因（非裸「错误」）→ 点「Resume」→ daemon 转续跑开新回合
-//（本地化继续语入上下文）→ 新回合真实写入文件 → 收尾完成。
-// mock 相位脚本见 mock-model-server.mjs E2E_TOOL_LOOP（按工具结果数分相）。
+// v2.49 持续运行 E2E（§9.1 / §7.5，真 daemon + 真 UI）：计划提交暂停 →
+// 点「Resume」→ daemon 转续跑开新回合（本地化继续语入上下文）→ 新回合真实
+// 写入文件 → 收尾完成。v2.49 起交互会话无回合上限（ADR-21），脚本可控的
+// 暂停源改用计划模式（submit_plan → 终态 paused）。
+// mock 相位脚本见 mock-model-server.mjs E2E_PLAN_RESUME（回合状态机分相）。
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,23 +36,20 @@ async function openFreshTask(page: import("@playwright/test").Page) {
   await page.getByTestId("project-new-task").click();
 }
 
-test("turn-limit pause shows the specific reason and resume continues into a real write", async ({
+test("plan pause shows the plan card and resume continues into a real write", async ({
   page,
 }) => {
   test.setTimeout(120_000);
   await openFreshTask(page);
 
   const file = "e2e-resume.txt";
-  const payload = "resumed after turn limit\n";
-  const task = ["E2E_TOOL_LOOP", file, Buffer.from(payload).toString("base64")].join("\n");
+  const payload = "resumed after plan pause\n";
+  const task = ["E2E_PLAN_RESUME", file, Buffer.from(payload).toString("base64")].join("\n");
   await page.getByTestId("task-input").fill(task);
   await page.getByTestId("send").click();
 
-  // 相 1 跑满 24 轮 → 回合上限暂停：错误卡带具体原因与轮数（用户令「只有错误
-  // 没有具体提示用户没有能力处理」的核心断言），「Resume」钮可见且可点
-  const errorCard = page.getByTestId("turn-error");
-  await expect(errorCard).toBeVisible({ timeout: 60_000 });
-  await expect(errorCard).toContainText("Round limit reached (24 rounds)");
+  // 相 1 提交计划 → 计划暂停：计划卡可见（items 清单），「Resume」钮可见且可点
+  await expect(page.getByTestId("turn-plan")).toBeVisible({ timeout: 60_000 });
   const resume = page.getByTestId("resume");
   await expect(resume).toBeVisible();
   await expect(resume).toBeEnabled();
