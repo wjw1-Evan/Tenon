@@ -166,6 +166,21 @@ mod tests {
         ));
     }
 
+    /// v2.41 补强：符号链接指向项目内目录同样判目录——is_dir 跟随链接，
+    /// 写守卫 canonical 后仍在项目内不拒，报错按词义路径（link）。
+    #[cfg(unix)]
+    #[test]
+    fn symlink_to_directory_rejected() {
+        let (d, s) = svc();
+        std::fs::create_dir(d.path().join("real")).unwrap();
+        std::os::unix::fs::symlink(d.path().join("real"), d.path().join("link")).unwrap();
+        assert!(matches!(s.read_file("link"), Err(FsError::IsDirectory(_))));
+        assert!(matches!(
+            s.read_file_view("link"),
+            Err(FsError::IsDirectory(_))
+        ));
+    }
+
     #[test]
     fn large_file_full_read_and_editable() {
         let (d, s) = svc();

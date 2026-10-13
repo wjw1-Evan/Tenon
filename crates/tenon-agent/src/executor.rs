@@ -1233,6 +1233,33 @@ mod tests {
         assert!(!out.content.contains("os error"), "{}", out.content);
     }
 
+    /// v2.41 补强：apply_patch 两个入口打在目录上——判目录根修于 tenon-fs，
+    /// 此处回归调用面文案（明示「路径是目录」，不冒裸 os error）：
+    /// range 写在「读原文」阶段即拒；search/replace 在探针读取阶段即拒。
+    #[test]
+    fn apply_patch_on_directory_rejected() {
+        let (dir, c) = ctx();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({"file": "sub", "range": [1, 1], "content": "x"}),
+        );
+        assert!(!out.ok);
+        assert!(out.content.contains("路径是目录"), "{}", out.content);
+        assert!(!out.content.contains("os error"), "{}", out.content);
+
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({"file": "sub", "search": "a", "replace": "b"}),
+        );
+        assert!(!out.ok);
+        assert!(out.content.contains("路径是目录"), "{}", out.content);
+        assert!(!out.content.contains("os error"), "{}", out.content);
+    }
+
     #[test]
     fn apply_patch_replaces_range() {
         let (_d, c) = ctx();
