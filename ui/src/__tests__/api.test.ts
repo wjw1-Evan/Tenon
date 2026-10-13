@@ -99,6 +99,51 @@ describe("TenonApi（§15 客户端）", () => {
     expect(events).toEqual([{ type: "user_input" }]);
   });
 
+  it("connectTerminal 先换票、首帧携带 ticket、auth ok 后落定（v2.42）", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ ticket: "term-ticket", expires_in_s: 60 }), { status: 200 })
+    );
+    const api = new TenonApi({ port: 9999, token: "t" });
+    const ws = (await api.connectTerminal(
+      "p1",
+      () => {},
+      () => {}
+    )) as unknown as FakeWebSocket;
+    expect(ws.url).toContain("127.0.0.1:9999/projects/p1/terminal/ws");
+    expect(ws.sent[0]).toBe("term-ticket");
+  });
+
+  it("connectTerminal 鉴权完成前对端关闭 → reject 而非永久挂起（v2.42）", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ ticket: "term-ticket", expires_in_s: 60 }), { status: 200 })
+    );
+    // 无自动 open 的桩：仅模拟 daemon 鉴权失败/超时静默 close
+    class CloseBeforeAuthWebSocket {
+      url: string;
+      onopen: (() => void) | null = null;
+      onmessage: ((m: { data: string }) => void) | null = null;
+      onerror: (() => void) | null = null;
+      onclose: (() => void) | null = null;
+      constructor(url: string) {
+        this.url = url;
+        queueMicrotask(() => this.onclose?.());
+      }
+    }
+    vi.stubGlobal("WebSocket", CloseBeforeAuthWebSocket);
+    try {
+      const api = new TenonApi({ port: 9999, token: "t" });
+      await expect(
+        api.connectTerminal(
+          "p1",
+          () => {},
+          () => {}
+        )
+      ).rejects.toThrow("terminal ws closed before auth");
+    } finally {
+      vi.stubGlobal("WebSocket", FakeWebSocket);
+    }
+  });
+
   it("v1.157 局域网：页面与 daemon 同端口时 base 用页面 origin", async () => {
     vi.stubGlobal("location", {
       protocol: "http:",

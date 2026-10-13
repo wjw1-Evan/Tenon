@@ -3859,6 +3859,9 @@ async fn terminal_ws_first_frame_auth(
         let _ = socket.close().await;
         return;
     };
+    // 与 /ws 同规（ADR-10）：回发 auth ok 让 UI 握手 Promise 落定后再接管
+    // 消息泵；失败路径已发 auth failed 或静默 close。
+    let _ = socket.send(Message::text("auth ok".to_string())).await;
     crate::terminal::pump_terminal_ws(session, socket).await;
 }
 

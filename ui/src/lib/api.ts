@@ -937,10 +937,23 @@ export class TenonApi {
         settled = true;
         reject(new Error("terminal ws connect failed"));
       };
+      // 鉴权完成前对端关闭（daemon 首帧 5s 超时静默 close 等）：
+      // 不 reject 会让本 promise 永不落定、上层重连链路死掉
       ws.onclose = () => {
         if (settled) return;
         settled = true;
         reject(new Error("terminal ws closed before auth"));
+      };
+      // daemon 校验票据后回发 auth ok（同 connectEvents，v2.42）——
+      // 此前 resolve 从未被调用，成功路径也会永久挂起、终端死白屏
+      ws.onmessage = (msg) => {
+        if (msg.data === "auth ok") {
+          settled = true;
+          resolve();
+        } else if (msg.data === "auth failed") {
+          settled = true;
+          reject(new Error("terminal ws auth failed"));
+        }
       };
     });
     ws.binaryType = "arraybuffer";

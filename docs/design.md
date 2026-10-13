@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | **v2.40** |
+| 版本 | **v2.42** |
 | 日期 | 2026-10-12 |
 | 状态 | 定稿，M0 已验收（附录 D 基线 v2.32 起 glm-5.3-flash 9/10=90%，violation=0；历史最高），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
@@ -801,7 +801,7 @@ A/B/C/D 仅是风险与执行边界标记，不再是审批门槛；去 Plan 安
 
 ### 12.6 本地服务与浏览器访问
 
-默认仅绑 127.0.0.1 + 随机端口（`--lan` 显式开启后绑 0.0.0.0；桌面壳 v1.157 起 spawn 即 `--lan`）；HTTP 用 `X-Tenon-Token` 头；**WS 用一次性 ticket**（浏览器 WebSocket 无法自定义请求头：`POST /ws-ticket` 换 60 秒一次性票据，连接首帧携带，重放即拒）；校验 Origin/Host；**CORS 仅白名单放行应用自身 origin（Tauri WebView 源）与同源请求，其余拒绝**——同源判定为「Origin host == Host host 且 Host 为 IP 字面量」（局域网设备经 IP 直访的必然形态；Host 为域名的请求不在放行之列，DNS rebinding 防线保持：域名 Host 一律按未配对局域网请求 403）；白名单源跨源 dev server 的 `OPTIONS` 预检由本地服务直接 2xx，并显式 `Allow-Headers` / `Allow-Methods` / `Max-Age`；**局域网访问：显式开启（`--lan`）+ 一次性配对 + 可吊销（v1.157 全链落地）**——`lan_bind` 启动即自动启用配对，Host 非回环的请求须持已配对设备令牌 `X-Tenon-Paired`（PairingStore 校验，吊销即失效），免令牌的仅 `POST /lan/pair`（一次性 6 位配对码自证，5 分钟有效）与 `GET /ws`（浏览器 WebSocket 无法自定义请求头，真实鉴权在首帧一次性票据——票据仅经带鉴权的 `POST /ws-ticket` 签发，未配对设备拿不到）；静态 UI 资产挂载于鉴权层之外（前端代码本身公开，未配对设备可加载 UI、全部 API 仍被拦，据此渲染配对屏）；局域网管理端点：`POST /lan/enable`（重新生成配对码，主 token）、`GET /lan/status`（enabled / 当前码 / 局域网地址 / 已配对设备，主 token，v1.157）、`POST /lan/pair`（`{device, code}` → 设备令牌，免令牌）、`POST /lan/revoke`（`{device}` 吊销，主 token）；登记新项目 / 传本地路径：UI 添加项目模态提交本地绝对路径（v1.43，本机浏览器与桌面壳同权），v1.133 增 `GET /fs/dirs` 目录浏览端点（列任意绝对路径的直接子目录，驱动浏览器模式目录选择器）——其目录名枚举面与 `/projects/open` 同一信任级别：token 鉴权 + Host/Origin 校验之下，能传路径登记项目者本就可读该项目全部文件，列子目录名是严格更小的披露面，未配对局域网请求被中间件 403 挡住；UI 打开项目即静默信任（v1.67），信任仅作为项目作用域元数据保留；公网访问非目标。
+默认仅绑 127.0.0.1 + 随机端口（`--lan` 显式开启后绑 0.0.0.0；桌面壳 v1.157 起 spawn 即 `--lan`）；HTTP 用 `X-Tenon-Token` 头；**WS 用一次性 ticket**（浏览器 WebSocket 无法自定义请求头：`POST /ws-ticket` 换 60 秒一次性票据，连接首帧携带，重放即拒）；校验 Origin/Host；**CORS 仅白名单放行应用自身 origin（Tauri WebView 源）与同源请求，其余拒绝**——同源判定为「Origin host == Host host 且 Host 为 IP 字面量」（局域网设备经 IP 直访的必然形态；Host 为域名的请求不在放行之列，DNS rebinding 防线保持：域名 Host 一律按未配对局域网请求 403）；白名单源跨源 dev server 的 `OPTIONS` 预检由本地服务直接 2xx，并显式 `Allow-Headers` / `Allow-Methods` / `Max-Age`；**局域网访问：显式开启（`--lan`）+ 一次性配对 + 可吊销（v1.157 全链落地）**——`lan_bind` 启动即自动启用配对，Host 非回环的请求须持已配对设备令牌 `X-Tenon-Paired`（PairingStore 校验，吊销即失效），免令牌的仅 `POST /lan/pair`（一次性 6 位配对码自证，5 分钟有效）与 `GET /ws`、终端 WS 升级（v1.197 §7.2 `/projects/:id/terminal/ws`，同首帧一次性票据）（浏览器 WebSocket 无法自定义请求头，真实鉴权在首帧一次性票据——票据仅经带鉴权的 `POST /ws-ticket` 签发，未配对设备拿不到）；静态 UI 资产挂载于鉴权层之外（前端代码本身公开，未配对设备可加载 UI、全部 API 仍被拦，据此渲染配对屏）；局域网管理端点：`POST /lan/enable`（重新生成配对码，主 token）、`GET /lan/status`（enabled / 当前码 / 局域网地址 / 已配对设备，主 token，v1.157）、`POST /lan/pair`（`{device, code}` → 设备令牌，免令牌）、`POST /lan/revoke`（`{device}` 吊销，主 token）；登记新项目 / 传本地路径：UI 添加项目模态提交本地绝对路径（v1.43，本机浏览器与桌面壳同权），v1.133 增 `GET /fs/dirs` 目录浏览端点（列任意绝对路径的直接子目录，驱动浏览器模式目录选择器）——其目录名枚举面与 `/projects/open` 同一信任级别：token 鉴权 + Host/Origin 校验之下，能传路径登记项目者本就可读该项目全部文件，列子目录名是严格更小的披露面，未配对局域网请求被中间件 403 挡住；UI 打开项目即静默信任（v1.67），信任仅作为项目作用域元数据保留；公网访问非目标。
 
 ### 12.7 仓库信任（TOFU）
 

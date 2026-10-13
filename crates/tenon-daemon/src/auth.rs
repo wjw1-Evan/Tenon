@@ -111,8 +111,8 @@ pub async fn auth_middleware(
     let token = &state.master;
     let pairing = &state.pairing;
     // Host 校验（§12.6）：回环 = 本机访问；局域网地址 = 显式开启 + 已配对令牌
-    //（/lan/pair 以一次性配对码自证免令牌；/ws 靠首帧一次性票据——浏览器
-    // WebSocket 无法自定义请求头，配对令牌带不上）
+    //（/lan/pair 以一次性配对码自证免令牌；/ws 与终端 WS 靠首帧一次性票据——
+    // 浏览器 WebSocket 无法自定义请求头，配对令牌带不上）
     //
     // 域名形态 Host 一律拒绝（DNS rebinding 面 §12.6）：合法访问形态只有
     // 回环名（本机）与 IP 直访（局域网已配对设备）；域名 Host 必为伪造——
@@ -153,7 +153,11 @@ pub async fn auth_middleware(
                 !host_is_loopback
             }
         };
-    if lan_request && path != "/lan/pair" && path != "/ws" {
+    // 浏览器 WS 免 HTTP 层令牌（真实鉴权在首帧一次性票据）：既有事件流 /ws
+    // 与终端 WS（v1.197，/projects/:id/terminal/ws）同规——后者中间件豁免
+    // 名单此前遗漏，升级请求被 401 挡死、终端永远打不开（v2.42 修复）。
+    let ws_ticket_auth = path == "/ws" || path.ends_with("/terminal/ws");
+    if lan_request && path != "/lan/pair" && !ws_ticket_auth {
         // 局域网访问（--lan 绑定后）：须持已配对设备令牌（X-Tenon-Paired，
         // 经 PairingStore 校验；吊销即失效，§12.6 可吊销）。主 token 同样
         // 放行——持有者本就是全权，不因来源是局域网而收窄；/pairing 的
@@ -208,11 +212,15 @@ pub async fn auth_middleware(
         }
         return StatusCode::OK.into_response();
     }
-    // Token 校验（/health、/pairing、/lan/pair 免鉴权；/ws 用一次性票据首帧鉴权 ADR-10）。
+    // Token 校验（/health、/pairing、/lan/pair 免鉴权；/ws 与终端 WS 用一次性
+    // 票据首帧鉴权 ADR-10——浏览器 WS 带不了自定义头，§12.6）。
     // 主 token（X-Tenon-Token）或已配对设备令牌（X-Tenon-Paired，PairingStore 校验）均可；
     // 主 token 专属端点（§15）只认主 token——设备令牌不得借道提升权限。
-    let auth_exempt =
-        path == "/health" || path == "/ws" || path == "/pairing" || path == "/lan/pair";
+    let auth_exempt = path == "/health"
+        || path == "/pairing"
+        || path == "/lan/pair"
+        || path == "/ws"
+        || path.ends_with("/terminal/ws");
     if !auth_exempt {
         let master = headers.get("X-Tenon-Token").and_then(|t| t.to_str().ok());
         let paired = headers
@@ -554,5 +562,72 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::FORBIDDEN, "未配对仍拦截");
+    }
+
+    /// v2.42 回归：终端 WS 升级（/projects/:id/terminal/ws）与 /ws 同规——
+    /// 免 HTTP 层 token（回环无 token 放行）与免 LAN 配对头；否则浏览器
+    /// WebSocket 带不了自定义头，升级恒 401、终端永远打不开。
+    #[tokio::test]
+    async fn terminal_ws_upgrade_exempt_from_token_and_lan_checks() {
+        let state = AuthState {
+            master: String::from("tok"),
+            pairing: std::sync::Arc::new(PairingStore::default()),
+            force_lan_peer: false,
+        };
+        let app = axum::Router::new()
+            .route("/projects/open", axum::routing::post(|| async { "ok" }))
+            .route(
+                "/projects/p1/terminal/ws",
+                axum::routing::get(|| async { "ws" }),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                auth_middleware,
+            ));
+
+        // 回环无 token → 免 token 放行（修复前此处 401）
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("http://127.0.0.1/projects/p1/terminal/ws")
+                    .header(header::HOST, "127.0.0.1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "终端 WS 免 token 头");
+
+        // 局域网 IP 直访（Host 非回环 → lan_request）无配对头 → 同样放行
+        //（/ws 同规：浏览器 WS 带不了 X-Tenon-Paired，首帧票据兜底）
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("http://192.168.1.5/projects/p1/terminal/ws")
+                    .header(header::HOST, "192.168.1.5:41234")
+                    .header(header::ORIGIN, "http://192.168.1.5:41234")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "终端 WS 免配对头");
+
+        // 对照：普通 API 无 token 仍 401
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("http://127.0.0.1/projects/open")
+                    .header(header::HOST, "127.0.0.1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "普通 API 仍拦");
     }
 }
