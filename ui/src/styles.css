@@ -3333,7 +3333,9 @@ button:disabled { opacity: 0.45; cursor: default; }
 .review-tabs {
   display: flex;
   gap: 2px;
-  padding: 0 8px;
+  /* v2.56 间距统一：容器 2px + tab 按钮 10px 水平 padding = 文本 12px，与
+     review-head / review-body 内容缘对齐；按钮纵向 8px 对齐全局垂直节奏。 */
+  padding: 0 2px;
   border-bottom: 1px solid var(--border, #2a2f3a);
 }
 .review-tab {
@@ -3343,7 +3345,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   color: var(--fg-muted, #8a8f98);
   font: inherit;
   font-size: 12px;
-  padding: 6px 10px;
+  padding: 8px 10px;
   cursor: pointer;
   border-bottom: 2px solid transparent;
 }
@@ -3381,7 +3383,8 @@ button:disabled { opacity: 0.45; cursor: default; }
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 10px;
+  /* v2.56：去水平 padding，缘交 review-body 统一 12px。 */
+  padding: 4px 0;
 }
 .review-preview-path {
   flex: 1;
@@ -3461,10 +3464,26 @@ button:disabled { opacity: 0.45; cursor: default; }
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  /* v2.55 用户令「上面缺少间距」——tab 栏（padding 0 8px）与首个内容行
-     （diff-title 等微标题只有 margin-bottom）之间零纵向间距，顶 8px 呼吸位
-     对齐 .diff-title 的 margin-bottom 节奏；v2.5 无 tab 回退形态同理受益。 */
-  padding-top: 8px;
+  /* v2.55/v2.56 间距统一：内容区单一 12px 水平缘（= review-head），顶 8px
+     垂直节奏（= 微标题 margin-bottom）；diff / 文件 / 概览三 tab 与 v2.5
+     无 tab 回退形态一致受益。 */
+  padding: 8px 12px 0;
+}
+.review-body .diff-panel {
+  /* v2.56：diff-panel 的 border-left + padding-left 16 是底部 grid 列分隔
+     语义，审查面内为噪音竖线——去分隔、缘交给 review-body 统一 12px。 */
+  border-left: none;
+  padding-left: 0;
+}
+.review-body .diff-body {
+  /* v2.56：正文贴 12px 内容缘（去 pre 自带 10px 水平内缩），行底色带随之
+     全出血；top 8 与 spacer/window 定位常量耦合勿动。 */
+  padding: 8px 0;
+}
+.review-body .diff-spacer,
+.review-body .diff-window {
+  left: 0;
+  right: 0;
 }
 
 .review-body > * {
