@@ -229,8 +229,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   gap: 10px;
   align-items: center;
   height: 46px;
-  /* v2.57 全应用间距系统：水平缘 12px */
-  padding: 0 12px;
+  padding: 0 14px;
   flex-shrink: 0;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
@@ -809,8 +808,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   display: flex;
   flex-direction: column;
   /* 横向收紧（用户令「减少两侧外间距 充分利用两侧空间」）：10px → 6px */
-  /* v2.57 全应用间距系统：垂直 8px（横向 6 为侧栏树出血缩进体系，特例保留） */
-  padding: 8px 6px;
+  padding: 10px 6px;
   background: var(--bg);
   border-right: 1px solid var(--border);
 }
@@ -1274,9 +1272,8 @@ button:disabled { opacity: 0.45; cursor: default; }
 .agent-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  /* v2.57 全应用间距系统：8/12（原 9/13） */
-  padding: 8px 12px;
+  gap: 9px;
+  padding: 9px 13px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
@@ -1315,11 +1312,10 @@ button:disabled { opacity: 0.45; cursor: default; }
 .agent-feed {
   flex: 1;
   overflow: auto;
-  /* v2.57 全应用间距系统：8/12（原 10/12）、回合间 gap 14→12（外层 12 / 回合内 7 层级保留） */
-  padding: 8px 12px;
+  padding: 10px 12px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
   /* v2.44 排版精雕：线程区 6px 细滚动条（全局 10px 在窄内容区偏重） */
   scrollbar-width: thin;
   scrollbar-color: var(--border-strong) transparent;
@@ -1831,10 +1827,9 @@ button:disabled { opacity: 0.45; cursor: default; }
   display: flex;
   flex-direction: column;
   gap: 4px;
-  /* v2.57 全应用间距系统：8/12（原 10px 12px 12px）
-     v2.44 排版精雕：9/12 呼吸感 → 收敛 8px 节奏 */
-  margin: 8px 12px;
-  padding: 8px 12px;
+  margin: 10px 12px 12px;
+  /* v2.44 排版精雕：8/10→9/12 呼吸感 */
+  padding: 9px 12px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-m);
   background: var(--raised);
@@ -1978,8 +1973,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   position: relative;
   border-top: 1px solid var(--border);
   overflow: auto;
-  /* v2.57 全应用间距系统：8/12（原 10px 14px 12px） */
-  padding: 8px 12px;
+  padding: 10px 14px 12px;
   background: var(--surface);
   flex-shrink: 0;
 }
@@ -2049,8 +2043,7 @@ button:disabled { opacity: 0.45; cursor: default; }
 .bottom-grid {
   display: grid;
   grid-template-columns: 1fr 1.4fr;
-  /* v2.57 全应用间距系统：列间 12px */
-  gap: 12px;
+  gap: 18px;
 }
 
 /* 活动文件诊断（§8.1 / §8.5 / T4） */
@@ -2058,8 +2051,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   min-width: 0;
   display: flex;
   flex-direction: column;
-  /* v2.57 全应用间距系统：块间 8px（原 7） */
-  gap: 8px;
+  gap: 7px;
 }
 .diagnostics-panel .diff-title {
   display: flex;
@@ -2323,12 +2315,11 @@ button:disabled { opacity: 0.45; cursor: default; }
   background: var(--overlay);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-l);
-  /* v2.57 全应用间距系统：浮层缘 12px（原 10）、输入行 8/12（原 9/11） */
-  padding: 12px;
+  padding: 10px;
   box-shadow: var(--shadow-pop);
   animation: pop-in 0.16s ease-out;
 }
-.palette input { width: 100%; font-size: 13px; padding: 8px 12px; }
+.palette input { width: 100%; font-size: 13px; padding: 9px 11px; }
 .palette ul { list-style: none; margin: 8px 0 0; padding: 0; max-height: 320px; overflow: auto; }
 .palette li button {
   width: 100%;
@@ -2386,8 +2377,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  /* v2.57 全应用间距系统：8/12（原 6/10） */
-  padding: 8px 12px;
+  padding: 6px 10px;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
 }
@@ -3729,9 +3719,8 @@ button:disabled { opacity: 0.45; cursor: default; }
 .activity-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  /* v2.57 全应用间距系统：8/12（原 12/16） */
-  padding: 8px 12px;
+  gap: 10px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--border, #2a2f3a);
   font-size: 13px;
 }

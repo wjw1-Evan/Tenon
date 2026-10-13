@@ -39,6 +39,41 @@ async fn start_daemon(script: Vec<ScriptedReply>) -> (tempfile::TempDir, u16, St
     (dir, handle.port, handle.token)
 }
 
+/// 端点冒烟测试专用项目目录：tempdir 内 git init + 种子提交，替代既往
+/// `{"path": "."}` 打开进程 CWD（crate 根）的反模式——测试经 file 写端点
+/// 落盘的 fixture（sr.ts / hl.ts）会直接污染仓库目录并曾被误提交入库，
+/// 搜索 / 文件树端点也会扫全仓库拖慢测试。返回 (dir, port, token, 项目路径)。
+async fn start_daemon_with_project(
+    script: Vec<ScriptedReply>,
+) -> (tempfile::TempDir, u16, String, std::path::PathBuf) {
+    let (dir, port, token) = start_daemon(script).await;
+    let proj = dir.path().join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&proj)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    assert!(git(&["init", "-qb", "main"]).status.success());
+    std::fs::write(proj.join("a.txt"), "hello main\n").unwrap();
+    assert!(git(&["add", "."]).status.success());
+    assert!(git(&[
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "-qm",
+        "init"
+    ])
+    .status
+    .success());
+    (dir, port, token, proj)
+}
+
 #[tokio::test]
 async fn resume_and_message_store_orphan_session_after_restart() {
     // v2.48 懒重建（§10.3）：daemon 重启后 sessions 内存表为空，store 里的会话
@@ -3315,13 +3350,13 @@ async fn lan_endpoints() {
 
 #[tokio::test]
 async fn project_trust_endpoint() {
-    let (_dir, port, token) = start_daemon(vec![]).await;
+    let (_dir, port, token, proj) = start_daemon_with_project(vec![]).await;
     let client = client_with_token(&token);
 
     // 打开项目
     let r = client
         .post(format!("{}/projects/open", base(port)))
-        .json(&serde_json::json!({ "path": "." }))
+        .json(&serde_json::json!({ "path": &proj }))
         .send()
         .await
         .unwrap();
@@ -3341,13 +3376,13 @@ async fn project_trust_endpoint() {
 
 #[tokio::test]
 async fn file_operations_crud() {
-    let (_dir, port, token) = start_daemon(vec![]).await;
+    let (_dir, port, token, proj) = start_daemon_with_project(vec![]).await;
     let client = client_with_token(&token);
 
     // 打开项目
     let r = client
         .post(format!("{}/projects/open", base(port)))
-        .json(&serde_json::json!({ "path": "." }))
+        .json(&serde_json::json!({ "path": &proj }))
         .send()
         .await
         .unwrap();
@@ -3412,13 +3447,13 @@ async fn file_operations_crud() {
 
 #[tokio::test]
 async fn language_packs_and_l4_endpoints() {
-    let (_dir, port, token) = start_daemon(vec![]).await;
+    let (_dir, port, token, proj) = start_daemon_with_project(vec![]).await;
     let client = client_with_token(&token);
 
     // 打开项目
     let r = client
         .post(format!("{}/projects/open", base(port)))
-        .json(&serde_json::json!({ "path": "." }))
+        .json(&serde_json::json!({ "path": &proj }))
         .send()
         .await
         .unwrap();
@@ -3457,13 +3492,13 @@ async fn session_lifecycle_full() {
         ScriptedReply::Text("ok".into()),
         ScriptedReply::Text("ok2".into()),
     ];
-    let (_dir, port, token) = start_daemon(script).await;
+    let (_dir, port, token, proj) = start_daemon_with_project(script).await;
     let client = client_with_token(&token);
 
     // 打开项目
     let r = client
         .post(format!("{}/projects/open", base(port)))
-        .json(&serde_json::json!({ "path": "." }))
+        .json(&serde_json::json!({ "path": &proj }))
         .send()
         .await
         .unwrap();
@@ -3609,12 +3644,12 @@ async fn ws_ticket_post() {
 #[tokio::test]
 async fn inline_complete_endpoint() {
     let script = vec![ScriptedReply::Text("completion text".into())];
-    let (_dir, port, token) = start_daemon(script).await;
+    let (_dir, port, token, proj) = start_daemon_with_project(script).await;
     let client = client_with_token(&token);
 
     let r = client
         .post(format!("{}/projects/open", base(port)))
-        .json(&serde_json::json!({ "path": "." }))
+        .json(&serde_json::json!({ "path": &proj }))
         .send()
         .await
         .unwrap();
@@ -3635,12 +3670,12 @@ async fn inline_complete_endpoint() {
 
 #[tokio::test]
 async fn file_ops_endpoint() {
-    let (_dir, port, token) = start_daemon(vec![]).await;
+    let (_dir, port, token, proj) = start_daemon_with_project(vec![]).await;
     let client = client_with_token(&token);
 
     let r = client
         .post(format!("{}/projects/open", base(port)))
-        .json(&serde_json::json!({ "path": "." }))
+        .json(&serde_json::json!({ "path": &proj }))
         .send()
         .await
         .unwrap();
@@ -3663,12 +3698,12 @@ async fn file_ops_endpoint() {
 
 #[tokio::test]
 async fn search_replace_endpoint() {
-    let (_dir, port, token) = start_daemon(vec![]).await;
+    let (_dir, port, token, proj) = start_daemon_with_project(vec![]).await;
     let client = client_with_token(&token);
 
     let r = client
         .post(format!("{}/projects/open", base(port)))
-        .json(&serde_json::json!({ "path": "." }))
+        .json(&serde_json::json!({ "path": &proj }))
         .send()
         .await
         .unwrap();
@@ -3697,12 +3732,12 @@ async fn search_replace_endpoint() {
 
 #[tokio::test]
 async fn syntax_highlight_endpoint() {
-    let (_dir, port, token) = start_daemon(vec![]).await;
+    let (_dir, port, token, proj) = start_daemon_with_project(vec![]).await;
     let client = client_with_token(&token);
 
     let r = client
         .post(format!("{}/projects/open", base(port)))
-        .json(&serde_json::json!({ "path": "." }))
+        .json(&serde_json::json!({ "path": &proj }))
         .send()
         .await
         .unwrap();
@@ -3732,12 +3767,12 @@ async fn syntax_highlight_endpoint() {
 
 #[tokio::test]
 async fn git_source_view_endpoint() {
-    let (_dir, port, token) = start_daemon(vec![]).await;
+    let (_dir, port, token, proj) = start_daemon_with_project(vec![]).await;
     let client = client_with_token(&token);
 
     let r = client
         .post(format!("{}/projects/open", base(port)))
-        .json(&serde_json::json!({ "path": "." }))
+        .json(&serde_json::json!({ "path": &proj }))
         .send()
         .await
         .unwrap();
@@ -3757,12 +3792,12 @@ async fn git_source_view_endpoint() {
 
 #[tokio::test]
 async fn project_lsp_proxy_endpoint() {
-    let (_dir, port, token) = start_daemon(vec![]).await;
+    let (_dir, port, token, proj) = start_daemon_with_project(vec![]).await;
     let client = client_with_token(&token);
 
     let r = client
         .post(format!("{}/projects/open", base(port)))
-        .json(&serde_json::json!({ "path": "." }))
+        .json(&serde_json::json!({ "path": &proj }))
         .send()
         .await
         .unwrap();
@@ -3879,12 +3914,12 @@ async fn create_session_with_worktree() {
 #[tokio::test]
 async fn checkpoint_rollback_endpoint() {
     let script = vec![ScriptedReply::Text("done".into())];
-    let (_dir, port, token) = start_daemon(script).await;
+    let (_dir, port, token, proj) = start_daemon_with_project(script).await;
     let client = client_with_token(&token);
 
     let r = client
         .post(format!("{}/projects/open", base(port)))
-        .json(&serde_json::json!({ "path": "." }))
+        .json(&serde_json::json!({ "path": &proj }))
         .send()
         .await
         .unwrap();
