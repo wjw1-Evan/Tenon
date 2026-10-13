@@ -144,6 +144,73 @@ describe("TenonApi（§15 客户端）", () => {
     }
   });
 
+  it("connectTerminal 票据被拒（auth failed）→ reject（v2.45）", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ ticket: "bad-ticket", expires_in_s: 60 }), { status: 200 })
+    );
+    // 模拟 daemon 对无效票据回发 auth failed
+    class AuthFailedWebSocket {
+      url: string;
+      onopen: (() => void) | null = null;
+      onmessage: ((m: { data: string }) => void) | null = null;
+      onerror: (() => void) | null = null;
+      onclose: (() => void) | null = null;
+      constructor(url: string) {
+        this.url = url;
+        queueMicrotask(() => {
+          this.onopen?.();
+          this.onmessage?.({ data: "auth failed" });
+        });
+      }
+      send() {}
+    }
+    vi.stubGlobal("WebSocket", AuthFailedWebSocket);
+    try {
+      const api = new TenonApi({ port: 9999, token: "t" });
+      await expect(
+        api.connectTerminal(
+          "p1",
+          () => {},
+          () => {}
+        )
+      ).rejects.toThrow("terminal ws auth failed");
+    } finally {
+      vi.stubGlobal("WebSocket", FakeWebSocket);
+    }
+  });
+
+  it("connectTerminal 升级失败（onerror）→ reject（v2.45）", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ ticket: "t", expires_in_s: 60 }), { status: 200 })
+    );
+    // 模拟升级被拒（修复前 401 形态）：浏览器侧表现为 onerror
+    class UpgradeFailedWebSocket {
+      url: string;
+      onopen: (() => void) | null = null;
+      onmessage: ((m: { data: string }) => void) | null = null;
+      onerror: (() => void) | null = null;
+      onclose: (() => void) | null = null;
+      constructor(url: string) {
+        this.url = url;
+        queueMicrotask(() => this.onerror?.());
+      }
+      send() {}
+    }
+    vi.stubGlobal("WebSocket", UpgradeFailedWebSocket);
+    try {
+      const api = new TenonApi({ port: 9999, token: "t" });
+      await expect(
+        api.connectTerminal(
+          "p1",
+          () => {},
+          () => {}
+        )
+      ).rejects.toThrow("terminal ws connect failed");
+    } finally {
+      vi.stubGlobal("WebSocket", FakeWebSocket);
+    }
+  });
+
   it("v1.157 局域网：页面与 daemon 同端口时 base 用页面 origin", async () => {
     vi.stubGlobal("location", {
       protocol: "http:",

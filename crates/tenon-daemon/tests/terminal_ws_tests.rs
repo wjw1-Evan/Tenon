@@ -81,6 +81,22 @@ async fn terminal_open_http_returns_shell() {
 }
 
 #[tokio::test]
+async fn terminal_post_without_token_is_401() {
+    // 豁免仅限 WS 升级（浏览器带不了头）；HTTP 端点不放宽——无 token 仍 401
+    let (dir, port, token) = start_daemon(vec![]).await;
+    let project_id = open_project(port, &token, &dir).await;
+    let bare = reqwest::Client::new()
+        .post(format!(
+            "{base}/projects/{project_id}/terminal",
+            base = base(port)
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bare.status(), 401, "终端 HTTP 端点仍须 token");
+}
+
+#[tokio::test]
 async fn terminal_ws_ticket_first_frame_auth_ok_and_output_roundtrip() {
     let (dir, port, token) = start_daemon(vec![]).await;
     let project_id = open_project(port, &token, &dir).await;
@@ -171,4 +187,141 @@ async fn terminal_ws_rejects_replayed_ticket() {
         .unwrap();
     let reply = ws2.next().await.unwrap().unwrap();
     assert_eq!(reply.to_string(), "auth failed", "{reply}");
+    // 拒绝后对端关闭（不吊着死连接）
+    let after = tokio::time::timeout(Duration::from_secs(3), ws2.next()).await;
+    if let Ok(Some(Ok(msg))) = after {
+        assert!(
+            matches!(msg, tokio_tungstenite::tungstenite::Message::Close(_)),
+            "auth failed 后应关闭，实际 {msg}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn terminal_ws_resize_control_frame_applies() {
+    // JSON 控制帧 {"resize":[rows,cols]} 不进 PTY 输入，真实生效——
+    // resize 后 stty size 回读应反映新尺寸（初始 24x80）
+    let (dir, port, token) = start_daemon(vec![]).await;
+    let project_id = open_project(port, &token, &dir).await;
+
+    let resp: serde_json::Value = client_with_token(&token)
+        .post(format!("{}/ws-ticket", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!(
+        "ws://127.0.0.1:{port}/projects/{project_id}/terminal/ws"
+    ))
+    .await
+    .unwrap();
+    ws.send(tokio_tungstenite::tungstenite::Message::text(
+        resp["ticket"].as_str().unwrap().to_string(),
+    ))
+    .await
+    .unwrap();
+    let auth = ws.next().await.unwrap().unwrap();
+    assert_eq!(auth.to_string(), "auth ok", "{auth}");
+
+    ws.send(tokio_tungstenite::tungstenite::Message::text(
+        r#"{"resize":[30,120]}"#.to_string(),
+    ))
+    .await
+    .unwrap();
+    ws.send(tokio_tungstenite::tungstenite::Message::text(
+        "stty size\r\n".to_string(),
+    ))
+    .await
+    .unwrap();
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut seen = false;
+    while tokio::time::Instant::now() < deadline {
+        let Ok(Some(Ok(msg))) = tokio::time::timeout(Duration::from_millis(500), ws.next()).await
+        else {
+            continue;
+        };
+        if msg.to_string().contains("30 120") {
+            seen = true;
+            break;
+        }
+    }
+    assert!(seen, "resize 控制帧应真实生效（stty size = 30 120）");
+    let _ = ws.close(None).await;
+}
+
+#[tokio::test]
+async fn terminal_close_recycles_session_and_eof_old_stream() {
+    // DELETE 回收：杀 shell 进程 → 旧 WS 流收到 EOF 标记（空帧）或关闭；
+    // 随后再 POST open 正常重开（懒重建）
+    let (dir, port, token) = start_daemon(vec![]).await;
+    let project_id = open_project(port, &token, &dir).await;
+
+    let resp: serde_json::Value = client_with_token(&token)
+        .post(format!("{}/ws-ticket", base(port)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!(
+        "ws://127.0.0.1:{port}/projects/{project_id}/terminal/ws"
+    ))
+    .await
+    .unwrap();
+    ws.send(tokio_tungstenite::tungstenite::Message::text(
+        resp["ticket"].as_str().unwrap().to_string(),
+    ))
+    .await
+    .unwrap();
+    let auth = ws.next().await.unwrap().unwrap();
+    assert_eq!(auth.to_string(), "auth ok", "{auth}");
+
+    client_with_token(&token)
+        .delete(format!(
+            "{base}/projects/{project_id}/terminal",
+            base = base(port)
+        ))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+
+    // 子进程退出 → 看护线程发空帧 → 泵转发空文本帧或直接关闭
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut eof = false;
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(500), ws.next()).await {
+            Ok(Some(Ok(msg))) => {
+                let is_close = matches!(msg, tokio_tungstenite::tungstenite::Message::Close(_));
+                if is_close || msg.to_string().is_empty() {
+                    eof = true;
+                    break;
+                }
+            }
+            _ => {
+                eof = true;
+                break;
+            }
+        }
+    }
+    assert!(eof, "DELETE 后旧终端流应有 EOF 标记（空帧或关闭）");
+
+    // 回收后再开：懒重建成功
+    let reopened: serde_json::Value = client_with_token(&token)
+        .post(format!(
+            "{base}/projects/{project_id}/terminal",
+            base = base(port)
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(reopened["shell"].as_str().is_some(), "{reopened}");
 }

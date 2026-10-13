@@ -580,6 +580,10 @@ mod tests {
                 "/projects/p1/terminal/ws",
                 axum::routing::get(|| async { "ws" }),
             )
+            .route(
+                "/projects/p1/terminal",
+                axum::routing::post(|| async { "ok" }),
+            )
             .layer(axum::middleware::from_fn_with_state(
                 state.clone(),
                 auth_middleware,
@@ -614,6 +618,23 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK, "终端 WS 免配对头");
+
+        // 边界对照：/projects/p1/terminal（HTTP POST，非 ws 升级后缀）不豁免
+        // ——LAN 无配对头仍 403（防 ends_with("/terminal/ws") 过宽回归）
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("http://192.168.1.5/projects/p1/terminal")
+                    .header(header::HOST, "192.168.1.5:41234")
+                    .header(header::ORIGIN, "http://192.168.1.5:41234")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN, "终端 HTTP 端点不豁免");
 
         // 对照：普通 API 无 token 仍 401
         let res = app
