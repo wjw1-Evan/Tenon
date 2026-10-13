@@ -49,10 +49,6 @@ pub struct AgentConfig {
     pub fix_rounds: u32,
     /// 单命令超时秒（§9.2）。
     pub command_timeout_s: u64,
-    /// 回合预算（§9.1 v2.49 ADR-21）：0 = 无上限（新默认——交互会话持续运行
-    /// 至收尾 / 错误 / 用户停止）；非零 = 预算上限，达限转 Paused（evals 按
-    /// 附录 D budget.max_steps×2/×3 显式设置判负；headless / 显式配置同理）。
-    pub max_tool_rounds: u32,
     /// 历史压缩触发阈值（§10.2 v2.13 自适应：daemon 按合并后 provider 配置
     /// `max(24k, context_tokens × 40%)` 或显式覆盖注入；缺省 24k = v1 行为）。
     pub compaction_input_tokens: u64,
@@ -113,7 +109,6 @@ impl AgentConfig {
             .field("project_id", &self.project_id)
             .field("project_root", &self.project_root)
             .field("fix_rounds", &self.fix_rounds)
-            .field("max_tool_rounds", &self.max_tool_rounds)
             .field("memories_enabled", &self.memories_enabled)
             .field("fallback_providers", &self.fallback_providers.len())
             .finish_non_exhaustive()
@@ -128,8 +123,6 @@ impl AgentConfig {
             first_edit_buffer_ms: 2000,
             fix_rounds: 3,
             command_timeout_s: 120,
-            // v2.49 ADR-21：0 = 无回合上限——对话持续运行（§9.1）
-            max_tool_rounds: 0,
             compaction_input_tokens: tenon_core::context::MIN_COMPACTION_INPUT_TOKENS,
             exec_rules: Vec::new(),
             laya: None,
@@ -1713,15 +1706,10 @@ impl AgentSession {
         self.run_turn_hooks(crate::hooks::HookEvent::PreTurn).await;
 
         // ---- 模型回合循环（SENSING / DECIDING / EXECUTING 在回合内展开）----
-        // v2.49 ADR-21：对话持续运行——预算 0（交互默认）无上限；非零为回合
-        // 预算（evals / 显式配置），达限走循环后的回合预算耗尽暂停。
-        let rounds_budget =
-            (self.config.max_tool_rounds != 0).then_some(self.config.max_tool_rounds);
+        // v2.52 ADR-22：无工具调用次数上限——任务持续运行至收尾回答 / 模型
+        // 错误 / 用户停止；防跑飞保险丝由 evals runner 侧承担（§18.3）。
         let mut round: u32 = 0;
         'rounds: loop {
-            if rounds_budget.is_some_and(|n| round >= n) {
-                break 'rounds;
-            }
             self.force_state(State::Deciding).await;
             self.set_status(SessionStatus::Deciding).await;
 
@@ -2411,23 +2399,6 @@ impl AgentSession {
                 break 'rounds;
             }
             round += 1;
-        }
-
-        // ---- 回合预算耗尽：无收尾回答 ≠ 任务完成 ----
-        // 仅非零回合预算可达（evals / 显式配置；v2.49 起交互会话无上限）。
-        // 预算内模型持续只发工具调用未收敛 → Paused 交用户 / 评测判负处置
-        if paused_reason.is_none() && error_msg.is_none() && final_answer.is_none() {
-            self.force_state(State::Paused).await;
-            self.set_status(SessionStatus::Paused).await;
-            paused_reason = Some(format!(
-                "回合预算耗尽（{} 轮）仍未产出收尾回答；可再发消息续跑或停止",
-                self.config.max_tool_rounds
-            ));
-            self.emit(
-                EventKind::Error,
-                &serde_json::json!({"rounds_exhausted": self.config.max_tool_rounds}),
-            )
-            .await;
         }
 
         // ---- 验证（VERIFYING，双通道 / 降级通道，§9.4）----

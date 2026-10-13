@@ -852,30 +852,6 @@ async fn readonly_session_blocks_writes_but_answers() {
 }
 
 #[tokio::test]
-async fn round_budget_exhaustion_still_pauses_for_evals() {
-    // §9.1 v2.49：非零回合预算（evals 按附录 D budget.max_steps×2/×3 注入、
-    // headless / 显式配置同理）达限仍转 Paused——预算判负语义保留
-    let script: Vec<ScriptedReply> = (0..5)
-        .map(|_| ScriptedReply::Tool {
-            name: "read_file".into(),
-            args: serde_json::json!({"path": "a.txt"}),
-        })
-        .collect();
-    let (dir, session, _store, _p) = setup_with_config(script, |cfg| {
-        cfg.max_tool_rounds = 2;
-    })
-    .await;
-    std::fs::write(dir.path().join("a.txt"), "x").unwrap();
-    let outcome = session.run_task("预算任务").await;
-    match outcome {
-        TaskOutcome::Paused { reason, .. } => {
-            assert!(reason.contains("回合预算"), "{reason}");
-        }
-        other => panic!("预算耗尽应暂停（评测判负语义），实际 {other:?}"),
-    }
-}
-
-#[tokio::test]
 async fn conversation_runs_past_legacy_round_cap_until_done() {
     // §9.1 v2.49 ADR-21：交互会话无回合上限——脚本 25 轮只读调用（超过旧默认
     // 24 轮）后文本收尾，任务应 Done 而非回合预算暂停

@@ -143,15 +143,45 @@ impl EvalRunner {
     /// 运行单任务：准备夹具目录 → 建会话 → 跑任务 → 判定断言。
     /// v1.190 计划模式适配：计划暂停（等待批准）→ 自动批准续跑（≤2 次，
     /// 语义等价 UI 侧「批准执行」= 发送批准文本新回合）。
+    /// v2.52 ADR-22：回合预算保险丝移交 runner——任务循环已无任何次数上限，
+    /// 防跑飞由评测 harness 承担：订阅事件计模型轮数（ContextUsage 每轮一次），
+    /// 超 budget.max_steps×2 即 Stop（outcome=Paused → 既有「任务未完成 +
+    /// 步数超预算」双 fail 判定照常命中）。
+    async fn run_with_budget(session: &AgentSession, prompt: &str, max_steps: u32) -> TaskOutcome {
+        let mut events = session.subscribe();
+        let budget_rounds = (max_steps as u64).saturating_mul(2);
+        let run = session.run_task(prompt);
+        tokio::pin!(run);
+        let mut seen: u64 = 0;
+        loop {
+            tokio::select! {
+                outcome = &mut run => return outcome,
+                ev = events.recv() => {
+                    if let Ok(ev) = ev {
+                        if ev.kind == EventKind::ContextUsage {
+                            seen += 1;
+                            if seen > budget_rounds {
+                                session.control(crate::session::ControlCommand::Stop);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     async fn run_with_plan_approval(session: &AgentSession, task: &EvalTask) -> TaskOutcome {
-        let mut outcome = session.run_task(&task.instruction).await;
+        let mut outcome =
+            Self::run_with_budget(session, &task.instruction, task.budget.max_steps).await;
         let mut approvals = 0;
         while let TaskOutcome::Paused { reason, .. } = &outcome {
             if approvals >= 2 || !reason.contains("计划") {
                 break;
             }
             approvals += 1;
-            outcome = session.run_task("计划已批准，请按计划执行。").await;
+            outcome =
+                Self::run_with_budget(session, "计划已批准，请按计划执行。", task.budget.max_steps)
+                    .await;
         }
         outcome
     }
@@ -185,7 +215,6 @@ impl EvalRunner {
         // 基准任务 = 受控仓库快照（附录 D）；v2.37 全对话完整权限（ADR-19）零审批。
         let mut config = AgentConfig::for_project(dir.path().to_path_buf(), &project_id);
         config.first_edit_buffer_ms = 5; // evals 提速
-        config.max_tool_rounds = task.budget.max_steps * 2;
 
         let session = AgentSession::create(
             self.store.clone(),
@@ -253,7 +282,6 @@ impl EvalRunner {
         );
         let mut config = AgentConfig::for_project(dir.path().to_path_buf(), &project_id);
         config.first_edit_buffer_ms = 5;
-        config.max_tool_rounds = task.budget.max_steps * 3;
 
         let session = AgentSession::create(
             self.store.clone(),
