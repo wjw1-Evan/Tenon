@@ -8,6 +8,7 @@
 // 信息与交互不删——用户消息去气泡改居右纯文本（按钮组 hover 显现）、写类步骤卡改单行
 // muted 折叠行、回合竖线与分隔线移除（留白分组）、用量 + 改动摘要徽标合并 .turn-foot 单行。
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { MouseEvent as ReactMouseEvent } from "react";
 import type { ProjectSummary, QueuedMessage, TenonApi } from "../lib/api";
 import type { Translate } from "../lib/i18n";
 import { RUNNING_STATES, STATE_COLORS, type AgentStateName } from "../lib/stateColors";
@@ -790,16 +791,10 @@ export function AgentPanel({
   const [copiedTurnId, setCopiedTurnId] = useState<number | null>(null);
   const copyTimer = useRef<number | null>(null);
 
-  function copyTurn(turn: Turn) {
-    if (copiedTurnId === turn.id) return;
-    const text = turn.task ?? "";
-    const markCopied = () => {
-      setCopiedTurnId(turn.id);
-      if (copyTimer.current !== null) window.clearTimeout(copyTimer.current);
-      copyTimer.current = window.setTimeout(() => setCopiedTurnId(null), 1500);
-    };
-    // 剪贴板 API 不可用（局域网 http 非安全上下文）或被拒（WebView 未授权）时降级
-    // execCommand——同步路径，点击手势内基本总能成功。
+  // v2.59：剪贴板写入统一 helper（回合复制与代码块复制共用）——剪贴板 API 不可用
+  // （局域网 http 非安全上下文）或被拒（WebView 未授权）时降级 execCommand——
+  // 同步路径，点击手势内基本总能成功。
+  function copyTextToClipboard(text: string, onCopied: () => void) {
     const fallbackCopy = () => {
       const ta = document.createElement("textarea");
       ta.value = text;
@@ -808,7 +803,7 @@ export function AgentPanel({
       document.body.appendChild(ta);
       ta.select();
       try {
-        if (document.execCommand("copy")) markCopied();
+        if (document.execCommand("copy")) onCopied();
       } catch {
         // 两种通道都不可用：静默放弃（不留误导性「已复制」）
       } finally {
@@ -816,10 +811,39 @@ export function AgentPanel({
       }
     };
     if (navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(text).then(markCopied, fallbackCopy);
+      navigator.clipboard.writeText(text).then(onCopied, fallbackCopy);
     } else {
       fallbackCopy();
     }
+  }
+
+  function copyTurn(turn: Turn) {
+    if (copiedTurnId === turn.id) return;
+    copyTextToClipboard(turn.task ?? "", () => {
+      setCopiedTurnId(turn.id);
+      if (copyTimer.current !== null) window.clearTimeout(copyTimer.current);
+      copyTimer.current = window.setTimeout(() => setCopiedTurnId(null), 1500);
+    });
+  }
+
+  // v2.59 代码块复制：markdown 正文经 dangerouslySetInnerHTML 注入，按钮无
+  // React handler——容器事件委托接管。点击 .code-copy 取同块 pre 文本复制，
+  // 按钮瞬时「✓」反馈后还原（直接 DOM 操作，不经 React 状态）。
+  function onMarkdownClick(e: ReactMouseEvent<HTMLElement>) {
+    const target = e.target as HTMLElement;
+    const btn = target.closest?.(".code-copy");
+    if (!(btn instanceof HTMLElement)) return;
+    const pre = btn.closest(".code-block")?.querySelector("pre");
+    if (!pre) return;
+    const original = btn.textContent ?? "";
+    copyTextToClipboard(pre.textContent ?? "", () => {
+      btn.textContent = "✓";
+      btn.classList.add("copied");
+      window.setTimeout(() => {
+        btn.textContent = original;
+        btn.classList.remove("copied");
+      }, 1200);
+    });
   }
 
   const running = RUNNING_STATES.has(status);
@@ -1048,6 +1072,7 @@ export function AgentPanel({
                           ? () => void retryTask(turn.task as string)
                           : undefined
                       }
+                      onMarkdownClick={onMarkdownClick}
                     />
                   ));
                 })()}
@@ -1075,9 +1100,14 @@ export function AgentPanel({
                 )}
                 {active && streamText && (
                   <div
-                    className="turn-answer"
+                    className={running ? "turn-answer live-stream" : "turn-answer"}
                     data-testid="model-stream"
-                    dangerouslySetInnerHTML={{ __html: renderMarkdownLite(streamText) }}
+                    onClick={onMarkdownClick}
+                    dangerouslySetInnerHTML={{
+                      __html: renderMarkdownLite(streamText, {
+                        copyLabel: t("thread.code_copy"),
+                      }),
+                    }}
                   />
                 )}
                 {active && running && !streamText && (
@@ -1742,6 +1772,7 @@ function EventNode({
   retryLatest,
   onApprovePlan,
   onRetry,
+  onMarkdownClick,
 }: {
   ev: EventItem;
   t: Translate;
@@ -1750,6 +1781,8 @@ function EventNode({
   onApprovePlan?: (() => void) | undefined;
   /** v1.204 错误回合一键重试：非空 = 该回合任务文本（error 事件行内渲染重试钮）。 */
   onRetry?: (() => void) | undefined;
+  /** v2.59 代码块复制：markdown 正文容器的事件委托 handler（AgentPanel 传入）。 */
+  onMarkdownClick?: ((e: ReactMouseEvent<HTMLElement>) => void) | undefined;
 }) {
   switch (ev.type) {
     case "reasoning_delta":
@@ -1786,12 +1819,14 @@ function EventNode({
       return (
         <div
           className="turn-answer"
+          onClick={onMarkdownClick}
           dangerouslySetInnerHTML={{
-            __html: renderMarkdownLite(decisionDisplayText(String(ev.payload.intent ?? ""))),
+            __html: renderMarkdownLite(decisionDisplayText(String(ev.payload.intent ?? "")), {
+              copyLabel: t("thread.code_copy"),
+            }),
           }}
         />
-      );
-    case "patch_applied":
+      );    case "patch_applied":
     case "command_run":
       // v1.112：成功的只读步骤聚合为单行（回合渲染层），失败的仍单独红显。
       if (isReadOnlyStep(ev) && (ev.payload.output as { ok?: boolean } | undefined)?.ok !== false) {

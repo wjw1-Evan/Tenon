@@ -1684,6 +1684,111 @@ button:disabled { opacity: 0.45; cursor: default; }
 .turn-answer a {
   color: var(--accent-text);
 }
+/* v2.59 对话内容渲染质量：围栏代码块头部条（语言标注 + 复制钮）——
+   pre 由 .code-block 包裹承接边框，头部条弱化为 raised 底，v2.57 间距语言（2/8 竖向节奏） */
+.turn-answer .code-block {
+  margin: 6px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  overflow: hidden;
+}
+.turn-answer .code-head {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 2px 9px;
+  background: var(--raised);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  min-height: 20px;
+}
+.turn-answer .code-lang {
+  margin-right: auto;
+  font-family: var(--font-mono);
+  color: var(--muted);
+}
+.turn-answer .code-copy {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  padding: 1px 5px;
+  border-radius: var(--radius-s);
+  cursor: pointer;
+}
+.turn-answer .code-copy:hover {
+  color: var(--fg);
+  background: var(--bg);
+}
+.turn-answer .code-copy.copied {
+  color: var(--ok);
+}
+.turn-answer .code-block pre {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+}
+/* v2.59 表格：块级横向滚动（宽表不撑破 46em 行长约束），v1.162 弱边框语言 */
+.turn-answer table {
+  border-collapse: collapse;
+  margin: 6px 0;
+  font-size: 12px;
+  max-width: 100%;
+  display: block;
+  overflow-x: auto;
+}
+.turn-answer th,
+.turn-answer td {
+  border: 1px solid var(--border);
+  padding: 3px 8px;
+  text-align: left;
+}
+.turn-answer th {
+  background: var(--raised);
+  color: var(--fg-strong);
+  font-weight: 600;
+}
+/* v2.59 引用块 / 分隔线 / 任务清单 */
+.turn-answer blockquote {
+  margin: 6px 0;
+  padding: 1px 0 1px 10px;
+  border-left: 3px solid var(--border-strong);
+  color: var(--muted);
+}
+.turn-answer blockquote p {
+  margin: 0;
+}
+.turn-answer hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 8px 0;
+}
+.turn-answer li.task-item {
+  list-style: none;
+}
+.turn-answer li.task-item input[type="checkbox"] {
+  accent-color: var(--accent-text);
+  margin: 0 4px 0 -14px;
+  vertical-align: -1px;
+}
+/* v2.59 流式光标：末元素 ::after 闪烁块状光标（纯 CSS，运行态 live-stream 类挂载） */
+.turn-answer.live-stream > :last-child::after {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 12px;
+  margin-left: 3px;
+  vertical-align: -1px;
+  background: currentColor;
+  animation: md-cursor-blink 1s steps(2, start) infinite;
+}
+@keyframes md-cursor-blink {
+  to {
+    visibility: hidden;
+  }
+}
 
 /* 工具步骤行（v1.162 去卡片装饰）：折叠单行 muted，点击展开明细；失败红显 */
 .turn-step-head {

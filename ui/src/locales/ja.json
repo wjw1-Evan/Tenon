@@ -329,6 +329,7 @@
   "thread.undo_confirm": "このメッセージによる変更をすべて取り消しますか？タイムラインからロールバックを取り消せます。",
   "thread.undo_failed": "取り消し失敗：一致するスナップショットが見つかりません",
   "thread.copy": "コピー",
+  "thread.code_copy": "コードをコピー",
   "thread.edit": "編集",
   "thread.jump_bottom": "一番下へ",
   "thread.copied": "コピーしました",
