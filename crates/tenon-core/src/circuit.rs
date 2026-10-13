@@ -143,6 +143,16 @@ impl CircuitBreaker {
         CircuitStatus::Open
     }
 
+    /// 清零四项计数、保留限额（§9.3 v2.43：预算按任务计，每任务起点调用）。
+    /// 超限消耗已在任务内如实落账（v1.93/v1.166 不变式，model_usage / events
+    /// 审计全量保留），重置只决定下一任务的预算起点，不抹历史。
+    pub fn reset(&mut self) {
+        self.touched_files = 0;
+        self.changed_lines = 0;
+        self.tokens_used = 0;
+        self.cost_used = 0.0;
+    }
+
     /// 当前状态（执行每步前轮询）。
     pub fn status(&self) -> CircuitStatus {
         if self.touched_files > self.limits.max_files {
@@ -242,6 +252,34 @@ mod tests {
                 "本地模型仅计 token"
             );
         }
+    }
+
+    #[test]
+    fn reset_clears_counters_and_keeps_limits() {
+        // §9.3 v2.43：预算按任务计——重置清零计数、保留限额，Tripped 回 Open
+        let mut b = breaker();
+        b.record_usage(2000, 2.0);
+        assert_eq!(b.status(), CircuitStatus::Tripped(TripReason::OutOfTokens));
+        b.record_patch(PatchFootprint {
+            total_files_touched: 5,
+            lines_changed: 200,
+        });
+        // status() 优先级：文件 → 行 → token → 成本
+        assert_eq!(b.status(), CircuitStatus::Tripped(TripReason::TooManyFiles));
+        b.reset();
+        assert_eq!(b.status(), CircuitStatus::Open);
+        assert_eq!(b.tokens_used(), 0);
+        assert_eq!(b.cost_used(), 0.0);
+        assert_eq!(b.touched_files(), 0);
+        assert_eq!(b.changed_lines(), 0);
+        // 限额不变：重置后照原预算重新累计、照常熔断
+        let limits = b.limits();
+        assert_eq!(limits.max_tokens, 1000);
+        assert_eq!(limits.max_cost_usd, 1.0);
+        assert_eq!(
+            b.record_usage(2000, 0.0),
+            CircuitStatus::Tripped(TripReason::OutOfTokens)
+        );
     }
 
     #[test]

@@ -1549,6 +1549,13 @@ impl AgentSession {
         let _guard = scope_lock.lock().await;
         self.first_edit_done.store(false, Ordering::SeqCst);
         self.touched_files.lock().await.clear();
+        // §9.3 v2.43：熔断预算按任务计——每任务起点清零计数（限额不变）。
+        // 此前四项计数跨任务累计成会话生命周期预算：长会话正常工作累计超限
+        // 即误触发，且熔断暂停后 v2.35 续跑新回合在首个工具步检查点即再熔断，
+        // 「可恢复续跑」名存实亡。重置仅发生在用户新发任务的起点（暂停态
+        // 发送队列不自动出队，无无人值守续刷面）；任务内超限照常如实落账
+        // （v1.93/v1.166 不变式），审计全量保留。
+        self.circuit.lock().await.reset();
         {
             let mut mem = self.memory.lock().await;
             mem.goals.push(user_text.to_string());
