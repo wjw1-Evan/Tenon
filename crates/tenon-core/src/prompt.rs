@@ -137,7 +137,7 @@ pub fn tool_catalog() -> String {
             Tool::SpawnSubagents,
             "并行分发独立子任务（worktree 隔离子代理，1-3 项、文件集不相交）：返回各子代理摘要，合并 / 丢弃在子会话行处置",
         ),
-        (Tool::ApplyPatch, "结构化编辑：定向替换用 file + search + replace（search 全文唯一，replace_all=true 替换全部命中）；整段改写用 file + range + content"),
+        (Tool::ApplyPatch, "结构化编辑：单文件定向替换用 file + search + replace（search 全文唯一，replace_all=true 替换全部命中）；整段改写用 file + range + content；多文件改动用 ops 数组一次原子落盘（≤8 个文件，任一失败整体拒绝）"),
         (Tool::RunTests, "沙箱内运行测试（断网）"),
         (Tool::RunBuild, "沙箱内构建（断网）"),
         (Tool::InstallDeps, "沙箱内经镜像代理安装依赖（仅包管理器安装命令，如 npm/pnpm/yarn/pip/uv/cargo/go/dotnet … install；禁 shell 控制符与脚本执行子命令）"),

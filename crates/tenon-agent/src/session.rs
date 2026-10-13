@@ -335,7 +335,7 @@ fn tool_specs() -> Vec<ToolSpec> {
         ("git_read", "只读 git：status/log/diff", serde_json::json!({
             "type": "object", "properties": {"sub": {"type": "string", "enum": ["status", "log", "diff"]}}
         })),
-        ("apply_patch", "编辑文件（三选一）：① file + range(1-based 行区间含端点，缺省追加) + content；② 定向替换 file + search + replace（search 须在文件中唯一，空白不一致可容忍）——定向编辑优先用 ②；③ ②加 replace_all=true 替换全部命中（同文案多处修改时用）", serde_json::json!({
+        ("apply_patch", "编辑文件：单文件——① file + range(1-based 行区间含端点，缺省追加) + content；② 定向替换 file + search + replace（search 须在文件中唯一，空白不一致可容忍）——定向编辑优先用 ②；③ ②加 replace_all=true 替换全部命中。多文件——ops: [{file + search/replace 或 range/content}]（≤8 个）一次原子落盘：任一文件失败则整体拒绝零写入（Codex apply_patch 形态，多文件改动优先用）", serde_json::json!({
             "type": "object",
             "properties": {
                 "file": {"type": "string"},
@@ -343,9 +343,24 @@ fn tool_specs() -> Vec<ToolSpec> {
                 "content": {"type": "string"},
                 "search": {"type": "string"},
                 "replace": {"type": "string"},
-                "replace_all": {"type": "boolean", "description": "search/replace 形态下替换全部命中（缺省要求唯一）"}
-            },
-            "required": ["file", "content"]
+                "replace_all": {"type": "boolean", "description": "search/replace 形态下替换全部命中（缺省要求唯一）"},
+                "ops": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "file": {"type": "string"},
+                            "range": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
+                            "content": {"type": "string"},
+                            "search": {"type": "string"},
+                            "replace": {"type": "string"},
+                            "replace_all": {"type": "boolean"}
+                        }
+                    },
+                    "minItems": 1, "maxItems": 8,
+                    "description": "多文件原子编辑：每项为一次单文件编辑，任一失败整体拒绝"
+                }
+            }
         })),
         ("run_tests", "运行测试（沙箱断网）", serde_json::json!({
             "type": "object", "properties": {"command": {"type": "string"}}

@@ -382,6 +382,256 @@ fn write_patch_result(ctx: &ToolContext, rel: String, before: &str, after: Strin
     }
 }
 
+/// 已解析的单文件编辑（解析阶段零写入；before 用于 diff 与人机共编合并）。
+struct ResolvedEdit {
+    rel: String,
+    before: String,
+    after: String,
+}
+
+/// v2.62 §9.2（Codex apply_patch 对齐）：apply_patch 参数解析——
+/// `ops` 数组多文件原子编辑（1–8 项、每项与单文件形态同构、解析全量校验
+/// 任一失败整体拒绝零写入）；缺省单文件三形态。与顶层单文件参数混给拒绝。
+/// Err 变体含模型可自纠的错误卡（§8.6 同款，result_large_err 白名单同 execute_tool）。
+#[allow(clippy::result_large_err)]
+fn resolve_patch_edits(
+    ctx: &ToolContext,
+    args: &serde_json::Value,
+) -> Result<Vec<ResolvedEdit>, ToolOutput> {
+    match args.get("ops") {
+        Some(serde_json::Value::Array(ops)) => {
+            if args.get("file").is_some()
+                || args.get("content").is_some()
+                || args.get("search").is_some()
+            {
+                return Err(ToolOutput::err("ops 与单文件参数不可同给（防歧义）"));
+            }
+            if ops.is_empty() {
+                return Err(ToolOutput::err("ops 不可为空"));
+            }
+            const MAX_OPS: usize = 8;
+            if ops.len() > MAX_OPS {
+                return Err(ToolOutput::err(format!("ops 单次最多 {MAX_OPS} 个文件")));
+            }
+            let mut edits: Vec<ResolvedEdit> = Vec::with_capacity(ops.len());
+            for (i, op) in ops.iter().enumerate() {
+                match resolve_one_edit(ctx, op) {
+                    Ok(e) => {
+                        if let Some(dup) = edits.iter().find(|p| p.rel == e.rel) {
+                            return Err(ToolOutput::err(format!(
+                                "第 {} 项编辑重复目标文件 {}（同文件多处修改请合并为一次编辑或改用 replace_all）",
+                                i + 1,
+                                dup.rel
+                            )));
+                        }
+                        edits.push(e);
+                    }
+                    Err(o) => {
+                        return Err(ToolOutput::err(format!(
+                            "第 {} 项编辑失败: {}",
+                            i + 1,
+                            o.content
+                        )));
+                    }
+                }
+            }
+            Ok(edits)
+        }
+        Some(_) => Err(ToolOutput::err("ops 须为数组")),
+        None => resolve_one_edit(ctx, args).map(|e| vec![e]),
+    }
+}
+
+/// 解析单个编辑（search/replace[+replace_all] 或 range/append）为
+/// (rel, before, after)——只读解析，零写入；报错文案与既有单文件路径逐字一致。
+#[allow(clippy::result_large_err)]
+fn resolve_one_edit(ctx: &ToolContext, a: &serde_json::Value) -> Result<ResolvedEdit, ToolOutput> {
+    if let (Some(search), Some(replace)) = (
+        a.get("search").and_then(|v| v.as_str()),
+        a.get("replace").and_then(|v| v.as_str()),
+    ) {
+        // v1.188 §9.2：search/replace 块格式——与 range 同给拒绝（防歧义）。
+        if a.get("range").is_some() {
+            return Err(ToolOutput::err(
+                "range 与 search/replace 不可同给（防歧义）",
+            ));
+        }
+        let Some(file) = a.get("file").and_then(|v| v.as_str()) else {
+            return Err(ToolOutput::err("缺少 file 参数"));
+        };
+        let rel = project_rel(ctx, file)?;
+        let before = match ctx.files.read_file(&rel) {
+            Ok(c) => c,
+            Err(tenon_fs::FsError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(ToolOutput::err(format!(
+                    "目标文件不存在，search/replace 需既有文件（{rel}）"
+                )));
+            }
+            Err(e) => return Err(ToolOutput::err(format!("读取原文件失败（{rel}）: {e}"))),
+        };
+        // v2.61 §9.2：replace_all——全部命中替换；单命中与唯一语义等价。
+        let replace_all = a
+            .get("replace_all")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let spans = if replace_all {
+            search_replace_spans(&before, search).map_err(ToolOutput::err)?
+        } else {
+            search_replace_span(&before, search)
+                .map(|s| vec![s])
+                .map_err(ToolOutput::err)?
+        };
+        let after = splice_spans(&before, &spans, replace);
+        return Ok(ResolvedEdit { rel, before, after });
+    }
+    if a.get("replace_all")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        return Err(ToolOutput::err("replace_all 仅用于 search/replace 形态"));
+    }
+    let op: PatchOp = serde_json::from_value(a.clone()).map_err(|_| {
+        ToolOutput::err("apply_patch 参数非法（需 file/range/content 或 file/search/replace）")
+    })?;
+    let rel = project_rel(ctx, &op.file)?;
+    // 读失败（二进制 / 权限）≠ 文件不存在：把「读不了」当「空文件」整文件
+    // 覆盖会毁坏二进制资产，必须拒绝。
+    let before = match ctx.files.read_file(&rel) {
+        Ok(c) => c,
+        Err(tenon_fs::FsError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return Err(ToolOutput::err(format!(
+                "读取原文件失败，apply_patch 拒绝整文件覆盖（{rel}）: {e}"
+            )));
+        }
+    };
+    let mut lines: Vec<String> = before.lines().map(String::from).collect();
+    match op.range {
+        Some((start, end)) => {
+            if start < 1 || end < start || start > lines.len() + 1 {
+                return Err(ToolOutput::err(format!(
+                    "非法行区间 [{start},{end}]（文件 {len} 行）",
+                    len = lines.len()
+                )));
+            }
+            let new_lines: Vec<String> = op.content.lines().map(String::from).collect();
+            let end_clamped = end.min(lines.len());
+            lines.splice(start - 1..end_clamped, new_lines);
+        }
+        None => {
+            if !op.content.is_empty() {
+                for l in op.content.lines() {
+                    lines.push(l.to_string());
+                }
+            }
+        }
+    }
+    let after = join_after(&before, &lines);
+    Ok(ResolvedEdit { rel, before, after })
+}
+
+/// 区间替换（倒序套用保持行号有效；行粒度——命中区间整行替换，v1.188 语义）。
+fn splice_spans(before: &str, spans: &[(usize, usize)], replacement: &str) -> String {
+    let mut lines: Vec<String> = before.lines().map(String::from).collect();
+    let new_lines: Vec<String> = replacement.lines().map(String::from).collect();
+    for (start, end) in spans.iter().rev() {
+        let end_clamped = (*end).min(lines.len());
+        lines.splice(start - 1..end_clamped, new_lines.clone());
+    }
+    join_after(before, &lines)
+}
+
+/// 行向量回串：保留原文件尾换行语义（before 尾带换行或为空文件时补尾换行）。
+fn join_after(before: &str, lines: &[String]) -> String {
+    if lines.is_empty() {
+        String::new()
+    } else {
+        let mut s = lines.join("\n");
+        if before.ends_with('\n') || before.is_empty() {
+            s.push('\n');
+        }
+        s
+    }
+}
+
+/// 多文件写入尾段（v2.62）：脏缓冲冲突预检（任一冲突全体阻断零写入——
+/// 原子性）→ 统一落盘 → 逐文件 diff 汇总。
+fn write_multi_patch_result(ctx: &ToolContext, edits: Vec<ResolvedEdit>) -> ToolOutput {
+    let mut plans: Vec<(String, String, String, bool)> = Vec::with_capacity(edits.len());
+    for e in &edits {
+        let mut text = e.after.clone();
+        let mut merged = false;
+        if let Some(registry) = &ctx.dirty {
+            if let Some(buffer) = registry.get(&e.rel) {
+                match tenon_core::merge::merge_three_way(&buffer.base, &e.after, &buffer.dirty) {
+                    Ok(m) => {
+                        text = m;
+                        merged = true;
+                    }
+                    Err(conflict) => {
+                        return ToolOutput {
+                            ok: false,
+                            content: format!(
+                                "人机共编冲突：{} 存在未保存的用户改动，与代理改动冲突。                                     写入已阻断，等待用户在三栏预览中处置（§8.6）。",
+                                e.rel
+                            ),
+                            changed_files: vec![],
+                            exit_code: None,
+                            dirty_conflict: Some(DirtConflictView {
+                                path: e.rel.clone(),
+                                base: conflict.base,
+                                ours: conflict.ours,
+                                theirs: conflict.theirs,
+                            }),
+                            dirty_merged: None,
+                        };
+                    }
+                }
+            }
+        }
+        plans.push((e.rel.clone(), e.before.clone(), text, merged));
+    }
+    let mut out = String::new();
+    let mut changed: Vec<String> = Vec::new();
+    let mut any_merged = false;
+    for (rel, before, text, merged) in plans {
+        match ctx.files.write_file(&rel, &text) {
+            Ok(_) => {
+                if merged {
+                    if let Some(registry) = &ctx.dirty {
+                        registry.update_base(&rel, &text);
+                    }
+                    any_merged = true;
+                }
+                let diff = tenon_core::tools::unified_diff(&before, &text, &rel);
+                let note = if merged {
+                    "（人机共编：与未保存的用户改动三方合并）"
+                } else {
+                    ""
+                };
+                out.push_str(&format!("已写入 {rel}{note}\n{diff}\n"));
+                changed.push(rel);
+            }
+            Err(e) => {
+                let written = if changed.is_empty() {
+                    "无".to_string()
+                } else {
+                    changed.join("、")
+                };
+                return ToolOutput::err(format!("写入 {rel} 失败: {e}（此前已写入: {written}）"));
+            }
+        }
+    }
+    ToolOutput {
+        ok: true,
+        content: out.trim_end().to_string(),
+        changed_files: changed,
+        exit_code: None,
+        dirty_conflict: None,
+        dirty_merged: if any_merged { Some(true) } else { None },
+    }
+}
+
 /// 远端名只能是 Git remote 短名；不允许 option 前缀、refspec 或 shell 空白。
 fn safe_git_remote(remote: &str) -> bool {
     !remote.is_empty()
@@ -645,148 +895,19 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
             if ctx.readonly.load(Ordering::Relaxed) {
                 return ToolOutput::err("只读会话禁用写操作");
             }
-            // v1.188 §9.2：search/replace 块格式（file + search + replace）——
-            // 解析为等价 range 操作后走既有链路；与 range 同给拒绝（防歧义）。
-            let op = match (
-                args.get("search").and_then(|v| v.as_str()),
-                args.get("replace").and_then(|v| v.as_str()),
-            ) {
-                (Some(search), Some(replace)) => {
-                    if args.get("range").is_some() {
-                        return ToolOutput::err("range 与 search/replace 不可同给（防歧义）");
-                    }
-                    let Some(file) = args.get("file").and_then(|v| v.as_str()) else {
-                        return ToolOutput::err("缺少 file 参数");
-                    };
-                    let rel_probe = match project_rel(ctx, file) {
-                        Ok(r) => r,
-                        Err(e) => return e,
-                    };
-                    let before_probe = match ctx.files.read_file(&rel_probe) {
-                        Ok(c) => c,
-                        Err(tenon_fs::FsError::Io(e))
-                            if e.kind() == std::io::ErrorKind::NotFound =>
-                        {
-                            return ToolOutput::err(format!(
-                                "目标文件不存在，search/replace 需既有文件（{rel_probe}）"
-                            ));
-                        }
-                        Err(e) => {
-                            return ToolOutput::err(format!("读取原文件失败（{rel_probe}）: {e}"));
-                        }
-                    };
-                    let spans = {
-                        // v2.61 §9.2：replace_all——全部命中替换（倒序套用保持
-                        // 行号有效）；单命中与唯一语义等价，走既有链路。
-                        let replace_all = args
-                            .get("replace_all")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
-                        if replace_all {
-                            match search_replace_spans(&before_probe, search) {
-                                Ok(s) => s,
-                                Err(e) => return ToolOutput::err(e),
-                            }
-                        } else {
-                            match search_replace_span(&before_probe, search) {
-                                Ok(span) => vec![span],
-                                Err(e) => return ToolOutput::err(e),
-                            }
-                        }
-                    };
-                    if spans.len() > 1 {
-                        let mut lines: Vec<String> =
-                            before_probe.lines().map(String::from).collect();
-                        for (start, end) in spans.iter().rev() {
-                            let end_clamped = (*end).min(lines.len());
-                            let new_lines: Vec<String> =
-                                replace.lines().map(String::from).collect();
-                            lines.splice(start - 1..end_clamped, new_lines);
-                        }
-                        let after = if lines.is_empty() {
-                            String::new()
-                        } else {
-                            let mut s = lines.join("\n");
-                            if before_probe.ends_with('\n') || before_probe.is_empty() {
-                                s.push('\n');
-                            }
-                            s
-                        };
-                        return write_patch_result(ctx, rel_probe, &before_probe, after);
-                    }
-                    PatchOp {
-                        file: file.to_string(),
-                        range: Some(spans[0]),
-                        content: replace.to_string(),
-                    }
-                }
-                _ => {
-                    if args
-                        .get("replace_all")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false)
-                    {
-                        return ToolOutput::err("replace_all 仅用于 search/replace 形态");
-                    }
-                    match serde_json::from_value::<PatchOp>(args.clone()) {
-                        Ok(op) => op,
-                        Err(_) => {
-                            return ToolOutput::err(
-                                "apply_patch 参数非法（需 file/range/content 或 file/search/replace）",
-                            );
-                        }
-                    }
-                }
+            // v2.62 §9.2：解析与写入分离——ops 多文件原子编辑（解析全量校验
+            // 任一失败零写入）与单文件三形态统一经 resolve_patch_edits。
+            let edits = match resolve_patch_edits(ctx, args) {
+                Ok(e) => e,
+                Err(o) => return o,
             };
-            let rel = match project_rel(ctx, &op.file) {
-                Ok(r) => r,
-                Err(e) => return e,
-            };
-            // 读失败（二进制 / 权限）≠ 文件不存在：unwrap_or_default 会把
-            // 「读不了」当「空文件」整文件覆盖，毁坏二进制资产
-            let before = match ctx.files.read_file(&rel) {
-                Ok(c) => c,
-                Err(tenon_fs::FsError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
-                    String::new()
+            match edits.len() {
+                1 => {
+                    let e = edits.into_iter().next().expect("len==1 已判定");
+                    write_patch_result(ctx, e.rel, &e.before, e.after)
                 }
-                Err(e) => {
-                    return ToolOutput::err(format!(
-                        "读取原文件失败，apply_patch 拒绝整文件覆盖（{rel}）: {e}"
-                    ));
-                }
-            };
-            let mut lines: Vec<String> = before.lines().map(String::from).collect();
-            match op.range {
-                Some((start, end)) => {
-                    if start < 1 || end < start || start > lines.len() + 1 {
-                        return ToolOutput::err(format!(
-                            "非法行区间 [{start},{end}]（文件 {len} 行）",
-                            len = lines.len()
-                        ));
-                    }
-                    let new_lines: Vec<String> = op.content.lines().map(String::from).collect();
-                    let end_clamped = (end).min(lines.len());
-                    lines.splice(start - 1..end_clamped, new_lines);
-                }
-                None => {
-                    if !op.content.is_empty() {
-                        for l in op.content.lines() {
-                            lines.push(l.to_string());
-                        }
-                    }
-                }
+                _ => write_multi_patch_result(ctx, edits),
             }
-            let after = if lines.is_empty() {
-                String::new()
-            } else {
-                let mut s = lines.join("\n");
-                if before.ends_with('\n') || before.is_empty() {
-                    s.push('\n');
-                }
-                s
-            };
-            // ---- 写入尾段：人机共编三方合并 / 冲突阻断 / 落盘 + diff（公共函数）
-            write_patch_result(ctx, rel, &before, after)
         }
         // v2.0（design-v2.md §4.2）：诚实通用命令通道——command 必填（无探测
         // 缺省），execpolicy 前置拦截高危模式；v2.37（ADR-19）命令沙箱恒降级
@@ -1443,6 +1564,183 @@ mod tests {
         assert!(out.ok, "{}", out.content);
         let content = std::fs::read_to_string(dir.path().join("g.txt")).unwrap();
         assert_eq!(content, "x\nx\n");
+    }
+
+    /// v2.62 §9.2（Codex apply_patch 对齐）：ops 多文件原子编辑——新建 + 编辑
+    /// 一次落盘，changed_files 全列、逐文件 diff 汇总。
+    #[test]
+    fn apply_patch_ops_atomic_multi_file() {
+        let (dir, c) = ctx();
+        std::fs::write(dir.path().join("a.txt"), "alpha\nbeta\n").unwrap();
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "ops": [
+                    {"file": "a.txt", "search": "alpha", "replace": "ALPHA"},
+                    {"file": "new.txt", "content": "created\n"}
+                ]
+            }),
+        );
+        assert!(out.ok, "{}", out.content);
+        assert_eq!(
+            out.changed_files,
+            vec!["a.txt".to_string(), "new.txt".to_string()]
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "ALPHA\nbeta\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("new.txt")).unwrap(),
+            "created\n"
+        );
+        assert!(out.content.contains("--- a/a.txt"), "{}", out.content);
+        assert!(out.content.contains("--- a/new.txt"), "{}", out.content);
+    }
+
+    /// v2.62 §9.2：原子性——任一 op 校验失败整体拒绝零写入。
+    #[test]
+    fn apply_patch_ops_all_or_nothing() {
+        let (dir, c) = ctx();
+        std::fs::write(dir.path().join("a.txt"), "alpha\n").unwrap();
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "ops": [
+                    {"file": "a.txt", "search": "alpha", "replace": "ALPHA"},
+                    {"file": "b.txt", "search": "不存在", "replace": "x"}
+                ]
+            }),
+        );
+        assert!(!out.ok);
+        assert!(out.content.contains("第 2 项编辑失败"), "{}", out.content);
+        assert!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap() == "alpha\n",
+            "第 1 项合法编辑不得落盘（全有或全无）"
+        );
+    }
+
+    /// v2.62 §9.2：同文件重复编辑拒绝；ops 空表 / 超限 / 混给 / 非数组拒绝。
+    #[test]
+    fn apply_patch_ops_rejections() {
+        let (dir, c) = ctx();
+        std::fs::write(dir.path().join("a.txt"), "alpha\n").unwrap();
+
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "ops": [
+                    {"file": "a.txt", "search": "alpha", "replace": "A"},
+                    {"file": "a.txt", "search": "alpha", "replace": "B"}
+                ]
+            }),
+        );
+        assert!(!out.ok);
+        assert!(out.content.contains("重复目标文件"), "{}", out.content);
+
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({"ops": []}));
+        assert!(!out.ok);
+        assert!(out.content.contains("ops 不可为空"), "{}", out.content);
+
+        let nine: Vec<serde_json::Value> = (0..9)
+            .map(|i| serde_json::json!({"file": format!("f{i}.txt"), "content": "x\n"}))
+            .collect();
+        let out = execute_tool(&c, "apply_patch", &serde_json::json!({"ops": nine}));
+        assert!(!out.ok);
+        assert!(out.content.contains("最多 8 个"), "{}", out.content);
+
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({"file": "a.txt", "content": "x\n", "ops": [
+                {"file": "a.txt", "content": "y\n"}
+            ]}),
+        );
+        assert!(!out.ok);
+        assert!(out.content.contains("不可同给"), "{}", out.content);
+
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({"ops": "not-an-array"}),
+        );
+        assert!(!out.ok);
+        assert!(out.content.contains("ops 须为数组"), "{}", out.content);
+    }
+
+    /// v2.62 §9.2：op 内 replace_all 多命中全替（splice_spans 路径）。
+    #[test]
+    fn apply_patch_ops_replace_all_inside_op() {
+        let (dir, c) = ctx();
+        std::fs::write(dir.path().join("f.txt"), "MARK\nkeep\nMARK\nkeep\nMARK\n").unwrap();
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "ops": [
+                    {"file": "f.txt", "search": "MARK", "replace": "DONE", "replace_all": true}
+                ]
+            }),
+        );
+        assert!(out.ok, "{}", out.content);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("f.txt")).unwrap(),
+            "DONE\nkeep\nDONE\nkeep\nDONE\n"
+        );
+    }
+
+    /// v2.62 §9.2：人机共编——ops 任一文件脏缓冲冲突即全体阻断零写入。
+    #[test]
+    fn apply_patch_ops_dirty_conflict_blocks_all() {
+        let (dir, mut c) = ctx();
+        std::fs::write(dir.path().join("a.txt"), "a\nb\n").unwrap();
+        std::fs::write(dir.path().join("g.txt"), "g1\n").unwrap();
+        let registry = std::sync::Arc::new(tenon_fs::DirtyBufferRegistry::new());
+        // 脏缓冲改 a.txt 第 1 行（base=磁盘内容）；代理也改第 1 行 → 冲突
+        registry.set("a.txt", "X\nb\n", "a\nb\n");
+        c.dirty = Some(registry);
+
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "ops": [
+                    {"file": "a.txt", "search": "a", "replace": "A"},
+                    {"file": "g.txt", "search": "g1", "replace": "G1"}
+                ]
+            }),
+        );
+        assert!(!out.ok);
+        assert!(out.content.contains("人机共编冲突"), "{}", out.content);
+        assert!(out.dirty_conflict.is_some(), "冲突三栏预览返回");
+        assert!(
+            std::fs::read_to_string(dir.path().join("g.txt")).unwrap() == "g1\n",
+            "无冲突文件亦不得落盘（原子性）"
+        );
+
+        // 非重叠改动可合并：多文件路径三方合并落盘
+        let registry = std::sync::Arc::new(tenon_fs::DirtyBufferRegistry::new());
+        registry.set("a.txt", "a\nB-user\n", "a\nb\n");
+        c.dirty = Some(registry);
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "ops": [
+                    {"file": "a.txt", "search": "a", "replace": "A"},
+                    {"file": "g.txt", "search": "g1", "replace": "G1"}
+                ]
+            }),
+        );
+        assert!(out.ok, "{}", out.content);
+        assert_eq!(out.dirty_merged, Some(true), "任一合并置 dirty_merged");
+        let merged = std::fs::read_to_string(dir.path().join("a.txt")).unwrap();
+        assert_eq!(merged, "A\nB-user\n", "代理与用户改动并存");
+        let g = std::fs::read_to_string(dir.path().join("g.txt")).unwrap();
+        assert_eq!(g, "G1\n");
     }
 
     /// v2.61 §9.2：read_file 分段读取——行号前缀 / 尾注续读锚点 / offset 越界。
