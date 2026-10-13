@@ -279,6 +279,10 @@ export function AgentPanel({
   // v1.147 发送消息队列（§9.1）：运行态入队的待发消息，随 GET /session/:id 轮询刷新。
   const [queue, setQueue] = useState<QueuedMessage[]>([]);
   const feedRef = useRef<HTMLDivElement>(null);
+  // v2.58 对话交互三件套①：滚动回底浮钮——feedAway = 用户上滑距底 ≥160px（与
+  // 自动跟随阈值同源）；feedNew = 离底期间内容继续增长（流式增量 / 新事件）出徽点。
+  const [feedAway, setFeedAway] = useState(false);
+  const [feedNew, setFeedNew] = useState(false);
   const patchLinesCb = useRef<Props["onPatchLines"]>(undefined);
 
   useEffect(() => {
@@ -437,12 +441,39 @@ export function AgentPanel({
   }, [sessionId]);
 
   // 流式输出保持最新增量可见；用户向上回看时不强制拉底。
+  // v2.58：内容增长时人不在底部（距底 ≥160px）——判离底出回底浮钮 + 未读徽点；
+  // 回到阈值内复位。scrollTop 本就在顶部时无 scroll 事件，浮钮靠本 effect 显现。
   useEffect(() => {
     const feed = feedRef.current;
-    if (feed && feed.scrollHeight - feed.scrollTop - feed.clientHeight < 160) {
+    if (!feed) return;
+    if (feed.scrollHeight - feed.scrollTop - feed.clientHeight < 160) {
       feed.scrollTop = feed.scrollHeight;
+      setFeedAway(false);
+      setFeedNew(false);
+    } else {
+      setFeedAway(true);
+      setFeedNew(true);
     }
   }, [events.length, streamText, status]);
+
+  // v2.58 对话交互三件套①：用户滚动定位——距底 ≥160px 判离底（浮钮显现），
+  // 回到阈值内即复位；浮钮点击与手动滚动走同一路径（scroll 事件统一收敛状态）。
+  function handleFeedScroll() {
+    const feed = feedRef.current;
+    if (!feed) return;
+    const away = feed.scrollHeight - feed.scrollTop - feed.clientHeight >= 160;
+    setFeedAway(away);
+    if (!away) setFeedNew(false);
+  }
+
+  // v2.58 对话交互三件套②：输入框随内容自动增高——单行起、180px 封顶内部滚动
+  //（CSS max-height 兜底），发送清空 / 回填 / 会话切换恢复草稿均随值变化重算回缩。
+  useEffect(() => {
+    const ta = inputRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = `${Math.min(ta.scrollHeight, 180)}px`;
+  }, [inputValue]);
 
   // §8.1 / §8.5 诊断「AI 修复」：直接发起当前项目会话任务（T4 入口）。
   // v1.126：主根草稿态改走草稿首发链路（建会话再发），不再静默丢弃；
@@ -923,7 +954,7 @@ export function AgentPanel({
         )}
       </div>
 
-      <div className="agent-feed" ref={feedRef} data-testid="agent-feed">
+      <div className="agent-feed" ref={feedRef} onScroll={handleFeedScroll} data-testid="agent-feed">
         {empty && (
           <div className="agent-empty" data-testid="agent-empty">
             {/* v2.47 排版精雕：muted 对话气泡轮廓图标——纯装饰点缀，文案不变 */}
@@ -951,6 +982,21 @@ export function AgentPanel({
                       onClick={() => copyTurn(turn)}
                     >
                       {copiedTurnId === turn.id ? t("thread.copied") : t("thread.copy")}
+                    </button>
+                    {/* v2.58 对话交互三件套③：编辑——任务文本回填输入框并聚焦（同队列
+                        气泡回填语义），改后发送即新回合（运行态自动入队）；不截断历史。 */}
+                    <button
+                      type="button"
+                      className="turn-action"
+                      data-testid={`turn-edit-${turn.id}`}
+                      title={t("thread.edit")}
+                      aria-label={t("thread.edit")}
+                      onClick={() => {
+                        setInputValue(turn.task ?? "");
+                        inputRef.current?.focus();
+                      }}
+                    >
+                      {t("thread.edit")}
                     </button>
                     {turn.firstPatchSeq !== null && (
                       <button
@@ -1098,6 +1144,26 @@ export function AgentPanel({
               </div>
             ))}
           </div>
+        )}
+        {/* v2.58 对话交互三件套①：回底浮钮——sticky 钉在滚动口下缘，仅离底（≥160px）
+            时渲染；徽点 = 离底期间流式/新事件继续产生（feedNew）。点击回底并复位。 */}
+        {feedAway && (
+          <button
+            type="button"
+            className="agent-jump"
+            data-testid="agent-jump"
+            title={t("thread.jump_bottom")}
+            aria-label={t("thread.jump_bottom")}
+            onClick={() => {
+              const feed = feedRef.current;
+              if (feed) feed.scrollTop = feed.scrollHeight;
+              setFeedAway(false);
+              setFeedNew(false);
+            }}
+          >
+            ↓
+            {feedNew && <span className="agent-jump-dot" data-testid="agent-jump-dot" />}
+          </button>
         )}
       </div>
 

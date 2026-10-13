@@ -329,6 +329,8 @@
   "thread.undo_confirm": "¿Deshacer todos los cambios realizados a partir de este mensaje? Puedes revertir esta reversión más tarde desde la cronología.",
   "thread.undo_failed": "No se pudo deshacer: no se encontró la instantánea correspondiente",
   "thread.copy": "Copiar",
+  "thread.edit": "Editar",
+  "thread.jump_bottom": "Ir al final",
   "thread.copied": "Copiado",
   "tool.read_file": "Leer",
   "toast.close": "Descartar notificación",

@@ -329,6 +329,8 @@
   "thread.undo_confirm": "撤銷這則訊息產生的全部變更？可稍後在時間軸撤銷本次回滾。",
   "thread.undo_failed": "撤銷失敗：未找到對應快照",
   "thread.copy": "複製",
+  "thread.edit": "編輯",
+  "thread.jump_bottom": "回到底部",
   "thread.copied": "已複製",
   "tool.read_file": "讀取",
   "toast.close": "關閉通知",

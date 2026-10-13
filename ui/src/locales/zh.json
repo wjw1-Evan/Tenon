@@ -329,6 +329,8 @@
   "thread.undo_confirm": "撤销这条消息产生的全部改动？可稍后在时间轴撤销本次回滚。",
   "thread.undo_failed": "撤销失败：未找到对应快照",
   "thread.copy": "复制",
+  "thread.edit": "编辑",
+  "thread.jump_bottom": "回到底部",
   "thread.copied": "已复制",
   "tool.read_file": "读取",
   "toast.close": "关闭通知",

@@ -329,6 +329,8 @@
   "thread.undo_confirm": "Annuler toutes les modifications issues de ce message ? Vous pourrez annuler ce retour arrière plus tard via la chronologie.",
   "thread.undo_failed": "Échec de l'annulation : instantané correspondant introuvable",
   "thread.copy": "Copier",
+  "thread.edit": "Modifier",
+  "thread.jump_bottom": "Revenir en bas",
   "thread.copied": "Copié",
   "tool.read_file": "Lire",
   "toast.close": "Fermer la notification",

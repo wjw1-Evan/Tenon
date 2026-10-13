@@ -329,6 +329,8 @@
   "thread.undo_confirm": "Undo all changes made from this message? You can revert this rollback later via the timeline.",
   "thread.undo_failed": "Undo failed: matching snapshot not found",
   "thread.copy": "Copy",
+  "thread.edit": "Edit",
+  "thread.jump_bottom": "Back to bottom",
   "thread.copied": "Copied",
   "tool.read_file": "Read",
   "toast.close": "Dismiss notification",
