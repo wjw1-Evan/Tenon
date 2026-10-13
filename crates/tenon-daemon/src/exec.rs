@@ -77,7 +77,7 @@ pub async fn run_exec(
     let (status, answer, exit_code) = match &outcome {
         TaskOutcome::Done(card) => ("done", Some(card.answer.clone()), 0),
         TaskOutcome::Paused { reason, .. } => {
-            print(format!("── 暂停：{reason}（计划待批准 / 熔断 / 用户暂停）"));
+            print(format!("── 暂停：{reason}（计划待批准 / 用户暂停）"));
             ("paused", None, 1)
         }
         TaskOutcome::Error(e) => {

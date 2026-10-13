@@ -1,5 +1,5 @@
 //! Agent 会话（设计方案 §9.1 / §9.3 / §9.4 / §9.7 / §10.3）：
-//! 状态机驱动任务循环，联动权限、快照、熔断与事件流；v1.89 无审批。
+//! 状态机驱动任务循环，联动权限、快照与事件流；v1.89 无审批。
 //!
 //! 转移规则由 `tenon_core::machine::StateMachine` 单测覆盖；运行态经
 //! `force_state` 对齐并保留计数（拒绝改案 ≤2、模型重试 ≤2、修复轮次）。
@@ -15,7 +15,6 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, RwLock};
 
 use futures::StreamExt;
-use tenon_core::circuit::{CircuitBreaker, CircuitLimits, CircuitStatus, PatchFootprint};
 use tenon_core::context::{
     render_working_set, ContextSlice, ProjectRules, SessionMemory, WorkingSet, MAX_L2_GOALS,
 };
@@ -46,7 +45,6 @@ pub struct AgentConfig {
     pub policy: Policy,
     /// 首改缓冲毫秒（§9.3）。
     pub first_edit_buffer_ms: u64,
-    pub circuit: CircuitLimits,
     /// 修复循环轮次上限（§9.4；无测试仓库降为 1）。
     pub fix_rounds: u32,
     /// 单命令超时秒（§9.2）。
@@ -126,7 +124,6 @@ impl AgentConfig {
             project_id: project_id.to_string(),
             policy: Policy::default(),
             first_edit_buffer_ms: 2000,
-            circuit: CircuitLimits::default(),
             fix_rounds: 3,
             command_timeout_s: 120,
             max_tool_rounds: 24,
@@ -225,7 +222,6 @@ pub struct AgentSession {
     pub session_id: String,
     config: AgentConfig,
     machine: Mutex<StateMachine>,
-    circuit: Mutex<CircuitBreaker>,
     memory: Mutex<SessionMemory>,
     rules: Mutex<ProjectRules>,
     store: Arc<Mutex<Store>>,
@@ -840,7 +836,6 @@ impl AgentSession {
         };
         let (control_tx, control_rx) = mpsc::unbounded_channel();
         let (events_tx, _) = broadcast::channel(1024);
-        let circuit_limits = config.circuit;
         let write_scope = config.write_scope.clone();
         let managed_worktree = config.managed_worktree.clone();
         let machine = StateMachine::with_limits(MachineLimits {
@@ -850,7 +845,6 @@ impl AgentSession {
         Ok(Arc::new(Self {
             session_id: session.id,
             config,
-            circuit: Mutex::new(CircuitBreaker::new(circuit_limits)),
             machine: Mutex::new(machine),
             memory: Mutex::new(SessionMemory::default()),
             rules: Mutex::new(rules),
@@ -1125,11 +1119,6 @@ impl AgentSession {
         Ok(())
     }
 
-    /// 设置熔断器预算（创建后按 config.toml 覆盖）。
-    pub async fn set_circuit_limits(&self, limits: CircuitLimits) {
-        *self.circuit.lock().await = CircuitBreaker::new(limits);
-    }
-
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
         self.events_tx.subscribe()
     }
@@ -1171,8 +1160,7 @@ impl AgentSession {
         }
         let provider = self.provider.read().await.clone();
         let model = provider.default_model();
-        // §11 v1.93：按 provider 配置单价折算（未定价模型计 0，宁少报不虚报），
-        // 并作为熔断预算输入（§9.3）——超 token / 超预算在下一工具步检查点熔断。
+        // §11：按 provider 配置单价折算（未定价模型计 0，宁少报不虚报）；
         // v1.196 §11：缓存命中部分按缓存价计（未配置缓存价 = 输入价，行为不变）。
         let cost = tenon_models::compute_cost(
             &self.config.price_table,
@@ -1181,11 +1169,6 @@ impl AgentSession {
             usage.output_tokens,
             usage.cached_input_tokens,
         );
-        let _status = self
-            .circuit
-            .lock()
-            .await
-            .record_usage(usage.input_tokens + usage.output_tokens, cost);
         let mut st = self.store.lock().await;
         let _ = st.record_model_usage(
             &self.session_id,
@@ -1549,13 +1532,6 @@ impl AgentSession {
         let _guard = scope_lock.lock().await;
         self.first_edit_done.store(false, Ordering::SeqCst);
         self.touched_files.lock().await.clear();
-        // §9.3 v2.43：熔断预算按任务计——每任务起点清零计数（限额不变）。
-        // 此前四项计数跨任务累计成会话生命周期预算：长会话正常工作累计超限
-        // 即误触发，且熔断暂停后 v2.35 续跑新回合在首个工具步检查点即再熔断，
-        // 「可恢复续跑」名存实亡。重置仅发生在用户新发任务的起点（暂停态
-        // 发送队列不自动出队，无无人值守续刷面）；任务内超限照常如实落账
-        // （v1.93/v1.166 不变式），审计全量保留。
-        self.circuit.lock().await.reset();
         {
             let mut mem = self.memory.lock().await;
             mem.goals.push(user_text.to_string());
@@ -1998,7 +1974,7 @@ impl AgentSession {
             let mut tool_messages: Vec<ChatMessage> = Vec::new();
 
             for call in &resp.tool_calls {
-                // Esc / 熔断暂停检查点
+                // Esc 暂停检查点
                 if let Some(cmd) = self.drain_control().await {
                     match cmd {
                         ControlCommand::Pause => {
@@ -2045,19 +2021,6 @@ impl AgentSession {
                         }
                     }
                 }
-                // 熔断预算检查（§9.3 v1.93）：token / 成本按回合累计，超限即暂停
-                if let CircuitStatus::Tripped(reason) = self.circuit.lock().await.status() {
-                    self.emit(
-                        EventKind::Error,
-                        &serde_json::json!({"circuit_tripped": reason.label()}),
-                    )
-                    .await;
-                    self.force_state(State::Paused).await;
-                    self.set_status(SessionStatus::Paused).await;
-                    paused_reason = Some(format!("熔断器触发（{}）", reason.label()));
-                    break 'rounds;
-                }
-
                 let tool = Tool::from_name(&call.name);
                 // §13.5 v1.145：MCP 工具分级查策略（默认 D，net:* 服务器工具 → C），
                 // 不落入未知工具的 C 兜底（§13.3：外部插件永不静默升 A/B）。
@@ -2172,49 +2135,9 @@ impl AgentSession {
                     self.first_edit_done.store(true, Ordering::SeqCst);
                 }
 
-                // ---- B 级写前：熔断预检（文件预算，写前拦截）+ 快照（§10.3）----
+                // ---- B 级写前：事件级快照（§10.3）----
                 let mut pre_tree: Option<String> = None;
                 if level == Level::B {
-                    let prospective_new = call.name == "apply_patch"
-                        && !self
-                            .tool_ctx
-                            .root
-                            .join(
-                                call.arguments
-                                    .get("file")
-                                    .and_then(|f| f.as_str())
-                                    .unwrap_or(""),
-                            )
-                            .exists();
-                    {
-                        let touched = self.touched_files.lock().await;
-                        let circuit = self.circuit.lock().await;
-                        let prospective = touched.len() as u32
-                            + u32::from(
-                                prospective_new
-                                    && !touched.contains(
-                                        &call
-                                            .arguments
-                                            .get("file")
-                                            .and_then(|f| f.as_str())
-                                            .unwrap_or("")
-                                            .to_string(),
-                                    ),
-                            );
-                        if prospective > circuit.limits().max_files {
-                            drop(circuit);
-                            drop(touched);
-                            self.emit(
-                                EventKind::Error,
-                                &serde_json::json!({"circuit_tripped": "max_files"}),
-                            )
-                            .await;
-                            self.force_state(State::Paused).await;
-                            self.set_status(SessionStatus::Paused).await;
-                            paused_reason = Some("熔断器触发（max_files）——写前拦截".into());
-                            break 'rounds;
-                        }
-                    }
                     match self.snapshots.snapshot() {
                         Ok(t) => {
                             let anticipated: Vec<String> = call
@@ -2409,7 +2332,7 @@ impl AgentSession {
                     );
                 }
 
-                // 熔断记账 + 事件级快照链（B 级）
+                // 事件级快照链（B 级）
                 if level == Level::B {
                     {
                         let mut touched = self.touched_files.lock().await;
@@ -2420,13 +2343,6 @@ impl AgentSession {
                             }
                         }
                     }
-                    // 熔断行数按本回合真实 diff（新增+删除）记账：按文件总行数
-                    // 累计会 把「重复编辑同一大文件」误记为巨额改动而提前熔断
-                    let lines = output.lines_changed.unwrap_or(0);
-                    let status = self.circuit.lock().await.record_patch(PatchFootprint {
-                        total_files_touched: self.touched_files.lock().await.len() as u32,
-                        lines_changed: lines,
-                    });
                     let post_tree = self
                         .snapshots
                         .snapshot()
@@ -2442,18 +2358,6 @@ impl AgentSession {
                         );
                     }
                     last_tree = post_tree;
-
-                    if let CircuitStatus::Tripped(reason) = status {
-                        self.emit(
-                            EventKind::Error,
-                            &serde_json::json!({"circuit_tripped": reason.label()}),
-                        )
-                        .await;
-                        self.force_state(State::Paused).await;
-                        self.set_status(SessionStatus::Paused).await;
-                        paused_reason = Some(format!("熔断器触发（{}）", reason.label()));
-                        break 'rounds;
-                    }
                 }
 
                 tool_messages.push(ChatMessage::tool_result(
@@ -2772,7 +2676,6 @@ impl AgentSession {
                 lines.join("\n")
             ),
             changed_files: vec![],
-            lines_changed: None,
             exit_code: None,
             dirty_conflict: None,
             dirty_merged: None,

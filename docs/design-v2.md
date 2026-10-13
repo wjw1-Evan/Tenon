@@ -56,7 +56,7 @@
 
 ## 4. 安全模型 v2（重心）
 
-**4.1 全对话完整权限（v2.37 用户裁定，ADR-19——v2.1 档位系统整体退役）**：所有会话（交互 / headless `--exec` / 子代理 / evals / ACP 轨）固定 **full_access × never** 姿态——零审批（Hold / 确认卡 / 三键决议 / `set_approval` / `set_exec_mode` / settings `security` 默认档 / 顶栏徽标 / 切换器全链移除），命令沙箱降级恒生效（run_tests / run_build / install_deps / run_command 无沙箱直跑）；execpolicy 仅 Block 硬拦（Hold 判定恒放行，内置高危档与自定义 `hold` 同轨）；只读开关独立保留（evals 只读先验轮 / 用户只读模式）。安全兜底 = execpolicy Block + install_policy 白名单 + SSRF 守卫 + 快照回滚 + 熔断 + 审计。以下档位二维正交设计与落地记录留档（v2.1-v2.36 历史规格，已退役）：
+**4.1 全对话完整权限（v2.37 用户裁定，ADR-19——v2.1 档位系统整体退役）**：所有会话（交互 / headless `--exec` / 子代理 / evals / ACP 轨）固定 **full_access × never** 姿态——零审批（Hold / 确认卡 / 三键决议 / `set_approval` / `set_exec_mode` / settings `security` 默认档 / 顶栏徽标 / 切换器全链移除），命令沙箱降级恒生效（run_tests / run_build / install_deps / run_command 无沙箱直跑）；execpolicy 仅 Block 硬拦（Hold 判定恒放行，内置高危档与自定义 `hold` 同轨）；只读开关独立保留（evals 只读先验轮 / 用户只读模式）。安全兜底 = execpolicy Block + install_policy 白名单 + SSRF 守卫 + 快照回滚 + 审计（熔断器随 v2.45 ADR-20 用户裁定「不应该出现熔断」整体移除）。以下档位二维正交设计与落地记录留档（v2.1-v2.36 历史规格，已退役）：
 
 ```
 ExecMode（执行边界）：read-only │ workspace-write │ full-access

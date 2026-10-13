@@ -75,7 +75,7 @@ pub enum Event {
     FixRoundDone,
     /// 证据卡汇总完成。
     SummaryDone,
-    /// 全局暂停：Esc / 托盘 / 熔断器触发（任意状态）。
+    /// 全局暂停：Esc / 托盘（任意状态）。
     Pause,
     /// 从暂停恢复 → 回断点状态。
     Resume,
@@ -405,7 +405,7 @@ mod tests {
         assert_eq!(
             m.transition(Event::Pause).unwrap(),
             State::Paused,
-            "熔断器 / Esc / 托盘"
+            "Esc / 托盘"
         );
         assert_eq!(m.transition(Event::Resume).unwrap(), State::Executing);
     }

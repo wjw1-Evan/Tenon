@@ -135,14 +135,9 @@ pub fn truncate_output(s: &str) -> String {
 pub struct ToolOutput {
     pub ok: bool,
     pub content: String,
-    /// B 级写操作产生的改动文件集（供熔断 / checkpoint / revert 记账）。
+    /// B 级写操作产生的改动文件集（供 checkpoint / revert 记账）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub changed_files: Vec<String>,
-    /// 本次写入的真实变更行数（新增 + 删除，unified diff 口径）——熔断器
-    /// lines_changed 预算按此记账；按全文件行数累计会把「重复编辑同一
-    /// 大文件」误记为巨额改动而提前熔断。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub lines_changed: Option<u64>,
     /// 命令输出（run_tests / run_build）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
@@ -169,7 +164,6 @@ impl ToolOutput {
             ok: true,
             content: content.into(),
             changed_files: vec![],
-            lines_changed: None,
             exit_code: None,
             dirty_conflict: None,
             dirty_merged: None,
@@ -180,7 +174,6 @@ impl ToolOutput {
             ok: false,
             content: content.into(),
             changed_files: vec![],
-            lines_changed: None,
             exit_code: None,
             dirty_conflict: None,
             dirty_merged: None,
@@ -577,10 +570,6 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                                     "已写入 {rel}（人机共编：与未保存的用户改动三方合并）\n{diff}"
                                 ),
                                 changed_files: vec![rel.clone()],
-                                lines_changed: Some(tenon_core::count_changed_lines(
-                                    &before,
-                                    &merged_text,
-                                )),
                                 exit_code: None,
                                 dirty_conflict: None,
                                 dirty_merged: Some(true),
@@ -593,7 +582,6 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                                     "人机共编冲突：{rel} 存在未保存的用户改动，与代理改动冲突。                                     写入已阻断，等待用户在三栏预览中处置（§8.6）。"
                                 ),
                                 changed_files: vec![],
-                                lines_changed: None,
                                 exit_code: None,
                                 dirty_conflict: Some(DirtConflictView {
                                     path: rel,
@@ -615,7 +603,6 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                         ok: true,
                         content: format!("已写入 {rel}\n{diff}"),
                         changed_files: vec![rel.clone()],
-                        lines_changed: Some(tenon_core::count_changed_lines(&before, &after)),
                         exit_code: None,
                         dirty_conflict: None,
                         dirty_merged: None,
@@ -659,7 +646,6 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                         out.stderr.trim()
                     )),
                     changed_files: vec![],
-                    lines_changed: None,
                     exit_code: out.exit_code,
                     dirty_conflict: None,
                     dirty_merged: None,
@@ -702,7 +688,6 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                         out.stderr.trim()
                     )),
                     changed_files: vec![],
-                    lines_changed: None,
                     exit_code: out.exit_code,
                     dirty_conflict: None,
                     dirty_merged: None,
@@ -742,7 +727,6 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                         out.stderr.trim()
                     )),
                     changed_files: vec![],
-                    lines_changed: None,
                     exit_code: out.exit_code,
                     dirty_conflict: None,
                     dirty_merged: None,
@@ -989,7 +973,6 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                         out.stdout, out.stderr
                     ))),
                     changed_files: vec![],
-                    lines_changed: None,
                     exit_code: out.exit_code,
                     dirty_conflict: None,
                     dirty_merged: None,
@@ -1065,7 +1048,6 @@ fn create_pull_request(ctx: &ToolContext, args: &serde_json::Value) -> ToolOutpu
                 ok: out.success() && !out.timed_out,
                 content: truncate_output(&tenon_core::redact::redact(&text)),
                 changed_files: vec![],
-                lines_changed: None,
                 exit_code: out.exit_code,
                 dirty_conflict: None,
                 dirty_merged: None,
@@ -1188,7 +1170,6 @@ mod tests {
         assert!(out.ok, "{}", out.content);
         let content = std::fs::read_to_string(dir.path().join("f.txt")).unwrap();
         assert_eq!(content, "l1\nL2-改\nl3\nl4\n");
-        assert_eq!(out.lines_changed, Some(2), "替换 1 行 = 删 1 + 加 1");
 
         // range + search 同给拒绝
         let out = execute_tool(

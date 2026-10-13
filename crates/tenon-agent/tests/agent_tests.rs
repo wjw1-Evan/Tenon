@@ -852,96 +852,6 @@ async fn readonly_session_blocks_writes_but_answers() {
 }
 
 #[tokio::test]
-async fn circuit_breaker_pauses_on_file_budget() {
-    let (dir, session, _store, _p) = setup(vec![
-        ScriptedReply::Tool {
-            name: "apply_patch".into(),
-            args: serde_json::json!({"file": "a.txt", "range": null, "content": "x\n"}),
-        },
-        ScriptedReply::Tool {
-            name: "apply_patch".into(),
-            args: serde_json::json!({"file": "b.txt", "range": null, "content": "y\n"}),
-        },
-        ScriptedReply::Text("done".into()),
-    ])
-    .await;
-    // 收紧熔断：最多 1 个文件
-    session
-        .set_circuit_limits(tenon_core::circuit::CircuitLimits {
-            max_files: 1,
-            max_lines: 10_000,
-            max_tokens: 1_000_000,
-            max_cost_usd: 100.0,
-        })
-        .await;
-    let outcome = session.run_task("大改").await;
-    match outcome {
-        TaskOutcome::Paused { reason, .. } => {
-            assert!(reason.contains("熔断"), "{reason}");
-        }
-        other => panic!("期望 Paused，实际 {other:?}"),
-    }
-    assert!(dir.path().join("a.txt").exists());
-    assert!(!dir.path().join("b.txt").exists(), "熔断在第二个文件前暂停");
-}
-
-#[tokio::test]
-async fn circuit_pause_then_new_task_gets_fresh_budget() {
-    // §9.3 v2.43：预算按任务计——熔断暂停后续跑新任务从零计（限额不变），
-    // 修复前 changed_lines / tokens / cost 跨任务累计，新任务首个工具步即再熔断，
-    // v2.35「可恢复续跑」落空。行数维度真实跨任务累计（files 计数为赋值语义、
-    // 随每补丁覆盖为任务累计值，故用 max_lines 钉住）。
-    let (dir, session, _store, _p) = setup(vec![
-        // 任务 1：a.txt（1 行，预算内）→ b.txt 落盘后记账越限熔断（v1.166 记账诚实）
-        ScriptedReply::Tool {
-            name: "apply_patch".into(),
-            args: serde_json::json!({"file": "a.txt", "range": null, "content": "x\n"}),
-        },
-        ScriptedReply::Tool {
-            name: "apply_patch".into(),
-            args: serde_json::json!({"file": "b.txt", "range": null, "content": "y\n"}),
-        },
-        // 任务 2（续跑）：新预算下 c.txt 可写、任务正常收尾
-        ScriptedReply::Tool {
-            name: "apply_patch".into(),
-            args: serde_json::json!({"file": "c.txt", "range": null, "content": "z\n"}),
-        },
-        ScriptedReply::Text("done".into()),
-    ])
-    .await;
-    session
-        .set_circuit_limits(tenon_core::circuit::CircuitLimits {
-            max_files: 10,
-            max_lines: 1,
-            max_tokens: 1_000_000,
-            max_cost_usd: 100.0,
-        })
-        .await;
-    let first = session.run_task("任务一").await;
-    match &first {
-        TaskOutcome::Paused { reason, .. } => {
-            assert!(reason.contains("max_lines"), "{reason}");
-        }
-        other => panic!("期望任务一熔断暂停，实际 {other:?}"),
-    }
-    assert!(dir.path().join("a.txt").exists());
-    assert!(
-        dir.path().join("b.txt").exists(),
-        "超限补丁先落盘再记账暂停"
-    );
-    // 续跑 = 用户新发任务：预算重置，修复前此处首个补丁即再熔断（Paused）
-    let second = session.run_task("继续").await;
-    match &second {
-        TaskOutcome::Done(_) => {}
-        other => panic!("期望续跑新任务以新预算完成，实际 {other:?}"),
-    }
-    assert!(
-        dir.path().join("c.txt").exists(),
-        "续跑新任务可真正执行写工具"
-    );
-}
-
-#[tokio::test]
 async fn model_failure_rolls_back_to_pre_task_state() {
     // v1.186：用 NonTransient（不进自动重试）——本用例验证模型失败后的回滚管道，
     // 重试预算已有专用快测；Failure=Network=瞬时，会吃满 10 次退避（约 3.5 分钟）。
@@ -1308,7 +1218,7 @@ async fn set_title_persists_and_broadcasts_session_title_event() {
     assert_eq!(broadcast.kind, EventKind::SessionTitle);
 }
 
-// ---------- v1.93：真恢复 / 运行期只读 / 并发守卫 / token 熔断 ----------
+// ---------- v1.93：真恢复 / 运行期只读 / 并发守卫 ----------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pause_suspends_until_resume_then_completes_task() {
@@ -1410,42 +1320,6 @@ async fn run_task_rejects_reentry_while_running() {
         other => panic!("进行中重入应被拒绝，实际 {other:?}"),
     }
     assert!(matches!(handle.await.unwrap(), TaskOutcome::Done(_)));
-}
-
-#[tokio::test]
-async fn circuit_breaker_pauses_on_token_budget() {
-    let (dir, session, _store, _p) = setup(vec![
-        ScriptedReply::Tool {
-            name: "apply_patch".into(),
-            args: serde_json::json!({"file": "a.txt", "range": null, "content": "x\n"}),
-        },
-        ScriptedReply::Tool {
-            name: "apply_patch".into(),
-            args: serde_json::json!({"file": "b.txt", "range": null, "content": "y\n"}),
-        },
-        ScriptedReply::Text("done".into()),
-    ])
-    .await;
-    // §9.3 v1.93：token 预算熔断（此前 record_usage 不进熔断器，max_tokens 恒无效）
-    session
-        .set_circuit_limits(tenon_core::circuit::CircuitLimits {
-            max_files: 100,
-            max_lines: 100_000,
-            max_tokens: 8,
-            max_cost_usd: 1_000.0,
-        })
-        .await;
-    let outcome = session.run_task("长任务").await;
-    match &outcome {
-        TaskOutcome::Paused { reason, .. } => assert!(reason.contains("max_tokens"), "{reason}"),
-        other => panic!("期望 token 熔断暂停，实际 {other:?}"),
-    }
-    // 预算极小：首个回合用量即超限，在第一个工具步检查点拦截——
-    // 后续脚本步（b.txt）不执行即语义达成。
-    assert!(
-        !dir.path().join("b.txt").exists(),
-        "熔断后不得继续执行后续工具步"
-    );
 }
 
 #[tokio::test]
@@ -1659,17 +1533,9 @@ async fn session_switch_provider_and_current_model() {
 }
 
 #[tokio::test]
-async fn session_set_title_and_circuit_limits() {
+async fn session_set_title_persists() {
     let (_d, session, _store, _p) = setup(vec![ScriptedReply::Text("ok".into())]).await;
     session.set_title("My Test Session").await.unwrap();
-    session
-        .set_circuit_limits(tenon_core::circuit::CircuitLimits {
-            max_files: 5,
-            max_lines: 100,
-            max_tokens: 50_000,
-            max_cost_usd: 1.0,
-        })
-        .await;
 }
 
 #[tokio::test]

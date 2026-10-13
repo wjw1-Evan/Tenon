@@ -27,26 +27,6 @@ impl Default for SessionConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct CircuitConfig {
-    pub max_files: u32,
-    pub max_lines: u64,
-    pub max_tokens: u64,
-    pub max_cost_usd: f64,
-}
-
-impl Default for CircuitConfig {
-    fn default() -> Self {
-        Self {
-            max_files: 15,
-            max_lines: 1500,
-            max_tokens: 500_000,
-            max_cost_usd: 5.0,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
 pub struct FixLoopConfig {
     pub max_rounds: u32,
     /// 无测试仓库降级通道（§9.4）
@@ -77,28 +57,11 @@ impl Default for ExecConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AgentConfig {
-    pub circuit: CircuitConfig,
     pub fix_loop: FixLoopConfig,
     pub exec: ExecConfig,
-}
-
-impl Default for AgentConfig {
-    fn default() -> Self {
-        Self::default_with(CircuitConfig::default())
-    }
-}
-
-impl AgentConfig {
-    pub fn default_with(circuit: CircuitConfig) -> Self {
-        Self {
-            circuit,
-            fix_loop: FixLoopConfig::default(),
-            exec: ExecConfig::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -430,12 +393,6 @@ update.channel  = "manual"
 [session]
 first_edit_buffer = 1500
 
-[agent.circuit]
-max_files   = 20
-max_lines   = 3000
-max_tokens  = 800000
-max_cost_usd = 10.0
-
 [agent.fix_loop]
 max_rounds              = 2
 low_verification_rounds = 1
@@ -474,8 +431,6 @@ features      = ["intent", "risk"]
     fn parses_full_example_with_defaults_for_missing() {
         let cfg = Config::parse_toml(FULL_EXAMPLE).expect("parse");
         assert_eq!(cfg.session.first_edit_buffer_ms, 1500);
-        assert_eq!(cfg.agent.circuit.max_files, 20);
-        assert_eq!(cfg.agent.circuit.max_lines, 3000);
         assert_eq!(cfg.agent.fix_loop.max_rounds, 2);
         assert_eq!(cfg.agent.exec.command_timeout_s, 60);
         assert_eq!(cfg.checkpoint.keep_days, 3);
@@ -502,10 +457,6 @@ features      = ["intent", "risk"]
     fn empty_input_yields_design_defaults() {
         let cfg = Config::parse_toml("").expect("parse empty");
         assert_eq!(cfg.session.first_edit_buffer_ms, 2000);
-        assert_eq!(cfg.agent.circuit.max_files, 15);
-        assert_eq!(cfg.agent.circuit.max_lines, 1500);
-        assert_eq!(cfg.agent.circuit.max_tokens, 500_000);
-        assert_eq!(cfg.agent.circuit.max_cost_usd, 5.0);
         assert_eq!(cfg.agent.fix_loop.max_rounds, 3);
         assert_eq!(cfg.agent.fix_loop.low_verification_rounds, 1);
         assert_eq!(cfg.agent.exec.command_timeout_s, 120);
@@ -527,10 +478,6 @@ features      = ["intent", "risk"]
         let cfg = Config::parse_toml(FULL_EXAMPLE).expect("parse");
         let text = toml::to_string(&cfg).expect("serialize");
         let cfg2 = Config::parse_toml(&text).expect("re-parse");
-        assert_eq!(
-            cfg.agent.circuit.max_cost_usd,
-            cfg2.agent.circuit.max_cost_usd
-        );
         assert_eq!(cfg.models.laya.features, cfg2.models.laya.features);
     }
 

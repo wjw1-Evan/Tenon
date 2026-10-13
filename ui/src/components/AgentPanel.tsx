@@ -657,7 +657,7 @@ export function AgentPanel({
 
   // v1.92：暂停只进不出的修复——paused 时发送钮承担恢复。
   // v2.35 恢复双语义（§9.1）：daemon 自裁定——运行态挂起为控制命令唤醒；终态
-  // 暂停（熔断 / 回合上限 / 计划批准 / 重启遗留）转「续跑」开新回合，故附带
+  // 暂停（回合上限 / 计划批准 / 快照降级 / 重启遗留）转「续跑」开新回合，故附带
   // 本地化继续语；失败此前静默（点击无响应无提示），现显式 toast 上报。
   async function resume() {
     if (!sessionId) return;
@@ -1737,7 +1737,7 @@ function EventNode({
         );
       }
       // v2.35 错误原因细分（§7.5）：守卫类暂停的错误事件载荷散布于
-      // circuit_tripped / rounds_exhausted / snapshot_unavailable 键——此前仅读
+      // circuit_tripped（v2.45 熔断器移除后仅旧库事件回显）/ rounds_exhausted / snapshot_unavailable 键——此前仅读
       // error 键，这些场景全部落到「错误」裸兜底（用户无从处置）；现按键生成
       // 具体原因文案，error 键（模型调用失败等）仍直显上游原文。
       const p = ev.payload as {

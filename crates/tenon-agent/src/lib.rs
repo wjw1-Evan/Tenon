@@ -5,7 +5,7 @@
 //! PAUSED / ERROR / ROLLED_BACK。每次状态变化落 events 表并向订阅者广播。
 //!
 //! 安全联动：B 级写前自动快照（先快照后写入，§10.3）；写守卫收敛项目内；
-//! 熔断器超限即暂停（§9.3）；只读开关禁写；C/D 直执并审计。
+//! 只读开关禁写；C/D 直执并审计。
 
 pub mod evals;
 pub mod executor;

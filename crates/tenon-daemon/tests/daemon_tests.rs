@@ -6093,7 +6093,6 @@ async fn settings_roundtrip_full_config() {
         },
         "checkpoint": { "keep_days": 3 },
         "agent": {
-            "circuit": { "max_files": 20, "max_lines": 2000 },
             "fix_loop": { "max_rounds": 2 },
             "exec": { "command_timeout_s": 45 }
         }

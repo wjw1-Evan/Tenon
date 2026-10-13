@@ -159,19 +159,6 @@ pub fn unified_diff(before: &str, after: &str, path: &str) -> String {
         .to_string()
 }
 
-/// 统计 diff 的变更行数（新增 + 删除），供熔断器记账。
-pub fn count_changed_lines(before: &str, after: &str) -> u64 {
-    let diff = similar::TextDiff::from_lines(before, after);
-    let mut n = 0u64;
-    for change in diff.iter_all_changes() {
-        match change.tag() {
-            similar::ChangeTag::Insert | similar::ChangeTag::Delete => n += 1,
-            similar::ChangeTag::Equal => {}
-        }
-    }
-    n
-}
-
 #[cfg(test)]
 mod diff_tests {
     use super::unified_diff;
@@ -244,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn unified_diff_and_line_counting() {
+    fn unified_diff_basic_markers() {
         let before = "a\nb\nc\n";
         let after = "a\nB\nc\nd\n";
         let d = unified_diff(before, after, "f.txt");
@@ -253,8 +240,6 @@ mod tests {
         assert!(d.contains("-b"));
         assert!(d.contains("+B"));
         assert!(d.contains("+d"));
-        // 1 删 + 2 增
-        assert_eq!(count_changed_lines(before, after), 3);
     }
 
     #[test]

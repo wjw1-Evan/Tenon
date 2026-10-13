@@ -184,7 +184,6 @@ pub(crate) async fn create_agent_session(
             agent_cfg.command_timeout_s = v;
         }
     }
-    agent_cfg.circuit = (&state.config.agent.circuit).into();
     agent_cfg.fix_rounds = state.config.agent.fix_loop.max_rounds;
     agent_cfg.command_timeout_s = state.config.agent.exec.command_timeout_s;
     agent_cfg.snapshots_root.clone_from(&state.snapshots_root);
@@ -197,8 +196,8 @@ pub(crate) async fn create_agent_session(
         .unwrap_or_else(|| "root".to_string());
     agent_cfg.dirty = Some(state.dirty_buffers_for(&project.id).await);
     agent_cfg.lsp = Some(state.lsp.clone());
-    // §11 v1.93：按 provider 配置单价构建价格表（设置覆盖优先于 config），
-    // 会话每回合计价入 model_usage.cost_usd 并作为熔断预算输入（§9.3）。
+    // §11：按 provider 配置单价构建价格表（设置覆盖优先于 config），
+    // 会话每回合计价入 model_usage.cost_usd 供成本归因（v2.9 运行仪表）。
     // v2.13 起本块改读 effective_models 合并视图——顺带修复 v1.199 缺口：
     // 此前读 raw config，settings 覆盖的计价字段未进新会话价格表。
     {
@@ -1050,7 +1049,7 @@ async fn session_control(
     match body.action.as_str() {
         "pause" => session.control(ControlCommand::Pause),
         // v2.35 恢复双语义（§9.1）：运行态挂起（任务循环活着的检查点等待）→ 控制
-        // 命令唤醒（v1.92 语义不变）；终态暂停（熔断 / 回合上限 / 计划批准 / 快照降级 /
+        // 命令唤醒（v1.92 语义不变）；终态暂停（回合上限 / 计划批准 / 快照降级 /
         // daemon 重启遗留——任务循环已退出，控制命令入队无人消费，此前点击恢复毫无
         // 效果）→ 转为「续跑」：复用发送链路开新回合（v1.179 计划批准「发消息续跑」
         // 同语义），text 为 UI 本地化继续语。
