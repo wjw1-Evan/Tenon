@@ -1316,6 +1316,13 @@ button:disabled { opacity: 0.45; cursor: default; }
   display: flex;
   flex-direction: column;
   gap: 14px;
+  /* v2.44 排版精雕：线程区 6px 细滚动条（全局 10px 在窄内容区偏重） */
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+.agent-feed::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
 }
 .agent-empty {
   flex: 1;
@@ -1333,12 +1340,14 @@ button:disabled { opacity: 0.45; cursor: default; }
 .turn {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  /* v2.44 排版精雕：6→7px——回合内纵向节奏 */
+  gap: 7px;
 }
 .turn-user {
   /* v1.109 用户消息居右；v1.162 曾去气泡改纯文本；v2.34 用户令恢复气泡样式 */
   align-self: flex-end;
-  max-width: 85%;
+  /* v2.44 排版精雕：85%→78%——长任务文本换行节奏更接近对话气泡 */
+  max-width: 78%;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -1349,8 +1358,9 @@ button:disabled { opacity: 0.45; cursor: default; }
    * 气泡内文本左对齐保多行长句阅读性，整体仍居右；功能按钮组 hover 显现不变 */
   background: var(--accent-soft);
   border-radius: var(--radius-m) var(--radius-m) var(--radius-s) var(--radius-m);
-  padding: 6px 11px;
-  font-size: 12.5px;
+  /* v2.44 排版精雕：padding/字号提升呼吸感（用户输入是会话流主层级） */
+  padding: 8px 13px;
+  font-size: 13px;
   line-height: 1.55;
   color: var(--fg-strong);
   white-space: pre-wrap;
@@ -1570,7 +1580,8 @@ button:disabled { opacity: 0.45; cursor: default; }
 .turn-body {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  /* v2.44 排版精雕：6→7px——回合内纵向节奏 */
+  gap: 7px;
 }
 
 /* 助手 markdown 正文 */
@@ -1651,7 +1662,9 @@ button:disabled { opacity: 0.45; cursor: default; }
   font-size: 11px;
 }
 .turn-step-label {
-  flex: 1;
+  /* v2.44 排版精雕：label 不再 flex:1 推移——失败徽标「失败」紧邻动词而非
+   * 挂在行尾右缘（与动词之间隔整行空白，视觉断裂）；head 仍 width:100% 可点 */
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1659,6 +1672,7 @@ button:disabled { opacity: 0.45; cursor: default; }
 }
 .step-badge {
   flex: none;
+  margin-left: 8px;
   font-size: 10.5px;
   color: var(--error-text);
 }
@@ -1677,6 +1691,10 @@ button:disabled { opacity: 0.45; cursor: default; }
 }
 .turn-step-fail .turn-step-icon {
   color: var(--error);
+}
+/* v2.44 排版精雕：失败组输出框描边 error 弱化——错误详情与错误语义同色系 */
+.turn-step-fail .turn-step-body pre {
+  border-color: color-mix(in srgb, var(--error) 32%, transparent);
 }
 .turn-step-risk .turn-step-icon {
   color: var(--patch-border);
@@ -1802,7 +1820,8 @@ button:disabled { opacity: 0.45; cursor: default; }
   flex-direction: column;
   gap: 4px;
   margin: 10px 12px 12px;
-  padding: 8px 10px;
+  /* v2.44 排版精雕：8/10→9/12 呼吸感 */
+  padding: 9px 12px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-m);
   background: var(--raised);
@@ -1882,11 +1901,15 @@ button:disabled { opacity: 0.45; cursor: default; }
 }
 .agent-context-select {
   max-width: 46%;
-  padding: 2px 6px;
+  /* v2.44 排版精雕：自绘外观——原生 select 箭头与整体质感不符 */
+  appearance: none;
+  padding: 2px 20px 2px 8px;
   font-size: 11px;
   font-family: inherit;
   color: var(--text);
-  background: var(--bg);
+  background: var(--bg)
+    url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath d='M1 1l3 3 3-3' fill='none' stroke='%238a8f98' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+    no-repeat right 7px center;
   border: 1px solid var(--border);
   border-radius: var(--radius-s);
   cursor: pointer;
@@ -3263,6 +3286,8 @@ button:disabled { opacity: 0.45; cursor: default; }
   cursor: pointer;
   padding: 0;
   font-size: 12px;
+  /* v2.44 排版精雕：字重 500——与只读聚合组头（regular muted）区分层级 */
+  font-weight: 500;
 }
 .turn-thinking-body {
   color: var(--fg-muted);
