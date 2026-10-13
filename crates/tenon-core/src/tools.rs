@@ -2,8 +2,8 @@
 //!
 //! | 级 | 工具 |
 //! |---|---|
-//! | A | read_file / list_dir / grep / glob（v2.61）/ git_read / lsp_query / laya_decide（v1.124）/ skill_use（v1.130 §13.4）/ subtasks（v1.146）/ run_code（v2.63 PTC 首期，内层仅四只读工具） |
-//! | B | apply_patch / run_tests / run_build / install_deps |
+//! | A | read_file / list_dir / grep / glob（v2.61）/ git_read / lsp_query / laya_decide（v1.124）/ skill_use（v1.130 §13.4）/ subtasks（v1.146） |
+//! | B | apply_patch / run_tests / run_build / install_deps / run_code（v2.63 首期 A 级，v2.67 内层写扩展升 B） |
 //! | C | http_fetch / web_search（v1.182） |
 //! | D | git_commit / git_push / create_pr |
 //! | 按声明 | plugin_*（外部进程插件映射分级） |
@@ -19,9 +19,9 @@ pub enum Tool {
     /// 文件名模式定位（§9.2，v2.61）：ignore overrides 白名单 glob，
     /// 尊重 .gitignore、跳过隐藏文件，只读零副作用。
     Glob,
-    /// PTC 程序化工具调用首期（§9.2，v2.63 DSH §3.3 对标）：内嵌 JS 引擎
-    /// 一次回合批量调用只读工具（内层仅 read_file/glob/grep/list_dir），
-    /// 零工作区副作用。
+    /// PTC 程序化工具调用（§9.2，v2.63 DSH §3.3 对标）：内嵌 JS 引擎一次回合
+    /// 批量调用工具；v2.67 内层写扩展（+apply_patch，变更记账回传外层
+    /// checkpoint）升 B 级。
     RunCode,
     GitRead,
     LspQuery,
@@ -103,7 +103,6 @@ impl Tool {
             | Tool::ListDir
             | Tool::Grep
             | Tool::Glob
-            | Tool::RunCode
             | Tool::TaskOutput
             | Tool::GitRead
             | Tool::LspQuery
@@ -118,6 +117,7 @@ impl Tool {
             | Tool::InstallDeps
             | Tool::RunCommand
             | Tool::TaskKill
+            | Tool::RunCode
             | Tool::SpawnSubagents => Level::B,
             Tool::HttpFetch | Tool::WebSearch => Level::C,
             Tool::GitCommit | Tool::GitPush => Level::D,
@@ -215,8 +215,8 @@ mod tests {
         );
         assert_eq!(
             Tool::RunCode.level(),
-            Some(Level::A),
-            "v2.63 §9.2 PTC 首期只读（内层仅四只读工具）"
+            Some(Level::B),
+            "v2.67 §9.2 PTC 内层写扩展（apply_patch）升 B"
         );
         assert_eq!(
             Tool::TaskOutput.level(),

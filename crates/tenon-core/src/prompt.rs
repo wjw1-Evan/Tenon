@@ -117,7 +117,7 @@ pub fn tool_catalog() -> String {
         ),
         (
             Tool::RunCode,
-            "PTC 批处理（JS 脚本一次回合批量调用只读工具）：code 内用 tool(\"read_file\"|\"glob\"|\"grep\"|\"list_dir\", 参数…) 程序化调用、log(...) 输出中间结果——多文件批量「搜索→读→汇总」用它省回合",
+            "PTC 批处理（JS 脚本一次回合批量调用工具）：code 内用 tool(\"read_file\"|\"glob\"|\"grep\"|\"list_dir\", …) 读、tool(\"apply_patch\", {file, search, replace, replace_all?} 或 {ops}) 写——同文案多文件批量替换（codemod）一次回合完成；变更计入回合检查点可整体撤销",
         ),
         (Tool::GitRead, "只读 git：status / log / diff"),
         (Tool::LspQuery, "语言服务查询：定义 / 引用 / 符号 / hover"),

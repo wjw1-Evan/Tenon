@@ -847,9 +847,12 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                 Err(e) => ToolOutput::err(format!("glob 失败: {e}")),
             }
         }
-        // PTC 程序化工具调用首期（§9.2 v2.63，DSH §3.3 对标）：内嵌 JS 引擎
-        // 一次回合批量调用只读工具（内层复用 execute_tool=同作用域守卫）。
+        // PTC 程序化工具调用（§9.2 v2.63，DSH §3.3 对标；v2.67 内层写扩展升 B）：
+        // 内嵌 JS 引擎一次回合批量调用工具（内层复用 execute_tool=同作用域守卫）。
         "run_code" => {
+            if ctx.readonly.load(Ordering::Relaxed) {
+                return ToolOutput::err("只读会话禁用 run_code（内层可写）");
+            }
             let Some(code) = args.get("code").and_then(|v| v.as_str()) else {
                 return ToolOutput::err("缺少 code 参数");
             };
