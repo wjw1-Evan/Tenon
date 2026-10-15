@@ -42,11 +42,16 @@ pub struct ProcessWriter {
 
 impl ProcessConnection {
     /// 启动语言服务器进程（v2.4 沙箱总线默认路径：文件系统隔离——写限
-    /// 项目/worktree + 临时 + 平台缓存目录，读全开；网络首期开放——
-    /// cargo metadata 等工具链联网，逐语言包收紧另行验证，design-v2 §4.4）。
-    pub fn spawn(program: &str, args: &[&str], cwd: &std::path::Path) -> io::Result<Self> {
-        let spec =
-            tenon_sandbox::ExternalSpec::for_workspace(cwd, tenon_sandbox::ExternalNetwork::Open);
+    /// 项目/worktree + 临时 + 平台缓存目录，读全开；网络按语言包声明
+    /// （v2.74 逐语言包收紧，design-v2.md §4.3）——tsserver / pyright
+    /// offline、rust-analyzer open；显式传参无隐式缺省）。
+    pub fn spawn(
+        program: &str,
+        args: &[&str],
+        cwd: &std::path::Path,
+        network: tenon_sandbox::ExternalNetwork,
+    ) -> io::Result<Self> {
+        let spec = tenon_sandbox::ExternalSpec::for_workspace(cwd, network);
         let spawned = tenon_sandbox::spawn_external(program, args, cwd, &spec, &[])?;
         let mut child = spawned.child;
         let keepalive = spawned.keepalive;
@@ -66,9 +71,14 @@ impl ProcessConnection {
 
 impl ProcessConnection {
     /// String 参数版本的 spawn（语言包 args 为 Vec<String>）。
-    pub fn spawn_str(program: &str, args: &[String], cwd: &std::path::Path) -> io::Result<Self> {
+    pub fn spawn_str(
+        program: &str,
+        args: &[String],
+        cwd: &std::path::Path,
+        network: tenon_sandbox::ExternalNetwork,
+    ) -> io::Result<Self> {
         let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        Self::spawn(program, &arg_refs, cwd)
+        Self::spawn(program, &arg_refs, cwd, network)
     }
 }
 

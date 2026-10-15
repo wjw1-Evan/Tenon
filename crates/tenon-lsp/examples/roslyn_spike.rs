@@ -55,7 +55,12 @@ fn main() {
     let _ = sandbox_profile; // 例程在宿主内做 initialize；进程级沙箱由
                              // tenon-sandbox::exec 承担（run_tests 等同一路径）
 
-    let conn = match ProcessConnection::spawn_str(&program, &pre_args, &workspace) {
+    let conn = match ProcessConnection::spawn_str(
+        &program,
+        &pre_args,
+        &workspace,
+        tenon_sandbox::ExternalNetwork::Open,
+    ) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("SPIKE_FAIL: 启动 {program} 失败: {e}");

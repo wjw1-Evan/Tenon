@@ -1,10 +1,13 @@
 //! 内置语言包（设计方案 §8.4 内置档）：按项目探测语言并映射语言服务器。
 //!
-//! | 语言包 | 服务器 | 探测 |
-//! |---|---|---|
-//! | TypeScript/JS | typescript-language-server --stdio | package.json |
-//! | Python | pyright-langserver --stdio | pyproject.toml / requirements.txt / *.py |
-//! | Rust | rust-analyzer（如已安装） | Cargo.toml |
+//! | 语言包 | 服务器 | 探测 | 网络 |
+//! |---|---|---|---|
+//! | TypeScript/JS | typescript-language-server --stdio | package.json | offline |
+//! | Python | pyright-langserver --stdio | pyproject.toml / requirements.txt / *.py | offline |
+//! | Rust | rust-analyzer（如已安装） | Cargo.toml | open |
+//!
+//! 网络策略（v2.74，design-v2.md §4.3）：纯本地分析器收紧为 offline（tsserver /
+//! pyright 不出网），仅需工具链联网者（rust-analyzer 的 `cargo metadata`）保持 open。
 //!
 //! 运行时缺失（服务器未安装）→ 返回明确错误（安装向导随 M1 语言包体系补全）。
 
@@ -23,6 +26,9 @@ pub struct LanguagePack {
     pub extensions: &'static [&'static str],
     /// 项目探测文件。
     pub detect_files: &'static [&'static str],
+    /// 网络策略（v2.74 逐语言包收紧，design-v2.md §4.3）：纯本地分析器
+    /// offline；rust-analyzer 等需工具链联网者 Open。
+    pub network: tenon_sandbox::ExternalNetwork,
 }
 
 /// 内置语言包清单（§8.4 内置档；C#/Rust/Go 一键安装随 M1 后段）。
@@ -34,6 +40,8 @@ pub fn builtin_packs() -> Vec<LanguagePack> {
             args: vec!["--stdio".into()],
             extensions: &["ts", "tsx", "js", "jsx", "mjs", "cjs"],
             detect_files: &["package.json"],
+            // tsserver 纯本地分析，无需出网
+            network: tenon_sandbox::ExternalNetwork::Offline,
         },
         LanguagePack {
             language: "python",
@@ -41,6 +49,8 @@ pub fn builtin_packs() -> Vec<LanguagePack> {
             args: vec!["--stdio".into()],
             extensions: &["py", "pyi"],
             detect_files: &["pyproject.toml", "requirements.txt", "setup.py"],
+            // pyright 静态分析本地源码，无需出网
+            network: tenon_sandbox::ExternalNetwork::Offline,
         },
         LanguagePack {
             language: "rust",
@@ -48,6 +58,8 @@ pub fn builtin_packs() -> Vec<LanguagePack> {
             args: vec![],
             extensions: &["rs"],
             detect_files: &["Cargo.toml"],
+            // rust-analyzer 内部跑 cargo metadata，需拉取 registry 索引
+            network: tenon_sandbox::ExternalNetwork::Open,
         },
     ]
 }
@@ -129,6 +141,23 @@ mod tests {
     fn unknown_extension_returns_none() {
         let dir = tempfile::tempdir().unwrap();
         assert!(pack_for_file(dir.path(), "readme.md").is_none());
+    }
+
+    #[test]
+    fn builtin_packs_declare_network_policy() {
+        // v2.74 §4.3：纯本地分析器 offline，需工具链联网者 open
+        use tenon_sandbox::ExternalNetwork;
+        let packs = builtin_packs();
+        let policy = |lang: &str| {
+            packs
+                .iter()
+                .find(|p| p.language == lang)
+                .unwrap_or_else(|| panic!("缺语言包 {lang}"))
+                .network
+        };
+        assert_eq!(policy("typescript"), ExternalNetwork::Offline);
+        assert_eq!(policy("python"), ExternalNetwork::Offline);
+        assert_eq!(policy("rust"), ExternalNetwork::Open);
     }
 
     #[test]

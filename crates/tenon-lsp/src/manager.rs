@@ -133,7 +133,7 @@ impl LspManager {
             )));
         }
         // 启动语言服务器（§12.1 铁律七：宿主命令白名单默认空 = 全拒）
-        let conn = ProcessConnection::spawn_str(&pack.command, &pack.args, root)
+        let conn = ProcessConnection::spawn_str(&pack.command, &pack.args, root, pack.network)
             .map_err(|e| LspManagerError::Request(format!("启动 {} 失败: {e}", pack.command)))?;
         let cfg = LspHostConfig {
             language: pack.language.to_string(),

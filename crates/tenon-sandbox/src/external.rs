@@ -17,7 +17,8 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 
 /// 外部进程网络策略（声明式；MCP 按服务器 `permissions` 是否含 `net:*`，
-/// LSP 首期 Open——cargo metadata 等工具链联网，逐语言包收紧另行验证）。
+/// LSP 按语言包声明——v2.74 逐语言包收紧，tsserver / pyright offline、
+/// rust-analyzer open，见 tenon-lsp `pack.rs`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExternalNetwork {
     Offline,

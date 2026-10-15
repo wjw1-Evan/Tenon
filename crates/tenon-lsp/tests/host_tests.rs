@@ -271,6 +271,7 @@ process.stdin.on('data', d => {
         &node,
         &[js_path.to_string_lossy().as_ref()],
         dir.path(),
+        tenon_sandbox::ExternalNetwork::Offline,
     )
     .unwrap();
     let mut guard_cfg = tenon_lsp::guard::LspGuardConfig::new(dir.path());

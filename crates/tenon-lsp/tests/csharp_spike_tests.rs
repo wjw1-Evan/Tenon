@@ -52,8 +52,13 @@ async fn csharp_lsp_sandboxed_handshake_and_semantics() {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-    let conn = ProcessConnection::spawn(&wrapper.to_string_lossy(), &[], dir.path())
-        .expect("spawn csharp-ls");
+    let conn = ProcessConnection::spawn(
+        &wrapper.to_string_lossy(),
+        &[],
+        dir.path(),
+        tenon_sandbox::ExternalNetwork::Open,
+    )
+    .expect("spawn csharp-ls");
 
     let cfg = LspHostConfig {
         language: "csharp".into(),
