@@ -1,6 +1,7 @@
 //! 工具执行器（设计方案 §9.2 内置工具协议）：分级执行 + 写守卫 + 快照联动。
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
@@ -245,6 +246,48 @@ pub struct ToolContext {
     /// 后台任务注册表（§9.2 v2.64：run_command background + task_output /
     /// task_kill）；会话作用域，Drop 兜底清杀存活子进程。
     pub background: Arc<crate::bgtask::BgRegistry>,
+    /// 新鲜度守卫（§9.2 v2.69）：每文件最近一次读取快照（mtime+len）——
+    /// 编辑前校验读取后是否被外部修改；会话作用域。
+    pub freshness: std::sync::Mutex<HashMap<String, (std::time::SystemTime, u64)>>,
+}
+
+/// 记录 / 刷新文件读取快照（读取成功与写入成功后调用）。
+fn freshness_record(ctx: &ToolContext, rel: &str) {
+    if let Ok(meta) = std::fs::metadata(ctx.root.join(rel)) {
+        let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+        ctx.freshness
+            .lock()
+            .expect("freshness lock")
+            .insert(rel.to_string(), (mtime, meta.len()));
+    }
+}
+
+/// 编辑前校验：文件在读取后被外部修改（或已删除）→ 拒绝并指引重读；
+/// 未读取过不拦（软口径——不强制先读后改）。
+/// Err 变体含模型可自纠的错误卡（result_large_err 白名单同 execute_tool）。
+#[allow(clippy::result_large_err)]
+fn freshness_check(ctx: &ToolContext, rel: &str) -> Result<(), ToolOutput> {
+    let snapshot = ctx
+        .freshness
+        .lock()
+        .expect("freshness lock")
+        .get(rel)
+        .copied();
+    let Some((mtime, len)) = snapshot else {
+        return Ok(());
+    };
+    let Ok(meta) = std::fs::metadata(ctx.root.join(rel)) else {
+        return Err(ToolOutput::err(format!(
+            "文件已被外部删除（{rel}）——请重新 read_file 确认现状"
+        )));
+    };
+    let cur = (meta.modified().unwrap_or(std::time::UNIX_EPOCH), meta.len());
+    if cur != (mtime, len) {
+        return Err(ToolOutput::err(format!(
+            "文件在读取后已被外部修改（{rel}）——请重新 read_file 获取最新内容后再编辑（防旧行号静默损坏）"
+        )));
+    }
+    Ok(())
 }
 
 impl ToolContext {
@@ -265,6 +308,7 @@ impl ToolContext {
             skills_global_dir: None,
             skills_disabled: Vec::new(),
             background: Arc::new(crate::bgtask::BgRegistry::new()),
+            freshness: std::sync::Mutex::new(HashMap::new()),
         }
     }
 }
@@ -337,6 +381,8 @@ fn write_patch_result(ctx: &ToolContext, rel: String, before: &str, after: Strin
                     }
                     // 合并后的内容成为脏缓冲的新基线（用户编辑继续保留）
                     registry.update_base(&rel, &merged_text);
+                    // v2.69：写入成功即刷新新鲜度快照（连续编辑不受影响）
+                    freshness_record(ctx, &rel);
                     let diff = tenon_core::tools::unified_diff(before, &merged_text, &rel);
                     return ToolOutput {
                         ok: true,
@@ -372,6 +418,8 @@ fn write_patch_result(ctx: &ToolContext, rel: String, before: &str, after: Strin
 
     match ctx.files.write_file(&rel, &after) {
         Ok(_) => {
+            // v2.69：写入成功即刷新新鲜度快照（连续编辑不受影响）
+            freshness_record(ctx, &rel);
             let diff = tenon_core::tools::unified_diff(before, &after, &rel);
             ToolOutput {
                 ok: true,
@@ -464,6 +512,8 @@ fn resolve_one_edit(ctx: &ToolContext, a: &serde_json::Value) -> Result<Resolved
             return Err(ToolOutput::err("缺少 file 参数"));
         };
         let rel = project_rel(ctx, file)?;
+        // v2.69 新鲜度守卫：读取后被外部修改 → 拒编辑并指引重读
+        freshness_check(ctx, &rel)?;
         let before = match ctx.files.read_file(&rel) {
             Ok(c) => c,
             Err(tenon_fs::FsError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -498,6 +548,8 @@ fn resolve_one_edit(ctx: &ToolContext, a: &serde_json::Value) -> Result<Resolved
         ToolOutput::err("apply_patch 参数非法（需 file/range/content 或 file/search/replace）")
     })?;
     let rel = project_rel(ctx, &op.file)?;
+    // v2.69 新鲜度守卫：range 编辑防「读取后外部变更 → 旧行号静默损坏」
+    freshness_check(ctx, &rel)?;
     // 读失败（二进制 / 权限）≠ 文件不存在：把「读不了」当「空文件」整文件
     // 覆盖会毁坏二进制资产，必须拒绝。
     let before = match ctx.files.read_file(&rel) {
@@ -607,6 +659,8 @@ fn write_multi_patch_result(ctx: &ToolContext, edits: Vec<ResolvedEdit>) -> Tool
                     }
                     any_merged = true;
                 }
+                // v2.69：写入成功即刷新新鲜度快照（连续编辑不受影响）
+                freshness_record(ctx, &rel);
                 let diff = tenon_core::tools::unified_diff(&before, &text, &rel);
                 let note = if merged {
                     "（人机共编：与未保存的用户改动三方合并）"
@@ -695,6 +749,8 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
             let limit = args.get("limit").and_then(|v| v.as_u64());
             match ctx.files.read_file(&rel) {
                 Ok(content) => {
+                    // v2.69 新鲜度守卫：读取成功即记录快照（编辑前校验基准）
+                    freshness_record(ctx, &rel);
                     if offset.is_some() || limit.is_some() {
                         return read_file_segmented(&rel, &content, offset, limit);
                     }
@@ -2080,6 +2136,104 @@ mod tests {
         let out = execute_tool(&c, "task_output", &serde_json::json!({"id": 1}));
         assert!(!out.ok, "任务不存在仍是未知错误而非只读拒绝");
         assert!(out.content.contains("未知后台任务"), "{}", out.content);
+    }
+
+    /// v2.69 §9.2：新鲜度守卫——读取后被外部修改 → 拒编辑并指引重读；
+    /// 未读取不拦；自家写入刷新快照（连续编辑不受影响）。
+    #[test]
+    fn freshness_guard_rejects_stale_edit() {
+        let (dir, c) = ctx();
+        std::fs::write(dir.path().join("f.txt"), "v1\n").unwrap();
+        execute_tool(&c, "read_file", &serde_json::json!({"path": "f.txt"}));
+        // 外部修改（长度不同保证 mtime+len 指纹必变）
+        std::fs::write(dir.path().join("f.txt"), "v2 with longer content\n").unwrap();
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({"file": "f.txt", "range": [1, 1], "content": "x"}),
+        );
+        assert!(!out.ok);
+        assert!(out.content.contains("已被外部修改"), "{}", out.content);
+        assert!(out.content.contains("重新 read_file"), "{}", out.content);
+
+        // 重读后放行
+        execute_tool(&c, "read_file", &serde_json::json!({"path": "f.txt"}));
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({"file": "f.txt", "search": "v2", "replace": "v3"}),
+        );
+        assert!(out.ok, "{}", out.content);
+    }
+
+    #[test]
+    fn freshness_guard_allows_fresh_and_sequential() {
+        let (dir, c) = ctx();
+        // 未读取过的文件不拦（软口径——不强制先读后改）
+        std::fs::write(dir.path().join("g.txt"), "hello\n").unwrap();
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({"file": "g.txt", "search": "hello", "replace": "hi"}),
+        );
+        assert!(out.ok, "未读取文件不拦: {}", out.content);
+
+        // 连续两次编辑不受影响（写后刷新快照）
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({"file": "g.txt", "search": "hi", "replace": "hey"}),
+        );
+        assert!(out.ok, "自写后快照已刷新: {}", out.content);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("g.txt")).unwrap(),
+            "hey\n"
+        );
+    }
+
+    /// v2.69：分段读取同样记录快照；ops 多文件任一失鲜全体拒绝零写入。
+    #[test]
+    fn freshness_guard_segmented_and_ops() {
+        let (dir, c) = ctx();
+        let body = "l1\nl2\nl3\n";
+        std::fs::write(dir.path().join("s.txt"), body).unwrap();
+        std::fs::write(dir.path().join("ok.txt"), "fresh\n").unwrap();
+        execute_tool(
+            &c,
+            "read_file",
+            &serde_json::json!({"path": "s.txt", "offset": 1, "limit": 2}),
+        );
+        // 外部修改
+        std::fs::write(dir.path().join("s.txt"), "l1\nl2 changed\nl3\n").unwrap();
+
+        // 分段读后失鲜同样拦
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({"file": "s.txt", "search": "l1", "replace": "L1"}),
+        );
+        assert!(!out.ok);
+        assert!(out.content.contains("已被外部修改"), "{}", out.content);
+
+        // ops：ok.txt 新鲜但 s.txt 失鲜 → 全体拒绝零写入（原子性一致）
+        std::fs::write(dir.path().join("s.txt"), "l1\nl2 more\nl3\n").unwrap();
+        let out = execute_tool(
+            &c,
+            "apply_patch",
+            &serde_json::json!({
+                "ops": [
+                    {"file": "ok.txt", "search": "fresh", "replace": "FRESH"},
+                    {"file": "s.txt", "search": "l1", "replace": "L1"}
+                ]
+            }),
+        );
+        assert!(!out.ok);
+        assert!(out.content.contains("已被外部修改"), "{}", out.content);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("ok.txt")).unwrap(),
+            "fresh\n",
+            "合法项不落盘（原子性）"
+        );
     }
 
     #[test]

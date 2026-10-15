@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | **v2.68** |
+| 版本 | **v2.69** |
 | 日期 | 2026-10-13 |
 | 状态 | 定稿，M0 已验收（附录 D 基线 v2.32 起 glm-5.3-flash 9/10=90%，violation=0；历史最高），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
@@ -576,7 +576,7 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 | `submit_plan`（计划提交，v1.179 Codex 形态计划模式） | A | 复杂任务先计划后执行：`{items:[string]}`（1–12 项、每项 ≤200 字符）→ `plan_submitted` 事件 + 会话转 PAUSED 等待批准；边界见下文 |
 | `mcp_meta_resources_list / mcp_meta_resources_read / mcp_meta_prompts_list / mcp_meta_prompts_get`（MCP 资源与提示，v1.187） | A | 跨服务器枚举 / 读取 MCP resources（URI）与 prompts（渲染后消息文本）；内容按不可信数据处理（§12.1）、输出截 20k + redact；只读会话仍拒（与 MCP 工具既有语义一致——调用即拉起外部进程）；名字与 `mcp_{server}_{tool}` 形式重叠时精确名优先 |
 | `run_code`（PTC 程序化工具调用首期，v2.63 DSH §3.3 对标；**v2.67 内层写扩展——批量重构 codemod**） | B | 内嵌 JS 引擎（boa，纯 Rust 零原生依赖）执行模型脚本，脚本内经 `tool(name, ...args)` 程序化批量调用**五工具**（read_file / glob / grep / list_dir 四只读 + **apply_patch（v2.67：JSON 对象参数，boa serde `to_json` 直传既有编辑语义——search/replace、replace_all、range、ops 多文件原子全支持**）——executor 同函数复用 = 同 `project_rel` 作用域守卫，即 DSH「子调用重入同一管线」的执行层等价物），一次回合完成「搜索→批量改（codemod）」类工作；**变更记账（v2.67 不变式）**：内层 apply_patch 的 changed_files 回传外层 ToolOutput → session 既有 B 级写前快照 + checkpoint / 撤销链路全覆盖（工具升级 B 级自动生效）；脚本顺序执行非原子（中途失败先前写入不回滚，由回合撤销兜底，如实留档）；`log(...)` 进 console 收集，脚本返回值字符串化，合计经 truncate_output 20k 截断；预算双封顶——宿主工具调用 ≤500 次（超限报错）+ JS 循环迭代 / 递归上限（boa RuntimeLimits，超限报错），同步执行无事件循环；B 级（v2.67 起，只读会话拒；不进只读先验轮白名单）；MCP / LSP / 出网不可达（扩展须过策略总线，如实留档） |
-| `apply_patch` | B | 结构化编辑：① range 形式（file + range + content）；② search/replace 块格式（v1.188：file + search + replace，目标片段全文唯一匹配——精确优先、降级逐行空白归一序列匹配；零/多命中报错，与 range 互斥），`replace_all: true` 替换全部命中（精确优先非重叠全量、降级逐行空白归一滑窗全量、倒序套用保持行号有效；零命中报错、缺省维持唯一命中语义，v2.61 Claude Code Edit 对齐）；③ `ops` 数组多文件原子编辑（v2.62 Codex apply_patch 对齐）：1–8 项、每项与单文件形态同构（①②任选），解析阶段全量校验、任一失败整体拒绝（零写入），同文件重复编辑拒绝（多处修改合并为一次编辑或改用 replace_all）；人机共编任一文件存在合并冲突即全体阻断（零写入），无冲突统一落盘，输出逐文件 diff 汇总与 changed_files 全列（单文件中途写盘失败如实报告已写清单）。产生事件与 checkpoint |
+| `apply_patch` | B | 结构化编辑：① range 形式（file + range + content）；② search/replace 块格式（v1.188：file + search + replace，目标片段全文唯一匹配——精确优先、降级逐行空白归一序列匹配；零/多命中报错，与 range 互斥），`replace_all: true` 替换全部命中（精确优先非重叠全量、降级逐行空白归一滑窗全量、倒序套用保持行号有效；零命中报错、缺省维持唯一命中语义，v2.61 Claude Code Edit 对齐）；③ `ops` 数组多文件原子编辑（v2.62 Codex apply_patch 对齐）：1–8 项、每项与单文件形态同构（①②任选），解析阶段全量校验、任一失败整体拒绝（零写入），同文件重复编辑拒绝（多处修改合并为一次编辑或改用 replace_all）；人机共编任一文件存在合并冲突即全体阻断（零写入），无冲突统一落盘，输出逐文件 diff 汇总与 changed_files 全列（单文件中途写盘失败如实报告已写清单）。**新鲜度守卫（v2.69，软口径——零基线扰动）**：会话侧记录每文件最近一次读取快照（mtime+len），编辑解析阶段校验——文件在读取后被外部修改（run_command 写盘 / 用户保存 / 其他进程）→ 整体拒绝并指引「重新 read_file」（range 旧行号静默损坏的唯一防线；search/replace 未命中本就安全失败，此处补齐 range 面）；自家写入成功即刷新快照（连续编辑不受影响）；**未读取过的文件不拦**（不强制先读后改——避免净加步数；search/replace 未命中安全网在）；ops 多文件任一文件失鲜即全体拒绝（原子性一致）。产生事件与 checkpoint |
 | `spawn_subagents`（并行子代理，v1.190） | B | 分发 1–3 个独立子任务（`{tasks:[{instruction, files}]}`，文件集不相交——相交拒绝回传）；子代理各自运行于受管 worktree 并登记为独立会话，完成后回传摘要、合并/丢弃在子会话行处置；边界见 §9.5 |
 | `run_tests` / `run_build` | B | 沙箱内，断网态；单命令超时默认 120s（附录 E）；接受可选 `command` 覆盖（缺省按项目清单探测）——任意命令面经断网沙箱收敛，通用命令经 `run_command` 正名承载（v2.2） |
 | `install_deps` | B | **v2.0 命令白名单**（design-v2.md §4.5）：仅接受已知包管理器与安装语义子命令（`tenon-core::install_policy`，管线②违例→Deny）；**v2.3 域过滤收口**（design-v2.md §4.4）：本地 registry 白名单代理 + Seatbelt 仅回环——**v2.37 起命令沙箱随全对话完整权限降级为无（ADR-19），代理通路不再生效，安装命令无沙箱直跑**；白名单校验保留（零审批下唯一命令级收窄） |
