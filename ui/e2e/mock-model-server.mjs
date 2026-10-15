@@ -7,8 +7,8 @@ import { createServer } from "node:http";
 //   written = 恢复续跑回合首轮（lastUser 为本地化继续语、无标记）：转写入相，
 //             复用 apply_patch 管线真实落盘（恢复效果断言）；
 //   复位    = 写入后的下一请求文本收尾（E2E resume continuation complete）。
-// 关键事实：daemon 每个任务都是全新对话（system + user，session.rs run_task）
-// ——续跑回合不携带前回合工具历史（任务文本经 L2 goals 进系统提示），故相位
+// 关键事实：跨任务 / 跨回合只携带对话文本与终答，不携带工具历史（§9.1
+// v2.72，session.rs run_task）——任务文本亦经 L2 goals 进系统提示，故相位
 // 不能跨回合按工具结果数推算，须按「标记 → 无标记」的回合状态机推进。
 let loopPhase = null; // null | "loop" | "written"
 let loopFile = null;

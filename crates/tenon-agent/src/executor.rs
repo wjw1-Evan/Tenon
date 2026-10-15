@@ -916,7 +916,7 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
         }
         // 后台任务查询（§9.2 v2.64）：状态 + 输出末尾 ≤20k 字符；wait_s 阻塞等完成。
         // v2.70 列表模式：id 省略 = 枚举全部任务一行摘要（跨任务找回后台任务——
-        // daemon 每任务全新对话，任务号只存在于启动它的任务上下文里）。
+        // 跨任务携带只带对话不带工具输出，任务号仍只在启动它的任务上下文里）。
         "task_output" => {
             let id = args.get("id").and_then(|v| v.as_u64());
             let Some(id) = id else {
@@ -2144,7 +2144,7 @@ mod tests {
     }
 
     /// v2.70 §9.2：task_output 列表模式——id 省略枚举全部任务（跨任务找回
-    /// 后台任务：daemon 每任务全新对话，任务号只存在于启动它的任务上下文）。
+    /// 后台任务：携带只带对话不带工具输出，任务号只在启动它的任务上下文）。
     #[test]
     fn task_output_list_mode() {
         let (_d, c) = ctx();

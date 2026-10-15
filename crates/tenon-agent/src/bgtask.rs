@@ -200,7 +200,7 @@ impl BgRegistry {
     }
 
     /// 全部任务摘要（v2.70 列表模式：跨任务找回后台任务的唯一口——
-    /// daemon 每任务全新对话，任务号只存在于启动它的任务上下文里）。
+    /// 跨任务携带只带对话不带工具输出，任务号只在启动它的任务上下文里）。
     pub fn list(&self) -> Vec<TaskSnapshot> {
         self.tasks
             .lock()

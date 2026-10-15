@@ -1,6 +1,7 @@
 // v2.66 审查发现一键修复（§7.5）：审查回合识别（任务文本恰为审查模板）→
 // 气泡下「修复以上发现」钮 → 点击发送自包含修复任务（模板 + 审查回复全文——
-// daemon 每任务全新对话，指代上文模型不可见）；非审查回合不渲染；运行态禁用。
+// v2.72 起 §9.1 跨任务携带使指代可见，但携带预算有限且可被压缩，自包含仍为
+// 稳健缺省）；非审查回合不渲染；运行态禁用。
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { AgentPanel } from "../components/AgentPanel";
