@@ -342,6 +342,7 @@
   "tool.list_dir": "Listar",
   "tool.grep": "Buscar",
   "tool.glob": "Buscar archivos",
+  "tool.run_code": "Lote PTC",
   "tool.task_output": "Salida de tarea",
   "tool.task_kill": "Terminar tarea",
   "tool.git_read": "Lectura de Git",

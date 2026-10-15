@@ -342,6 +342,7 @@
   "tool.list_dir": "列出",
   "tool.grep": "搜尋",
   "tool.glob": "檔案定位",
+  "tool.run_code": "PTC 批次",
   "tool.task_output": "背景任務輸出",
   "tool.task_kill": "終止任務",
   "tool.git_read": "查看 git",

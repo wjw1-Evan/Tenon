@@ -342,6 +342,7 @@
   "tool.list_dir": "List",
   "tool.grep": "Search",
   "tool.glob": "Find files",
+  "tool.run_code": "PTC batch",
   "tool.task_output": "Task output",
   "tool.task_kill": "Kill task",
   "tool.git_read": "Git read",

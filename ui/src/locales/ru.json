@@ -342,6 +342,7 @@
   "tool.list_dir": "Список",
   "tool.grep": "Поиск",
   "tool.glob": "Поиск файлов",
+  "tool.run_code": "PTC-пакет",
   "tool.task_output": "Вывод задачи",
   "tool.task_kill": "Остановить задачу",
   "tool.git_read": "Git: чтение",

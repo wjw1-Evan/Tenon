@@ -342,6 +342,7 @@
   "tool.list_dir": "سرد",
   "tool.grep": "بحث",
   "tool.glob": "بحث الملفات",
+  "tool.run_code": "دفعة PTC",
   "tool.task_output": "مخرجات المهمة",
   "tool.task_kill": "إنهاء المهمة",
   "tool.git_read": "قراءة Git",

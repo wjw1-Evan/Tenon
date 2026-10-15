@@ -342,6 +342,7 @@
   "tool.list_dir": "나열",
   "tool.grep": "검색",
   "tool.glob": "파일 찾기",
+  "tool.run_code": "PTC 일괄",
   "tool.task_output": "작업 출력",
   "tool.task_kill": "작업 종료",
   "tool.git_read": "git 조회",

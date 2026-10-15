@@ -342,6 +342,7 @@
   "tool.list_dir": "一覧",
   "tool.grep": "検索",
   "tool.glob": "ファイル検索",
+  "tool.run_code": "PTC バッチ",
   "tool.task_output": "タスク出力",
   "tool.task_kill": "タスク終了",
   "tool.git_read": "git 参照",

@@ -199,6 +199,25 @@ impl BgRegistry {
             .ok_or_else(|| format!("任务 #{id} 已结束"))
     }
 
+    /// 全部任务摘要（v2.70 列表模式：跨任务找回后台任务的唯一口——
+    /// daemon 每任务全新对话，任务号只存在于启动它的任务上下文里）。
+    pub fn list(&self) -> Vec<TaskSnapshot> {
+        self.tasks
+            .lock()
+            .expect("bg tasks lock")
+            .iter()
+            .map(|task| TaskSnapshot {
+                id: task.id,
+                cmd: task.cmd.clone(),
+                running: !task.is_done(),
+                elapsed: task.started.elapsed(),
+                buffer: String::new(),
+                truncated: false,
+                exit: *task.exit.lock().expect("bg exit lock"),
+            })
+            .collect()
+    }
+
     fn get(&self, id: u32) -> Option<Arc<BgTask>> {
         self.tasks
             .lock()

@@ -915,9 +915,45 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
             crate::runcode::run_code_script(ctx, code)
         }
         // 后台任务查询（§9.2 v2.64）：状态 + 输出末尾 ≤20k 字符；wait_s 阻塞等完成。
+        // v2.70 列表模式：id 省略 = 枚举全部任务一行摘要（跨任务找回后台任务——
+        // daemon 每任务全新对话，任务号只存在于启动它的任务上下文里）。
         "task_output" => {
-            let Some(id) = args.get("id").and_then(|v| v.as_u64()) else {
-                return ToolOutput::err("缺少 id 参数");
+            let id = args.get("id").and_then(|v| v.as_u64());
+            let Some(id) = id else {
+                let tasks = ctx.background.list();
+                if tasks.is_empty() {
+                    return ToolOutput::ok("（无后台任务——run_command 加 background=true 启动）");
+                }
+                let lines: Vec<String> = tasks
+                    .into_iter()
+                    .map(|t| {
+                        let status = if t.running {
+                            "运行中".to_string()
+                        } else if let Some(exit) = t.exit {
+                            if exit.timed_out {
+                                "超时终止".to_string()
+                            } else if exit.killed {
+                                "已终止".to_string()
+                            } else {
+                                format!(
+                                    "完成 exit={}",
+                                    exit.code
+                                        .map(|c| c.to_string())
+                                        .unwrap_or_else(|| "signal".into())
+                                )
+                            }
+                        } else {
+                            "已结束".to_string()
+                        };
+                        let cmd: String = t.cmd.chars().take(80).collect();
+                        format!("#{} [{status}] {cmd}", t.id)
+                    })
+                    .collect();
+                return ToolOutput::ok(format!(
+                    "后台任务 {} 项（task_output {{id}} 查输出、task_kill 终止）:\n{}",
+                    lines.len(),
+                    lines.join("\n")
+                ));
             };
             let wait = args
                 .get("wait_s")
@@ -2105,6 +2141,50 @@ mod tests {
         );
         assert!(!out.ok);
         assert!(out.content.contains("execpolicy 拦截"), "{}", out.content);
+    }
+
+    /// v2.70 §9.2：task_output 列表模式——id 省略枚举全部任务（跨任务找回
+    /// 后台任务：daemon 每任务全新对话，任务号只存在于启动它的任务上下文）。
+    #[test]
+    fn task_output_list_mode() {
+        let (_d, c) = ctx();
+        // 空表如实回报
+        let out = execute_tool(&c, "task_output", &serde_json::json!({}));
+        assert!(out.ok, "{}", out.content);
+        assert!(out.content.contains("无后台任务"), "{}", out.content);
+
+        // 双任务：一行摘要（状态 + 命令）
+        execute_tool(
+            &c,
+            "run_command",
+            &serde_json::json!({"command": "echo done-early", "background": true}),
+        );
+        execute_tool(
+            &c,
+            "run_command",
+            &serde_json::json!({"command": "sleep 30", "background": true}),
+        );
+        // 等第一个收尾
+        execute_tool(
+            &c,
+            "task_output",
+            &serde_json::json!({"id": 1, "wait_s": 10}),
+        );
+
+        let out = execute_tool(&c, "task_output", &serde_json::json!({}));
+        assert!(out.ok, "{}", out.content);
+        assert!(out.content.contains("后台任务 2 项"), "{}", out.content);
+        assert!(out.content.contains("#1 [完成 exit=0]"), "{}", out.content);
+        assert!(
+            out.content.contains("#2 [运行中] sleep 30"),
+            "{}",
+            out.content
+        );
+        assert!(
+            out.content.contains("task_kill 终止"),
+            "附操作指引: {}",
+            out.content
+        );
     }
 
     /// v2.64 §9.2：未知任务号双拒；只读会话 task_kill 拒、task_output 可用。

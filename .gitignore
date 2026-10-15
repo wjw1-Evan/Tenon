@@ -38,3 +38,4 @@ ui/coverage/
 # 开发热重载 dev daemon 的隔离 HOME 与构建标记（scripts/dev-daemon.sh）
 .tenon-dev/
 .playwright-mcp/
+*.tsbuildinfo
