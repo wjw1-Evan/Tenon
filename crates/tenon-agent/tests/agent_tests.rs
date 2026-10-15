@@ -175,6 +175,49 @@ async fn compaction_summary_failure_falls_back_to_elide() {
 }
 
 #[tokio::test]
+async fn second_task_carries_prior_conversation() {
+    // v2.72 §9.1 跨任务对话携带：同会话第二次 run_task 的模型请求含第一轮
+    // 任务文本与终答（时间序：历史 user/assistant 在前、本轮任务正文末条），
+    // 且第一轮任务只出现一次（不重复携带）。
+    let (_dir, session, _store, provider) = setup(vec![
+        ScriptedReply::Text("第一轮回答：已完成".into()),
+        ScriptedReply::Text("第二轮回答：好的".into()),
+    ])
+    .await;
+    let outcome = session.run_task("第一问：解释 a.txt").await;
+    assert!(matches!(outcome, TaskOutcome::Done(_)));
+    let outcome = session.run_task("第二问：继续").await;
+    assert!(matches!(outcome, TaskOutcome::Done(_)));
+
+    let calls = provider.calls();
+    let last = calls.last().expect("模型调用存在");
+    let contents: Vec<&str> = last.messages.iter().map(|m| m.content.as_str()).collect();
+    assert!(
+        contents.iter().any(|c| c.contains("第一问")),
+        "第一轮任务文本携带: {contents:?}"
+    );
+    assert!(
+        contents.iter().any(|c| c.contains("第一轮回答")),
+        "第一轮终答携带: {contents:?}"
+    );
+    assert_eq!(
+        contents
+            .iter()
+            .zip(last.messages.iter())
+            .filter(|(c, m)| c.contains("第一问") && m.role != Role::System)
+            .count(),
+        1,
+        "第一轮任务在对话消息中只出现一次（system 的 L2 goals 不计）"
+    );
+    assert!(
+        last.messages
+            .last()
+            .is_some_and(|m| m.content.contains("第二问")),
+        "末条为本轮任务正文"
+    );
+}
+
+#[tokio::test]
 async fn run_task_records_run_row_with_outcome() {
     // v2.15 Task/Run 分离：run_task 全生命周期落 runs 表——done 行带结束 seq；
     // error 收尾（script 故障）记 outcome=error + 原因 detail。

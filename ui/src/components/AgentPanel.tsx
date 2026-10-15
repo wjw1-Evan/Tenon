@@ -1017,8 +1017,9 @@ export function AgentPanel({
         )}
         {turns.map((turn, idx) => {
           const active = idx === turns.length - 1;
-          // v2.66：审查回合识别 + 发现修复一键后续（⚠️daemon 每任务全新对话——
-          // 修复指令必须自包含：模板 + 审查回复全文内嵌，指代上文模型不可见）
+          // v2.66：审查回合识别 + 发现修复一键后续（⚠️ v2.72 起 daemon 已跨任务
+          // 携带对话，但修复模板仍自包含：模板 + 审查回复全文内嵌——携带预算
+          // 有限（§9.1）且经压缩可能被摘要，自包含模板不依赖携带内容存活）
           const isReviewTurn = turn.task?.trim() === t("slash.review_task").trim();
           const reviewDecision = isReviewTurn
             ? [...turn.items].reverse().find((e) => e.type === "decision")

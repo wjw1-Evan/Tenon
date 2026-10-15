@@ -4,8 +4,8 @@
 //! 会话记忆 L2 / 跨会话记忆 L5（参考数据非指令，v1.104）/ 可用技能目录
 //! （名称 + 描述，正文经 skill_use 按需加载，v1.130）/ 子任务清单与计划模式
 //! 使用规则（含 v1.185 质量纪律）/ 任务执行与验证纪律 / 专项任务规范
-//! （v1.185，codex 开源提示词集成，借机制不拷码）/ 工具 schema /
-//! 输出契约（意图一句话 → 结构化动作 → 证据）/ 最终回答规范（v1.185）。
+//! （v1.185，codex 开源提示词集成，借机制不拷码）/ 对话纪律（v2.72）/ 工具
+//! schema / 输出契约（意图一句话 → 结构化动作 → 证据）/ 最终回答规范（v1.185）。
 
 use crate::context::{ProjectRules, SessionMemory};
 use crate::skills::{self, SkillEntry};
@@ -95,6 +95,18 @@ pub const SPECIAL_TASK_RULES: &str = "\
 前端设计任务避免模板化的平庸布局：确立明确的视觉方向（有目的的排版、\
 克制的配色变量、少量有意义的动效），兼顾桌面与移动端；\
 在既有网站或设计系统内工作时遵循既有风格，不另起炉灶。";
+
+/// 对话纪律（§9.6 v2.72，用户令「提升对话能力，该产品重点方向是程序开发」）：
+/// 面向程序开发的对话行为——少打扰的自主推断、缺口才澄清、本仓库事实先读码、
+/// 按上文解析指代（跨任务对话携带 §9.1 v2.72 使这一条成立）。
+pub const CONVERSATION_RULES: &str = "\
+面向程序开发的对话：能从代码与上文推断的一律自行推断后继续，不用提问代替探索；\
+仅当缺少完成任务所必需、无法从仓库推断的关键信息（目标文件 / 输入来源 / 期望行为等）时，\
+用一句话问最关键的 1–3 个问题后停下等答复，不臆造需求后大改。\
+涉及本仓库事实或代码行为的问题，先用工具读相关代码确认再回答，不凭记忆断言项目内事实；\
+不确定的 API 用法先查代码 / 文档，答不出就如实说明并给出验证路径。\
+上文对话已在上下文中（最新一条用户消息才是本次任务）：按上文解析「上面的」「刚才改的」等指代，\
+指代不清或与当前指令冲突时按当前指令执行并一句话说明。";
 
 /// 最终回答规范（§9.6 v1.185，同源改编）：置于输出契约之后，约束面向用户的收尾文本。
 pub const FINAL_ANSWER_RULES: &str = "\
@@ -250,6 +262,9 @@ pub fn build_system_prompt(
 
     p.push_str("\n\n## 专项任务规范\n");
     p.push_str(SPECIAL_TASK_RULES);
+
+    p.push_str("\n\n## 对话纪律\n");
+    p.push_str(CONVERSATION_RULES);
 
     p.push('\n');
     p.push_str(&tool_catalog());
@@ -463,8 +478,8 @@ mod tests {
         assert!(contract < final_answer, "最终回答规范置于输出契约之后");
     }
 
-    // v1.185：新增纪律文本 token 预算上限（§9.6，防提示词无界膨胀；
-    // estimate_tokens 为 chars/3 保守口径）。
+    // v2.72：新增纪律文本 token 预算上限（§9.6，防提示词无界膨胀；
+    // estimate_tokens 为 chars/3 保守口径；对话纪律节并入后上限 1200→1500）。
     #[test]
     fn codex_discipline_text_within_budget() {
         let sections = [
@@ -473,15 +488,41 @@ mod tests {
             FINAL_ANSWER_RULES,
             SUBTASK_RULES,
             PLAN_RULES,
+            CONVERSATION_RULES,
         ];
         let tokens: u64 = sections
             .iter()
             .map(|s| crate::context::estimate_tokens(s))
             .sum();
         assert!(
-            tokens <= 1200,
-            "v1.185 纪律文本合计 ≤1200 tokens（{sections} 节，实测 {tokens}）",
+            tokens <= 1500,
+            "v1.185+v2.72 纪律文本合计 ≤1500 tokens（{sections} 节，实测 {tokens}）",
             sections = sections.len(),
         );
+    }
+
+    // v2.72 §9.6：对话纪律节——面向程序开发的对话行为（自主推断 / 缺口才澄清 /
+    // 本仓库事实先读码 / 按上文解析指代）。
+    #[test]
+    fn conversation_rules_surface_in_prompt() {
+        let p = build_system_prompt(
+            &ProjectRules::default(),
+            &SessionMemory::default(),
+            &[],
+            &[],
+        );
+        assert!(p.contains("## 对话纪律"), "对话纪律节进提示");
+        assert!(p.contains("不用提问代替探索"), "自主推断优先");
+        assert!(p.contains("1–3 个问题"), "缺口才澄清且收口");
+        assert!(p.contains("不凭记忆断言项目内事实"), "本仓库事实先读码");
+        assert!(
+            p.contains("最新一条用户消息才是本次任务"),
+            "跨任务携带语义写明"
+        );
+        // 节序：专项任务规范之后、工具目录之前
+        let special = p.find("## 专项任务规范").expect("专项任务规范节");
+        let converse = p.find("## 对话纪律").expect("对话纪律节");
+        let tools = p.find("可用工具").expect("工具目录");
+        assert!(special < converse && converse < tools, "对话纪律节序正确");
     }
 }

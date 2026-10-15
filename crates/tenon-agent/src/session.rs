@@ -605,6 +605,155 @@ fn decider_result_summary(value: &tenon_laya::DecideValue) -> serde_json::Value 
 /// 压缩时保留原文的最近工具输出条数；更早的替换为存根。
 const KEEP_RECENT_TOOL_RESULTS: usize = 4;
 
+/// 跨任务对话携带（§9.1 v2.72）：前置进本次模型对话的最近对话轮数上限。
+const MAX_CONVERSATION_TURNS: usize = 8;
+/// 跨任务对话携带的 token 预算（§9.1 v2.72）：超预算自最旧轮整轮丢弃。
+const MAX_CONVERSATION_TOKENS: u64 = 3_000;
+/// 单条携带用户文本 / 回答的字符上限（§9.1 v2.72）：单轮 ≤2000+4000 字符
+/// ≈2000 tokens < 预算，保证最新一轮恒可容纳（预算裁剪不会清空携带）。
+const MAX_CONVERSATION_USER_CHARS: usize = 2_000;
+const MAX_CONVERSATION_ANSWER_CHARS: usize = 4_000;
+
+/// 跨任务对话轮（§9.1 v2.72）：从事件日志重建的一轮对话。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConversationTurn {
+    user: String,
+    /// 终答文本（空 = 该轮无终答：中止 / 失败 / 计划轮由计划文本承载见下）。
+    answer: String,
+}
+
+/// 终答文本提取（与 UI `decisionDisplayText` 同源，§9.1 v2.72）：纯回答契约输出
+/// JSON `{"intent","answer",...}`——优先取 answer，其次 intent；非 JSON 原样。
+fn decision_display_text(raw: &str) -> String {
+    let text = raw.trim();
+    if !(text.starts_with('{') && text.ends_with('}')) {
+        return text.to_string();
+    }
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
+        for key in ["answer", "intent"] {
+            if let Some(s) = value.get(key).and_then(|v| v.as_str()) {
+                if !s.trim().is_empty() {
+                    return s.trim().to_string();
+                }
+            }
+        }
+    }
+    text.to_string()
+}
+
+/// 从（`conversation_tail` 返回的）事件序列重建对话轮次（§9.1 v2.72）：
+/// `user_input` 开一轮；轮内最后一个「终答」decision（payload `tool_calls == 0`
+/// 且非 `first_edit`）为该轮回答（v1.93 resume 续跑同一回合时后者自然覆盖前值）；
+/// 无终答但有 `plan_submitted` 的轮次以计划清单承载——批准续跑时模型确实
+/// 「记得」自己提交的计划（§9.2 v1.179）。不带工具输出（需要时重新调用工具获取）。
+fn conversation_turns(events: &[Event]) -> Vec<ConversationTurn> {
+    let mut turns: Vec<ConversationTurn> = Vec::new();
+    for ev in events {
+        match ev.kind {
+            EventKind::UserInput => {
+                let text = ev
+                    .payload
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim();
+                if text.is_empty() {
+                    continue;
+                }
+                turns.push(ConversationTurn {
+                    user: text.to_string(),
+                    answer: String::new(),
+                });
+            }
+            EventKind::Decision => {
+                let Some(turn) = turns.last_mut() else {
+                    continue;
+                };
+                if ev.payload.get("first_edit").is_some() {
+                    continue;
+                }
+                // 终答 = 无工具调用的模型回合（§9.6 输出契约）
+                if ev
+                    .payload
+                    .get("tool_calls")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0)
+                    != 0
+                {
+                    continue;
+                }
+                let intent = ev
+                    .payload
+                    .get("intent")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let text = decision_display_text(intent);
+                if !text.is_empty() {
+                    turn.answer = text;
+                }
+            }
+            EventKind::PlanSubmitted => {
+                let Some(turn) = turns.last_mut() else {
+                    continue;
+                };
+                if !turn.answer.is_empty() {
+                    continue;
+                }
+                let Some(items) = ev.payload.get("items").and_then(|v| v.as_array()) else {
+                    continue;
+                };
+                let mut text = String::from("（已提交执行计划，等待批准后按计划执行）");
+                for (i, item) in items.iter().enumerate() {
+                    if let Some(item) = item.as_str() {
+                        text.push_str(&format!("\n{}. {}", i + 1, item));
+                    }
+                }
+                turn.answer = text;
+            }
+            _ => {}
+        }
+    }
+    turns
+}
+
+/// 字符上限截断（§9.1 v2.72）：超出取前 max-1 字符 + 省略号。
+fn clamp_chars(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+/// 把重建的对话轮次渲染为前置消息（§9.1 v2.72）：取最近 [`MAX_CONVERSATION_TURNS`]
+/// 轮，[`MAX_CONVERSATION_TOKENS`] 预算内自最旧整轮丢弃（单轮字符上限保证最新一轮
+/// 恒可容纳）；输出 `[user, assistant?, user, assistant?, …]` 时间序。
+fn conversation_history_messages(turns: &[ConversationTurn]) -> Vec<ChatMessage> {
+    let mut budget = MAX_CONVERSATION_TOKENS;
+    let mut picked: Vec<(String, String)> = Vec::new();
+    for turn in turns.iter().rev().take(MAX_CONVERSATION_TURNS) {
+        let user = clamp_chars(&turn.user, MAX_CONVERSATION_USER_CHARS);
+        let answer = clamp_chars(&turn.answer, MAX_CONVERSATION_ANSWER_CHARS);
+        let cost = tenon_core::context::estimate_tokens(&user)
+            + tenon_core::context::estimate_tokens(&answer);
+        if cost > budget {
+            break;
+        }
+        budget -= cost;
+        picked.push((user, answer));
+    }
+    picked.reverse();
+    let mut out = Vec::with_capacity(picked.len() * 2);
+    for (user, answer) in picked {
+        out.push(ChatMessage::user(user));
+        if !answer.is_empty() {
+            out.push(ChatMessage::assistant(answer));
+        }
+    }
+    out
+}
+
 /// 任务内请求输入 token 估算（§10.2）：正文 + tool_calls 参数，字符近似。
 fn estimate_messages_tokens(messages: &[ChatMessage]) -> u64 {
     messages
@@ -633,25 +782,28 @@ struct ContextBreakdown {
     tools: u64,
 }
 
-fn context_breakdown(messages: &[ChatMessage], l1_tokens: u64, l5_tokens: u64) -> ContextBreakdown {
+fn context_breakdown(
+    messages: &[ChatMessage],
+    l1_tokens: u64,
+    l5_tokens: u64,
+    task_user_index: Option<usize>,
+) -> ContextBreakdown {
     let mut out = ContextBreakdown {
         l1: l1_tokens,
         l5: l5_tokens,
         ..ContextBreakdown::default()
     };
-    let mut first_user_seen = false;
-    for m in messages {
+    for (i, m) in messages.iter().enumerate() {
         let est = tenon_core::context::estimate_tokens(&m.content);
         match m.role {
             Role::System => out.system += est.saturating_sub(l5_tokens),
             Role::Tool => out.tools += est,
             Role::User => {
-                if first_user_seen {
-                    out.history += est;
-                } else {
-                    // 首条 user = 任务正文 + L1 工作集（§10.1）——正文归历史
+                if task_user_index == Some(i) {
+                    // 本次任务用户消息（已含 L1 工作集）：正文归历史，L1 桶单独计
                     out.history += est.saturating_sub(l1_tokens);
-                    first_user_seen = true;
+                } else {
+                    out.history += est;
                 }
             }
             Role::Assistant => {
@@ -740,16 +892,25 @@ pub(crate) struct EarlyRoundsPrune {
     pub removed: usize,
     /// 占位消息在剪枝后消息中的下标。
     pub placeholder_index: usize,
+    /// v2.72：剪枝后任务正文（+L1 工作集）消息的新下标——携带布局下任务正文
+    /// 位于消息序列中部，区间移除后前移；编排层回写以保持 context_breakdown
+    /// 的 L1 归桶口径。
+    pub task_user_index: usize,
 }
 
 /// 摘要式剪枝（§10.2 v2.14 阶段②）：从首条 user 之后成对移除最早轮次，保留
 /// 尾部使剩余估算 ≤ `target_tokens`；边界回退到含 tool_calls 的 assistant 之前
 /// （成对移除，配对完整性不变式）；system 与首条 user（任务 + L1）恒保留；
 /// 已含 `[历史摘要]` 前导的上一轮摘要并入被移除区间（幂等——摘要消息不堆积）。
+/// **v2.72 跨任务对话携带**：`task_user_index` 是本次任务正文消息的下标（携带
+/// 布局下位于消息序列中部而非下标 1）——保留尾累计落点越过任务正文时收缩至
+/// 任务正文（任务正文即保留尾起点，本轮轮次整段保留），移除区间只含任务正文
+/// 之前的携带历史轮；无携带（`task_user_index == 1`）行为不变。
 /// 无可移除对象（历史过短 / 保留尾已达标）返回 None。
 fn summarize_prune_earlyrounds(
     messages: &[ChatMessage],
     target_tokens: u64,
+    task_user_index: usize,
 ) -> Option<EarlyRoundsPrune> {
     if messages.len() < 3 {
         return None;
@@ -780,11 +941,17 @@ fn summarize_prune_earlyrounds(
     while keep_from > 2 && messages[keep_from].role == Role::Tool {
         keep_from -= 1;
     }
-    if messages[keep_from].role == Role::Tool {
-        return None; // 极端：候选保留尾全为 tool 链——保守放弃，调用方回退省略式
+    // v2.72 携带布局：任务正文（+L1）在序列中部（下标 ≥2）——保留尾累计落点
+    // 越过任务正文时收缩至任务正文（任务正文即保留尾起点，本轮轮次整段保留）；
+    // 移除区间下界随之前移到 1（携带布局下下标 1 起全是携带历史轮，可全量移除，
+    // 上一轮摘要占位也在其内——幂等不堆积）。无携带（task_user_index == 1）时
+    // 下界仍为 2（首条 user = 任务正文恒保留），行为不变。
+    let carried = task_user_index > 1;
+    if carried {
+        keep_from = keep_from.min(task_user_index);
     }
-    // keep_from ∈ [2, len-1]；候选区间 [2, keep_from)
-    let start = 2usize;
+    // keep_from ≥ 2（循环下界）；候选区间 [start, keep_from)
+    let start = if carried { 1usize } else { 2usize };
     // 幂等：候选区间内已有的 [历史摘要] 消息一并移除（不堆积）；区间外的
     // 首条 user 若为摘要占位（上一轮压缩结果）也并入区间（换成新的任务原文？
     // 不——首条 user 恒保留，摘要占位只会在 start 位）。
@@ -798,7 +965,17 @@ fn summarize_prune_earlyrounds(
     }
     let mut out = Vec::with_capacity(messages.len() - removed_slice.len() + 1);
     out.push(messages[0].clone()); // system
-    out.push(messages[1].clone()); // 首条 user（任务 + L1）
+                                   // 占位摘要插回被移除区间原位；任务正文不单独克隆——携带布局下它就在保留尾
+                                   // [keep_from..] 内（钳制保证 keep_from ≤ task_user_index），自然跟随占位之后，
+                                   // 无重复、时序不变。
+    let task_user_in_out_index = if carried {
+        2 + (task_user_index - keep_from)
+    } else {
+        1 // 无携带：首条 user（任务 + L1）恒在 out[1]，占位在其后（原行为）
+    };
+    if !carried {
+        out.push(messages[1].clone()); // 首条 user（任务 + L1）
+    }
     let placeholder_index = out.len();
     out.push(ChatMessage::user(String::new())); // [历史摘要] 占位（调用方填）
     out.extend_from_slice(&messages[keep_from..]);
@@ -812,6 +989,7 @@ fn summarize_prune_earlyrounds(
         raw,
         removed: removed_slice.len(),
         placeholder_index,
+        task_user_index: task_user_in_out_index,
     })
 }
 
@@ -1610,6 +1788,15 @@ impl AgentSession {
             }
         }
 
+        // ---- 跨任务对话携带（§9.1 v2.72）：在本次 user_input 落库**之前**取
+        // 历史轮次，保证重建的只有先前任务（本轮任务正文只出现一次、且带 L1）。
+        let prior_conversation_events = match self.store.try_lock() {
+            Ok(mut guard) => guard
+                .conversation_tail(&self.session_id, MAX_CONVERSATION_TURNS as i64)
+                .unwrap_or_default(),
+            Err(_) => Vec::new(), // store 锁被占用：不携带（对话能力降级不阻塞任务）
+        };
+
         // ---- IDLE → SENSING ----
         self.emit(
             EventKind::UserInput,
@@ -1774,6 +1961,18 @@ impl AgentSession {
         // v2.52 ADR-22：无工具调用次数上限——任务持续运行至收尾回答 / 模型
         // 错误 / 用户停止；防跑飞保险丝由 evals runner 侧承担（§18.3）。
         let mut round: u32 = 0;
+        // v2.72 跨任务对话携带（§9.1）：把最近对话轮次前置进本次 messages，
+        // 置于 system 之后、本次任务用户消息之前——时间序：历史(user/assistant)…
+        // 本次任务正文。
+        let mut task_user_index: usize = 1; // messages 目前是 [system, current user]
+                                            // prior_conversation_events 在本轮 user_input emit **之前**加载（见上），
+                                            // 故只含先前任务——首轮任务正文不会被误当历史重复携带。
+        let inserted: Vec<ChatMessage> =
+            conversation_history_messages(&conversation_turns(&prior_conversation_events));
+        if !inserted.is_empty() {
+            messages.splice(1..1, inserted.iter().cloned());
+            task_user_index = 1 + inserted.len();
+        }
         'rounds: loop {
             self.force_state(State::Deciding).await;
             self.set_status(SessionStatus::Deciding).await;
@@ -1804,7 +2003,9 @@ impl AgentSession {
                                 > self.config.compaction_input_tokens
                         {
                             let target = self.config.compaction_input_tokens / 5 * 4; // 保留尾 ≤ 阈值 ×80%
-                            if let Some(prune) = summarize_prune_earlyrounds(&compacted, target) {
+                            if let Some(prune) =
+                                summarize_prune_earlyrounds(&compacted, target, task_user_index)
+                            {
                                 let provider_now = self.provider.read().await.clone();
                                 match self.summarize_history(&provider_now, &prune.raw).await {
                                     Ok(summary) => {
@@ -1817,6 +2018,7 @@ impl AgentSession {
                                             mode = "summary";
                                             summary_text = Some(summary);
                                             removed_rounds = prune.removed;
+                                            task_user_index = prune.task_user_index;
                                         }
                                     }
                                     Err(e) => {
@@ -1943,7 +2145,8 @@ impl AgentSession {
 
             // v2.9 运行仪表（design-v2.md §5③ / §6）：每轮发输入构成 breakdown +
             // 本次 usage（含成本）+ 会话累计——审查面仪表卡消费；估算为字符近似。
-            let breakdown = context_breakdown(&messages, l1_tokens, l5_tokens);
+            let breakdown =
+                context_breakdown(&messages, l1_tokens, l5_tokens, Some(task_user_index));
             let totals = self
                 .store
                 .lock()
@@ -3085,7 +3288,7 @@ mod context_breakdown_tests {
         ];
         let l1 = est("L1 WORKING SET");
         let l5 = est("L5 SEGMENT");
-        let b = context_breakdown(&messages, l1, l5);
+        let b = context_breakdown(&messages, l1, l5, Some(1));
         assert_eq!(b.l1, l1);
         assert_eq!(b.l5, l5);
         assert_eq!(b.system, est("SYSTEM BASE + L5 SEGMENT") - l5);
@@ -3103,7 +3306,7 @@ mod context_breakdown_tests {
     #[test]
     fn context_breakdown_saturates_system_bucket() {
         let messages = vec![ChatMessage::system("S".to_string())];
-        let b = context_breakdown(&messages, 0, 1000);
+        let b = context_breakdown(&messages, 0, 1000, Some(0));
         assert_eq!(b.system, 0);
         assert_eq!(b.history, 0);
     }
@@ -3309,7 +3512,7 @@ mod compaction_tests {
         // 6 轮小历史 + 极小 target：从首条 user 后成对移除，保留尾起点的
         // tool 结果触发向前扩展（其 assistant 一并保留），配对完整。
         let messages = base_history(6);
-        let prune = summarize_prune_earlyrounds(&messages, 1).expect("可剪枝");
+        let prune = summarize_prune_earlyrounds(&messages, 1, 1).expect("可剪枝");
         assert!(tool_call_pairs_intact(&prune.messages));
         assert_eq!(prune.messages[0].content, "sys");
         assert_eq!(prune.messages[1].content, "任务 + L1 工作集");
@@ -3320,14 +3523,14 @@ mod compaction_tests {
         assert_ne!(prune.messages[3].role, Role::Tool);
 
         // target 巨大（保留尾需覆盖全部）→ 无可移除 → None
-        assert!(summarize_prune_earlyrounds(&messages, u64::MAX / 2).is_none());
+        assert!(summarize_prune_earlyrounds(&messages, u64::MAX / 2, 1).is_none());
 
         // 历史过短（<3 条）→ None
         let short = vec![
             ChatMessage::system(String::from("s")),
             ChatMessage::user(String::from("u")),
         ];
-        assert!(summarize_prune_earlyrounds(&short, 1).is_none());
+        assert!(summarize_prune_earlyrounds(&short, 1, 1).is_none());
     }
 
     #[test]
@@ -3443,6 +3646,245 @@ mod compaction_tests {
         );
         // 空列表 = 无 MCP 工具进目录。
         assert!(build_mcp_specs(&[]).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod conversation_carry_tests {
+    //! 跨任务对话携带（§9.1 v2.72）纯函数：事件重建轮次 / 预算裁剪渲染 /
+    //! 携带布局下的摘要式剪枝（任务正文恒保留且不重复）。
+
+    use super::*;
+    use tenon_models::ToolCallReq;
+
+    fn ev(kind: EventKind, payload: serde_json::Value) -> Event {
+        Event {
+            id: 0,
+            session_id: "s".into(),
+            project_id: "p".into(),
+            seq: 0,
+            kind,
+            payload,
+            created_at: String::new(),
+        }
+    }
+
+    fn user_input(text: &str) -> Event {
+        ev(EventKind::UserInput, serde_json::json!({ "text": text }))
+    }
+
+    /// decision 事件：payload 契约 {intent, tool_calls}（§9.6）。
+    fn decision(intent: &str, tool_calls: u64) -> Event {
+        ev(
+            EventKind::Decision,
+            serde_json::json!({ "intent": intent, "tool_calls": tool_calls }),
+        )
+    }
+
+    #[test]
+    fn turns_rebuild_final_answer_priority_and_skips() {
+        // 轮1：中间 decision 带工具调用（跳过）→ 终答 JSON 取 answer；
+        // first_edit decision 跳过；终答后的 decision 覆盖（resume 续跑语义）。
+        let events = vec![
+            user_input("修 bug"),
+            decision("意图：读文件", 2),
+            ev(
+                EventKind::Decision,
+                serde_json::json!({ "first_edit": true, "tool": "apply_patch" }),
+            ),
+            decision(r#"{"intent":"改完了","answer":"已修复并测试通过"}"#, 0),
+            decision(r#"{"answer":"最终回答（resume 覆盖）"}"#, 0),
+        ];
+        let turns = conversation_turns(&events);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].user, "修 bug");
+        assert_eq!(turns[0].answer, "最终回答（resume 覆盖）");
+    }
+
+    #[test]
+    fn turns_json_fallback_intent_then_raw() {
+        // 纯 JSON 无 answer → 取 intent；非 JSON 原样。
+        let events = vec![
+            user_input("q1"),
+            decision(r#"{"intent":"口头回答"}"#, 0),
+            user_input("q2"),
+            decision("直接文本回答", 0),
+        ];
+        let turns = conversation_turns(&events);
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].answer, "口头回答");
+        assert_eq!(turns[1].answer, "直接文本回答");
+    }
+
+    #[test]
+    fn turns_plan_carries_when_no_final_answer() {
+        // 无终答但有 plan_submitted → 计划清单承载（真实时序：带工具调用的
+        // 决策 → 提交计划 → 暂停，本无 tool_calls==0 的终答 decision）。
+        let events = vec![
+            user_input("实现功能"),
+            decision("意图：设计方案", 2),
+            ev(
+                EventKind::PlanSubmitted,
+                serde_json::json!({ "items": ["步骤A", "步骤B"] }),
+            ),
+        ];
+        let turns = conversation_turns(&events);
+        assert_eq!(turns.len(), 1);
+        assert!(turns[0].answer.contains("已提交执行计划"));
+        assert!(turns[0].answer.contains("1. 步骤A"));
+        assert!(turns[0].answer.contains("2. 步骤B"));
+
+        // 批准续跑后模型给出真终答 → 覆盖计划文本（真实完成 > 计划草稿）
+        let events = vec![
+            user_input("实现功能"),
+            decision("意图：设计方案", 2),
+            ev(
+                EventKind::PlanSubmitted,
+                serde_json::json!({ "items": ["步骤A"] }),
+            ),
+            decision("已按计划完成", 0),
+        ];
+        let turns = conversation_turns(&events);
+        assert_eq!(turns[0].answer, "已按计划完成");
+    }
+
+    #[test]
+    fn turns_skip_orphan_decision_and_blank_user() {
+        // 无 user_input 前导的 decision（不会发生但防御）不 panic；
+        // 空 text 的 user_input 不开新轮。
+        let events = vec![
+            decision("孤儿回答", 0),
+            user_input("   "),
+            user_input("真问题"),
+        ];
+        let turns = conversation_turns(&events);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].user, "真问题");
+        assert!(turns[0].answer.is_empty(), "无终答留空");
+    }
+
+    #[test]
+    fn history_render_caps_turns_and_drops_oldest_by_budget() {
+        // 10 轮 → 只取最近 8 轮（时间序保持）。
+        let turns: Vec<ConversationTurn> = (0..10)
+            .map(|i| ConversationTurn {
+                user: format!("问题{i}"),
+                answer: format!("回答{i}"),
+            })
+            .collect();
+        let msgs = conversation_history_messages(&turns);
+        assert_eq!(msgs.len(), 16, "8 轮 × user+assistant");
+        assert_eq!(msgs[0].content, "问题2", "最旧轮被丢");
+        assert_eq!(msgs[15].content, "回答9", "最新轮恒在");
+
+        // 预算裁剪：单轮字符上限下最新轮 ≈2001 tokens 恒可容纳，
+        // 第二轮起超 3000 预算即整轮丢弃。
+        let big = ConversationTurn {
+            user: "问".repeat(MAX_CONVERSATION_USER_CHARS),
+            answer: "答".repeat(MAX_CONVERSATION_ANSWER_CHARS),
+        };
+        let msgs = conversation_history_messages(&[big.clone(), big.clone(), big]);
+        assert_eq!(msgs.len(), 2, "预算内只保留最新一轮");
+        assert!(msgs[0].content.starts_with('问'));
+        assert!(msgs[1].content.starts_with('答'));
+    }
+
+    #[test]
+    fn history_render_user_only_when_no_answer_and_clamps_chars() {
+        // 无终答 → 只有 user 消息；超长字符截断带省略号。
+        let msgs = conversation_history_messages(&[ConversationTurn {
+            user: "长".repeat(10),
+            answer: String::new(),
+        }]);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].role, Role::User);
+        assert_eq!(clamp_chars("abc", 5), "abc", "未超限原样");
+        let cut = clamp_chars(&"字".repeat(10), 5);
+        assert_eq!(cut.chars().count(), 5, "max-1 字符 + 省略号");
+        assert!(cut.ends_with('…'));
+    }
+
+    /// 携带布局用的 assistant(工具调用) + tool(结果) 一对。
+    fn toolround(id: &str) -> Vec<ChatMessage> {
+        let mut assistant = ChatMessage::assistant("意图：read_file");
+        assistant.tool_calls = vec![ToolCallReq {
+            id: id.to_string(),
+            name: "read_file".to_string(),
+            arguments: serde_json::json!({}),
+        }];
+        vec![assistant, ChatMessage::tool_result(id.to_string(), "out")]
+    }
+
+    /// 携带布局：[system, 历史任务1, 历史回答1, 历史任务2, 历史回答2,
+    /// 本次任务正文, 本轮工具轮, 终答]——估算：历史轮各 10 tokens（30 字符）、
+    /// 任务 10、工具轮 5、终答 2。
+    fn carried_history() -> (Vec<ChatMessage>, usize) {
+        let mut messages = vec![
+            ChatMessage::system("s"),
+            ChatMessage::user("a".repeat(30)),
+            ChatMessage::assistant("b".repeat(30)),
+            ChatMessage::user("c".repeat(30)),
+            ChatMessage::assistant("d".repeat(30)),
+            ChatMessage::user("任务正文".to_string()),
+        ];
+        messages.extend(toolround("call_0"));
+        messages.push(ChatMessage::assistant("done"));
+        (messages, 5)
+    }
+
+    #[test]
+    fn prune_carried_keeps_task_and_reports_new_index() {
+        // 极小 target：保留尾收缩至任务正文——移除全部携带历史轮，
+        // 任务正文不进移除区间、不重复，新下标 = 2（占位之后）。
+        let (messages, tui) = carried_history();
+        let prune = summarize_prune_earlyrounds(&messages, 1, tui).expect("可剪枝");
+        assert_eq!(prune.task_user_index, 2);
+        assert_eq!(prune.messages[0].content, "s");
+        assert!(prune.messages[1].content.is_empty(), "占位空串待填");
+        assert_eq!(prune.messages[2].content, "任务正文");
+        assert_eq!(
+            prune
+                .messages
+                .iter()
+                .filter(|m| m.content == "任务正文")
+                .count(),
+            1,
+            "任务正文只出现一次"
+        );
+        assert!(prune.raw.contains(&"a".repeat(30)), "历史轮原文进摘要素材");
+        assert!(prune.removed >= 4);
+        assert!(tool_call_pairs_intact(&prune.messages));
+    }
+
+    #[test]
+    fn prune_carried_partial_history_keeps_recent_turn() {
+        // target=19：保留尾从末尾累计（终答2+工具轮5+任务2+历史回答10=19
+        // ≥19）→ keep_from=4，落在任务正文之前——钳制不触发；移除 [1,4)
+        // （历史任务1/回答1/历史任务2），最近历史回答保留，
+        // 任务正文新下标 = 2 + (5-4) = 3。
+        let (messages, tui) = carried_history();
+        let prune = summarize_prune_earlyrounds(&messages, 19, tui).expect("可剪枝");
+        assert_eq!(prune.task_user_index, 3);
+        assert_eq!(
+            prune.messages[2].content,
+            "d".repeat(30),
+            "最近历史回答保留"
+        );
+        assert_eq!(prune.messages[3].content, "任务正文");
+        assert!(prune.raw.contains(&"a".repeat(30)));
+        assert!(!prune.raw.contains(&"d".repeat(30)), "保留尾不进摘要素材");
+        assert!(tool_call_pairs_intact(&prune.messages));
+    }
+
+    #[test]
+    fn prune_carried_no_removal_when_history_is_only_task() {
+        // 携带轮已被先前压缩移除（任务正文紧随 system）→ 无可移除 → None。
+        let messages = vec![
+            ChatMessage::system("s"),
+            ChatMessage::user("任务正文"),
+            ChatMessage::assistant("done"),
+        ];
+        assert!(summarize_prune_earlyrounds(&messages, 1, 1).is_none());
     }
 }
 

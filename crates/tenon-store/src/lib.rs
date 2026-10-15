@@ -1216,6 +1216,36 @@ impl Store {
             .collect())
     }
 
+    /// v2.72 跨任务对话携带（§9.1）：返回最近 `max_turns` 个回合内的对话事件
+    /// （`user_input` / `decision` / `plan_submitted`，按 seq 升序）——完整事件流
+    /// 含工具输出等大载荷，对话重建只需要这三类小载荷事件。
+    /// 走与 [`Self::events_since`] 同一线程截断水位过滤（v1.135 撤销截断语义：
+    /// 被撤销的回合不算发生过，不参与对话连续性）。
+    /// 回合边界取自第 `max_turns` 近的 user_input（不足则从头返回）。
+    pub fn conversation_tail(&mut self, session_id: &str, max_turns: i64) -> Result<Vec<Event>> {
+        let truncation = self.thread_truncation(session_id)?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, session_id, project_id, seq, type, payload, created_at
+             FROM events
+             WHERE session_id = ?1
+               AND type IN ('user_input', 'decision', 'plan_submitted')
+               AND seq >= COALESCE(
+                     (SELECT seq FROM events
+                      WHERE session_id = ?1 AND type = 'user_input'
+                      ORDER BY seq DESC LIMIT 1 OFFSET ?2), 0)
+             ORDER BY seq ASC",
+        )?;
+        let rows = stmt.query_map(params![session_id, (max_turns - 1).max(0)], row_to_event)?;
+        let all = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(all
+            .into_iter()
+            .filter(|e| match (truncation.0, truncation.1) {
+                (Some(from), Some(to)) => !(e.seq >= from && e.seq <= to),
+                _ => true,
+            })
+            .collect())
+    }
+
     /// 线程截断水位（v1.135）：None = 无截断。
     pub fn thread_truncation(&mut self, session_id: &str) -> Result<(Option<i64>, Option<i64>)> {
         let row: Option<(Option<i64>, Option<i64>)> = self
@@ -3650,5 +3680,117 @@ mod message_queue_tests {
             Some((snap[1].0, "二".to_string()))
         );
         assert_eq!(store.dequeue_message(&sid).unwrap(), None);
+    }
+
+    /// v2.72 §9.1：conversation_tail 只取对话三类事件，工具输出 / 状态事件不入。
+    #[test]
+    fn conversation_tail_keeps_only_conversation_kinds() {
+        let mut s = Store::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let sid = s.create_session(&p.id, "mock").unwrap().id;
+        s.append_event(
+            &sid,
+            EventKind::UserInput,
+            &serde_json::json!({"text": "第一轮"}),
+        )
+        .unwrap();
+        s.append_event(&sid, EventKind::Sensing, &serde_json::json!({"files": 3}))
+            .unwrap();
+        s.append_event(
+            &sid,
+            EventKind::PatchApplied,
+            &serde_json::json!({"file": "a.rs"}),
+        )
+        .unwrap();
+        s.append_event(
+            &sid,
+            EventKind::Decision,
+            &serde_json::json!({"intent": "改 a.rs", "tool_calls": 1}),
+        )
+        .unwrap();
+        s.append_event(
+            &sid,
+            EventKind::Decision,
+            &serde_json::json!({"intent": "第一轮完成", "tool_calls": 0}),
+        )
+        .unwrap();
+        s.append_event(
+            &sid,
+            EventKind::UserInput,
+            &serde_json::json!({"text": "第二轮"}),
+        )
+        .unwrap();
+        let tail = s.conversation_tail(&sid, 8).unwrap();
+        let kinds: Vec<&str> = tail.iter().map(|e| e.kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            vec!["user_input", "decision", "decision", "user_input"],
+            "只保留 user_input / decision / plan_submitted（sensing / patch_applied 被滤掉）"
+        );
+    }
+
+    /// v2.72 §9.1：max_turns 边界取第 N+1 近 user_input——只回最近 N 轮。
+    #[test]
+    fn conversation_tail_bounds_to_recent_turns() {
+        let mut s = Store::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let sid = s.create_session(&p.id, "mock").unwrap().id;
+        for i in 1..=5 {
+            s.append_event(
+                &sid,
+                EventKind::UserInput,
+                &serde_json::json!({"text": format!("任务{i}")}),
+            )
+            .unwrap();
+            s.append_event(
+                &sid,
+                EventKind::Decision,
+                &serde_json::json!({"intent": format!("答复{i}"), "tool_calls": 0}),
+            )
+            .unwrap();
+        }
+        let tail = s.conversation_tail(&sid, 2).unwrap();
+        let users: Vec<String> = tail
+            .iter()
+            .filter(|e| e.kind == EventKind::UserInput)
+            .map(|e| e.payload["text"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(users, vec!["任务4", "任务5"], "只携带最近 2 轮");
+        // 轮数不足时从头返回（不报错、不空）
+        let all = s.conversation_tail(&sid, 99).unwrap();
+        assert_eq!(
+            all.iter()
+                .filter(|e| e.kind == EventKind::UserInput)
+                .count(),
+            5
+        );
+    }
+
+    /// v2.72 §9.1：撤销截断水位内的回合不参与对话连续性（§7.3 v1.135）。
+    #[test]
+    fn conversation_tail_respects_truncation_watermark() {
+        let mut s = Store::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
+        let sid = s.create_session(&p.id, "mock").unwrap().id;
+        for i in 1..=3 {
+            s.append_event(
+                &sid,
+                EventKind::UserInput,
+                &serde_json::json!({"text": format!("任务{i}")}),
+            )
+            .unwrap();
+        }
+        // 隐藏 seq 2（第二个回合）——被撤销的对话不算发生过
+        s.set_thread_truncation(&sid, Some(2), Some(2)).unwrap();
+        let tail = s.conversation_tail(&sid, 8).unwrap();
+        let users: Vec<String> = tail
+            .iter()
+            .filter(|e| e.kind == EventKind::UserInput)
+            .map(|e| e.payload["text"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(users, vec!["任务1", "任务3"]);
     }
 }
