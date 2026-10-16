@@ -10,6 +10,9 @@ import htmlWorker from "monaco-editor/esm/vs/language/html/html.worker?worker";
 import tsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
 import { loader } from "@monaco-editor/react";
 
+// 懒加载宿主（MonacoEditorHost）求值时注册 Tenon 主题用
+export { monaco };
+
 self.MonacoEnvironment = {
   getWorker(_workerId: string, label: string): Worker {
     if (label === "json") return new jsonWorker();

@@ -151,7 +151,8 @@ describe("三档布局（§7.2 v1.110）", () => {
     // 单击文件：编辑器浮层弹出（v1.110 形态回归）。
     fireEvent.click(within(screen.getByTestId("file-tree")).getByText("a.txt"));
     await waitFor(() => expect(screen.getByTestId("editor-overlay")).toBeTruthy());
-    expect(screen.getByTestId("editor-pane")).toBeTruthy();
+    // EditorPane 为 App 层懒加载（monaco 拆分）：浮层先现，面板随 chunk 解析
+    await waitFor(() => expect(screen.getByTestId("editor-pane")).toBeTruthy());
 
     // ✕ 关闭浮层回对话；源码区仍在；✕ 收起源码区后侧栏回整栏任务流。
     fireEvent.click(screen.getByTestId("editor-overlay-close"));

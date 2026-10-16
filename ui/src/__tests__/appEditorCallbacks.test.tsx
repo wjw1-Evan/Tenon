@@ -88,8 +88,13 @@ async function bootAndOpenFile() {
     if (fileEl) fireEvent.click(fileEl);
   }, { timeout: 5000 });
 
-  // Monaco mock 可能渲染
-  const monaco = screen.queryByTestId("monaco-hello.ts");
+  // Monaco mock 渲染（EditorPane 为 App 层懒加载：monaco 拆分后异步解析）
+  let monaco: HTMLElement | null = null;
+  try {
+    monaco = await screen.findByTestId("monaco-hello.ts", {}, { timeout: 3000 });
+  } catch {
+    // 文件树交互未触发（受 UI 渲染时序影响）——调用方按 null 分支不失败
+  }
   return { monaco };
 }
 

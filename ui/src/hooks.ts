@@ -1,7 +1,7 @@
 // 全局快捷键（设计方案 §7.4 核心集；组合显示单源 lib/shortcuts.ts）。
 // v1.167 扩展：Cmd/Ctrl+Alt+N 新任务、Alt+W 关编辑器标签、Alt+J 循环底部
 // tab、Cmd/Ctrl+/ 速查表——浏览器保留 Cmd/Ctrl+T/W，故取 Alt 档。
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 export interface ShortcutHandlers {
   onPalette?: () => void; // Cmd/Ctrl+Shift+P
@@ -71,4 +71,21 @@ export function useShortcuts(handlers: ShortcutHandlers) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [handlers]);
+}
+
+/** 当前解析主题（data-theme 驱动；跟随系统档由 ThemePicker 改属性后联动）。
+ *  原 EditorPane 导出（monaco 懒加载拆分后上移 hooks，供 ReviewPane 复用）。 */
+export function useResolvedTheme(): "dark" | "light" {
+  const [theme, setTheme] = useState<"dark" | "light">(
+    () => (document.documentElement.dataset.theme === "light" ? "light" : "dark")
+  );
+  useEffect(() => {
+    const root = document.documentElement;
+    const observer = new MutationObserver(() => {
+      setTheme(root.dataset.theme === "light" ? "light" : "dark");
+    });
+    observer.observe(root, { attributes: true, attributeFilter: ["data-theme"] });
+    return () => observer.disconnect();
+  }, []);
+  return theme;
 }

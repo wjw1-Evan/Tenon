@@ -31,7 +31,13 @@ import { FileTree } from "./components/FileTree";
 import { ProjectExplorer } from "./components/ProjectExplorer";
 import { SearchPanel } from "./components/SearchPanel";
 import { FileFinder } from "./components/FileFinder";
-import { EditorPane, type EditorSelection, type EditorTab } from "./components/EditorPane";
+import type { EditorSelection, EditorTab } from "./components/EditorPane";
+// EditorPane（连同 MonacoEditorHost 的 monaco 内核，约 3.4MB）懒加载：
+// 编辑器浮层仅在打开文件时挂载（v1.110），主 chunk 不承载内核——任务流
+// 首屏与局域网配对设备（v1.157）首载显著减负；类型经 import type 静态保留。
+const EditorPane = React.lazy(() =>
+  import("./components/EditorPane").then((m) => ({ default: m.EditorPane })),
+);
 import { InlineInstruction, buildInlineTask, type InlineTarget } from "./components/InlineInstruction";
 import { AgentPanel } from "./components/AgentPanel";
 import { ReviewPane } from "./components/ReviewPane";
@@ -1673,7 +1679,17 @@ export default function App({
                 </svg>
               </button>
             </div>
-            <div className="editor-overlay-body">{editorElement}</div>
+            <div className="editor-overlay-body">
+              <Suspense
+                fallback={
+                  <div className="editor-loading" data-testid="editor-loading">
+                    {t("editor.loading")}
+                  </div>
+                }
+              >
+                {editorElement}
+              </Suspense>
+            </div>
           </div>
         )}
       </div>

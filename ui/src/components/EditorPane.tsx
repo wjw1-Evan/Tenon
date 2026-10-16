@@ -1,8 +1,10 @@
 // 编辑器（设计方案 §8.2 / §7.5）：Monaco 内核；多标签；
 // 代理写入行带「AI」角标（AI 修改高亮区，§8.6），用户编辑后解除。
-import Editor, { type Monaco } from "@monaco-editor/react";
+// Monaco 内核经本组件静态引用 MonacoEditorHost（App 层再对本组件 lazy），
+// 本模块内挂载语义保持同步——深度单测不受异步边界影响。
+import Editor from "./MonacoEditorHost";
+import type { Monaco } from "@monaco-editor/react";
 import { useEffect, useRef, useState } from "react";
-import type { editor as monacoEditor } from "monaco-editor";
 import type { Translate } from "../lib/i18n";
 import type { TenonApi } from "../lib/api";
 import {
@@ -15,7 +17,8 @@ import {
   toMonacoCompletionSuggestions,
 } from "../lib/lsp";
 import { recordCompletionPresentation } from "../lib/performance";
-import "../monacoSetup";
+import { useResolvedTheme } from "../hooks";
+import { defineTenonThemes } from "./editorThemes";
 
 type DecorationsCollection = { clear: () => void };
 type SelectionRange = {
@@ -47,74 +50,8 @@ type HighlightToken = {
   end_column: number;
 };
 
-/* Tenon 主题（§7.5 设计令牌同步）：与 styles.css 的 --surface /
-   --fg 等变量保持一致；data-theme 切换时联动换主题。 */
-const TENON_DARK = {
-  base: "vs-dark",
-  inherit: true,
-  rules: [],
-  colors: {
-    "editor.background": "#14171F",
-    "editor.foreground": "#DFE4EE",
-    "editorGutter.background": "#14171F",
-    "editorLineNumber.foreground": "#39415A",
-    "editorLineNumber.activeForeground": "#8B93A7",
-    "editor.lineHighlightBackground": "#1A1E28",
-    "editorCursor.foreground": "#5C8AF5",
-    "editor.selectionBackground": "#2C4A86",
-    "editorIndentGuide.background1": "#232938",
-    "editorWhitespace.foreground": "#2A3145",
-    "editorWidget.background": "#1D2230",
-    "editorWidget.border": "#2B3140",
-    "scrollbarSlider.background": "#8B93A71F",
-    "scrollbarSlider.hoverBackground": "#8B93A733",
-    "scrollbarSlider.activeBackground": "#8B93A747",
-  },
-} satisfies monacoEditor.IStandaloneThemeData;
-
-const TENON_LIGHT = {
-  base: "vs",
-  inherit: true,
-  rules: [],
-  colors: {
-    "editor.background": "#FFFFFF",
-    "editor.foreground": "#1C2434",
-    "editorGutter.background": "#FFFFFF",
-    "editorLineNumber.foreground": "#C2C9D6",
-    "editorLineNumber.activeForeground": "#5F6B81",
-    "editor.lineHighlightBackground": "#F2F4F8",
-    "editorCursor.foreground": "#2F6BEC",
-    "editor.selectionBackground": "#B9D2FB",
-    "editorIndentGuide.background1": "#E8EBF1",
-    "editorWhitespace.foreground": "#D8DEE9",
-    "editorWidget.background": "#FFFFFF",
-    "editorWidget.border": "#D4D9E3",
-    "scrollbarSlider.background": "#5F6B811F",
-    "scrollbarSlider.hoverBackground": "#5F6B8133",
-    "scrollbarSlider.activeBackground": "#5F6B8147",
-  },
-} satisfies monacoEditor.IStandaloneThemeData;
-
-function defineTenonThemes(monaco: Monaco) {
-  monaco.editor.defineTheme("tenon-dark", TENON_DARK);
-  monaco.editor.defineTheme("tenon-light", TENON_LIGHT);
-}
-
-/** 当前解析主题（data-theme 驱动；跟随系统档由 ThemePicker 改属性后联动）。 */
-export function useResolvedTheme(): "dark" | "light" {
-  const [theme, setTheme] = useState<"dark" | "light">(
-    () => (document.documentElement.dataset.theme === "light" ? "light" : "dark")
-  );
-  useEffect(() => {
-    const root = document.documentElement;
-    const observer = new MutationObserver(() => {
-      setTheme(root.dataset.theme === "light" ? "light" : "dark");
-    });
-    observer.observe(root, { attributes: true, attributeFilter: ["data-theme"] });
-    return () => observer.disconnect();
-  }, []);
-  return theme;
-}
+/* Tenon 主题与 defineTenonThemes：见 editorThemes.ts（MonacoEditorHost
+   求值即注册，beforeMount 复用同一定义）。 */
 
 export interface EditorTab {
   path: string;

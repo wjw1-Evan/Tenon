@@ -113,11 +113,13 @@ describe("ReviewPane 工具面板（v2.38，design.md §7.2）", () => {
     // FileTree 懒加载根目录
     await waitFor(() => expect(screen.getByText("f.ts")).toBeTruthy());
     expect(api.tree).toHaveBeenCalledWith("p1", "");
-    // 点击文件行 → 只读预览（Monaco mock data-value 承载内容）
+    // 点击文件行 → 只读预览（Monaco mock data-value 承载内容；宿主懒加载异步解析）
     fireEvent.click(screen.getByText("f.ts"));
     await waitFor(() => expect(screen.getByTestId("review-preview")).toBeTruthy());
     expect(screen.getByTestId("review-preview-open")).toBeTruthy();
-    expect(screen.getByTestId("monaco-editor").getAttribute("data-value")).toBe("const a = 1;\n");
+    await waitFor(() =>
+      expect(screen.getByTestId("monaco-editor").getAttribute("data-value")).toBe("const a = 1;\n")
+    );
     fireEvent.click(screen.getByTestId("review-preview-open"));
     expect(onOpenEditor).toHaveBeenCalledWith("f.ts");
   });

@@ -14,11 +14,13 @@
 // 源码区数据链 + Monaco 只读预览 +「编辑器打开」跳浮层）/ 概览（摘要五卡 +
 // 运行仪表整体迁入）；页记忆 tenon:toolTab。不传 toolTabs 即 v2.5 单一 diff
 // 审查面回退形态（无 tab 栏、摘要卡常驻顶部），渲染路径与 v2.36 完全一致。
-import { useEffect, useMemo, useState } from "react";
-import Editor from "@monaco-editor/react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { DiffPanel, parseDiffLines } from "./DiffPanel";
 import { FileTree } from "./FileTree";
-import { useResolvedTheme } from "./EditorPane";
+import { useResolvedTheme } from "../hooks";
+// Monaco 只读预览经懒加载宿主：审查面常驻但预览按需挂载（files 页点文件才
+// 渲染），monaco 内核不因审查面进主 chunk。
+const Editor = lazy(() => import("./MonacoEditorHost"));
 import { mapDiffLines, selectionTargetFromInfos, type DiffSelectionTarget } from "../lib/diffSelect";
 import {
   digestHasContent,
@@ -146,18 +148,26 @@ function FilePreview({
             {t("review.files_error")}
           </div>
         ) : (
-          <Editor
-            value={content ?? ""}
-            language={langOf(path)}
-            theme={theme === "light" ? "tenon-light" : "tenon-dark"}
-            options={{
-              readOnly: true,
-              minimap: { enabled: false },
-              scrollBeyondLastLine: false,
-              fontSize: 12,
-              automaticLayout: true,
-            }}
-          />
+          <Suspense
+            fallback={
+              <div className="review-files-empty" data-testid="review-preview-loading">
+                {t("editor.loading")}
+              </div>
+            }
+          >
+            <Editor
+              value={content ?? ""}
+              language={langOf(path)}
+              theme={theme === "light" ? "tenon-light" : "tenon-dark"}
+              options={{
+                readOnly: true,
+                minimap: { enabled: false },
+                scrollBeyondLastLine: false,
+                fontSize: 12,
+                automaticLayout: true,
+              }}
+            />
+          </Suspense>
         )}
       </div>
     </div>

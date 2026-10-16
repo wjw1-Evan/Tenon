@@ -100,7 +100,8 @@ describe("侧栏源码区动线（§7.2 v1.139）", () => {
     await waitFor(() => expect(screen.getByTestId("pe-source-pane")).toBeTruthy());
     fireEvent.click(within(screen.getByTestId("pe-source-pane")).getByText("a.txt"));
     await waitFor(() => expect(screen.getByTestId("editor-overlay")).toBeTruthy());
-    expect(screen.getByTestId("editor-pane")).toBeTruthy();
+    // EditorPane 为 App 层懒加载（monaco 拆分）：浮层先现，面板随 chunk 解析
+    await waitFor(() => expect(screen.getByTestId("editor-pane")).toBeTruthy());
     fireEvent.click(screen.getByTestId("editor-overlay-close"));
     await waitFor(() => expect(screen.queryByTestId("editor-overlay")).toBeNull());
     // 源码区仍在，线程原样。

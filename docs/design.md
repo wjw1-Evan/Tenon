@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | **v2.82** |
+| 版本 | **v2.83** |
 | 日期 | 2026-10-16 |
 | 状态 | 定稿，M0 已验收（附录 D 基线 v2.68 起 glm-5.3-flash **10/10=100%**，violation=0；历史最高），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
@@ -528,7 +528,7 @@ GlobalScheduler（全局并发 / 成本 / 通知）
 | 项目切换到可交互 | < 150ms（P50；runtime 已打开；冷项目按打开流程另计） |
 | 多项目稳态 | 12 个打开项目下 UI 主线程不因任一项目 watcher / LSP 输出阻塞；非活跃项目 LSP 可被资源控制器回收 |
 
-**v1.56 CI 分层**：服务层 release 门禁显式断言大文件全量打开与 10 万文件首结果预算；`merge / snapshot / sandbox-exec` 基准输出趋势基线。**v1.57 起**万行 diff 使用固定行高虚拟窗口，20k 行 DOM 物化量有 UI 门禁；**v2.51 修**：diff 正文容器内容自适应高——spacer 常规流以内容总高撑出 scrollHeight（上限 240px 内完整展示、超出滚动），禁止 spacer absolute 定位（absolute 子盒不撑父级 auto 高，容器塌缩为 padding+border=18px 单行——审查面 / 底部时间线 diff 同病，用户报「内容未显示完整」；review-gate E2E 断言容器高度回归）；**v1.66 起**已打开项目切换核心链路有 daemon P50 门禁。**v1.82 起**补全归一化 / Monaco 映射热路径有 5k 项 P50 <80ms UI 门禁；冷启动、真实 LSP 首补全与实际帧率继续由手工矩阵 / 后续 UI 基准验收。
+**v1.56 CI 分层**：服务层 release 门禁显式断言大文件全量打开与 10 万文件首结果预算；`merge / snapshot / sandbox-exec` 基准输出趋势基线。**v1.57 起**万行 diff 使用固定行高虚拟窗口，20k 行 DOM 物化量有 UI 门禁；**v2.51 修**：diff 正文容器内容自适应高——spacer 常规流以内容总高撑出 scrollHeight（上限 240px 内完整展示、超出滚动），禁止 spacer absolute 定位（absolute 子盒不撑父级 auto 高，容器塌缩为 padding+border=18px 单行——审查面 / 底部时间线 diff 同病，用户报「内容未显示完整」；review-gate E2E 断言容器高度回归）；**v1.66 起**已打开项目切换核心链路有 daemon P50 门禁。**v1.82 起**补全归一化 / Monaco 映射热路径有 5k 项 P50 <80ms UI 门禁；冷启动、真实 LSP 首补全与实际帧率继续由手工矩阵 / 后续 UI 基准验收。**v2.83 起**冷启动包体拆分——monaco-editor 内核（约 3.4MB，主包八成体积）经 `MonacoEditorHost` 懒加载边界按需分块：App 层对 EditorPane `React.lazy`（编辑器浮层本就仅在打开文件时挂载，v1.110）、审查面只读预览组件级 lazy（files 页点文件才渲染）；宿主模块求值先于任何 Editor 挂载（`loader.config` 先行，无 CDN 回退竞态）并即注册 tenon 双主题（预览先行于编辑器浮层挂载也有正确主题）；monaco 语言包与 worker 本就按需分块不变。主 chunk 3.82MB→483KB（gzip 1002→145KB），E2E 冷启动 P50 494.7ms→109.8ms——局域网配对设备（v1.157）与 `pnpm web` 网络伺服首载同比受益；任务流首屏（本产品第一界面）不再下载编辑器内核。
 
 ---
 
