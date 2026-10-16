@@ -106,6 +106,11 @@ interface Props {
   onWorkspaceApplied?: (paths: string[]) => Promise<void> | void;
   /** 命令面板撤销/重做入口（§8.2 v1.75）：挂载绑定 active editor，卸载解绑。 */
   bindEditorApi?: (api: { undo: () => void; redo: () => void } | null) => void;
+  /** Cmd/Ctrl+I 行内指令转发（§7.4 / §8.5）：monaco 内核对同 chord 有内部
+   *  键位并截停冒泡，window 全局监听收不到——而焦点在编辑器恰是行内指令
+   *  主战场（选中代码就地改写），故编辑器内显式接管转发；App 层全局监听
+   *  仍兜底编辑器外场景。仅活动编辑面注册（分屏不承载该入口）。 */
+  onRequestInline?: () => void;
 }
 
 export function EditorPane({
@@ -132,6 +137,7 @@ export function EditorPane({
   onReadFlushFile,
   onWorkspaceApplied,
   bindEditorApi,
+  onRequestInline,
 }: Props) {
   const editorRef = useRef<StandaloneEditor | null>(null);
   // bindEditorApi 经 ref 透传：卸载解绑用最新回调，不进 effect 依赖。
@@ -601,6 +607,19 @@ export function EditorPane({
             onMount={(editor, monacoInstance) => {
               editorRef.current = editor;
               registerLanguageProviders(monacoInstance);
+              // Cmd/Ctrl+I 行内指令（§7.4 / §8.5）：monaco 内部键位同 chord
+              // 截停冒泡，window 全局监听收不到——编辑器内显式接管转发。
+              // 测试环境 monaco 实例 / 编辑器均为空 stub，守卫跳过。
+              if (
+                typeof editor.addCommand === "function" &&
+                monacoInstance.KeyMod &&
+                monacoInstance.KeyCode
+              ) {
+                editor.addCommand(
+                  monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.KeyI,
+                  () => onRequestInline?.()
+                );
+              }
               // 命令面板撤销/重做（§8.2 v1.75）：trigger active editor，不依赖焦点。
               bindEditorApi?.({
                 undo: () => editor.trigger("palette", "undo", null),
