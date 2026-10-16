@@ -314,3 +314,4 @@
 | v2.81 | task_output 输出完整性——进程退出后等两路读取线程排空（≤500ms 宽限）再取快照（§9.2——CI 实测 stderr 尾行缺失；dev server 类后台任务尤甚） |
 | v2.82 | Agent 语义查询接通——lsp_query 补模型面 schema + 输出归一为「路径:行:列」可操作形态（§9.2：共享 LSP 宿主自 M0 起对模型空接；含内置工具 schema 完整性守卫） |
 | v2.83 | 冷启动包体拆分——monaco 内核经 MonacoEditorHost 懒加载边界按需分块（§8.7：主 chunk 3.82MB→483KB、E2E 冷启动 P50 494.7ms→109.8ms；App 层 EditorPane lazy + 审查面预览组件级 lazy，宿主求值先于 Editor 挂载无 CDN 竞态、即注册 tenon 双主题） |
+| v2.84 | 回滚双粒度接通——按事件撤销 revert 自设计定稿起零生产调用的空接修复（§7.3/§10.3：checkpoint 增记事件后树 tree_after 作三方合并基 + revert 默认粒度接线 + granularity 显式化，用户手改保护从承诺变行为） |

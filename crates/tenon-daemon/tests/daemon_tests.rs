@@ -2283,10 +2283,11 @@ async fn lsp_workspace_edit_applies_atomically_with_checkpoint_and_dirty_guard()
     );
     let checkpoint_id = applied["checkpoint_id"].as_str().unwrap().to_string();
 
-    // checkpoint 可通过既有 rollback 语义恢复到 LSP 写前 tree。
+    // checkpoint 可通过既有 rollback 语义恢复到 LSP 写前 tree（restore 粒度＝
+    // 树级覆盖；v2.84 起请求体 granularity 显式化，未知值 400）
     let rolled: serde_json::Value = client
         .post(format!("{url}/checkpoint/{checkpoint_id}/rollback"))
-        .json(&serde_json::json!({"granularity": "checkpoint"}))
+        .json(&serde_json::json!({"granularity": "restore"}))
         .send()
         .await
         .unwrap()
@@ -2294,10 +2295,20 @@ async fn lsp_workspace_edit_applies_atomically_with_checkpoint_and_dirty_guard()
         .await
         .unwrap();
     assert_eq!(rolled["rolled_back"][0], "a.ts");
+    assert_eq!(rolled["granularity"], "restore");
     assert_eq!(
         std::fs::read_to_string(project.join("a.ts")).unwrap(),
         "const value = old;\nexport { value };\n"
     );
+
+    // v2.84：未知粒度拒绝（此前 serde 静默丢弃、前端发的粒度从未生效）
+    let bad = client
+        .post(format!("{url}/checkpoint/{checkpoint_id}/rollback"))
+        .json(&serde_json::json!({"granularity": "checkpoint"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), 400);
 
     // 用户未保存缓冲不被 LSP server 结果静默覆盖。
     client

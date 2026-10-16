@@ -68,7 +68,7 @@ async fn crash_mid_executing_recovers_to_last_snapshot() {
             .unwrap();
         // 写前快照（同事务第一步）
         let pre_tree = snapshots.snapshot().unwrap();
-        st.insert_checkpoint(&s2.id, &pre_tree, &["code.txt".to_string()], None)
+        st.insert_checkpoint(&s2.id, &pre_tree, &["code.txt".to_string()], None, None)
             .unwrap();
         (s2.id, pre_tree)
     };

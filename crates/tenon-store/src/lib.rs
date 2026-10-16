@@ -288,6 +288,9 @@ pub struct Checkpoint {
     /// 关联事件 seq（可空：任务开始前快照）
     pub event_seq: Option<i64>,
     pub created_at: String,
+    /// 事件后快照树（v2.84 §10.3 按事件撤销的三方合并基；可空：写前 / 终点快照、
+    /// 旧版行——NULL 时 revert 对该步文件退化 restore 语义）
+    pub tree_after: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -387,7 +390,7 @@ pub struct Plugin {
     pub installed_at: String,
 }
 
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 12;
 
 const DDL: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -448,7 +451,8 @@ CREATE TABLE IF NOT EXISTS checkpoints (
     tree TEXT NOT NULL,
     files TEXT NOT NULL DEFAULT '[]',
     event_seq INTEGER,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    tree_after TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_checkpoints_session ON checkpoints(session_id, created_at);
 
@@ -787,6 +791,11 @@ impl Store {
                         "ALTER TABLE sessions ADD COLUMN truncated_to_seq INTEGER",
                         [],
                     )?;
+                }
+                // v11 → v12：checkpoint 记录事件后快照树（v2.84 §10.3 按事件撤销的
+                // 三方合并基；旧行 NULL → revert 对该文件退化 restore 语义）。
+                if !Self::column_exists(&conn, "checkpoints", "tree_after")? {
+                    conn.execute("ALTER TABLE checkpoints ADD COLUMN tree_after TEXT", [])?;
                 }
                 conn.execute("UPDATE schema_version SET version = ?1", [SCHEMA_VERSION])?;
             }
@@ -1612,6 +1621,7 @@ impl Store {
         tree: &str,
         files: &[String],
         event_seq: Option<i64>,
+        tree_after: Option<&str>,
     ) -> Result<Checkpoint> {
         let cp = Checkpoint {
             id: Uuid::now_v7().to_string(),
@@ -1620,17 +1630,19 @@ impl Store {
             files: files.to_vec(),
             event_seq,
             created_at: Self::now(),
+            tree_after: tree_after.map(String::from),
         };
         self.conn.execute(
-            "INSERT INTO checkpoints (id, session_id, tree, files, event_seq, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO checkpoints (id, session_id, tree, files, event_seq, created_at, tree_after)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 cp.id,
                 cp.session_id,
                 cp.tree,
                 serde_json::to_string(&cp.files)?,
                 cp.event_seq,
-                cp.created_at
+                cp.created_at,
+                cp.tree_after
             ],
         )?;
         Ok(cp)
@@ -1638,7 +1650,7 @@ impl Store {
 
     pub fn checkpoint(&mut self, id: &str) -> Result<Option<Checkpoint>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, session_id, tree, files, event_seq, created_at
+            "SELECT id, session_id, tree, files, event_seq, created_at, tree_after
              FROM checkpoints WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map([id], row_to_checkpoint)?;
@@ -1648,7 +1660,7 @@ impl Store {
     /// 时间轴（旧 → 新）。
     pub fn checkpoints(&mut self, session_id: &str) -> Result<Vec<Checkpoint>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, session_id, tree, files, event_seq, created_at
+            "SELECT id, session_id, tree, files, event_seq, created_at, tree_after
              FROM checkpoints WHERE session_id = ?1 ORDER BY created_at ASC",
         )?;
         let rows = stmt.query_map([session_id], row_to_checkpoint)?;
@@ -2330,6 +2342,7 @@ fn row_to_checkpoint(r: &rusqlite::Row<'_>) -> rusqlite::Result<Checkpoint> {
         files: serde_json::from_str(&r.get::<_, String>(3)?).unwrap_or_default(),
         event_seq: r.get(4)?,
         created_at: r.get(5)?,
+        tree_after: r.get(6)?,
     })
 }
 
@@ -2708,7 +2721,7 @@ mod tests {
             .append_event(&sess.id, EventKind::Checkpoint, &json!({}))
             .unwrap();
         let cp = s
-            .insert_checkpoint(&sess.id, "abc123", &["a.rs".into()], Some(e.seq))
+            .insert_checkpoint(&sess.id, "abc123", &["a.rs".into()], Some(e.seq), None)
             .unwrap();
         let cps = s.checkpoints(&sess.id).unwrap();
         assert_eq!(cps.len(), 1);
@@ -3049,13 +3062,85 @@ mod managed_worktree_tests {
         let dir = tempfile::tempdir().unwrap();
         let p = s.upsert_project(dir.path().to_str().unwrap()).unwrap();
         let sid = s.create_session(&p.id, "mock").unwrap().id;
-        s.insert_checkpoint(&sid, "tree-abc", &["a.ts".into()], None)
+        s.insert_checkpoint(&sid, "tree-abc", &["a.ts".into()], None, None)
             .unwrap();
+        // v2.84：事件后树（tree_after）随 checkpoint 持久化（按事件撤销三方合并基）
+        s.insert_checkpoint(
+            &sid,
+            "tree-pre",
+            &["b.ts".into()],
+            Some(7),
+            Some("tree-post"),
+        )
+        .unwrap();
         let cps = s.checkpoints(&sid).unwrap();
-        assert_eq!(cps.len(), 1);
+        assert_eq!(cps.len(), 2);
         assert_eq!(cps[0].tree, "tree-abc");
-        let cp = s.checkpoint(&cps[0].id).unwrap().unwrap();
-        assert_eq!(cp.tree, "tree-abc");
+        assert_eq!(cps[0].tree_after, None);
+        assert_eq!(cps[1].tree, "tree-pre");
+        assert_eq!(cps[1].event_seq, Some(7));
+        assert_eq!(cps[1].tree_after.as_deref(), Some("tree-post"));
+        let cp = s.checkpoint(&cps[1].id).unwrap().unwrap();
+        assert_eq!(cp.tree, "tree-pre");
+        assert_eq!(cp.tree_after.as_deref(), Some("tree-post"));
+    }
+
+    // v2.84：v11 旧库（无 tree_after 列）迁移后旧行 NULL、新列可写——按事件撤销
+    // 对旧 checkpoint 退化 restore 语义（revert_from_event 的合并基回退路径）。
+    #[test]
+    fn migration_v11_checkpoints_gain_tree_after() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("v11.db");
+        {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.execute_batch(
+                r#"
+                CREATE TABLE schema_version (version INTEGER NOT NULL);
+                INSERT INTO schema_version VALUES (11);
+                CREATE TABLE projects (
+                  id TEXT PRIMARY KEY, path TEXT NOT NULL, is_git INTEGER NOT NULL DEFAULT 0,
+                  languages TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL
+                );
+                CREATE TABLE sessions (
+                  id TEXT PRIMARY KEY, project_id TEXT NOT NULL, provider TEXT NOT NULL,
+                  status TEXT NOT NULL, created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                );
+                CREATE TABLE checkpoints (
+                  id TEXT PRIMARY KEY, session_id TEXT NOT NULL, tree TEXT NOT NULL,
+                  files TEXT NOT NULL DEFAULT '[]', event_seq INTEGER, created_at TEXT NOT NULL
+                );
+                INSERT INTO projects VALUES ('p1', '/tmp/p1', 0, '[]', '2026-01-01');
+                INSERT INTO sessions VALUES ('s1', 'p1', 'mock', 'idle', '2026-01-01', '2026-01-01');
+                INSERT INTO checkpoints VALUES ('cp-old', 's1', 'tree-old', '["a.ts"]', 3, '2026-01-01');
+                "#,
+            )
+            .unwrap();
+        }
+        let mut store = Store::open(&db).unwrap();
+        assert_eq!(
+            store
+                .connection_for_tests()
+                .query_row("SELECT version FROM schema_version", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
+        let cps = store.checkpoints("s1").unwrap();
+        assert_eq!(cps.len(), 1);
+        assert_eq!(cps[0].tree, "tree-old");
+        assert_eq!(cps[0].tree_after, None, "旧行 tree_after 为 NULL");
+        let inserted = store
+            .insert_checkpoint(
+                "s1",
+                "tree-new",
+                &["b.ts".into()],
+                Some(4),
+                Some("tree-new-post"),
+            )
+            .unwrap();
+        let cp = store.checkpoint(&inserted.id).unwrap().unwrap();
+        assert_eq!(cp.tree_after.as_deref(), Some("tree-new-post"));
     }
 
     #[test]

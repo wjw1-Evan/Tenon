@@ -328,6 +328,7 @@
   "thread.undo": "撤销",
   "thread.undo_confirm": "撤销这条消息产生的全部改动？可稍后在时间轴撤销本次回滚。",
   "thread.undo_failed": "撤销失败：未找到对应快照",
+  "thread.rollback_conflict": "回滚完成，但 {n} 个文件因含你的手改而冲突保留原样：{files}",
   "thread.copy": "复制",
   "thread.code_copy": "复制代码",
   "thread.view_image": "查看图片",

@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | **v2.83** |
+| 版本 | **v2.84** |
 | 日期 | 2026-10-16 |
 | 状态 | 定稿，M0 已验收（附录 D 基线 v2.68 起 glm-5.3-flash **10/10=100%**，violation=0；历史最高），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
@@ -388,6 +388,8 @@ GlobalScheduler（全局并发 / 成本 / 通知）
 
 **回滚**：两种粒度——① **按事件撤销**（默认）：基于事件日志与各步记录的改动文件集（§10.3），只撤销选定的 AI 补丁序列（快照中不存在的 AI 新建文件一并删除），用户同期手改与未保存缓冲走三方合并保留；② **checkpoint 整体恢复**（高级）：时间轴选快照 → 预览将丢弃的改动（明确警示包含用户手改）→ 确认 → shadow 库整体恢复。两种粒度的差异在预览中逐文件展示（§10.3）。**回滚本身可撤销（unrevert）**：每次回滚前自动追加快照，时间轴一键撤销最近一次回滚（opencode 同款双向语义）。
 
+> **v2.84 接线补记（回滚双粒度空接修复）**：①「按事件撤销」自设计定稿起即只有 `tenon-snapshot::revert_files` 原语（带测试），无任何生产调用——全部回滚路径（消息级撤销 / control rollback / `POST /checkpoint/:id/rollback`）都走 restore 整体覆盖，「用户同期手改三方合并保留」承诺空接；且前端一直发 `granularity: "revert"`，daemon 请求体不解析该字段被 serde 静默丢弃。本版接通：每步 checkpoint 增记**事件后快照树 `tree_after`**（三方合并基——缺它则 revert 对已改文件退化为直接覆盖；schema v12 迁移，旧行 NULL 时该文件退化 restore 语义）；revert 撤销目标事件（含）起全部事件级 checkpoint 涉及的文件并集，逐文件以 span 内最新事件后树作合并基三方合并（含编辑器 LSP apply 的负 seq checkpoint）；目标无事件 seq（写前 / 终点 checkpoint）退化 restore 并如实上报实际粒度；AI 新建文件若已被用户手改（工作区 ≠ 事件后快照）→ 冲突保留原样待处置，不静默删除用户内容。API：`granularity` 缺省 `revert` / 可选 `restore`，未知值 400；响应补 `granularity`（实际执行粒度）与 `report`（逐文件结局）字段，`rolled_back` 保持兼容；UI 对冲突文件弹 warning toast 明示（toast 增 warning 级：留驻手关，琥珀左缘），不静默部分回滚。
+
 ### 7.4 快捷键（核心集）
 
 | 键 | 动作 |
@@ -751,9 +753,9 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 - **对话节点与独立 shadow git 快照库**：对话节点是事件日志中的一个可回溯步骤；B 级写 / 命令前创建节点，UI 用该节点呈现 Checkpoint 时间轴。daemon 为每个项目 × worktree 维护一个独立的 shadow git 仓库（`~/.tenon/snapshots/<project-id>/<worktree-hash>/`），与用户仓库完全隔离——不向 `.git` 写任何 refs / objects / index，不触发用户仓库的 hooks 与 gc。把快照状态内嵌用户 `.git` 已有用户反弹实证（sst/opencode#10861，早期 `.git/opencode` 方案），独立库是其修正后的形态；
 - **统一单路径**：git 与非 git 项目同用 shadow git 快照（替代原「shadow ref + CoW」双轨，ADR-7 修订）。git 项目享受**种子加速**——shadow 库 `objects/info/alternates` 指向用户仓库对象库（含其 alternates 链）并复制其 index，已哈希对象直接复用，巨型仓库（chromium 级）首次快照从分钟级降到近零（**v2.76 修正**：对象库须经 `commondir` 解析——linked worktree 的私有 git dir 无 `objects`（对象在公共库），解析错误则 alternates 静默不写、复制来的 index 引用不可达对象，首快照 `write-tree` 报 `invalid object`——受管 worktree / 并行子代理首快照曾靠 racy-git 重哈希时序碰巧通过，Linux CI 实录 paused「快照库不可用」）；非 git 项目无种子，首次全量 add，成本在打开项目时明示；
 - **快照点 = tree oid**：增量 add（`diff-files` 变更 + `ls-files --others` 未跟踪）后 `git write-tree`，返回 tree oid 作为快照点——无 ref 链、无 commit，轻量且天然去重；尊重用户仓库 `.gitignore`（`check-ignore --no-index` 动态判定，新增忽略项自动从快照索引移除）；未跟踪大文件（默认 >2MB，可配置）排除；大仓库调优（untrackedCache / manyFiles / index.version=4，参考 opencode）；每个 shadow 库一把互斥锁，快照与回滚串行；
-- **快照时机（不变式的落地，较 opencode 的 model-step 级更密）**：任务开始前、每个 B 级补丁 / 写盘命令前（与写入同事务：先快照后写入）、每轮 FIXING 前——保证 EXECUTING 中崩溃回滚不丢半步；git 对象级去重使增量成本可接受；每次写入随事件记录**该步快照点 + 改动文件集**（patch），支撑「按事件撤销」；
+- **快照时机（不变式的落地，较 opencode 的 model-step 级更密）**：任务开始前、每个 B 级补丁 / 写盘命令前（与写入同事务：先快照后写入）、每轮 FIXING 前——保证 EXECUTING 中崩溃回滚不丢半步；git 对象级去重使增量成本可接受；每次写入随事件记录**该步快照点 + 改动文件集**（patch），支撑「按事件撤销」（**v2.84**：事件级 checkpoint 另记**事件后快照树 `tree_after`**——revert 三方合并基，schema v12）；
 - **回滚双原语**（对应 §7.3 两粒度）：
-  1. **按事件撤销 revert**（默认）：逐文件 `checkout <快照> -- <file>` 恢复到目标事件前状态；快照中不存在该文件 → 删除（AI 新建文件随撤销移除）；目标事件之外的用户手改文件不受触碰；同文件用户手改走三方合并保留（§8.6，强于 opencode 直接覆盖）；
+  1. **按事件撤销 revert**（默认）：逐文件 `checkout <快照> -- <file>` 恢复到目标事件前状态；快照中不存在该文件 → 删除（AI 新建文件随撤销移除；**v2.84：已被用户手改的 AI 新建文件 → 冲突保留原样待处置**）；目标事件之外的用户手改文件不受触碰；同文件用户手改走三方合并保留（§8.6，强于 opencode 直接覆盖）；**v2.84 接线**：每步 checkpoint 增记事件后快照树 `tree_after` 作三方合并基（旧行 NULL 退化 restore），agent `rollback_to_checkpoint` 双粒度接通（此前 revert 原语零生产调用，全路径只走 restore）；
   2. **整体恢复 restore**（高级）：`read-tree` + `checkout-index -a -f` 回到快照全量状态（含用户手改，预览警示）；
 - **撤销回滚（unrevert）**：每次回滚前自动追加快照（记录回滚前状态），时间轴支持一键撤销最近一次回滚——回滚是双向操作；
 - **保留与清理**（v1.93 接线）：shadow 库按 `checkpoint.keep_days`（默认 7 天）周期 `git gc --prune`（daemon 周期任务，默认每小时；项目 runtime 回收时顺带执行）——仅影响「checkpoint 整体恢复」的可达快照对象；checkpoint 记录与事件日志不受此限（会话归档策略见 §14.2）；`keep_last` / `checkpoint.enabled` 字段已删（前者无独立机制，后者可静默关闭快照、破坏回滚安全故事）；
@@ -1045,7 +1047,7 @@ signature: "<sig>"
 | DELETE | `/session/:id` | 删除会话（v1.103）：body `confirm:true` 必带，事务级联删事件 / 工具调用 / checkpoint 记录 / 用量 / 会话行；运行中或 runtime 存活 409，受管 worktree 未收尾 409；shadow 快照不随删 |
 | GET | `/session/:id/trace` | Trace 查询 |
 | GET | `/session/:id/checkpoints` | checkpoint 时间轴（事件列表 + 快照点） |
-| POST | `/checkpoint/:id/rollback` | 回滚（checkpoint 级 restore / 按事件 revert，§7.3） |
+| POST | `/checkpoint/:id/rollback` | 回滚（checkpoint 级 restore / 按事件 revert，§7.3；**v2.84**：body `granularity` 缺省 `revert` / 可选 `restore`、未知值 400——此前被 serde 静默丢弃；响应 `rolled_back` 兼容 + `granularity` 实际执行粒度 + `report` 逐文件结局） |
 
 **编辑器与文件**（UI 为纯 React，文件与语言智能全在此 API 之上）：
 

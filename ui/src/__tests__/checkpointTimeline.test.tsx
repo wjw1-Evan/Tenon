@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CheckpointTimeline } from "../components/CheckpointTimeline";
 import type { TenonApi } from "../lib/api";
+import { getToasts, __resetToastsForTest } from "../lib/toast";
 
 const checkpointsMock = vi.fn();
 const rollbackMock = vi.fn();
@@ -16,12 +17,14 @@ function api() {
   } as unknown as TenonApi;
 }
 
-const t = (key: string) => key;
+const t = (key: string) =>
+  key === "thread.rollback_conflict" ? "回滚冲突 {n}：{files}" : key;
 
 beforeEach(() => {
   checkpointsMock.mockReset();
   rollbackMock.mockReset();
   controlMock.mockReset();
+  __resetToastsForTest();
 });
 
 afterEach(cleanup);
@@ -58,6 +61,27 @@ describe("CheckpointTimeline", () => {
     await waitFor(() => expect(screen.getAllByRole("button", { name: "timeline.rollback" }).length).toBe(2));
     fireEvent.click(screen.getAllByRole("button", { name: "timeline.rollback" })[0]);
     await waitFor(() => expect(rollbackMock).toHaveBeenCalledWith("cp-2"));
+  });
+
+  // v2.84：按事件撤销冲突（用户手改保留原样）→ warning toast 明示，不静默
+  it("rollback conflict shows warning toast", async () => {
+    checkpointsMock.mockResolvedValue({ checkpoints: cps });
+    rollbackMock.mockResolvedValue({
+      rolled_back: ["a.ts"],
+      granularity: "revert",
+      report: [
+        { file: "a.ts", outcome: "conflict" },
+        { file: "b.ts", outcome: "deleted" },
+      ],
+    });
+    render(<CheckpointTimeline api={api()} t={t} sessionId="s1" />);
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "timeline.rollback" }).length).toBe(2));
+    fireEvent.click(screen.getAllByRole("button", { name: "timeline.rollback" })[0]);
+    await waitFor(() => {
+      const warning = getToasts().find((item) => item.kind === "warning");
+      expect(warning).toBeTruthy();
+      expect(warning!.message).toBe("回滚冲突 1：a.ts");
+    });
   });
 
   it("unrevert button calls session control", async () => {

@@ -1,12 +1,12 @@
 // 全局通知 store（§7.5 v1.167）：应用内右下角 Toast 的模块级发布订阅。
 // 无 context / 状态库依赖——任意模块 import 即可发通知，ToastHost 订阅渲染。
-// 行为契约：success/info 3s 自动消退；error 留驻、✕ 手关（不接 Esc——Esc 语义
-// 归暂停代理，关通知不得误停任务）；同文案 error 5s 去重（自动保存高频失败
-// 不刷屏）；最多堆叠 3 条、超出挤掉最旧非 error 条目。
+// 行为契约：success/info 3s 自动消退；warning / error 留驻、✕ 手关（不接
+// Esc——Esc 语义归暂停代理，关通知不得误停任务）；同文案 error 5s 去重
+//（自动保存高频失败不刷屏）；最多堆叠 3 条、超出挤掉最旧非 error 条目。
 
 import { useSyncExternalStore } from "react";
 
-export type ToastKind = "success" | "info" | "error";
+export type ToastKind = "success" | "info" | "warning" | "error";
 
 export interface ToastItem {
   id: number;
@@ -57,15 +57,17 @@ function push(kind: ToastKind, message: string): void {
   const item: ToastItem = { id: nextId++, kind, message: trimmed };
   let next = [...items];
   if (next.length >= MAX_STACK) {
-    // 堆叠上限：优先挤掉最旧非 error；全为 error 才挤最旧 error
-    const victim = next.findIndex((toastItem) => toastItem.kind !== "error");
+    // 堆叠上限：优先挤掉最旧自动消退条目；全为留驻条目才挤最旧
+    const victim = next.findIndex(
+      (toastItem) => toastItem.kind !== "error" && toastItem.kind !== "warning"
+    );
     if (victim === -1) next = next.slice(next.length - MAX_STACK + 1);
     else next.splice(victim, 1);
   }
   next.push(item);
   items = next;
   emit();
-  if (kind !== "error") {
+  if (kind !== "error" && kind !== "warning") {
     window.setTimeout(() => dismiss(item.id), AUTO_DISMISS_MS);
   }
 }
@@ -73,6 +75,8 @@ function push(kind: ToastKind, message: string): void {
 export const toast = {
   success: (message: string) => push("success", message),
   info: (message: string) => push("info", message),
+  // v2.84：warning = 部分成功的处置提示（如回滚冲突文件保持原样），留驻待手关
+  warning: (message: string) => push("warning", message),
   error: (message: string) => push("error", message),
 };
 

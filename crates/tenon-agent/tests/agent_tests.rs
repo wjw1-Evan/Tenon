@@ -3,7 +3,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tenon_agent::session::{AgentConfig, ControlCommand, ProjectWriteLock, TaskOutcome};
+use tenon_agent::session::{
+    AgentConfig, ControlCommand, ProjectWriteLock, RollbackGranularity, TaskOutcome,
+};
 use tenon_agent::AgentSession;
 use tenon_core::context::ProjectRules;
 use tenon_fs::l4;
@@ -991,8 +993,12 @@ async fn rollback_last_restores_pre_task_snapshot() {
     session.run_task("创建文件").await;
     assert!(dir.path().join("new.txt").exists());
 
+    // v2.84：默认粒度 = 按事件撤销（§7.3 ①）；AI 新建文件随撤销移除
     let rolled = session.rollback_last().await.unwrap();
-    assert_eq!(rolled, vec!["new.txt".to_string()]);
+    assert_eq!(rolled.granularity, "revert");
+    assert_eq!(rolled.files, vec!["new.txt".to_string()]);
+    let report = rolled.report.unwrap();
+    assert_eq!(report[0].outcome, "deleted");
     assert!(!dir.path().join("new.txt").exists(), "回滚删除 AI 新建文件");
 
     // unrevert 撤销回滚
@@ -1003,7 +1009,8 @@ async fn rollback_last_restores_pre_task_snapshot() {
     );
 }
 
-// v1.111 消息级撤销：按指定 checkpoint 恢复到该步写入前状态（后续步骤改动一并消失）。
+// v1.111 消息级撤销（restore 粒度）：按指定 checkpoint 恢复到该步写入前状态
+//（后续步骤改动一并消失）。
 #[tokio::test]
 async fn rollback_to_checkpoint_restores_target_step_tree() {
     let (dir, session, store, _p) = setup(vec![
@@ -1029,9 +1036,19 @@ async fn rollback_to_checkpoint_restores_target_step_tree() {
     cps.sort_by_key(|c| c.event_seq.unwrap());
     let first = cps.first().unwrap().clone();
     assert_eq!(first.files, vec!["new.txt".to_string()]);
+    // v2.84：每步 checkpoint 持久化事件后树（按事件撤销三方合并基）
+    assert!(
+        first.tree_after.is_some(),
+        "事件级 checkpoint 应记录 tree_after"
+    );
 
-    let rolled = session.rollback_to_checkpoint(&first).await.unwrap();
-    assert_eq!(rolled, vec!["new.txt".to_string()]);
+    let rolled = session
+        .rollback_to_checkpoint(&first, RollbackGranularity::Restore)
+        .await
+        .unwrap();
+    assert_eq!(rolled.granularity, "restore");
+    assert!(rolled.report.is_none());
+    assert_eq!(rolled.files, vec!["new.txt".to_string()]);
     assert!(!dir.path().join("new.txt").exists());
     assert!(
         !dir.path().join("second.txt").exists(),
@@ -1041,6 +1058,131 @@ async fn rollback_to_checkpoint_restores_target_step_tree() {
     // unrevert 双向恢复
     session.unrevert().await.unwrap();
     assert!(dir.path().join("second.txt").exists());
+}
+
+// v2.84 按事件撤销接通（§7.3 粒度①默认）：AI 两步改动 + 用户在完成后对同文件
+// 手改 → revert 只剥 AI 补丁、保留手改（restore 会连同手改一并覆盖）。
+#[tokio::test]
+async fn rollback_revert_preserves_user_manual_edits() {
+    let (dir, session, store, _p) = setup(vec![
+        ScriptedReply::Tool {
+            name: "apply_patch".into(),
+            args: serde_json::json!({"file": "doc.md", "range": null, "content": "l1\nl2\nl3\n"}),
+        },
+        ScriptedReply::Text("done".into()),
+    ])
+    .await;
+    let sid = session.session_id.clone();
+    session.run_task("改文档").await;
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("doc.md")).unwrap(),
+        "l1\nl2\nl3\n"
+    );
+
+    // 用户手改（AI 完成后）：在文件尾部追加自己的笔记
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(dir.path().join("doc.md"))
+        .unwrap();
+    f.write_all(b"user note\n").unwrap();
+    drop(f);
+
+    // 目标 = 该回合首个事件级 checkpoint（AI 写前状态）
+    let mut cps = store.lock().await.checkpoints(&sid).unwrap();
+    cps.retain(|c| c.event_seq.is_some() && !c.files.is_empty());
+    cps.sort_by_key(|c| c.event_seq.unwrap());
+    let first = cps.first().unwrap().clone();
+
+    // restore（粒度②）：手改一并消失（v1.111 起的旧行为，对照）
+    session
+        .rollback_to_checkpoint(&first, RollbackGranularity::Restore)
+        .await
+        .unwrap();
+    assert!(
+        !dir.path().join("doc.md").exists(),
+        "restore 回 AI 写前：AI 新建文件整体移除（用户手改一并丢失）"
+    );
+    session.unrevert().await.unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("doc.md")).unwrap(),
+        "l1\nl2\nl3\nuser note\n",
+        "unrevert 撤销回滚：工作区含手改的原样恢复"
+    );
+
+    // revert（粒度①默认）：AI 改动撤销（AI 新建文件移除）……但用户手改过的文件
+    // 走三方合并。AI 写前文件不存在 → revert_files 语义 = AI 新建文件随撤销删除。
+    // 用户手改发生在 AI 文件之上，合并冲突保留原样待用户处置（不静默丢弃手改）。
+    let rolled = session
+        .rollback_to_checkpoint(&first, RollbackGranularity::Revert)
+        .await
+        .unwrap();
+    assert_eq!(rolled.granularity, "revert");
+    let report = rolled.report.unwrap();
+    assert_eq!(report.len(), 1);
+    assert_eq!(report[0].file, "doc.md");
+    assert_eq!(
+        report[0].outcome, "conflict",
+        "AI 新建 + 用户手改 → 冲突保留原样"
+    );
+    assert!(
+        dir.path().join("doc.md").exists(),
+        "冲突文件保持原样（含手改），绝不静默删除用户内容"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("doc.md")).unwrap(),
+        "l1\nl2\nl3\nuser note\n"
+    );
+}
+
+// v2.84 revert：AI 改既有文件 + 用户随后手改同文件（改动不重叠）→ 三方合并
+// 剥离 AI 补丁、保留手改——「用户手改保护」从承诺变行为（此前只能整体覆盖）。
+#[tokio::test]
+async fn rollback_revert_merges_user_edits_on_ai_touched_file() {
+    let (dir, session, store, _p) = setup(vec![
+        // AI：search/replace 在 c 行后追加一行（单行无尾换行 = 单行锚定）
+        ScriptedReply::Tool {
+            name: "apply_patch".into(),
+            args: serde_json::json!({
+                "file": "f.txt",
+                "search": "c",
+                "replace": "c\nai1"
+            }),
+        },
+        ScriptedReply::Text("done".into()),
+    ])
+    .await;
+    let sid = session.session_id.clone();
+    std::fs::write(dir.path().join("f.txt"), "a\nb\nc\nd\ne\n").unwrap();
+    session.run_task("追加一行").await;
+    let after_ai = std::fs::read_to_string(dir.path().join("f.txt")).unwrap();
+    assert_eq!(after_ai, "a\nb\nc\nai1\nd\ne\n", "AI 改动应落盘");
+
+    // 用户在 AI 改动之后手改：首行 a → A（与 AI 追加行不相邻，git 可干净合并）
+    std::fs::write(dir.path().join("f.txt"), "A\nb\nc\nai1\nd\ne\n").unwrap();
+
+    let mut cps = store.lock().await.checkpoints(&sid).unwrap();
+    cps.retain(|c| c.event_seq.is_some() && !c.files.is_empty());
+    cps.sort_by_key(|c| c.event_seq.unwrap());
+    let first = cps.first().unwrap().clone();
+
+    let rolled = session
+        .rollback_to_checkpoint(&first, RollbackGranularity::Revert)
+        .await
+        .unwrap();
+    assert_eq!(rolled.granularity, "revert");
+    assert_eq!(rolled.files, vec!["f.txt".to_string()]);
+    let report = rolled.report.unwrap();
+    assert_eq!(report[0].file, "f.txt");
+    assert_eq!(
+        report[0].outcome, "merged",
+        "手改与 AI 补丁不重叠 → 三方合并干净剥离"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("f.txt")).unwrap(),
+        "A\nb\nc\nd\ne\n",
+        "AI 追加行被撤销，用户首行手改保留"
+    );
 }
 
 #[tokio::test]

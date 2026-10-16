@@ -328,6 +328,7 @@
   "thread.undo": "Annuler",
   "thread.undo_confirm": "Annuler toutes les modifications issues de ce message ? Vous pourrez annuler ce retour arrière plus tard via la chronologie.",
   "thread.undo_failed": "Échec de l'annulation : instantané correspondant introuvable",
+  "thread.rollback_conflict": "Restauration effectuée, mais {n} fichier(s) sont en conflit avec vos modifications manuelles et ont été laissés intacts : {files}",
   "thread.copy": "Copier",
   "thread.code_copy": "Copier le code",
   "thread.view_image": "Voir l'image",

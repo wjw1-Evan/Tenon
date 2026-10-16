@@ -328,6 +328,7 @@
   "thread.undo": "Deshacer",
   "thread.undo_confirm": "¿Deshacer todos los cambios realizados a partir de este mensaje? Puedes revertir esta reversión más tarde desde la cronología.",
   "thread.undo_failed": "No se pudo deshacer: no se encontró la instantánea correspondiente",
+  "thread.rollback_conflict": "Reversión completada, pero {n} archivo(s) entraron en conflicto con tus ediciones manuales y se dejaron sin cambios: {files}",
   "thread.copy": "Copiar",
   "thread.code_copy": "Copiar código",
   "thread.view_image": "Ver imagen",

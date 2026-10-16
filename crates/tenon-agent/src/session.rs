@@ -4,7 +4,7 @@
 //! 转移规则由 `tenon_core::machine::StateMachine` 单测覆盖；运行态经
 //! `force_state` 对齐并保留计数（拒绝改案 ≤2、模型重试 ≤2、修复轮次）。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc as StdArc;
@@ -25,7 +25,7 @@ use tenon_models::{
     ChatMessage, ChatRequest, ChatStreamEvent, ModelProvider, PriceTable, Role, ToolSpec, Usage,
     MEMORY_MARKER, TITLE_MARKER,
 };
-use tenon_snapshot::SnapshotStore;
+use tenon_snapshot::{FileRevertOutcome, SnapshotStore};
 use tenon_store::{
     Checkpoint, Event, EventKind, Level as StoreLevel, MemoryRecord, SessionStatus, Store,
 };
@@ -2470,7 +2470,13 @@ impl AgentSession {
                             // 「先快照后写入，同事务」（§10.3）：checkpoint 行在写盘前
                             // 落库——EXECUTING 中崩溃也能取到最近恢复点
                             let mut st = self.store.lock().await;
-                            let _ = st.insert_checkpoint(&self.session_id, &t, &anticipated, None);
+                            let _ = st.insert_checkpoint(
+                                &self.session_id,
+                                &t,
+                                &anticipated,
+                                None,
+                                None,
+                            );
                             drop(st);
                             pre_tree = Some(t.clone());
                             last_pre_tree = Some(t);
@@ -2668,7 +2674,9 @@ impl AgentSession {
                         .snapshots
                         .snapshot()
                         .unwrap_or_else(|_| last_tree.clone());
-                    // 每步 checkpoint（该步快照点 + 改动文件集，§10.3）
+                    // 每步 checkpoint（该步快照点 + 改动文件集 + 事件后树，§10.3）：
+                    // tree_after 是「按事件撤销」的三方合并基（v2.84）——缺它则
+                    // revert 对已改文件退化为直接覆盖，用户手改保护失效。
                     if let Some(ev) = &ev {
                         let mut st = self.store.lock().await;
                         let _ = st.insert_checkpoint(
@@ -2676,6 +2684,7 @@ impl AgentSession {
                             &pre_tree.unwrap_or_else(|| post_tree.clone()),
                             &output.changed_files,
                             Some(ev.seq),
+                            Some(&post_tree),
                         );
                     }
                     last_tree = post_tree;
@@ -2761,10 +2770,10 @@ impl AgentSession {
             return TaskOutcome::Error(err);
         }
 
-        // 终点 checkpoint（时间轴 + 整体恢复点）
+        // 终点 checkpoint（时间轴 + 整体恢复点；无单一事件可撤销，tree_after 留空）
         {
             let mut st = self.store.lock().await;
-            let _ = st.insert_checkpoint(&self.session_id, &last_tree, &changed_files, None);
+            let _ = st.insert_checkpoint(&self.session_id, &last_tree, &changed_files, None, None);
         }
         self.emit(
             EventKind::Checkpoint,
@@ -3158,7 +3167,16 @@ impl AgentSession {
 
     /// 回滚到最近 checkpoint（§15 control rollback）：
     /// 目标 = 最近一个事件级快照（该事件写入前的状态）；unrevert 快照先行（§10.3）。
-    pub async fn rollback_last(&self) -> Result<Vec<String>, AgentError> {
+    /// 粒度默认按事件撤销（§7.3 ①）。
+    pub async fn rollback_last(&self) -> Result<RollbackOutcome, AgentError> {
+        self.rollback_last_with(RollbackGranularity::Revert).await
+    }
+
+    /// 同 [`Self::rollback_last`]，显式指定粒度。
+    pub async fn rollback_last_with(
+        &self,
+        granularity: RollbackGranularity,
+    ) -> Result<RollbackOutcome, AgentError> {
         let cps = {
             let mut st = self.store.lock().await;
             st.checkpoints(&self.session_id)
@@ -3171,33 +3189,145 @@ impl AgentSession {
             .find(|c| c.event_seq.is_some() && !c.files.is_empty())
             .cloned();
         let Some(target) = target else {
-            return Ok(vec![]);
+            return Ok(RollbackOutcome {
+                files: vec![],
+                granularity: granularity.as_str().into(),
+                report: None,
+            });
         };
-        self.rollback_to_checkpoint(&target).await
+        self.rollback_to_checkpoint(&target, granularity).await
     }
 
-    /// 回滚到指定 checkpoint（v1.111 消息级撤销 / §10.3 快照恢复）：
-    /// restore 目标快照树（= 该步写入前状态），unrevert 快照先行（§10.3）。
+    /// 回滚到指定 checkpoint（v1.111 消息级撤销 / §10.3 快照恢复），unrevert
+    /// 快照先行（§10.3）。双粒度（§7.3，v2.84 接通——v1.111 起两条路径都只走
+    /// restore，按事件撤销「用户手改保护」空接）：
+    /// - [`RollbackGranularity::Revert`]（默认）：目标事件起至最新的 AI 改动逐一
+    ///   撤销，用户同期手改走三方合并保留；
+    /// - [`RollbackGranularity::Restore`]：整体恢复目标快照树（含用户手改一并覆盖）。
     pub async fn rollback_to_checkpoint(
         &self,
         target: &Checkpoint,
-    ) -> Result<Vec<String>, AgentError> {
+        granularity: RollbackGranularity,
+    ) -> Result<RollbackOutcome, AgentError> {
         let safety = self
             .snapshots
             .snapshot()
             .map_err(|e| AgentError::Snapshot(e.to_string()))?;
-        *self.pre_rollback_tree.lock().await = Some(safety);
-        self.snapshots
-            .restore(&target.tree)
-            .map_err(|e| AgentError::Snapshot(e.to_string()))?;
+        *self.pre_rollback_tree.lock().await = Some(safety.clone());
+        // 按事件撤销的前置条件：目标绑定事件（写前 anticipated / 终点 checkpoint
+        // 无单一事件可撤销 → 退化整体恢复，粒度如实上报）
+        let outcome = match (granularity, target.event_seq) {
+            (RollbackGranularity::Revert, Some(target_seq)) => {
+                self.revert_from_event(target, target_seq, &safety).await?
+            }
+            _ => self.rollback_restore(target).await?,
+        };
         self.emit(
             EventKind::Rollback,
-            &serde_json::json!({"tree": target.tree, "files": target.files}),
+            &serde_json::json!({
+                "tree": target.tree,
+                "files": outcome.files,
+                "granularity": outcome.granularity,
+            }),
         )
         .await;
         self.force_state(State::RolledBack).await;
         self.set_status(SessionStatus::RolledBack).await;
-        Ok(target.files.clone())
+        Ok(outcome)
+    }
+
+    /// 整体恢复（§7.3 粒度② / §10.3 restore）：目标快照树全量覆盖工作区。
+    async fn rollback_restore(&self, target: &Checkpoint) -> Result<RollbackOutcome, AgentError> {
+        self.snapshots
+            .restore(&target.tree)
+            .map_err(|e| AgentError::Snapshot(e.to_string()))?;
+        Ok(RollbackOutcome {
+            files: target.files.clone(),
+            granularity: RollbackGranularity::Restore.as_str().into(),
+            report: None,
+        })
+    }
+
+    /// 按事件撤销（§7.3 粒度① / §10.3 revert）：撤销目标事件（含）之后全部 AI
+    /// 改动，用户同期手改走三方合并保留（§8.6）。
+    ///
+    /// - span = 目标事件 seq 起（含）的全部事件级 checkpoint（含编辑器 LSP apply
+    ///   的负 seq 行——回滚到该点即撤销其后全部改动，与 restore 时间穿越语义一致）；
+    /// - 受影响文件 = span 各步改动文件并集；
+    /// - 逐文件合并基 = span 内「新 → 旧」首个含该文件且记录了事件后树
+    ///   （`tree_after`）的 checkpoint——必须用事件后状态作基（工作区 = 事件后内容
+    ///   加手改，三方合并才能剥出 AI 补丁、留下手改）；旧版行无 `tree_after` 时
+    ///   回退 safety 树（该文件退化 restore 语义）。
+    async fn revert_from_event(
+        &self,
+        target: &Checkpoint,
+        target_seq: i64,
+        safety_tree: &str,
+    ) -> Result<RollbackOutcome, AgentError> {
+        let cps = {
+            let mut st = self.store.lock().await;
+            st.checkpoints(&self.session_id)
+                .map_err(|e| AgentError::Store(e.to_string()))?
+        };
+        let span: Vec<&Checkpoint> = cps
+            .iter()
+            .filter(|c| matches!(c.event_seq, Some(seq) if seq >= target_seq))
+            .collect();
+        // 受影响文件 = span 各步改动文件并集（旧 → 新保序去重）
+        let mut files: Vec<String> = Vec::new();
+        for c in &span {
+            for f in &c.files {
+                if !files.contains(f) {
+                    files.push(f.clone());
+                }
+            }
+        }
+        if files.is_empty() {
+            // 无改动记录可撤销：退化整体恢复，保证行为可预期
+            return self.rollback_restore(target).await;
+        }
+        // 逐文件合并基：span 内新 → 旧首个含该文件且 tree_after 非空的 checkpoint
+        let mut base_of: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+        for c in span.iter().rev() {
+            let Some(after) = c.tree_after.as_deref() else {
+                continue;
+            };
+            for f in &c.files {
+                base_of.entry(f.as_str()).or_insert(after);
+            }
+        }
+        // 按合并基分组调 revert_files（BTreeMap 保证遍历顺序稳定）
+        let mut grouped: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+        for f in &files {
+            let base = base_of.get(f.as_str()).copied().unwrap_or(safety_tree);
+            grouped.entry(base).or_default().push(f.clone());
+        }
+        let mut report: Vec<FileRevertEntry> = Vec::new();
+        for (base, group) in grouped {
+            let r = self
+                .snapshots
+                .revert_files(&target.tree, Some(base), &group)
+                .map_err(|e| AgentError::Snapshot(e.to_string()))?;
+            report.extend(r.per_file.into_iter().map(|(file, outcome)| {
+                FileRevertEntry {
+                    outcome: match outcome {
+                        FileRevertOutcome::Restored => "restored",
+                        FileRevertOutcome::Merged => "merged",
+                        FileRevertOutcome::Deleted => "deleted",
+                        FileRevertOutcome::Conflict => "conflict",
+                        FileRevertOutcome::Unchanged => "unchanged",
+                    }
+                    .into(),
+                    file,
+                }
+            }));
+        }
+        report.sort_by(|a, b| a.file.cmp(&b.file));
+        Ok(RollbackOutcome {
+            files,
+            granularity: RollbackGranularity::Revert.as_str().into(),
+            report: Some(report),
+        })
     }
 
     /// 撤销回滚（§10.3 unrevert）：恢复到最近回滚前状态（回滚双向语义）。
@@ -3219,6 +3349,55 @@ impl AgentSession {
     pub fn config(&self) -> &AgentConfig {
         &self.config
     }
+}
+
+/// 回滚粒度（§7.3 / §10.3 回滚双原语）：① 按事件撤销 revert（默认，AI 补丁
+/// 序列撤销、用户同期手改三方合并保留）；② checkpoint 整体恢复 restore（高级，
+/// 目标快照树全量覆盖、连同用户手改）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RollbackGranularity {
+    Revert,
+    Restore,
+}
+
+impl RollbackGranularity {
+    /// 解析 API 粒度字面量：缺省 / "revert" → 按事件撤销；"restore" → 整体恢复；
+    /// 未知值报错（调用方回 400——此前 serde 静默丢字段，v2.84 前端发的
+    /// granularity 一直没生效的根因之一）。
+    pub fn parse(value: Option<&str>) -> Result<Self, String> {
+        match value {
+            None | Some("revert") => Ok(Self::Revert),
+            Some("restore") => Ok(Self::Restore),
+            Some(other) => Err(format!("未知回滚粒度: {other}（仅 revert / restore）")),
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Revert => "revert",
+            Self::Restore => "restore",
+        }
+    }
+}
+
+/// 按事件撤销的单文件结局（[`tenon_snapshot::FileRevertOutcome`] 的可序列化形态）。
+#[derive(Debug, Clone, Serialize)]
+pub struct FileRevertEntry {
+    pub file: String,
+    /// restored / merged / deleted / conflict / unchanged
+    pub outcome: String,
+}
+
+/// 回滚结果：受影响文件 + 实际执行粒度 + revert 逐文件结局。
+#[derive(Debug, Clone, Serialize)]
+pub struct RollbackOutcome {
+    pub files: Vec<String>,
+    /// 实际执行的粒度——请求 revert 但目标无事件可撤销时退化 restore，如实上报
+    pub granularity: String,
+    /// 按事件撤销逐文件结局；restore（含退化）时为 None。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub report: Option<Vec<FileRevertEntry>>,
 }
 
 /// 模型标题常见的元文本前缀（实测 GLM 会输出 "The user says: …" /
@@ -3510,6 +3689,12 @@ mod agent_config_tests {
             Tool::SubmitPlan,
             Tool::SpawnSubagents,
             Tool::WebSearch,
+            // v2.85：browser 四工具曾漏 enumeration（schema v2.80 已备，
+            // 守卫清单漏列则该面漂移不可测）
+            Tool::BrowserOpen,
+            Tool::BrowserEval,
+            Tool::BrowserConsole,
+            Tool::BrowserClose,
             Tool::ApplyPatch,
             Tool::RunTests,
             Tool::RunBuild,

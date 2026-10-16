@@ -328,6 +328,7 @@
   "thread.undo": "Undo",
   "thread.undo_confirm": "Undo all changes made from this message? You can revert this rollback later via the timeline.",
   "thread.undo_failed": "Undo failed: matching snapshot not found",
+  "thread.rollback_conflict": "Rolled back, but {n} file(s) conflicted with your manual edits and were left untouched: {files}",
   "thread.copy": "Copy",
   "thread.code_copy": "Copy code",
   "thread.view_image": "View image",

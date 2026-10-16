@@ -30,6 +30,7 @@
 
   /* 语义 */
   --ok: #3fb960;
+  --warn: #d9a514;
   --patch-border: #d9a514;
   --patch-soft: rgba(217, 165, 20, 0.09);
   --verify-border: #9d6ff5;
@@ -79,6 +80,7 @@
   --accent-soft-strong: rgba(47, 107, 236, 0.15);
 
   --ok: #1a7f37;
+  --warn: #a67c00;
   --patch-border: #a67c00;
   --patch-soft: rgba(166, 124, 0, 0.08);
   --verify-border: #6639ba;
@@ -3392,6 +3394,7 @@ button:disabled { opacity: 0.45; cursor: default; }
 .toast-msg { flex: 1; word-break: break-word; }
 .toast-success { border-left-color: var(--ok); }
 .toast-info { border-left-color: var(--accent); }
+.toast-warning { border-left-color: var(--warn); }
 .toast-error { border-left-color: var(--error); }
 .toast-close {
   flex: none;

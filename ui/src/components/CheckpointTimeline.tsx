@@ -40,7 +40,18 @@ export function CheckpointTimeline({ api, t, sessionId }: Props) {
   async function rollback(id: string) {
     setBusy(true);
     try {
-      await api.rollbackCheckpoint(id);
+      // v2.84：按事件撤销保留用户手改——冲突文件保持原样，须明示而非静默。
+      const res = await api.rollbackCheckpoint(id);
+      const conflicts = (res.report ?? [])
+        .filter((r) => r.outcome === "conflict")
+        .map((r) => r.file);
+      if (conflicts.length > 0) {
+        toast.warning(
+          t("thread.rollback_conflict")
+            .replace("{n}", String(conflicts.length))
+            .replace("{files}", conflicts.join(", "))
+        );
+      }
     } catch (e) {
       // 失败不挂起：时间轴 1.5s 轮询带回权威状态（回滚未生效则条目仍在）；
       // 但点击无果不得无感知（v1.167 toast）

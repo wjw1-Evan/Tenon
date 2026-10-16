@@ -565,7 +565,13 @@ export class TenonApi {
   }
 
   rollbackCheckpoint(checkpointId: string, truncate = false) {
-    return this.request<{ rolled_back: string[] }>(
+    return this.request<{
+      rolled_back: string[];
+      // v2.84 回滚双粒度：实际执行粒度（revert 目标无事件 seq 时退化 restore）
+      granularity?: string;
+      // 按事件撤销逐文件结局；restore 时缺省。conflict = 含用户手改、保持原样待处置
+      report?: Array<{ file: string; outcome: string }>;
+    }>(
       `/checkpoint/${checkpointId}/rollback`,
       { method: "POST", json: { granularity: "revert", truncate } }
     );

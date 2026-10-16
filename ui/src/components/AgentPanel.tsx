@@ -817,7 +817,18 @@ export function AgentPanel({
       // v1.135 撤销三合一：①任务文本回填输入框；②文件修改随树回滚；③线程截断
       //（服务端水位过滤，气泡及其后信息消失），整流重载。v1.136：撤销即终态，
       // 重做功能移除（检查点时间轴与 API 的 unrollback 能力保留）。
-      await api.rollbackCheckpoint(cp.id, true);
+      // v2.84：按事件撤销保留用户手改——冲突文件保持原样，须明示而非静默。
+      const res = await api.rollbackCheckpoint(cp.id, true);
+      const conflicts = (res.report ?? [])
+        .filter((r) => r.outcome === "conflict")
+        .map((r) => r.file);
+      if (conflicts.length > 0) {
+        toast.warning(
+          t("thread.rollback_conflict")
+            .replace("{n}", String(conflicts.length))
+            .replace("{files}", conflicts.join(", "))
+        );
+      }
       setInputValue(turn.task ?? "");
       setEvents([]);
       setStreamText("");

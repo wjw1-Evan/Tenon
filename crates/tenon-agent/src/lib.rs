@@ -24,7 +24,7 @@ pub use executor::{execute_tool, ToolContext, ToolOutput};
 pub use recovery::{recover_stale_sessions, RecoveryReport};
 pub use session::{
     sanitize_title, AgentConfig, AgentError, AgentSession, ControlCommand, EvidenceCard,
-    ProjectWriteLock, TaskOutcome,
+    FileRevertEntry, ProjectWriteLock, RollbackGranularity, RollbackOutcome, TaskOutcome,
 };
 pub use subagents::{
     composite_commit_summary, plan_parallel, SubAgentError, SubTask, WorktreePool,

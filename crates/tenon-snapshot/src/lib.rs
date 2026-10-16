@@ -435,7 +435,9 @@ impl SnapshotStore {
     /// - `tree_after`：该事件后的快照（三方合并基）；缺省用 `tree_before`；
     /// - 工作区与合并基一致 → 直接恢复（Restored）；
     /// - 工作区含用户手改 → `git merge-file` 三方合并保留（Merged / Conflict）；
-    /// - `tree_before` 中不存在的文件 = AI 新建 → 删除（Deleted，§7.3）。
+    /// - `tree_before` 中不存在的文件 = AI 新建 → 删除（Deleted，§7.3）；
+    ///   但工作区内容 ≠ 事件后快照（用户在 AI 新建之上手改）→ 冲突保留原样
+    ///   （v2.84：不静默吞掉手改，Conflict 待用户处置）。
     pub fn revert_files(
         &self,
         tree_before: &str,
@@ -449,17 +451,37 @@ impl SnapshotStore {
             let pre = self.blob_of(tree_before, file)?;
             match pre {
                 None => {
-                    // AI 新建文件：随撤销移除（§7.3）
-                    if self.read_workspace_file(file).is_some() {
-                        self.remove_workspace_file(file)?;
-                        self.unstage_file(file)?;
-                        report
-                            .per_file
-                            .push((file.clone(), FileRevertOutcome::Deleted));
-                    } else {
-                        report
-                            .per_file
-                            .push((file.clone(), FileRevertOutcome::Unchanged));
+                    // AI 新建文件：随撤销移除（§7.3）；工作区 ≠ 事件后快照
+                    // （用户手改过）→ 冲突保留原样，不静默删除用户内容。
+                    match self.read_workspace_file(file) {
+                        None => {
+                            report
+                                .per_file
+                                .push((file.clone(), FileRevertOutcome::Unchanged));
+                        }
+                        Some(ours) => match self.blob_of(&after_tree, file)? {
+                            Some(base) if ours == base => {
+                                self.remove_workspace_file(file)?;
+                                self.unstage_file(file)?;
+                                report
+                                    .per_file
+                                    .push((file.clone(), FileRevertOutcome::Deleted));
+                            }
+                            Some(_) => {
+                                report
+                                    .per_file
+                                    .push((file.clone(), FileRevertOutcome::Conflict));
+                            }
+                            // 无事件后快照可比对（旧调用形态缺省 tree_before）：
+                            // 保持既有删除语义
+                            None => {
+                                self.remove_workspace_file(file)?;
+                                self.unstage_file(file)?;
+                                report
+                                    .per_file
+                                    .push((file.clone(), FileRevertOutcome::Deleted));
+                            }
+                        },
                     }
                 }
                 Some(pre_content) => {
@@ -777,6 +799,35 @@ mod tests {
             "AI 新建文件随撤销移除"
         );
         assert_eq!(read(store.work_tree(), "base.txt"), "base\n");
+    }
+
+    // v2.84：AI 新建文件被用户手改过 → 撤销冲突保留原样（不静默删除用户内容）。
+    #[test]
+    fn revert_keeps_user_edited_ai_created_file_as_conflict() {
+        let (_d, _s, store) = setup("ws6b");
+        write(store.work_tree(), "base.txt", "base\n");
+        let t_before = store.snapshot().unwrap();
+
+        write(store.work_tree(), "ai_new.txt", "ai\n");
+        let t_after = store.snapshot().unwrap();
+
+        // 用户在 AI 新建文件之上手改
+        write(store.work_tree(), "ai_new.txt", "ai\nUSER-NOTE\n");
+
+        let report = store
+            .revert_files(&t_before, Some(&t_after), &["ai_new.txt".to_string()])
+            .unwrap();
+        assert_eq!(
+            report.per_file[0].1,
+            FileRevertOutcome::Conflict,
+            "AI 新建 + 用户手改 → 冲突"
+        );
+        assert!(report.has_conflicts());
+        assert_eq!(
+            read(store.work_tree(), "ai_new.txt"),
+            "ai\nUSER-NOTE\n",
+            "冲突时工作区保持原样待用户处置"
+        );
     }
 
     #[test]

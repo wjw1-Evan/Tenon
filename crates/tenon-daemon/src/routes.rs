@@ -1251,7 +1251,7 @@ async fn session_control(
         "compact" => session.control(ControlCommand::Compact),
         "rollback" => {
             return match session.rollback_last().await {
-                Ok(files) => Json(json!({"rolled_back": files})).into_response(),
+                Ok(outcome) => rollback_response(outcome),
                 Err(e) => api_err(StatusCode::CONFLICT, e.to_string()),
             };
         }
@@ -1852,10 +1852,27 @@ async fn session_runs(State(state): State<Arc<DaemonState>>, Path(id): Path<Stri
 /// v1.135 消息级撤销请求体：`truncate = true` 时回滚后截断线程——该回合 user_input
 /// 起至最新事件（含 rollback 事件）对线程 / Trace 隐藏，会话状态复位 idle；时间轴
 /// 回滚（§10.3 快照时间轴）不传即保持原语义。
+///
+/// `granularity`（v2.84 §7.3 回滚双粒度接通）：`revert`（缺省，按事件撤销——AI
+/// 补丁序列撤销、用户同期手改三方合并保留）/ `restore`（checkpoint 整体恢复）；
+/// 未知值回 400（此前 serde 静默丢弃，前端发的粒度从未生效）。
 #[derive(Deserialize)]
 struct RollbackBody {
     #[serde(default)]
     truncate: bool,
+    #[serde(default)]
+    granularity: Option<String>,
+}
+
+/// 统一回滚响应（v2.84）：`rolled_back` 保持 v1.111 形状兼容；补实际执行粒度与
+/// revert 逐文件结局（restore 无逐文件语义，缺省）。
+fn rollback_response(outcome: tenon_agent::RollbackOutcome) -> Response {
+    Json(json!({
+        "rolled_back": outcome.files,
+        "granularity": outcome.granularity,
+        "report": outcome.report,
+    }))
+    .into_response()
 }
 
 async fn checkpoint_rollback(
@@ -1863,6 +1880,10 @@ async fn checkpoint_rollback(
     Path(checkpoint_id): Path<String>,
     Json(body): Json<RollbackBody>,
 ) -> Response {
+    let granularity = match tenon_agent::RollbackGranularity::parse(body.granularity.as_deref()) {
+        Ok(g) => g,
+        Err(e) => return api_err(StatusCode::BAD_REQUEST, e),
+    };
     let target = {
         let mut store = state.store.lock().await;
         match store.checkpoint(&checkpoint_id) {
@@ -1877,10 +1898,10 @@ async fn checkpoint_rollback(
     let Some(session) = session else {
         return api_err(StatusCode::NOT_FOUND, "session not found");
     };
-    // v1.111：真按指定 checkpoint 恢复（此前误调 rollback_last 回最近一步，
-    // 与 §10.3「选快照 → 整体恢复」语义不符，时间轴与消息级撤销共用此端点）。
-    match session.rollback_to_checkpoint(&target).await {
-        Ok(files) => {
+    // v1.111：真按指定 checkpoint 恢复（此前误调 rollback_last 回最近一步）；
+    // v2.84：双粒度（§7.3）——revert 按事件撤销保留用户手改，restore 整体恢复。
+    match session.rollback_to_checkpoint(&target, granularity).await {
+        Ok(outcome) => {
             if body.truncate {
                 // v1.135：线程截断——回合起点（该回合 user_input）起全部隐藏；
                 // 水位与既有区间合并（多次撤销向更早处扩展）；含刚落库的 rollback
@@ -1904,7 +1925,7 @@ async fn checkpoint_rollback(
                 let _ = store.set_thread_truncation(&target.session_id, from, to);
                 let _ = store.set_session_status(&target.session_id, SessionStatus::Idle);
             }
-            Json(json!({"rolled_back": files})).into_response()
+            rollback_response(outcome)
         }
         Err(e) => api_err(StatusCode::CONFLICT, e.to_string()),
     }
@@ -2546,6 +2567,8 @@ async fn apply_lsp_workspace_edit(
                 .collect::<Vec<_>>(),
             // 负 seq 标记编辑器原子操作；既有 rollback_last 可选中 LSP checkpoint。
             Some(-1),
+            // v2.84：事件后树入 checkpoint——按事件撤销以此为三方合并基。
+            Some(&after_tree),
         )
     };
     let checkpoint = match checkpoint {

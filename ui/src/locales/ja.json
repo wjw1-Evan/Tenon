@@ -328,6 +328,7 @@
   "thread.undo": "取り消す",
   "thread.undo_confirm": "このメッセージによる変更をすべて取り消しますか？タイムラインからロールバックを取り消せます。",
   "thread.undo_failed": "取り消し失敗：一致するスナップショットが見つかりません",
+  "thread.rollback_conflict": "ロールバック完了。ただし {n} 件のファイルは手動編集との競合により元のまま維持されました：{files}",
   "thread.copy": "コピー",
   "thread.code_copy": "コードをコピー",
   "thread.view_image": "画像を見る",
