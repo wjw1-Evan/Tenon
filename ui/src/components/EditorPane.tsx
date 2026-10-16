@@ -97,6 +97,11 @@ interface Props {
   onSelectSplit?: (path: string | null) => void;
   /** LSP 写盘前 flush 未保存缓冲。 */
   onFlushFile?: (path: string) => Promise<void> | void;
+  /** LSP 读路径（补全 / hover 等语义请求）前 flush：仅自动保存模式写盘
+   *  （§7 保存 v1.75：手动模式仅显式保存写盘——Cmd/Ctrl+S / LSP 应用前 flush；
+   *  读路径若也写盘，补全 / hover 的每次请求都会把未保存缓冲静默落盘，
+   *  手动保存名存实亡）。缺省回退 onFlushFile（旧行为）。 */
+  onReadFlushFile?: (path: string) => Promise<void> | void;
   /** daemon 已原子应用 WorkspaceEdit；调用方刷新打开文件 / 文件树。 */
   onWorkspaceApplied?: (paths: string[]) => Promise<void> | void;
   /** 命令面板撤销/重做入口（§8.2 v1.75）：挂载绑定 active editor，卸载解绑。 */
@@ -124,6 +129,7 @@ export function EditorPane({
   splitPath = null,
   onSelectSplit,
   onFlushFile,
+  onReadFlushFile,
   onWorkspaceApplied,
   bindEditorApi,
 }: Props) {
@@ -147,6 +153,7 @@ export function EditorPane({
     projectRoot,
     sessionId,
     onFlushFile,
+    onReadFlushFile,
     onWorkspaceApplied,
     inlineCompletionEnabled,
   });
@@ -158,11 +165,12 @@ export function EditorPane({
       projectRoot,
       sessionId,
       onFlushFile,
+      onReadFlushFile,
       onWorkspaceApplied,
       inlineCompletionEnabled,
     };
     // inlineCompletionEnabled 缺席会让补全 provider 永远读到旧开关
-  }, [api, projectId, projectRoot, sessionId, onFlushFile, onWorkspaceApplied, inlineCompletionEnabled]);
+  }, [api, projectId, projectRoot, sessionId, onFlushFile, onReadFlushFile, onWorkspaceApplied, inlineCompletionEnabled]);
 
   useEffect(() => {
     activePathRef.current = activePath;
@@ -219,7 +227,8 @@ export function EditorPane({
     ) => {
       const runtime = runtimeRef.current;
       if (!runtime.projectId || !path) return null;
-      await runtime.onFlushFile?.(path);
+      // 读路径 flush：自动模式写盘保 LSP 新鲜度；手动模式不落盘（§7 保存 v1.75）
+      await (runtime.onReadFlushFile ?? runtime.onFlushFile)?.(path);
       return runtime.api.lsp({
         project_id: runtime.projectId,
         path,

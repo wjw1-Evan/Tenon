@@ -535,17 +535,25 @@ export default function App({
           })
         )
       ).filter((tab): tab is EditorTab => tab !== null);
-      setTabsByProject((prev) => ({ ...prev, [project.id]: restored }));
-      const activePath =
-        saved.activePath && restored.some((tab) => tab.path === saved.activePath)
-          ? saved.activePath
-          : (restored[0]?.path ?? null);
-      setActivePathByProject((prev) => ({ ...prev, [project.id]: activePath }));
-      const savedSplit =
-        saved.splitPath && restored.some((tab) => tab.path === saved.splitPath)
-          ? saved.splitPath
-          : null;
-      setSplitPathByProject((prev) => ({ ...prev, [project.id]: savedSplit }));
+      // 恢复让位现势（竞态守卫）：上面两次 await 的往返窗口内用户可能已经打开了
+      // 文件（编辑器浮层已挂 tab）——此刻回覆存储态会把刚开的 tab 连根拔掉，
+      // 浮层随之被 v1.110 的空 tab 收起逻辑关闭（E2E editor-save 实录）。
+      // 恢复只补空缺：项目已有 tab（内存现势，含切走再切回的未落盘状态）即跳过
+      // tab / active / split 回填；会话恢复与落库放行标志照常。
+      const userOpenedTabs = (tabsByProjectRef.current[project.id] ?? []).length > 0;
+      if (!userOpenedTabs) {
+        setTabsByProject((prev) => ({ ...prev, [project.id]: restored }));
+        const activePath =
+          saved.activePath && restored.some((tab) => tab.path === saved.activePath)
+            ? saved.activePath
+            : (restored[0]?.path ?? null);
+        setActivePathByProject((prev) => ({ ...prev, [project.id]: activePath }));
+        const savedSplit =
+          saved.splitPath && restored.some((tab) => tab.path === saved.splitPath)
+            ? saved.splitPath
+            : null;
+        setSplitPathByProject((prev) => ({ ...prev, [project.id]: savedSplit }));
+      }
 
       const savedSession =
         saved.sessionId && project.session_runtimes?.includes(saved.sessionId)
@@ -819,6 +827,17 @@ export default function App({
 
   /** LSP 写盘前 flush 未保存缓冲（§8.5 / v1.48）：与手动保存同路径。 */
   const flushFileForLsp = useCallback((path: string) => saveNow(path), [saveNow]);
+
+  /** LSP 读路径（补全 / hover 等语义请求）前 flush（§7 保存 v1.75）：仅自动保存
+   *  模式写盘——手动模式「仅显式保存写盘」，读路径请求不得把未保存缓冲静默
+   *  落盘（monaco 快速补全 / hover 每次键入都会发请求，否则手动保存名存实亡）。 */
+  const readFlushForLsp = useCallback(
+    (path: string) => {
+      if (saveMode !== "auto") return;
+      return saveNow(path);
+    },
+    [saveMode, saveNow]
+  );
 
   /** 循环底部面板 tab（§7.5 v1.167 Cmd/Ctrl+Alt+J）：timeline→trace→evals；收起态先展开。 */
   const cycleBottomTab = useCallback(() => {
@@ -1340,6 +1359,7 @@ export default function App({
         }
       }}
       onFlushFile={flushFileForLsp}
+      onReadFlushFile={readFlushForLsp}
       onWorkspaceApplied={refreshFilesAfterLsp}
       bindEditorApi={(editorApi) => {
         editorApiRef.current = editorApi;
