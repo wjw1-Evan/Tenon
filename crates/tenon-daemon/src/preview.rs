@@ -445,6 +445,12 @@ const BRIDGE_SCRIPT: &str = r#"<script data-tenon-preview="1">(function(){
 if(window.__tenonPreviewBridge)return;window.__tenonPreviewBridge=true;
 var m=/[?&]__tenon=([^&#]*)/.exec(location.search);
 var CHANNEL=m?decodeURIComponent(m[1]):"";
+try{
+  if(CHANNEL)sessionStorage.setItem("__tenon_preview_channel",CHANNEL);
+  else CHANNEL=sessionStorage.getItem("__tenon_preview_channel")||"";
+}catch(e){}
+// 频道号随 query 传递，但页内整页导航（根绝对链接）不带 query——落
+// sessionStorage，导航后的新文档据此找回归属，nav / console 桥不静默断流。
 var post=function(p){try{p.__tenon_preview=true;p.channel=CHANNEL;window.parent.postMessage(p,"*");}catch(e){}};
 var fmt=function(v){try{if(typeof v==="string")return v;if(v instanceof Error)return v.stack||String(v);return JSON.stringify(v);}catch(e){return String(v);}};
 var emit=function(level,args){
