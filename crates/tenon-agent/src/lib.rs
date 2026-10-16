@@ -12,6 +12,7 @@ pub mod browser;
 pub mod evals;
 pub mod executor;
 pub mod hooks;
+pub mod lsp_format;
 pub mod recovery;
 pub mod runcode;
 pub mod session;

@@ -324,6 +324,12 @@ fn project_rel(ctx: &ToolContext, path: &str) -> Result<String, ToolOutput> {
         .map_err(|e| ToolOutput::err(format!("路径越界: {e}")))
 }
 
+/// §9.2 v2.82：`lsp_query` 行号换算——模型面 1-based（与 `read_file` 输出 /
+/// `apply_patch` range 同一坐标系）→ LSP 0-based；缺省 1（文件首行）。
+fn lsp_line_1based_to_0based(v: Option<u64>) -> u32 {
+    v.unwrap_or(1).max(1).saturating_sub(1).min(u32::MAX as u64) as u32
+}
+
 /// v2.61 §9.2：read_file 分段读取——`行号\t` 前缀（cat -n 口径），行号即
 /// apply_patch range 编辑锚点；单行 2000 字符截断；尾注给续读锚点。
 fn read_file_segmented(
@@ -1027,35 +1033,66 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                 Err(e) => ToolOutput::err(format!("git 失败: {e}")),
             }
         }
+        // 语言服务语义查询（§9.2 v2.82）：共享 LSP 宿主（§8.5，与编辑器同实例）
+        // ——定义 / 引用 / hover / 全项目符号 / 诊断；A 级只读零工作区副作用。
+        // 原始 LSP JSON 经 lsp_format 归一为 `路径:行:列`（1-based，与 read_file
+        // 行号一致，可直接作 apply_patch 锚点）并附命中行原文。
         "lsp_query" => {
-            let Some(lsp) = ctx.lsp.clone() else {
-                return ToolOutput::err("共享 LSP 宿主未接入（daemon 配置缺失）");
-            };
-            let path = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
+            // 参数校验先于宿主检查：参数错误与宿主缺失是两类信号，参数面
+            // 可在无 LSP 环境下确定性验证（模型自纠依赖明确报错）。
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            if path.is_empty() {
+                return ToolOutput::err("缺少 path 参数（项目内文件）");
+            }
             let action = args
                 .get("action")
                 .and_then(|v| v.as_str())
                 .unwrap_or("diagnostics");
-            let line = args.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            let character = args.get("character").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            // 只读语义动作集；rename / codeaction / format 产出编辑属写面
+            // （走编辑器 §8.1 / apply_patch），此处如实拒绝并列出可用动作。
+            if !matches!(
+                action,
+                "definition" | "references" | "hover" | "diagnostics" | "workspace_symbol"
+            ) {
+                return ToolOutput::err(format!(
+                    "不支持的 lsp action: {action}（可用：definition / references / hover / diagnostics / workspace_symbol）"
+                ));
+            }
+            if action == "workspace_symbol" && args.get("extra").and_then(|v| v.as_str()).is_none()
+            {
+                return ToolOutput::err("workspace_symbol 需 extra=查询名");
+            }
+            let Some(lsp) = ctx.lsp.clone() else {
+                return ToolOutput::err("共享 LSP 宿主未接入（daemon 配置缺失）");
+            };
+            // 模型面行号 1-based（与 read_file 输出 / apply_patch range 一致），
+            // 此处折算 LSP 0-based；character 为 0-based（缺省 0，行首）。
+            let line0 = lsp_line_1based_to_0based(args.get("line").and_then(|v| v.as_u64()));
+            let character = args.get("character").and_then(|v| v.as_u64()).unwrap_or(0);
             let extra = args.get("extra").and_then(|v| v.as_str());
             let root = ctx.root.clone();
-            let path = path.to_string();
-            let action = action.to_string();
+            let path_req = path.to_string();
+            let action_req = action.to_string();
             let extra = extra.map(String::from);
             let result = run_async(async move {
-                lsp.request(&root, &path, &action, line, character, extra.as_deref())
-                    .await
+                lsp.request(
+                    &root,
+                    &path_req,
+                    &action_req,
+                    line0,
+                    character.min(u32::MAX as u64) as u32,
+                    extra.as_deref(),
+                )
+                .await
             });
             let result = match result {
                 Ok(result) => result,
                 Err(e) => return ToolOutput::err(format!("LSP runtime bridge: {e}")),
             };
             match result {
-                Ok(value) => ToolOutput::ok(value.to_string()),
+                Ok(value) => ToolOutput::ok(truncate_output(&crate::lsp_format::format_result(
+                    &ctx.root, path, action, &value,
+                ))),
                 Err(tenon_lsp::LspManagerError::BadPath(p)) => {
                     ToolOutput::err(format!("路径越界: {p}"))
                 }
@@ -2600,6 +2637,50 @@ mod tests {
         );
         assert!(!out.ok);
         assert!(out.content.contains("共享 LSP 宿主未接入"));
+    }
+
+    #[test]
+    fn lsp_line_conversion_is_1based_to_0based() {
+        // §9.2 v2.82：1-based 模型面 → 0-based LSP（缺省 1 → 0；0/负值钳到首行）
+        assert_eq!(lsp_line_1based_to_0based(None), 0);
+        assert_eq!(lsp_line_1based_to_0based(Some(1)), 0);
+        assert_eq!(lsp_line_1based_to_0based(Some(42)), 41);
+        assert_eq!(lsp_line_1based_to_0based(Some(0)), 0, "0 钳到首行");
+    }
+
+    #[test]
+    fn lsp_query_validates_args_before_host() {
+        // §9.2 v2.82：参数面确定性校验（无 LSP 环境下同样可验）——缺 path /
+        // 未知动作 / workspace_symbol 缺 extra 各自明确报错（模型可据此自纠）。
+        let (_d, c) = ctx();
+        let out = execute_tool(&c, "lsp_query", &serde_json::json!({"action": "hover"}));
+        assert!(
+            !out.ok && out.content.contains("缺少 path"),
+            "{}",
+            out.content
+        );
+
+        let out = execute_tool(
+            &c,
+            "lsp_query",
+            &serde_json::json!({"path": "a.ts", "action": "rename"}),
+        );
+        assert!(
+            !out.ok && out.content.contains("不支持的 lsp action: rename"),
+            "写面动作拒绝: {}",
+            out.content
+        );
+
+        let out = execute_tool(
+            &c,
+            "lsp_query",
+            &serde_json::json!({"path": "a.ts", "action": "workspace_symbol"}),
+        );
+        assert!(
+            !out.ok && out.content.contains("extra"),
+            "workspace_symbol 需 extra: {}",
+            out.content
+        );
     }
 
     #[test]

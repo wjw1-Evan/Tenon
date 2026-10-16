@@ -132,7 +132,7 @@ pub fn tool_catalog() -> String {
             "PTC 批处理（JS 脚本一次回合批量调用工具）：code 内用 tool(\"read_file\"|\"glob\"|\"grep\"|\"list_dir\", …) 读、tool(\"apply_patch\", {file, search, replace, replace_all?} 或 {ops}) 写——同文案多文件批量替换（codemod）一次回合完成；变更计入回合检查点可整体撤销",
         ),
         (Tool::GitRead, "只读 git：status / log / diff"),
-        (Tool::LspQuery, "语言服务查询：定义 / 引用 / 符号 / hover"),
+        (Tool::LspQuery, "语言服务语义查询（共享 LSP 宿主）：definition 定义 / references 引用 / hover 类型文档 / workspace_symbol 全项目符号（extra=查询名）/ diagnostics 该文件诊断——比 grep 精确，行号为 1-based"),
         (
             Tool::SkillUse,
             "读取技能 SKILL.md 全文（目录见「可用技能」节；需要方法指引时调用）",
@@ -164,6 +164,10 @@ pub fn tool_catalog() -> String {
         (
             Tool::WebSearch,
             "网络搜索（免密钥 Bing/DDG 多后端）：返回标题 / 链接 / 摘要列表；需要时效性信息（新版本、新闻、文档现状）时先用",
+        ),
+        (
+            Tool::LayaDecide,
+            "本地决策器结构化判定（intent / risk / route，零 token、毫秒级）：结果未校准仅作参考，不替代测试与验证",
         ),
         (Tool::GitCommit, "git 提交（D 级：直执并审计）"),
         (Tool::GitPush, "git 推送（D 级：直执并审计）"),

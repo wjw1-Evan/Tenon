@@ -312,3 +312,4 @@
 | v2.79 | 输入区单钮槽图标化——发送 / 停止 / 恢复三态文字转图标（§9.1 v1.147/v2.50：文字退居 aria-label / title，三态等宽方形钮） |
 | v2.80 | Agent 侧浏览器调试工具——browser_open / browser_eval（C 级）+ browser_console / browser_close（A 级）：CDP 无头 Chrome 宿主（§7.6/§9.2，与 v2.77 预览面板同源的人机同屏另一半） |
 | v2.81 | task_output 输出完整性——进程退出后等两路读取线程排空（≤500ms 宽限）再取快照（§9.2——CI 实测 stderr 尾行缺失；dev server 类后台任务尤甚） |
+| v2.82 | Agent 语义查询接通——lsp_query 补模型面 schema + 输出归一为「路径:行:列」可操作形态（§9.2：共享 LSP 宿主自 M0 起对模型空接；含内置工具 schema 完整性守卫） |

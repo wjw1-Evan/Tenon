@@ -336,6 +336,17 @@ fn tool_specs() -> Vec<ToolSpec> {
             },
             "required": ["pattern"]
         })),
+        ("lsp_query", "语言服务语义查询（共享 LSP 宿主，A 级只读）——精确定位符号比 grep 可靠：action=definition 找定义｜references 找全部引用｜hover 看类型与文档｜workspace_symbol 按名字搜全项目符号（extra=查询名）｜diagnostics 看该文件的编译/类型错误；path 为项目内文件（workspace_symbol 用它选定语言），line 为 1-based 行号（与 read_file 输出一致），character 为 0-based 列（缺省 0）。结果以「路径:行:列 + 命中行原文」返回，可直接用于 read_file / apply_patch", serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "项目内文件（相对路径）"},
+                "action": {"type": "string", "enum": ["definition", "references", "hover", "workspace_symbol", "diagnostics"]},
+                "line": {"type": "integer", "minimum": 1, "description": "1-based 行号（与 read_file 输出一致）"},
+                "character": {"type": "integer", "minimum": 0, "description": "0-based 列（缺省 0）"},
+                "extra": {"type": "string", "description": "workspace_symbol 的查询名"}
+            },
+            "required": ["path", "action"]
+        })),
         ("run_code", "PTC 批处理（JS 脚本一次回合内程序化批量调用工具）：code 为 JS 源码，tool(\"read_file\"|\"glob\"|\"grep\"|\"list_dir\", 参数…) 读、tool(\"apply_patch\", {file, search, replace, replace_all?} 或 {file, range, content} 或 {ops}) 写（批量重构一次回合完成），log(...) 输出中间结果，脚本返回值回流；变更计入本回合检查点可整体撤销（预算：tool ≤500 次、循环/递归上限）", serde_json::json!({
             "type": "object",
             "properties": {"code": {"type": "string", "description": "JS 脚本源码"}},
@@ -480,6 +491,7 @@ fn tool_specs_read_only() -> Vec<ToolSpec> {
                     | "list_dir"
                     | "grep"
                     | "glob"
+                    | "lsp_query"
                     | "git_read"
                     | "laya_decide"
                     | "skill_use"
@@ -3425,6 +3437,107 @@ mod agent_config_tests {
         );
         assert!(tool_specs().iter().any(|t| t.name == "glob"));
         assert!(tool_specs_read_only().iter().any(|t| t.name == "glob"));
+    }
+
+    #[test]
+    fn lsp_query_wired_into_model_tool_schema() {
+        // §9.2 v2.82：executor handler / 系统提示工具目录 / UI 标签自 M0 起齐备，
+        // 但模型面 schema 一直缺项——工具对模型不可达（共享 LSP 宿主空接）。
+        // 本测固化接通：全目录 + 只读先验轮白名单，且动作集与只读语义一致。
+        let spec = tool_specs()
+            .into_iter()
+            .find(|t| t.name == "lsp_query")
+            .expect("lsp_query 进模型工具目录");
+        assert_eq!(
+            tenon_core::Tool::from_name("lsp_query").and_then(|t| t.level()),
+            Some(tenon_core::policy::Level::A)
+        );
+        let actions: Vec<&str> = spec.parameters["properties"]["action"]["enum"]
+            .as_array()
+            .expect("action 枚举")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        for a in [
+            "definition",
+            "references",
+            "hover",
+            "workspace_symbol",
+            "diagnostics",
+        ] {
+            assert!(actions.contains(&a), "动作 {a} 须在 schema 中");
+        }
+        for a in ["rename", "codeaction", "format"] {
+            assert!(
+                !actions.contains(&a),
+                "{a} 产出编辑属写面，不应进 lsp_query 只读动作集"
+            );
+        }
+        let required: Vec<&str> = spec.parameters["required"]
+            .as_array()
+            .expect("required")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(required.contains(&"path"));
+        assert!(required.contains(&"action"));
+        assert!(
+            tool_specs_read_only().iter().any(|t| t.name == "lsp_query"),
+            "零工作区副作用的只读语义查询纳入只读先验轮白名单"
+        );
+    }
+
+    /// 根因守卫（v2.82）：内置工具枚举（executor 有 handler / 分级）必须都有
+    /// 模型可见 schema——防「实现齐备但模型不可达」这类静默空接（lsp_query 修复类）。
+    #[test]
+    fn every_builtin_tool_has_model_facing_schema() {
+        use tenon_core::Tool;
+        let mut spec_names: std::collections::HashSet<String> =
+            tool_specs().into_iter().map(|t| t.name).collect();
+        // MCP 元工具四元组经 mcp_meta_specs 单独注入（非 tool_specs）
+        spec_names.extend(mcp_meta_specs().into_iter().map(|t| t.name));
+        for tool in [
+            Tool::ReadFile,
+            Tool::ListDir,
+            Tool::Grep,
+            Tool::Glob,
+            Tool::RunCode,
+            Tool::GitRead,
+            Tool::LspQuery,
+            Tool::LayaDecide,
+            Tool::SkillUse,
+            Tool::Subtasks,
+            Tool::SubmitPlan,
+            Tool::SpawnSubagents,
+            Tool::WebSearch,
+            Tool::ApplyPatch,
+            Tool::RunTests,
+            Tool::RunBuild,
+            Tool::InstallDeps,
+            Tool::RunCommand,
+            Tool::TaskOutput,
+            Tool::TaskKill,
+            Tool::HttpFetch,
+            Tool::GitCommit,
+            Tool::GitPush,
+            Tool::CreatePr,
+        ] {
+            assert!(
+                spec_names.contains(tool.name()),
+                "内置工具 {} 缺模型面 schema（executor 有 handler 但模型不可达）",
+                tool.name()
+            );
+        }
+        // McpMeta 名字为通配 "mcp_meta_*"，其四元组须齐备
+        assert_eq!(Tool::McpMeta.name(), "mcp_meta_*");
+        for name in [
+            "mcp_meta_resources_list",
+            "mcp_meta_resources_read",
+            "mcp_meta_prompts_list",
+            "mcp_meta_prompts_get",
+        ] {
+            assert!(spec_names.contains(name), "MCP 元工具 {name} 缺 schema");
+        }
     }
 
     #[test]

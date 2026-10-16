@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | **v2.81** |
+| 版本 | **v2.82** |
 | 日期 | 2026-10-16 |
 | 状态 | 定稿，M0 已验收（附录 D 基线 v2.68 起 glm-5.3-flash **10/10=100%**，violation=0；历史最高），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
@@ -509,6 +509,8 @@ GlobalScheduler（全局并发 / 成本 / 通知）
 | 跟随模式 | 代理→编辑器 | 自动滚动到代理正在修改处（可关） |
 | 工作区重构原子应用 | 双向 | **v1.48 已落地**：LSP workspace edits 一次应用 + 单 checkpoint，失败整体 restore；dirty buffer 409 不覆盖 |
 
+**v2.82 接线补记**：代理侧语义查询 `lsp_query`（§9.2）此前只在 executor handler / 系统提示工具目录 / UI 标签三处齐备，却始终未进模型面 `tool_specs` schema——「编辑器与代理共用同一 LSP 实例」的代理侧入口自 M0 起空接，模型无法触达定义 / 引用 / 符号 / hover / 诊断。本版补 schema（含参数面校验与输出归一为 `路径:行:列`），差异化核心的双向能力自此真正可用；并加「内置工具枚举 ↔ 模型面 schema」完整性守卫测试防同类静默空接再现。
+
 ### 8.6 人机共编冲突处理
 
 代理写盘前检查目标文件用户未保存缓冲 → 有脏缓冲则暂停并弹「你的改动 / 代理改动 / 合并结果」三栏；被 AI 修改的行带标记，用户编辑同区域自动解除；任何合并失误可回 checkpoint。
@@ -592,7 +594,7 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 |---|---|---|
 | `read_file` / `list_dir` / `grep` / `glob`（v2.61） | A | 只读；核心服务 rg；`read_file` 超 10MB 拒整读（LLM 上下文预算，agent 侧承担，与编辑器无大小限制无关，v1.69），可选 `offset`（1-based 起始行）/ `limit`（1–2000 行，缺省 2000）分段读取——输出 `行号\t` 前缀（cat -n 口径，行号即 `apply_patch` range 编辑锚点；单行 2000 字符截断，分段读不受 10MB 整读预算约束，v2.61 Claude Code Read 对齐）；`glob` 按文件名模式定位文件（与 grep 同一文件宇宙：尊重 .gitignore、滤 .git、globset 全路径匹配；返回项目根相对路径列表，上限 500 条带尾注——补 grep 只搜内容的文件名检索缺口，v2.61） |
 | `git_read`（status/log/diff） | A | 只读 git |
-| `lsp_query`（定义/引用/符号/hover） | A | 共享 LSP 多路复用 |
+| `lsp_query`（语义查询：定义 / 引用 / hover / 全项目符号 / 诊断；**v2.82 接通模型工具面**） | A | 共享 LSP 多路复用（§8.5，编辑器与代理同实例）：`{path, action, line?, character?, extra?}`——`action ∈ definition / references / hover / workspace_symbol（extra=查询名）/ diagnostics`；`line` 为 **1-based**（与 `read_file` 输出行号同一坐标系，handler 折算 LSP 0-based）、`character` 0-based（缺省 0）。**输出归一（v2.82）**：原始 LSP JSON 经 `lsp_format` 格式化为 `路径:行:列`（1-based，可直接作 `read_file` / `apply_patch` 锚点）——项目内文件转相对路径、项目外（标准库 / 依赖）保留绝对路径，命中位置附该行原文（可读文件 best-effort，≤200 字符），列表类结果（引用 / 符号 / 诊断）上限 100 条带尾注，空态明确（未找到定义 / 无引用 / 无诊断 / 无匹配符号）。写面动作（rename / codeaction / format 产出 WorkspaceEdit）不进只读工具面（走编辑器 §8.1 / apply_patch），handler 拒绝并列出可用动作。**接线修复（v2.82）**：handler / 系统提示工具目录 / UI 标签自 M0 起齐备，但模型面 `tool_specs` 始终缺 schema——工具对模型不可达（共享 LSP 宿主空接）；本次补 schema + 参数面先于宿主校验（无 LSP 环境可确定性验证模型自纠），并加「内置工具枚举 ↔ 模型面 schema」完整性守卫测试防再现。纳入只读先验轮白名单（零工作区副作用，与 git_read 同轨） |
 | `skill_use`（读取技能全文） | A | 技能目录注入系统提示，正文按需加载进上下文（§13.4，v1.130） |
 | `subtasks`（子任务清单，v1.146） | A | 多步任务主动分解与状态维护：`{items:[{title,status}]}` 全量状态替换（幂等；1–12 项，status ∈ `pending / in_progress / done`）；分发与边界见下文 |
 | `submit_plan`（计划提交，v1.179 Codex 形态计划模式） | A | 复杂任务先计划后执行：`{items:[string]}`（1–12 项、每项 ≤200 字符）→ `plan_submitted` 事件 + 会话转 PAUSED 等待批准；边界见下文 |
