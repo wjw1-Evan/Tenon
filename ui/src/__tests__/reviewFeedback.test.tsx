@@ -4,7 +4,7 @@
 // （运行态自动入队，回合完成续跑——「边跑边审、审完即改」闭环的 UI 半边）。
 // v2.8 审查摘要卡：trace 事件流（subtasks / patch_applied / diagnostics.verification）
 // 经 AgentPanel digest 上提 → 审查面摘要区渲染。
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import type { ProjectSummary } from "../lib/api";
@@ -88,8 +88,13 @@ beforeEach(() => {
           },
         ],
       });
-    if (url.endsWith("/session/s-a"))
-      return jsonResponse({ session_id: "s-a", status: "executing", latest_seq: 1, outcome: null });
+    if (url.endsWith("/session/s-a") && method !== "POST")
+      return new Promise((resolve) =>
+        setTimeout(
+          () => resolve(jsonResponse({ session_id: "s-a", status: "executing", latest_seq: 1, outcome: null })),
+          1200
+        )
+      );
     if (url.endsWith("/session/new-sess"))
       return jsonResponse({ session_id: "new-sess", status: "idle", latest_seq: 0, outcome: null });
     if (url.includes("/ui-state")) return jsonResponse({});
@@ -128,13 +133,20 @@ function jsonResponse(body: unknown, status = 200) {
 describe("审查面 diff 级反馈 App 接线（v2.7）", () => {
   it("运行中审查面选行反馈 → POST /session/:id/message 携带任务组装", async () => {
     render(<App handshake={{ port: 1, token: "x" }} projectPath="/tmp/proj-a" />);
+    // 先等审查面停靠（v2.52 运行态自动停靠，agentState→executing 异步链）再点击：
+    // 「+new」可先经底部面板 / trace 步骤卡命中，而底部面板另有 selectable=false 的
+    // diff 实例——未停靠时点击可能落在不可选实例上（行点击静默无效，反馈卡永不
+    // 出现）；限定审查面容器内选行 + 显式等停靠，消除跨实例误点与两链时序依赖。
+    await waitFor(() => expect(screen.getByTestId("review-pane")).toBeTruthy(), {
+      timeout: 10_000,
+    });
     // 审查面停靠且 diff 到流（AgentPanel 500ms trace 轮询消费 patch_applied；
     // diffFromPatchEvent 保留输出前缀行——行序：0 已写入 1 --- 2 +++ 3 @@ 4 ctx 5 -old 6 +new）
     await waitFor(
       () => expect(screen.getByText("+new")).toBeTruthy(),
       { timeout: 5000 }
     );
-    fireEvent.click(screen.getAllByTestId("diff-line")[6]);
+    fireEvent.click(within(screen.getByTestId("review-pane")).getAllByTestId("diff-line")[6]);
     // timeout 显式化：CI 慢环境下 500ms trace 轮询→状态→渲染链可能超默认 1s（假红）
     await waitFor(() => expect(screen.getByTestId("review-feedback")).toBeTruthy(), {
       timeout: 5000,
