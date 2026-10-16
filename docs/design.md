@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | **v2.75** |
+| 版本 | **v2.76** |
 | 日期 | 2026-10-16 |
 | 状态 | 定稿，M0 已验收（附录 D 基线 v2.68 起 glm-5.3-flash **10/10=100%**，violation=0；历史最高），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
@@ -730,7 +730,7 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 > 机制源码级参考 opencode（sst/opencode `src/snapshot/index.ts` + `src/session/revert.ts`，§3.2 #7）；Tenon 在快照时机与用户手改保护上强于原版（见下）。
 
 - **对话节点与独立 shadow git 快照库**：对话节点是事件日志中的一个可回溯步骤；B 级写 / 命令前创建节点，UI 用该节点呈现 Checkpoint 时间轴。daemon 为每个项目 × worktree 维护一个独立的 shadow git 仓库（`~/.tenon/snapshots/<project-id>/<worktree-hash>/`），与用户仓库完全隔离——不向 `.git` 写任何 refs / objects / index，不触发用户仓库的 hooks 与 gc。把快照状态内嵌用户 `.git` 已有用户反弹实证（sst/opencode#10861，早期 `.git/opencode` 方案），独立库是其修正后的形态；
-- **统一单路径**：git 与非 git 项目同用 shadow git 快照（替代原「shadow ref + CoW」双轨，ADR-7 修订）。git 项目享受**种子加速**——shadow 库 `objects/info/alternates` 指向用户仓库对象库（含其 alternates 链）并复制其 index，已哈希对象直接复用，巨型仓库（chromium 级）首次快照从分钟级降到近零；非 git 项目无种子，首次全量 add，成本在打开项目时明示；
+- **统一单路径**：git 与非 git 项目同用 shadow git 快照（替代原「shadow ref + CoW」双轨，ADR-7 修订）。git 项目享受**种子加速**——shadow 库 `objects/info/alternates` 指向用户仓库对象库（含其 alternates 链）并复制其 index，已哈希对象直接复用，巨型仓库（chromium 级）首次快照从分钟级降到近零（**v2.76 修正**：对象库须经 `commondir` 解析——linked worktree 的私有 git dir 无 `objects`（对象在公共库），解析错误则 alternates 静默不写、复制来的 index 引用不可达对象，首快照 `write-tree` 报 `invalid object`——受管 worktree / 并行子代理首快照曾靠 racy-git 重哈希时序碰巧通过，Linux CI 实录 paused「快照库不可用」）；非 git 项目无种子，首次全量 add，成本在打开项目时明示；
 - **快照点 = tree oid**：增量 add（`diff-files` 变更 + `ls-files --others` 未跟踪）后 `git write-tree`，返回 tree oid 作为快照点——无 ref 链、无 commit，轻量且天然去重；尊重用户仓库 `.gitignore`（`check-ignore --no-index` 动态判定，新增忽略项自动从快照索引移除）；未跟踪大文件（默认 >2MB，可配置）排除；大仓库调优（untrackedCache / manyFiles / index.version=4，参考 opencode）；每个 shadow 库一把互斥锁，快照与回滚串行；
 - **快照时机（不变式的落地，较 opencode 的 model-step 级更密）**：任务开始前、每个 B 级补丁 / 写盘命令前（与写入同事务：先快照后写入）、每轮 FIXING 前——保证 EXECUTING 中崩溃回滚不丢半步；git 对象级去重使增量成本可接受；每次写入随事件记录**该步快照点 + 改动文件集**（patch），支撑「按事件撤销」；
 - **回滚双原语**（对应 §7.3 两粒度）：

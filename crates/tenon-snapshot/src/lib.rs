@@ -103,6 +103,35 @@ fn user_git_dir(workspace: &Path) -> Option<PathBuf> {
     None
 }
 
+/// 用户仓库对象库目录（§10.3 种子加速）。
+///
+/// 普通仓库 `.git/objects`；**linked worktree** 的 `.git` 文件指向私有 git dir
+/// （`<main>/.git/worktrees/<name>`），该目录**没有 objects**——对象在
+/// `commondir` 指向的公共库里；submodule 的 `.git` 文件直挂含 objects 的
+/// git dir（无 commondir）。解析错误会让 shadow 复制来的 index 引用不可达
+/// 对象，首快照 `write-tree` 报 `invalid object`（v2.76 修复）。
+fn user_objects_dir(workspace: &Path) -> Option<PathBuf> {
+    let git_dir = user_git_dir(workspace)?;
+    let common = match std::fs::read_to_string(git_dir.join("commondir")) {
+        Ok(content) => {
+            let rel = content.trim();
+            if rel.is_empty() {
+                git_dir
+            } else {
+                let p = PathBuf::from(rel);
+                if p.is_absolute() {
+                    p
+                } else {
+                    git_dir.join(p)
+                }
+            }
+        }
+        Err(_) => git_dir,
+    };
+    let objects = common.join("objects");
+    objects.is_dir().then_some(objects)
+}
+
 impl SnapshotStore {
     /// 删除某工作区对应的 shadow 快照分片（v1.87 §9.7 受管 worktree「丢弃」收尾；
     /// 分片不存在视为幂等成功）。
@@ -165,8 +194,11 @@ impl SnapshotStore {
         if let Some(user_git) = user_git_dir(&self.work_tree) {
             let alt_path = self.git_dir.join("objects/info/alternates");
             if !alt_path.exists() {
-                let user_objects = user_git.join("objects");
-                if user_objects.exists() {
+                // v2.76：对象库经 user_objects_dir 解析（linked worktree 的私有
+                // git dir 无 objects——此前只查私有目录，alternates 静默不写，
+                // 复制来的 index 对象不可达，首快照 write-tree 报 invalid object；
+                // 时序碰巧时由 git racy-git 重哈希兜底故长期潜伏）
+                if let Some(user_objects) = user_objects_dir(&self.work_tree) {
                     let mut lines = vec![user_objects.to_string_lossy().into_owned()];
                     let user_alts = user_objects.join("info/alternates");
                     if let Ok(content) = std::fs::read_to_string(&user_alts) {
@@ -893,5 +925,64 @@ mod tests {
         // unrevert = restore 到回滚前快照
         store.restore(&safety).unwrap();
         assert_eq!(read(store.work_tree(), "f.txt"), "v2\n");
+    }
+
+    /// v2.76 回归：linked worktree（`git worktree add`）的 `.git` 是文件，私有
+    /// git dir **无 objects**（对象在 commondir 指向的公共库）——种子必须解析公共
+    /// 库写 alternates，否则复制来的 index 引用不可达对象，首快照 `write-tree`
+    /// 报 `invalid object`（Linux CI 实录：并行子代理首快照 paused「快照库不可用」；
+    /// macOS 因 racy-git 重哈希碰巧兜底，故长期潜伏）。
+    #[test]
+    fn linked_worktree_seeds_alternates_to_common_objects() {
+        let data = tempfile::tempdir().expect("data");
+        let snaps = tempfile::tempdir().expect("snaps");
+        let repo = data.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_in(&repo, &[], &["init", "-q", "."]).unwrap();
+        std::fs::write(repo.join("a.rs"), "pub fn a() {}\n").unwrap();
+        run_in(&repo, &[], &["add", "-A"]).unwrap();
+        run_in(
+            &repo,
+            &[],
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-qm",
+                "init",
+            ],
+        )
+        .unwrap();
+
+        // linked worktree：.git 为文件 → 私有 git dir 无 objects
+        let wt = data.path().join("wt");
+        run_in(
+            &repo,
+            &[],
+            &["worktree", "add", "-q", wt.to_str().unwrap(), "HEAD"],
+        )
+        .unwrap();
+        assert!(wt.join(".git").is_file(), "linked worktree 的 .git 是文件");
+        assert!(
+            !user_git_dir(&wt).unwrap().join("objects").is_dir(),
+            "私有 git dir 无 objects——正是本回归的诱因"
+        );
+
+        let store = SnapshotStore::open(snaps.path(), "p-linked", &wt, 2).unwrap();
+        // ① alternates 指向公共对象库（修复前静默不写）
+        let alt = std::fs::read_to_string(store.git_dir.join("objects/info/alternates"))
+            .expect("linked worktree 也应写入 alternates");
+        let common_objects = std::fs::canonicalize(repo.join(".git/objects")).unwrap();
+        assert!(
+            alt.lines().any(|l| std::fs::canonicalize(l.trim())
+                .map(|p| p == common_objects)
+                .unwrap_or(false)),
+            "alternates 须指向公共对象库: {alt}"
+        );
+        // ② 首快照成功且含工作区文件（修复前 write-tree invalid object）
+        let t = store.snapshot().unwrap();
+        assert!(store.tree_contains(&t, "a.rs").unwrap());
     }
 }

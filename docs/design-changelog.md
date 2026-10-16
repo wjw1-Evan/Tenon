@@ -306,3 +306,4 @@
 | v2.73 | v2.72 口径同步——「每任务全新对话」过时表述清理（§7.5/§9.2 + 代码/E2E/测试注释五处） |
 | v2.74 | LSP 网络逐语言包收紧——tsserver/pyright offline、rust-analyzer open（design-v2 §4.3 余项清偿） |
 | v2.75 | E2E 扩面 17 例 + 工具步骤卡标签补全（§18.1——新增携带/后台任务+PTC/回合操作三 spec；顺手修 run_command 等四个工具缺 KNOWN_TOOLS 与九语言标签缺陷） |
+| v2.76 | 快照种子对象库解析修复——linked worktree 经 commondir 取公共 objects（§10.3 隐性缺陷：alternates 静默不写致首快照 write-tree invalid object，Linux CI 并行子代理 paused） |
