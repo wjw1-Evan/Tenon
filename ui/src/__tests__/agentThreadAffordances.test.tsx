@@ -34,14 +34,20 @@ function setFeedMetrics(scrollTop: number): HTMLElement {
 describe("回底浮钮（v2.58 三件套①）", () => {
   it("距底 ≥160px 显现浮钮；离底期间事件流继续增长出未读徽点；点击回底复位", async () => {
     let call = 0;
+    // 事件流增长由显式开关门控：500ms 轮询在慢环境（CI）下可能在「无徽点」
+    // 断言前就返回新事件，演成时序竞态假红（v2.82 后 CI 实测）。门控后
+    // 「无徽点」断言不依赖轮询时刻，增长由测试主动触发。
+    let grown = false;
     const trace = vi.fn().mockImplementation(() => {
       call += 1;
       if (call === 1)
         return Promise.resolve({ events: twoTurnEvents, latest_seq: 2 });
       // 轮询按 after 游标增量拉取：后续只回新事件（全量重放会重复键）
       return Promise.resolve({
-        events: [{ id: 3, seq: 3, type: "user_input", payload: { text: "任务二" } }],
-        latest_seq: 3,
+        events: grown
+          ? [{ id: 3, seq: 3, type: "user_input", payload: { text: "任务二" } }]
+          : [],
+        latest_seq: grown ? 3 : 2,
       });
     });
     render(<AgentPanel api={baseApi(trace)} t={t} sessionId="s1" />);
@@ -53,7 +59,8 @@ describe("回底浮钮（v2.58 三件套①）", () => {
     fireEvent.scroll(feed);
     expect(screen.getByTestId("agent-jump")).toBeTruthy();
     expect(screen.queryByTestId("agent-jump-dot")).toBeNull();
-    // 离底期间事件流继续增长（500ms 轮询第 2 拉新事件）→ 未读徽点
+    // 离底期间事件流继续增长（下一轮 500ms 轮询拉到新事件）→ 未读徽点
+    grown = true;
     await waitFor(() => expect(screen.getByTestId("agent-jump-dot")).toBeTruthy(), {
       timeout: 3000,
     });
