@@ -63,6 +63,13 @@ export default async function setup() {
   await mkdir(projectB, { recursive: true });
   await writeFile(path.join(projectA, "a.txt"), "alpha\n");
   await writeFile(path.join(projectB, "b.txt"), "beta\n");
+  // 受管 worktree 会话（§9.7 v1.87）要求项目是 git 仓库——`git worktree add
+  // <dir> HEAD` 需已有提交可指。project-a 落一个最小提交；project-b 刻意保持
+  // 非 git（对照组：普通主根会话与查找 / 快照动线均不依赖 git）。
+  execSync(
+    "git init -q && git config user.email tenon-e2e@localhost && git config user.name tenon-e2e && git add -A && git commit -qm 'tenon e2e initial'",
+    { cwd: projectA, stdio: "pipe" },
+  );
 
   const modelServer = await startModelServer();
   const configPath = path.join(workspace, "config.toml");

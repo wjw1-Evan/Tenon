@@ -1,8 +1,8 @@
 // 工作台偏好动线 E2E（§7.5）：外观三态循环按钮（v1.119 单钮：跟随系统 → 浅色
 // → 深色）即时落 data-theme；顶栏语言选择器（v1.100 九语言）切简体中文后界面
 // 文案与 <html lang> 即时切换（语言包懒加载分块真链路）。两者均双写 daemon
-// /ui-prefs（跨启动权威），本 spec 按字母序最后执行，不污染先行 spec 的英文
-// 断言。
+// /ui-prefs（跨启动权威，boot 对齐回写 localStorage）——ui-prefs 是跨 spec
+// 共享态，两测收尾各自还原（auto / system），不依赖字母序垫底假设。
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -44,6 +44,12 @@ test("theme button cycles system → light → dark with data-theme following", 
   await picker.click();
   await expect(picker).toHaveAttribute("data-theme-pref", "dark");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+
+  // 还原「跟随系统」：主题双写 daemon ui-prefs（跨启动权威，boot 对齐回写
+  // localStorage），不还原则后行 spec 全部深色启动——本 spec 已不再字母序
+  // 垫底（worktree-session 在其后），各自收尾还原本档写入。
+  await picker.click();
+  await expect(picker).toHaveAttribute("data-theme-pref", "system");
 });
 
 test("language picker switches the UI to Simplified Chinese live", async ({ page }) => {
@@ -65,4 +71,9 @@ test("language picker switches the UI to Simplified Chinese live", async ({ page
     await page.getByTestId("bottom-close").click();
   }
   await expect(page.getByTestId("bottom-open")).toHaveAttribute("title", "打开底部面板");
+
+  // 还原 auto：语言双写 daemon ui-prefs（跨启动权威，boot 对齐回写
+  // localStorage），不还原则后行 spec（worktree-session 等）全部中文渲染。
+  await page.locator("header.app-head select").first().selectOption("auto");
+  await expect(page.locator("html")).toHaveAttribute("lang", "en");
 });
