@@ -18,6 +18,9 @@ use tenon_sandbox::spawn_command_background;
 const BUFFER_CAP: usize = 512 * 1024;
 /// waiter 轮询周期。
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// 输出排空宽限（v2.81）：进程退出后 stdout/stderr 读取线程可能仍在排空管道，
+/// 查询须等两路归零再取快照，否则丢尾部输出（CI 实测 stderr 尾行缺失）。
+const DRAIN_GRACE: Duration = Duration::from_millis(500);
 
 /// 任务终态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +43,8 @@ pub struct BgTask {
     buffer: Mutex<Vec<u8>>,
     truncated: AtomicBool,
     killed: AtomicBool,
+    /// 尚在排空管道的读取线程数（stdout / stderr 各一，v2.81）。
+    readers: AtomicU32,
     exit: Mutex<Option<ExitState>>,
     child: Mutex<Option<Child>>,
 }
@@ -48,6 +53,11 @@ impl BgTask {
     /// 任务是否已结束（含被杀 / 超时）。
     pub fn is_done(&self) -> bool {
         self.exit.lock().expect("bg exit lock").is_some()
+    }
+
+    /// stdout / stderr 读取线程是否都已排空退出（v2.81）。
+    fn readers_done(&self) -> bool {
+        self.readers.load(Ordering::SeqCst) == 0
     }
 
     /// task_kill：已结束返回 None；否则发终止信号返回 true。
@@ -95,6 +105,7 @@ impl BgRegistry {
             buffer: Mutex::new(Vec::new()),
             truncated: AtomicBool::new(false),
             killed: AtomicBool::new(false),
+            readers: AtomicU32::new(2),
             exit: Mutex::new(None),
             child: Mutex::new(Some(child)),
         });
@@ -122,6 +133,8 @@ impl BgRegistry {
                         }
                     }
                 }
+                // v2.81：排空完毕（EOF / 出错）才计数归零——查询端据此等齐输出
+                task.readers.fetch_sub(1, Ordering::SeqCst);
             });
         }
 
@@ -173,8 +186,18 @@ impl BgRegistry {
     /// 按任务号查询（阻塞等待完成至多 `wait`）。
     pub fn wait_output(&self, id: u32, wait: Duration) -> Option<TaskSnapshot> {
         let task = self.get(id)?;
-        let deadline = Instant::now() + wait;
-        while !task.is_done() && Instant::now() < deadline {
+        let wait_deadline = Instant::now() + wait;
+        let drain_deadline = Instant::now() + DRAIN_GRACE;
+        // v2.81：终态后仍等读取线程排空（宽限内），保证快照输出完整——
+        // 此前 exit 置位即返回，管道未读尽时尾行丢失（CI 实测 stderr 尾行缺失）
+        loop {
+            if task.is_done() {
+                if task.readers_done() || Instant::now() >= drain_deadline {
+                    break;
+                }
+            } else if Instant::now() >= wait_deadline {
+                break;
+            }
             std::thread::sleep(POLL_INTERVAL);
         }
         let buffer =
@@ -275,6 +298,28 @@ mod tests {
             snap.buffer
         );
         assert_eq!(snap.exit.unwrap().code, Some(0));
+    }
+
+    /// v2.81 回归：进程退出后读取线程可能仍在排空管道——查询须等排空再返回，
+    /// 否则丢尾部输出（CI 实测 stderr 尾行缺失；`run_command background` 跑
+    /// 起 dev server / 守护子进程时，父 shell 先退出而管道仍被子进程持有，
+    /// 旧实现立即返回只拿到前半段输出）。
+    #[test]
+    fn output_complete_after_exit_waits_for_readers() {
+        let reg = registry();
+        // 父 shell 立即退出；后台子进程 0.3s 后才写 stderr 并释放管道
+        let cmd = "( sleep 0.3; echo LATE-ERR 1>&2 ) & echo EARLY-OUT; exit 0";
+        let id = reg
+            .spawn(cmd, &std::env::temp_dir(), Duration::from_secs(30))
+            .unwrap();
+        let snap = reg.wait_output(id, Duration::from_secs(5)).unwrap();
+        assert!(!snap.running, "应已结束");
+        assert!(snap.buffer.contains("EARLY-OUT"), "前半段输出须在");
+        assert!(
+            snap.buffer.contains("LATE-ERR"),
+            "退出后仍在写管道的子进程输出须在排空宽限内并入（本回归触发点）: {}",
+            snap.buffer
+        );
     }
 
     #[test]
