@@ -6,6 +6,7 @@
 //! - 会话 / 回滚 / 文件 / 搜索 / 成本端点一一对应 §15 表。
 
 mod auth;
+pub mod browser;
 pub mod exec;
 mod lsp_edit;
 mod pairing;
@@ -135,6 +136,8 @@ pub async fn serve(options: DaemonOptions) -> std::io::Result<DaemonHandle> {
         state.spawn_l4_worker(requests);
     }
 
+    // 浏览器宿主停机回收（§7.6 v2.80）：杀无头 Chrome，不留孤儿进程。
+
     // ProjectRuntime 空闲回收（§6.4）：无活跃任务且超过 TTL 时关闭 watcher / LSP。
     {
         let state = state.clone();
@@ -162,6 +165,16 @@ pub async fn serve(options: DaemonOptions) -> std::io::Result<DaemonHandle> {
     state.port.store(port, std::sync::atomic::Ordering::Relaxed);
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let shutdown_handle = shutdown_tx.subscribe();
+
+    // 浏览器宿主停机回收（§7.6 v2.80）：杀无头 Chrome，不留孤儿进程。
+    {
+        let browser = state.browser.clone();
+        let mut rx = shutdown_handle.clone();
+        tokio::spawn(async move {
+            let _ = rx.wait_for(|v| *v).await;
+            browser.shutdown();
+        });
+    }
 
     // 握手端点文件（§6.2 / §14.1）：随机端口 + token 不入日志；文件 0600。
     // 内存库（测试 serve）不写，避免测试端口污染共享端点；

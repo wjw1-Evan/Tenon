@@ -779,6 +779,9 @@ pub struct DaemonOptions {
     /// 文件监听轮询后端间隔（v1.128 测试确定性通道）；None = 原生后端
     ///（FSEvents/inotify，注册握手 2s 就绪预算 + 后台补注册）。
     pub watch_poll_interval: Option<std::time::Duration>,
+    /// Chrome / Chromium 可执行文件路径覆盖（§7.6 v2.80 浏览器工具面）；
+    /// None = 自动探测（环境变量 TENON_BROWSER_PATH → 平台常见路径）。
+    pub browser_path: Option<std::path::PathBuf>,
 }
 
 impl DaemonOptions {
@@ -811,6 +814,7 @@ impl DaemonOptions {
             skills_dir: None,
             market_base: None,
             watch_poll_interval: None,
+            browser_path: None,
         }
     }
 }
@@ -1328,6 +1332,9 @@ pub struct DaemonState {
     pub l4_status: std::sync::Mutex<HashMap<String, L4IndexStatus>>,
     /// 项目终端（§7.2 v1.197）：project_id → PTY 会话（单实例；项目运行时关闭回收）。
     pub terminals: crate::terminal::TerminalManager,
+    /// 浏览器宿主（§7.6 v2.80）：CDP 驱动本机 Chrome 无头实例，供
+    /// Agent 侧 browser_* 工具；惰性启动（首条命令才起进程）。
+    pub browser: Arc<crate::browser::ChromeBrowser>,
 }
 
 /// L4 索引请求。
@@ -1475,6 +1482,9 @@ impl DaemonState {
             l4_index_rx: std::sync::Mutex::new(Some(l4_index_rx)),
             l4_status: std::sync::Mutex::new(HashMap::new()),
             terminals: crate::terminal::TerminalManager::default(),
+            browser: Arc::new(crate::browser::ChromeBrowser::new(
+                options.browser_path.clone(),
+            )),
         };
         // provider 表统一入口：基础 config + 设置覆盖（settings.json）合并构建（v1.40）
         state.rebuild_providers();

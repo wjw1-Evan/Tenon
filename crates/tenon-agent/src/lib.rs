@@ -8,6 +8,7 @@
 //! 只读开关禁写；C/D 直执并审计。
 
 pub mod bgtask;
+pub mod browser;
 pub mod evals;
 pub mod executor;
 pub mod hooks;

@@ -59,6 +59,9 @@ pub struct AgentConfig {
     pub laya: Option<Arc<tenon_laya::LayaRuntime>>,
     /// daemon 共享 LSP 宿主（§8.5 / §9.2：编辑器与代理同实例）。
     pub lsp: Option<Arc<tenon_lsp::LspManager>>,
+    /// 浏览器宿主（§7.6 v2.80，daemon 注入的 CDP 客户端）；None = daemon
+    /// 未接入，browser_* 工具如实拒绝。
+    pub browser: Option<Arc<dyn crate::browser::BrowserHost>>,
     /// 脏缓冲注册表（§8.6 人机共编；None = daemon 未接入）。
     pub dirty: Option<Arc<tenon_fs::DirtyBufferRegistry>>,
     /// 项目内相对 / 绝对 cwd；命令在项目根沙箱内切到这里执行（§6.4）。
@@ -127,6 +130,7 @@ impl AgentConfig {
             exec_rules: Vec::new(),
             laya: None,
             lsp: None,
+            browser: None,
             dirty: None,
             working_dir: None,
             session_id: None,
@@ -400,6 +404,28 @@ fn tool_specs() -> Vec<ToolSpec> {
         })),
         ("http_fetch", "抓取 URL（C 级直执并审计）", serde_json::json!({
             "type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]
+        })),
+        ("browser_open", "打开浏览器页面并等加载完成（C 级；驱动本机 Chrome 无头实例）——调试本地 dev server 用：先 run_command background=true 起服务，再用本地地址（如 http://127.0.0.1:3000）打开，然后用 browser_console 看报错、browser_eval 断言运行时状态。返回 target_id（后续调用用它指定页面）", serde_json::json!({
+            "type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]
+        })),
+        ("browser_eval", "在页面里求值 JS 并取回结果（C 级）：读 DOM / 算状态 / 断言（如 `document.querySelectorAll('.err').length`）——表达式返回值经 JSON 序列化回传", serde_json::json!({
+            "type": "object",
+            "properties": {
+                "expression": {"type": "string"},
+                "target_id": {"type": "string", "description": "页面句柄；省略 = 最近打开的页面"}
+            },
+            "required": ["expression"]
+        })),
+        ("browser_console", "读页面控制台输出（A 级只读）：console 五级 + 未捕获异常 + 未处理 Promise 拒绝（自 browser_open 起持续收集）；clear=true 读后清空", serde_json::json!({
+            "type": "object",
+            "properties": {
+                "target_id": {"type": "string", "description": "页面句柄；省略 = 最近打开的页面"},
+                "clear": {"type": "boolean", "description": "读后清空缓冲（缺省 false）"}
+            }
+        })),
+        ("browser_close", "关闭浏览器页面（A 级）：target_id 省略 = 关闭全部页面（浏览器进程保留复用）", serde_json::json!({
+            "type": "object",
+            "properties": {"target_id": {"type": "string"}}
         })),
         ("web_search", "网络搜索（C 级直执并审计，免密钥 Bing/DDG 多后端）：返回标题/URL/摘要 JSON 列表；需要时效性信息（新版本、新闻、文档现状）时先用", serde_json::json!({
             "type": "object",
@@ -1043,6 +1069,8 @@ impl AgentSession {
         }
         tool_ctx.dirty = config.dirty.clone();
         tool_ctx.lsp = config.lsp.clone();
+        // §7.6 v2.80：浏览器宿主（daemon 注入；browser_* 工具面）。
+        tool_ctx.browser = config.browser.clone();
         // §13.4 v1.130：技能全局目录与停用名单（停用经 settings 快照，新会话生效）。
         tool_ctx.skills_global_dir = Some(config.skills_global_dir.clone());
         tool_ctx.skills_disabled = config.skills_disabled.clone();

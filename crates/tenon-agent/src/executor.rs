@@ -239,6 +239,8 @@ pub struct ToolContext {
     pub mcp_policy: tenon_mcp::McpLevelPolicy,
     /// 共享 LSP 宿主（§8.5 / §9.2；None = 内核未接入 daemon）。
     pub lsp: Option<std::sync::Arc<tenon_lsp::LspManager>>,
+    /// 浏览器宿主（§7.6 v2.80；None = daemon 未接入，browser_* 如实拒绝）。
+    pub browser: Option<std::sync::Arc<dyn crate::browser::BrowserHost>>,
     /// 技能全局目录（§13.4 v1.130；None = daemon 未接入，skill_use 仅项目级可见）。
     pub skills_global_dir: Option<PathBuf>,
     /// 停用技能名单（settings.json `skills.disabled`，会话创建时快照）。
@@ -305,6 +307,7 @@ impl ToolContext {
             mcp: None,
             mcp_policy: tenon_mcp::McpLevelPolicy::default(),
             lsp: None,
+            browser: None,
             skills_global_dir: None,
             skills_disabled: Vec::new(),
             background: Arc::new(crate::bgtask::BgRegistry::new()),
@@ -1270,6 +1273,95 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                 Ok(Err(e)) | Err(e) => ToolOutput::err(format!("抓取失败: {e}")),
             }
         }
+        // ---------- 浏览器调试工具面（§7.6 v2.80） ----------
+        // 宿主由 daemon 注入（CDP 驱动本机 Chrome 无头实例）；C 级出网面与
+        // http_fetch 同轨（只读会话禁用），browser_console / browser_close 为
+        // A 级只读（读本地缓冲 / 回收自己开的页面），只读会话仍可用。
+        "browser_open" => {
+            if ctx.readonly.load(Ordering::Relaxed) {
+                return ToolOutput::err("只读会话禁用浏览器驱动");
+            }
+            let Some(url) = args.get("url").and_then(|v| v.as_str()) else {
+                return ToolOutput::err("缺少 url 参数");
+            };
+            if !(url.starts_with("http://") || url.starts_with("https://")) {
+                return ToolOutput::err("url 须 http(s)");
+            }
+            let Some(host) = ctx.browser.clone() else {
+                return ToolOutput::err("浏览器宿主未接入（daemon 未提供 browser 设施）");
+            };
+            let url = url.to_string();
+            match run_async(async move { host.open(&url).await }) {
+                Ok(Ok(page)) => ToolOutput::ok(format!(
+                    "已打开页面 target_id={}\n{}\n标题: {}",
+                    page.target_id, page.url, page.title
+                )),
+                Ok(Err(e)) | Err(e) => ToolOutput::err(format!("打开失败: {e}")),
+            }
+        }
+        "browser_eval" => {
+            if ctx.readonly.load(Ordering::Relaxed) {
+                return ToolOutput::err("只读会话禁用浏览器驱动");
+            }
+            let Some(expression) = args.get("expression").and_then(|v| v.as_str()) else {
+                return ToolOutput::err("缺少 expression 参数");
+            };
+            let target = args
+                .get("target_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let Some(host) = ctx.browser.clone() else {
+                return ToolOutput::err("浏览器宿主未接入（daemon 未提供 browser 设施）");
+            };
+            let expression = expression.to_string();
+            match run_async(async move { host.eval(target.as_deref(), &expression).await }) {
+                Ok(Ok(v)) => {
+                    let truncated: String = v.chars().take(20_000).collect();
+                    ToolOutput::ok(tenon_core::redact::redact(&truncated))
+                }
+                Ok(Err(e)) | Err(e) => ToolOutput::err(format!("求值失败: {e}")),
+            }
+        }
+        "browser_console" => {
+            let target = args
+                .get("target_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let clear = args.get("clear").and_then(|v| v.as_bool()).unwrap_or(false);
+            let Some(host) = ctx.browser.clone() else {
+                return ToolOutput::err("浏览器宿主未接入（daemon 未提供 browser 设施）");
+            };
+            match run_async(async move { host.console(target.as_deref(), clear).await }) {
+                Ok(Ok(entries)) if entries.is_empty() => ToolOutput::ok(
+                    "控制台无输出（自 browser_open 起未捕获到 console / 异常）".to_string(),
+                ),
+                Ok(Ok(entries)) => {
+                    let mut text = String::new();
+                    for e in entries.iter().take(200) {
+                        text.push_str(&format!("[{}] {}\n", e.level, e.text));
+                    }
+                    let truncated: String = text.chars().take(20_000).collect();
+                    ToolOutput::ok(tenon_core::redact::redact(&truncated))
+                }
+                Ok(Err(e)) | Err(e) => ToolOutput::err(format!("读控制台失败: {e}")),
+            }
+        }
+        "browser_close" => {
+            let target = args
+                .get("target_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let Some(host) = ctx.browser.clone() else {
+                return ToolOutput::err("浏览器宿主未接入（daemon 未提供 browser 设施）");
+            };
+            match run_async(async move { host.close(target.as_deref()).await }) {
+                Ok(Ok(closed)) if closed.is_empty() => {
+                    ToolOutput::ok("没有打开中的页面".to_string())
+                }
+                Ok(Ok(closed)) => ToolOutput::ok(format!("已关闭页面: {}", closed.join(", "))),
+                Ok(Err(e)) | Err(e) => ToolOutput::err(format!("关闭失败: {e}")),
+            }
+        }
         "web_search" => {
             if ctx.readonly.load(Ordering::Relaxed) {
                 return ToolOutput::err("只读会话禁用网络访问");
@@ -1624,6 +1716,92 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
         (dir, c)
+    }
+
+    #[test]
+    fn browser_tools_dispatch_to_host_and_respect_readonly() {
+        // §7.6 v2.80：宿主未接入如实拒绝——不静默假装成功
+        let (_dir, mut ctx) = ctx();
+        let out = execute_tool(
+            &ctx,
+            "browser_open",
+            &serde_json::json!({"url": "http://127.0.0.1:3000/"}),
+        );
+        assert!(!out.ok && out.content.contains("未接入"), "{}", out.content);
+
+        // 注入假宿主：打开 → 控制台 → 求值 → 关闭全链接线
+        let host = std::sync::Arc::new(crate::browser::fake::FakeBrowser::default());
+        host.logs
+            .lock()
+            .unwrap()
+            .push(crate::browser::ConsoleEntry {
+                level: "error".into(),
+                text: "boom".into(),
+                ts_ms: 1,
+            });
+        ctx.browser = Some(host.clone());
+        let opened = execute_tool(
+            &ctx,
+            "browser_open",
+            &serde_json::json!({"url": "http://127.0.0.1:3000/"}),
+        );
+        assert!(opened.ok, "{}", opened.content);
+        assert!(
+            opened.content.contains("target_id=t1"),
+            "{}",
+            opened.content
+        );
+        assert_eq!(
+            host.opened.lock().unwrap().as_slice(),
+            ["http://127.0.0.1:3000/"]
+        );
+
+        let logs = execute_tool(&ctx, "browser_console", &serde_json::json!({}));
+        assert!(
+            logs.ok && logs.content.contains("[error] boom"),
+            "{}",
+            logs.content
+        );
+
+        let evaluated = execute_tool(
+            &ctx,
+            "browser_eval",
+            &serde_json::json!({"expression": "1+1"}),
+        );
+        assert!(
+            evaluated.ok && evaluated.content.contains("eval:1+1"),
+            "{}",
+            evaluated.content
+        );
+
+        let closed = execute_tool(&ctx, "browser_close", &serde_json::json!({}));
+        assert!(
+            closed.ok && closed.content.contains("all"),
+            "{}",
+            closed.content
+        );
+
+        // 参数校验：非 http(s) 拒绝、缺参数拒绝
+        assert!(
+            !execute_tool(
+                &ctx,
+                "browser_open",
+                &serde_json::json!({"url": "file:///etc/passwd"})
+            )
+            .ok
+        );
+        assert!(!execute_tool(&ctx, "browser_eval", &serde_json::json!({})).ok);
+
+        // 只读会话：C 级驱动拒绝，A 级读控制台仍可用
+        ctx.readonly = std::sync::atomic::AtomicBool::new(true);
+        assert!(execute_tool(
+            &ctx,
+            "browser_open",
+            &serde_json::json!({"url": "http://127.0.0.1:3000/"})
+        )
+        .content
+        .contains("只读"));
+        assert!(execute_tool(&ctx, "browser_console", &serde_json::json!({})).ok);
     }
 
     #[test]

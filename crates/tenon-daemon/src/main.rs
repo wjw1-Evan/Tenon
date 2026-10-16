@@ -177,6 +177,9 @@ async fn main() -> anyhow::Result<()> {
         attachments_dir: None,
         market_base: None,
         watch_poll_interval: None,
+        // 浏览器工具面（§7.6 v2.80）：显式路径走环境变量 TENON_BROWSER_PATH，
+        // 否则自动探测平台常见安装路径（见 browser::detect_chrome）。
+        browser_path: None,
     };
     // --exec headless（v1.181 §6.2）：复用上面 options（含配置发现链），不取锁、
     // 不起 HTTP，与常驻 daemon 经 SQLite 多实例语义并存（§14.2）；stdout 仅事件行

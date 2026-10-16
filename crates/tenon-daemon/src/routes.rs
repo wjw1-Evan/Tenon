@@ -251,6 +251,8 @@ pub(crate) async fn create_agent_session(
         .unwrap_or_else(|| "root".to_string());
     agent_cfg.dirty = Some(state.dirty_buffers_for(&project.id).await);
     agent_cfg.lsp = Some(state.lsp.clone());
+    // §7.6 v2.80：浏览器宿主（browser_* 工具面；惰性启动 Chrome）
+    agent_cfg.browser = Some(state.browser.clone());
     // §11：按 provider 配置单价构建价格表（设置覆盖优先于 config），
     // 会话每回合计价入 model_usage.cost_usd 供成本归因（v2.9 运行仪表）。
     // v2.13 起本块改读 effective_models 合并视图——顺带修复 v1.199 缺口：

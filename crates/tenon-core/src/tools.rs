@@ -2,9 +2,9 @@
 //!
 //! | 级 | 工具 |
 //! |---|---|
-//! | A | read_file / list_dir / grep / glob（v2.61）/ git_read / lsp_query / laya_decide（v1.124）/ skill_use（v1.130 §13.4）/ subtasks（v1.146） |
+//! | A | read_file / list_dir / grep / glob（v2.61）/ git_read / lsp_query / laya_decide（v1.124）/ skill_use（v1.130 §13.4）/ subtasks（v1.146）/ browser_console / browser_close（v2.80 §7.6） |
 //! | B | apply_patch / run_tests / run_build / install_deps / run_code（v2.63 首期 A 级，v2.67 内层写扩展升 B） |
-//! | C | http_fetch / web_search（v1.182） |
+//! | C | http_fetch / web_search（v1.182）/ browser_open / browser_eval（v2.80 §7.6——驱动浏览器即出网面，与 http_fetch 同轨） |
 //! | D | git_commit / git_push / create_pr |
 //! | 按声明 | plugin_*（外部进程插件映射分级） |
 
@@ -56,6 +56,15 @@ pub enum Tool {
     /// 后台任务终止（§9.2，v2.64）：杀进程树，B 级。
     TaskKill,
     HttpFetch,
+    /// 打开 / 复用浏览器页面（§7.6 v2.80）：驱动本机 Chrome/Chromium（CDP），
+    /// 用于调试本地 dev server——C 级（驱动浏览器 = 出网面，与 http_fetch 同轨）。
+    BrowserOpen,
+    /// 在页面里求值 JS（§7.6 v2.80）：读 DOM / 断言运行时状态，C 级。
+    BrowserEval,
+    /// 读页面控制台缓冲（§7.6 v2.80）：console / 异常 / 已捕获日志，A 级只读。
+    BrowserConsole,
+    /// 关闭浏览器页面（§7.6 v2.80）：A 级（只回收自己开的会话）。
+    BrowserClose,
     GitCommit,
     GitPush,
     CreatePr,
@@ -88,6 +97,10 @@ impl Tool {
             Tool::TaskOutput => "task_output",
             Tool::TaskKill => "task_kill",
             Tool::HttpFetch => "http_fetch",
+            Tool::BrowserOpen => "browser_open",
+            Tool::BrowserEval => "browser_eval",
+            Tool::BrowserConsole => "browser_console",
+            Tool::BrowserClose => "browser_close",
             Tool::GitCommit => "git_commit",
             Tool::GitPush => "git_push",
             Tool::CreatePr => "create_pr",
@@ -110,7 +123,9 @@ impl Tool {
             | Tool::SkillUse
             | Tool::Subtasks
             | Tool::SubmitPlan
-            | Tool::McpMeta => Level::A,
+            | Tool::McpMeta
+            | Tool::BrowserConsole
+            | Tool::BrowserClose => Level::A,
             Tool::ApplyPatch
             | Tool::RunTests
             | Tool::RunBuild
@@ -119,7 +134,7 @@ impl Tool {
             | Tool::TaskKill
             | Tool::RunCode
             | Tool::SpawnSubagents => Level::B,
-            Tool::HttpFetch | Tool::WebSearch => Level::C,
+            Tool::HttpFetch | Tool::WebSearch | Tool::BrowserOpen | Tool::BrowserEval => Level::C,
             Tool::GitCommit | Tool::GitPush => Level::D,
             Tool::CreatePr => Level::Composite,
             Tool::Plugin => return None,
@@ -152,6 +167,10 @@ impl Tool {
             "task_output" => Tool::TaskOutput,
             "task_kill" => Tool::TaskKill,
             "http_fetch" => Tool::HttpFetch,
+            "browser_open" => Tool::BrowserOpen,
+            "browser_eval" => Tool::BrowserEval,
+            "browser_console" => Tool::BrowserConsole,
+            "browser_close" => Tool::BrowserClose,
             "git_commit" => Tool::GitCommit,
             "git_push" => Tool::GitPush,
             "create_pr" => Tool::CreatePr,
