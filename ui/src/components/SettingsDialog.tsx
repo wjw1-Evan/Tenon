@@ -144,12 +144,14 @@ export function SettingsDialog({ api, t, settings, saveMode, onSaveModeChange, p
   }, [settings]);
 
   // Esc 关面板（hooks.ts 契约：消费了 Esc 必须 preventDefault，否则事件
-  // 穿透到全局 handler 会误暂停运行中的代理任务）；保存/局域网操作进行中不关
+  // 穿透到全局 handler 会误暂停运行中的代理任务）；保存/局域网操作进行中
+  // 不关——但 Esc 仍须消费（preventDefault），否则穿透后 editorOpen 为假
+  // 即误发 pause，空闲期预发的命令会在下一任务首检查点生效（v1.166）毒化新任务
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
-      if (busy || lanBusy) return;
       event.preventDefault();
+      if (busy || lanBusy) return;
       onClose();
     };
     window.addEventListener("keydown", onKey);

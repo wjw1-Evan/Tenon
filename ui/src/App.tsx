@@ -1002,7 +1002,12 @@ export default function App({
     onInlineInstruction: () => {
         if (activePath) setInlineOpen(true);
       },
-      onStop: () => sessionId && api.control(sessionId, "stop"),
+      onStop: () => {
+        // 暂停/停止只对运行中的回合有意义（§7.4 Esc 语义）。空闲期向控制
+        // 通道预发命令会按 v1.166 语义滞留到下一任务首个检查点生效——新
+        // 任务的首工具调用即被真挂起（v1.93 无限等 Resume），非运行态一律不发。
+        if (sessionId && RUNNING_STATES.has(agentState)) api.control(sessionId, "stop");
+      },
       onSave: () => {
         const p = activePath;
         if (p) void saveNow(p);
@@ -1031,7 +1036,8 @@ export default function App({
           setEditorOpen(false);
           return;
         }
-        if (sessionId) api.control(sessionId, "pause");
+        // 同 onStop：空闲会话不发 pause（滞留命令毒化下一任务，见上注）
+        if (sessionId && RUNNING_STATES.has(agentState)) api.control(sessionId, "pause");
       },
     }),
     [
@@ -1047,6 +1053,7 @@ export default function App({
       createProjectSession,
       closeTab,
       cycleBottomTab,
+      agentState,
     ]
   );
   useShortcuts(handlers);
@@ -1335,6 +1342,7 @@ export default function App({
       unsavedTitle={t("editor.unsaved")}
       goto={gotoLine}
       onSelectionChange={setSelection}
+      onRequestInline={() => setInlineOpen(true)}
       onSelect={setActivePath}
       onClose={closeTab}
       onChange={(p, content) => {
