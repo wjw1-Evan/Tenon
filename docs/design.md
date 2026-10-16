@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | **v2.84** |
+| 版本 | **v2.85** |
 | 日期 | 2026-10-16 |
 | 状态 | 定稿，M0 已验收（附录 D 基线 v2.68 起 glm-5.3-flash **10/10=100%**，violation=0；历史最高），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
@@ -610,7 +610,7 @@ IDLE → SENSING → DECIDING ──无需改──→ ANSWERING → DONE
 | `http_fetch` | C | 直接执行；目标域名写入审计事件 |
 | `web_search`（v1.182；v1.189 多后端） | C | 网络搜索（Bing HTML 主 + DuckDuckGo Lite 兜底，免密钥）：`{query, max_results?}` → 标题 / 链接 / 摘要 JSON；SSRF 守卫与 `http_fetch` 同轨（见下文） |
 | `browser_open` / `browser_eval`（浏览器驱动，v2.80 §7.6） | C | CDP 驱动本机 Chrome / Chromium **无头实例**（惰性启动，独立 user-data-dir）：`browser_open {url}` 开页面并等 `readyState=complete`，返回 `target_id` + 标题 + 最终 URL；`browser_eval {expression, target_id?}` 在页面求值 JS（`returnByValue` + `awaitPromise`，异常如实回报且连接可复用）→ 读 DOM / 断言运行时状态。**与 `http_fetch` 的差异**：目标不设 SSRF 守卫（调试本地 dev server 是主用途，回环地址是常态；能 `run_command` 跑 curl 者本就有同一面），**但只读会话同样禁用**；浏览器可执行文件探测 = `TENON_BROWSER_PATH` 环境变量 → 平台常见安装路径，均未命中如实报错（不静默降级） |
-| `browser_console` / `browser_close`（浏览器驱动，v2.80 §7.6） | A | `browser_console {target_id?, clear?}` 读页面控制台缓冲（自 `browser_open` 起持续收集 console 五级 + 未捕获异常 + 未处理 Promise 拒绝，单页面上限 500 条 / 单条 ≤4000 字符，输出截 20k + redact）；`browser_close {target_id?}` 关页面（省略 = 全部，浏览器进程保留复用）。只读会话可用（读本地缓冲 / 只回收自己开的页面） |
+| `browser_console` / `browser_close`（浏览器驱动，v2.80 §7.6） | A | `browser_console {target_id?, clear?}` 读页面控制台缓冲（自 `browser_open` 起持续收集 console 五级 + 未捕获异常 + 未处理 Promise 拒绝，单页面上限 500 条 / 单条 ≤4000 字符，输出截 20k + redact）；`browser_close {target_id?}` 关页面（省略 = 全部，浏览器进程保留复用）。只读会话可用（读本地缓冲 / 只回收自己开的页面）。**目录修复（v2.85）**：四工具曾漏系统提示工具目录（schema / 分级 / handler 齐备唯目录缺失——模型无从得知工具存在，与 v2.82 lsp_query 同类静默漂移）；本版补目录并加「内置工具枚举 ↔ 目录」完整性守卫（exhaustive match 兜底防守卫清单自身漂移），v2.82 的 schema 守卫枚举同步补列 |
 | `git_commit` / `git_push` | D | 直接执行；命令与结果全量入 Trace |
 | `create_pr` | C+D | 直接执行；目标平台与 PR 元数据全量入 Trace；经本机 `gh` CLI 凭据执行（v1.79） |
 | `mcp_{server}_{tool}`（MCP 插件工具） | 按声明（默认 D；`net:*` → C） | MCP 外部进程插件工具目录（§13.3 / §13.5，v1.145 接线）；只读会话一律拒绝；调用全量入 Trace |

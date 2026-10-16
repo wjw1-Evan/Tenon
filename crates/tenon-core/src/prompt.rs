@@ -166,6 +166,19 @@ pub fn tool_catalog() -> String {
             "网络搜索（免密钥 Bing/DDG 多后端）：返回标题 / 链接 / 摘要列表；需要时效性信息（新版本、新闻、文档现状）时先用",
         ),
         (
+            Tool::BrowserOpen,
+            "打开浏览器页面并等加载完成（C 级，驱动本机 Chrome/Chromium 无头实例）——调试本地 dev server：先 run_command background=true 起服务再用本地地址打开",
+        ),
+        (
+            Tool::BrowserEval,
+            "在页面里求值 JS 并取回结果（C 级）：读 DOM / 断言运行时状态",
+        ),
+        (
+            Tool::BrowserConsole,
+            "读页面控制台缓冲（A 级只读）：console 五级 + 未捕获异常，看报错用它",
+        ),
+        (Tool::BrowserClose, "关闭浏览器页面（A 级；省略 target_id = 全部）"),
+        (
             Tool::LayaDecide,
             "本地决策器结构化判定（intent / risk / route，零 token、毫秒级）：结果未校准仅作参考，不替代测试与验证",
         ),
@@ -337,6 +350,88 @@ mod tests {
         assert!(c.contains("apply_patch"));
         assert!(c.contains("（B）"));
         assert!(c.contains("（D）"));
+    }
+
+    // v2.85：工具目录完整性守卫——全部静态分级内置工具必须出现在目录里
+    // （v2.80 browser 四工具曾整体漏目录：schema / 分级 / handler 齐备唯独
+    // 目录缺失，模型无从得知工具存在；与 v2.82 lsp_query 同类静默漂移）。
+    // 清单自身由末尾 exhaustive match 兜底：新增 Tool 变体未显式处置时编译失败。
+    #[test]
+    fn tool_catalog_covers_all_builtin_tools() {
+        const LISTED: &[Tool] = &[
+            Tool::ReadFile,
+            Tool::ListDir,
+            Tool::Grep,
+            Tool::Glob,
+            Tool::RunCode,
+            Tool::GitRead,
+            Tool::LspQuery,
+            Tool::LayaDecide,
+            Tool::SkillUse,
+            Tool::Subtasks,
+            Tool::SubmitPlan,
+            Tool::SpawnSubagents,
+            Tool::WebSearch,
+            Tool::BrowserOpen,
+            Tool::BrowserEval,
+            Tool::BrowserConsole,
+            Tool::BrowserClose,
+            Tool::ApplyPatch,
+            Tool::RunTests,
+            Tool::RunBuild,
+            Tool::InstallDeps,
+            Tool::RunCommand,
+            Tool::TaskOutput,
+            Tool::TaskKill,
+            Tool::HttpFetch,
+            Tool::GitCommit,
+            Tool::GitPush,
+            Tool::CreatePr,
+        ];
+        let catalog = tool_catalog();
+        for tool in LISTED {
+            assert!(
+                catalog.contains(tool.name()),
+                "系统提示工具目录缺 {}（executor / 分级 / schema 已备，唯目录漏——模型不可达）",
+                tool.name()
+            );
+        }
+        // 穷尽性兜底：新增变体必须显式处置（列入 LISTED，或属动态名工具在此豁免）
+        fn every_variant_accounted(t: Tool) {
+            match t {
+                Tool::ReadFile
+                | Tool::ListDir
+                | Tool::Grep
+                | Tool::Glob
+                | Tool::RunCode
+                | Tool::GitRead
+                | Tool::LspQuery
+                | Tool::LayaDecide
+                | Tool::SkillUse
+                | Tool::Subtasks
+                | Tool::SubmitPlan
+                | Tool::SpawnSubagents
+                | Tool::WebSearch
+                | Tool::BrowserOpen
+                | Tool::BrowserEval
+                | Tool::BrowserConsole
+                | Tool::BrowserClose
+                | Tool::ApplyPatch
+                | Tool::RunTests
+                | Tool::RunBuild
+                | Tool::InstallDeps
+                | Tool::RunCommand
+                | Tool::TaskOutput
+                | Tool::TaskKill
+                | Tool::HttpFetch
+                | Tool::GitCommit
+                | Tool::GitPush
+                | Tool::CreatePr => {}
+                // 动态名工具（name() 为通配）：目录覆盖方式不同，豁免
+                Tool::McpMeta | Tool::Plugin => {}
+            }
+        }
+        every_variant_accounted(Tool::ReadFile);
     }
 
     // v1.104：L5 跨会话记忆节——参考数据标注、条数上限与 token 预算裁剪。
