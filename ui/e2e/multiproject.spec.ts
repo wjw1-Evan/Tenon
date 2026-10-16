@@ -38,6 +38,16 @@ test("concurrent projects keep writes and rollbacks isolated", async ({ page }) 
 
   // 登记即用：切回 A 执行首个写入 / 回滚链路（点击文件夹行即切换并展开）。
   await page.getByTestId("project-list").getByText("project-a", { exact: true }).click();
+  await expect(
+    page.getByTestId("project-list").getByText("project-a", { exact: true }).locator("xpath=ancestor::div[1]")
+  ).toHaveClass(/active/, { timeout: 20_000 });
+
+  // 先开全新会话再发任务（checkpoint-rollback 同款纪律）：App 激活项目最近
+  // 会话——共享 daemon 下 A 的最近会话可能是上一 spec（message-queue）强行
+  // 停止过的会话，携带未闭合的 tool_call 残迹；实测复用会让 mock 按「最后
+  // 一条 user 非写入指令」作答「missing write directive」，断言失真。
+  // 待 A 行 active 落定再点：project-new-task 作用 active 项目，防会话开到 B。
+  await page.getByTestId("project-new-task").click();
 
   // A 写入任务：v1.89 直接执行并落盘。
   const taskA = [
