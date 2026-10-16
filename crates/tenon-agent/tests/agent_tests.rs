@@ -930,7 +930,15 @@ async fn model_failure_rolls_back_to_pre_task_state() {
     .await;
     let outcome = session.run_task("改文件").await;
     match outcome {
-        TaskOutcome::Error(msg) => assert!(msg.contains("provider down")),
+        // v2.89 §9.1：模型错误经分类化载荷生成友好文案——上游原始报文
+        //（"provider down"）不再直显于用户可见的 outcome 文本。
+        TaskOutcome::Error(msg) => {
+            assert!(msg.contains("模型鉴权失败"), "应为友好分类文案，实际 {msg}");
+            assert!(
+                !msg.contains("provider down"),
+                "不应泄漏上游原始报文：{msg}"
+            );
+        }
         other => panic!("期望 Error，实际 {other:?}"),
     }
     assert!(

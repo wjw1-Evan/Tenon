@@ -1987,6 +1987,12 @@ button:disabled { opacity: 0.45; cursor: default; }
   white-space: pre-wrap;
   word-break: break-word;
 }
+/* v2.89 §9.1 对话错误友好化：可行动指引（hint）随错误行呈现 */
+.turn-error-hint {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
 .turn-note {
   font-size: 11.5px;
   color: var(--muted);

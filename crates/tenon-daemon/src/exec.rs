@@ -119,7 +119,36 @@ fn format_event(kind: &EventKind, payload: &serde_json::Value) -> Option<String>
             payload["event"].as_str().unwrap_or(""),
             payload["action"].as_str().unwrap_or("")
         ),
-        EventKind::Error => format!("✗ {}", payload["error"].as_str().unwrap_or("")),
+        // v2.89 §9.1：错误载荷可能不含 error 键（denied / interrupted /
+        // rollback_failed / snapshot_unavailable），按键择一，避免打印空行。
+        EventKind::Error => {
+            let text = payload["error"]
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| {
+                    payload["interrupted"]
+                        .as_str()
+                        .map(|s| format!("已中断：{s}"))
+                })
+                .or_else(|| {
+                    payload["rollback_failed"]
+                        .as_str()
+                        .map(|s| format!("回滚失败：{s}"))
+                })
+                .or_else(|| payload["denied"].as_str().map(|s| format!("已拒绝：{s}")))
+                .or_else(|| {
+                    payload["snapshot_unavailable"]
+                        .as_str()
+                        .map(|s| format!("快照不可用：{s}"))
+                })
+                .unwrap_or_default();
+            let hint = payload["hint"].as_str().unwrap_or("");
+            if hint.is_empty() {
+                format!("✗ {text}")
+            } else {
+                format!("✗ {text}（{hint}）")
+            }
+        }
         _ => return None,
     })
 }

@@ -208,6 +208,10 @@ fn spawn_daemon(app: &tauri::AppHandle) -> Result<(Child, Handshake), String> {
         // v1.157（§12.6 用户裁定）：桌面启动即绑 0.0.0.0，局域网设备凭一次性
         // 配对码配对后可访问 Web 版（门禁与吊销见 daemon §12.6）
         .arg("--lan")
+        // v2.88（§6.2）：父进程看门狗——壳被强杀 / 崩溃（on_window_event 清理
+        // 不执行）时 daemon 自检父进程消失即优雅停机退出，不留孤儿 daemon
+        .arg("--parent-pid")
+        .arg(std::process::id().to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     if let Some(cfg) = discover_config(&project) {

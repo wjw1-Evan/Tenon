@@ -768,6 +768,66 @@ fn clamp_chars(text: &str, max: usize) -> String {
     out
 }
 
+/// v2.89 §9.1 对话错误友好化：把模型调用穷尽的上游错误分类为可行动载荷
+/// （`code` + 友好中文 `message` + `hint` + 截断的 `detail`）。UI 按 `code`
+/// 渲染引导（鉴权 / 配置类给「打开设置」入口）；不再把 provider 原始报文
+/// 直接倾泻进用户对话。`error` 键保留为友好 message（headless / 旧库兼容）。
+fn model_error_payload(e: &tenon_models::ProviderError, provider: &str) -> serde_json::Value {
+    use tenon_models::ProviderError as PE;
+    // detail 只留尾部 200 字符（上游报文体可能很长且含 JSON）。
+    let raw = e.to_string();
+    let detail = clamp_chars(&raw, 200);
+    let (code, message, hint): (&str, String, &str) = match e {
+        PE::MissingKey(_) => (
+            "model_auth",
+            "模型未配置可用的 API Key".to_string(),
+            "请在设置 → 模型中为该 provider 填写 API Key",
+        ),
+        PE::Http { status, .. } if *status == 401 || *status == 403 => (
+            "model_auth",
+            format!("模型鉴权失败（HTTP {status}）"),
+            "API Key 可能无效或已过期，请在设置 → 模型中更新",
+        ),
+        PE::Http { status: 404, .. } => (
+            "model_endpoint",
+            "模型接口不可达（HTTP 404）".to_string(),
+            "请检查设置中的 base_url 与模型名是否正确",
+        ),
+        PE::RateLimited { .. } => (
+            "model_rate_limited",
+            "模型服务限流，已自动重试多次仍失败".to_string(),
+            "请稍后重试，或在设置中切换其它模型 / provider",
+        ),
+        PE::Network(_) => (
+            "model_network",
+            "无法连接模型服务".to_string(),
+            "请检查网络连接与设置中的 base_url",
+        ),
+        PE::Parse(_) => (
+            "model_parse",
+            "模型返回内容无法解析".to_string(),
+            "请重试；若持续出现，请在设置中切换模型",
+        ),
+        PE::Config(_) => (
+            "model_config",
+            "模型配置无效".to_string(),
+            "请在设置 → 模型中检查该 provider 的配置",
+        ),
+        PE::Http { status, .. } => (
+            "model_http",
+            format!("模型服务返回错误（HTTP {status}）"),
+            "请稍后重试；若持续出现，请检查设置或切换模型",
+        ),
+    };
+    serde_json::json!({
+        "error": message,
+        "code": code,
+        "hint": hint,
+        "provider": provider,
+        "detail": detail,
+    })
+}
+
 /// 把重建的对话轮次渲染为前置消息（§9.1 v2.72）：取最近 [`MAX_CONVERSATION_TURNS`]
 /// 轮，[`MAX_CONVERSATION_TOKENS`] 预算内自最旧整轮丢弃（单轮字符上限保证最新一轮
 /// 恒可容纳）；输出 `[user, assistant?, user, assistant?, …]` 时间序。
@@ -2020,144 +2080,157 @@ impl AgentSession {
             messages.splice(1..1, inserted.iter().cloned());
             task_user_index = 1 + inserted.len();
         }
-        'rounds: loop {
-            self.force_state(State::Deciding).await;
-            self.set_status(SessionStatus::Deciding).await;
+        // v2.89 §9.4 验证失败自动修复循环（「有问题产品自动解决」语义）：验证不通过
+        // 时把失败详情回灌模型自动修复，轮次受 config.fix_rounds 约束（§9.4 ≤3；
+        // 低强度降级通道 ≤1）；「本次修复轮零文件改动」时提前收敛停止
+        //（§9.4「失败数不增 / 无新变化即停」的可判定子集）。修复轮不产生用户可见
+        // 的错误——它只是模型继续工作的又一轮，UI 以「自动修复中」提示卡呈现。
+        let mut fix_round: u32 = 0;
+        let mut fix_changed_before: usize = 0;
+        'fix: loop {
+            'rounds: loop {
+                self.force_state(State::Deciding).await;
+                self.set_status(SessionStatus::Deciding).await;
 
-            // ---- 历史压缩（§10.2 v1.105 → v2.14 两阶段摘要式）：
-            // ①确定性剪枝先行（elide 陈旧工具输出）②剪枝后仍超阈值 → 摘要保留
-            // 早期语义（成对移除 + provider 单轮摘要插回），失败回退纯省略式。
-            // v1.161 手动压缩：ControlCommand::Compact 置位后跳过阈值强制执行一次（标志即消费）。
-            // 压缩后自检配对完整性，失败则本回合放弃压缩（保持原历史）----
-            let est_tokens = estimate_messages_tokens(&messages);
-            let manual_compact = self.force_compact.swap(false, Ordering::SeqCst);
-            if manual_compact
-                || est_tokens > self.config.compaction_input_tokens
-                || last_input_tokens > self.config.compaction_input_tokens
-            {
-                if let Some((mut compacted, elided)) = elide_stale_tool_outputs(&messages) {
-                    if tool_call_pairs_intact(&compacted) {
-                        // v2.14 阶段②：仅自适应放行的大阈值（> 24k 基线，即
-                        // 用户配置了 provider 窗口 / 显式阈值）且 elide 后仍超
-                        // 时摘要——缺省 24k 维持 v1 纯省略式（摘要的收益场景是
-                        // 大窗口保留更多语义；小阈值下深度移除信息损失大于收益）。
-                        let mut mode = "elide";
-                        let mut summary_text: Option<String> = None;
-                        let mut removed_rounds = 0usize;
-                        if self.config.compaction_input_tokens
-                            > tenon_core::context::MIN_COMPACTION_INPUT_TOKENS
-                            && estimate_messages_tokens(&compacted)
-                                > self.config.compaction_input_tokens
-                        {
-                            let target = self.config.compaction_input_tokens / 5 * 4; // 保留尾 ≤ 阈值 ×80%
-                            if let Some(prune) =
-                                summarize_prune_earlyrounds(&compacted, target, task_user_index)
+                // ---- 历史压缩（§10.2 v1.105 → v2.14 两阶段摘要式）：
+                // ①确定性剪枝先行（elide 陈旧工具输出）②剪枝后仍超阈值 → 摘要保留
+                // 早期语义（成对移除 + provider 单轮摘要插回），失败回退纯省略式。
+                // v1.161 手动压缩：ControlCommand::Compact 置位后跳过阈值强制执行一次（标志即消费）。
+                // 压缩后自检配对完整性，失败则本回合放弃压缩（保持原历史）----
+                let est_tokens = estimate_messages_tokens(&messages);
+                let manual_compact = self.force_compact.swap(false, Ordering::SeqCst);
+                if manual_compact
+                    || est_tokens > self.config.compaction_input_tokens
+                    || last_input_tokens > self.config.compaction_input_tokens
+                {
+                    if let Some((mut compacted, elided)) = elide_stale_tool_outputs(&messages) {
+                        if tool_call_pairs_intact(&compacted) {
+                            // v2.14 阶段②：仅自适应放行的大阈值（> 24k 基线，即
+                            // 用户配置了 provider 窗口 / 显式阈值）且 elide 后仍超
+                            // 时摘要——缺省 24k 维持 v1 纯省略式（摘要的收益场景是
+                            // 大窗口保留更多语义；小阈值下深度移除信息损失大于收益）。
+                            let mut mode = "elide";
+                            let mut summary_text: Option<String> = None;
+                            let mut removed_rounds = 0usize;
+                            if self.config.compaction_input_tokens
+                                > tenon_core::context::MIN_COMPACTION_INPUT_TOKENS
+                                && estimate_messages_tokens(&compacted)
+                                    > self.config.compaction_input_tokens
                             {
-                                let provider_now = self.provider.read().await.clone();
-                                match self.summarize_history(&provider_now, &prune.raw).await {
-                                    Ok(summary) => {
-                                        let mut m = prune.messages;
-                                        m[prune.placeholder_index] = ChatMessage::user(format!(
+                                let target = self.config.compaction_input_tokens / 5 * 4; // 保留尾 ≤ 阈值 ×80%
+                                if let Some(prune) =
+                                    summarize_prune_earlyrounds(&compacted, target, task_user_index)
+                                {
+                                    let provider_now = self.provider.read().await.clone();
+                                    match self.summarize_history(&provider_now, &prune.raw).await {
+                                        Ok(summary) => {
+                                            let mut m = prune.messages;
+                                            m[prune.placeholder_index] =
+                                                ChatMessage::user(format!(
                                             "[历史摘要（早期对话已压缩，语义保留）]\n{summary}"
                                         ));
-                                        if tool_call_pairs_intact(&m) {
-                                            compacted = m;
-                                            mode = "summary";
-                                            summary_text = Some(summary);
-                                            removed_rounds = prune.removed;
-                                            task_user_index = prune.task_user_index;
+                                            if tool_call_pairs_intact(&m) {
+                                                compacted = m;
+                                                mode = "summary";
+                                                summary_text = Some(summary);
+                                                removed_rounds = prune.removed;
+                                                task_user_index = prune.task_user_index;
+                                            }
                                         }
-                                    }
-                                    Err(e) => {
-                                        // 摘要失败回退省略式（兜底不变式），留痕不中断任务
-                                        tracing::warn!("历史摘要失败，回退省略式压缩: {e}");
+                                        Err(e) => {
+                                            // 摘要失败回退省略式（兜底不变式），留痕不中断任务
+                                            tracing::warn!("历史摘要失败，回退省略式压缩: {e}");
+                                        }
                                     }
                                 }
                             }
+                            let after_tokens = estimate_messages_tokens(&compacted);
+                            messages = compacted;
+                            self.emit(
+                                EventKind::Compaction,
+                                &serde_json::json!({
+                                    "round": round,
+                                    "before_est_tokens": est_tokens,
+                                    "after_est_tokens": after_tokens,
+                                    "elided_tool_results": elided,
+                                    "manual": manual_compact,
+                                    "mode": mode,
+                                    "summary_text": summary_text.as_deref()
+                                        .map(|s| s.chars().take(2_000).collect::<String>()),
+                                    "removed_rounds": removed_rounds,
+                                }),
+                            )
+                            .await;
+                        } else {
+                            tracing::error!(
+                                "历史压缩自检失败：tool_call_id 配对破损，本回合跳过压缩"
+                            );
                         }
-                        let after_tokens = estimate_messages_tokens(&compacted);
-                        messages = compacted;
+                    } else if manual_compact {
+                        // 手动压缩无可省略对象（无陈旧工具输出）——照发事件给 UI 反馈，不静默。
                         self.emit(
                             EventKind::Compaction,
                             &serde_json::json!({
                                 "round": round,
                                 "before_est_tokens": est_tokens,
-                                "after_est_tokens": after_tokens,
-                                "elided_tool_results": elided,
-                                "manual": manual_compact,
-                                "mode": mode,
-                                "summary_text": summary_text.as_deref()
-                                    .map(|s| s.chars().take(2_000).collect::<String>()),
-                                "removed_rounds": removed_rounds,
+                                "after_est_tokens": est_tokens,
+                                "elided_tool_results": 0,
+                                "manual": true,
                             }),
                         )
                         .await;
-                    } else {
-                        tracing::error!("历史压缩自检失败：tool_call_id 配对破损，本回合跳过压缩");
                     }
-                } else if manual_compact {
-                    // 手动压缩无可省略对象（无陈旧工具输出）——照发事件给 UI 反馈，不静默。
-                    self.emit(
-                        EventKind::Compaction,
-                        &serde_json::json!({
-                            "round": round,
-                            "before_est_tokens": est_tokens,
-                            "after_est_tokens": est_tokens,
-                            "elided_tool_results": 0,
-                            "manual": true,
-                        }),
-                    )
-                    .await;
                 }
-            }
 
-            // 只读先验：首轮仅开放 A 级工具（§9.8 预筛语义，只收窄不放宽）；
-            // 模型判断确需改动 → 后续回合恢复全目录（含 MCP 工具，§13.5）
-            let tools = if read_only_prior && round == 0 {
-                tool_specs_read_only()
-            } else {
-                let mut all = tool_specs();
-                all.extend(self.mcp_specs.iter().cloned());
-                all
-            };
-            let provider = self.provider.read().await.clone();
-            let mut request = ChatRequest {
-                model: provider.default_model(),
-                messages: messages.clone(),
-                tools,
-                max_tokens: self.config.generation_max_tokens,
-                temperature: self.config.generation_temperature,
-                reasoning_effort: None,
-            };
-            // v1.171 §9.1 自动恢复：瞬时重试 + 自动 fallback 链在 call_model_resilient
-            // 内完成（不进 ERROR 态）；穷尽才落 ERROR 侧向出口（用户重试 / 切模型 /
-            // 中止语义不变）。返回的 request 已按实际生效 provider 校正 model，
-            // 决策卡如实标注（v1.131 语义）。
-            //
-            // v1.191 §10.2 溢出恢复（DSH 确定借鉴项落地）：穷尽且末次错误为上下文
-            // 超限时，同一回合内强制省略一次陈旧工具输出再重试一次（压缩事件
-            // overflow:true）；再失败照常落 ERROR。压缩不可行（无可省略对象 /
-            // 配对自检失败）不重试——单回合至多恢复一次，防循环。
-            let mut overflow_recovered = false;
-            let (resp, turn_duration_ms, request) = 'overflow_recover: loop {
-                match self.call_model_resilient(&provider, request.clone()).await {
-                    Ok((r, ms, req)) => break (r, ms, req),
-                    Err(ModelTurnError::Interrupted) => {
-                        // 退避等待被打断（Esc / 停止）：按暂停落地，不误报模型失败
-                        self.force_state(State::Paused).await;
-                        self.set_status(SessionStatus::Paused).await;
-                        paused_reason = Some("模型重试等待被打断（Esc / 停止）".into());
-                        break 'rounds;
-                    }
-                    Err(ModelTurnError::Exhausted(e)) => {
-                        if !overflow_recovered && e.is_context_overflow() {
-                            let before = estimate_messages_tokens(&messages);
-                            if let Some((compacted, elided)) = elide_stale_tool_outputs(&messages) {
-                                if tool_call_pairs_intact(&compacted) {
-                                    overflow_recovered = true;
-                                    messages = compacted;
-                                    request.messages = messages.clone();
-                                    self.emit(
+                // 只读先验：首轮仅开放 A 级工具（§9.8 预筛语义，只收窄不放宽）；
+                // 模型判断确需改动 → 后续回合恢复全目录（含 MCP 工具，§13.5）
+                let tools = if read_only_prior && round == 0 {
+                    tool_specs_read_only()
+                } else {
+                    let mut all = tool_specs();
+                    all.extend(self.mcp_specs.iter().cloned());
+                    all
+                };
+                let provider = self.provider.read().await.clone();
+                let mut request = ChatRequest {
+                    model: provider.default_model(),
+                    messages: messages.clone(),
+                    tools,
+                    max_tokens: self.config.generation_max_tokens,
+                    temperature: self.config.generation_temperature,
+                    reasoning_effort: None,
+                };
+                // v1.171 §9.1 自动恢复：瞬时重试 + 自动 fallback 链在 call_model_resilient
+                // 内完成（不进 ERROR 态）；穷尽才落 ERROR 侧向出口（用户重试 / 切模型 /
+                // 中止语义不变）。返回的 request 已按实际生效 provider 校正 model，
+                // 决策卡如实标注（v1.131 语义）。
+                //
+                // v1.191 §10.2 溢出恢复（DSH 确定借鉴项落地）：穷尽且末次错误为上下文
+                // 超限时，同一回合内强制省略一次陈旧工具输出再重试一次（压缩事件
+                // overflow:true）；再失败照常落 ERROR。压缩不可行（无可省略对象 /
+                // 配对自检失败）不重试——单回合至多恢复一次，防循环。
+                let mut overflow_recovered = false;
+                let (resp, turn_duration_ms, request) = 'overflow_recover: loop {
+                    match self.call_model_resilient(&provider, request.clone()).await {
+                        Ok((r, ms, req)) => break (r, ms, req),
+                        Err(ModelTurnError::Interrupted) => {
+                            // 退避等待被打断（Esc / 停止）：按暂停落地，不误报模型失败
+                            self.force_state(State::Paused).await;
+                            self.set_status(SessionStatus::Paused).await;
+                            paused_reason = Some("模型重试等待被打断（Esc / 停止）".into());
+                            break 'rounds;
+                        }
+                        Err(ModelTurnError::Exhausted(e)) => {
+                            if !overflow_recovered && e.is_context_overflow() {
+                                let before = estimate_messages_tokens(&messages);
+                                if let Some((compacted, elided)) =
+                                    elide_stale_tool_outputs(&messages)
+                                {
+                                    if tool_call_pairs_intact(&compacted) {
+                                        overflow_recovered = true;
+                                        messages = compacted;
+                                        request.messages = messages.clone();
+                                        self.emit(
                                         EventKind::Compaction,
                                         &serde_json::json!({
                                             "round": round,
@@ -2169,574 +2242,616 @@ impl AgentSession {
                                         }),
                                     )
                                     .await;
-                                    continue 'overflow_recover;
+                                        continue 'overflow_recover;
+                                    }
                                 }
                             }
+                            // 侧向出口：自动恢复穷尽 → ERROR
+                            // v2.89 §9.1 对话错误友好化：按 ProviderError 分类生成可行动
+                            // 载荷（code + 友好 message + hint），不再把上游原始报文
+                            //（可能带 provider JSON 体）直接倾泻进用户对话。
+                            self.force_state(State::Error).await;
+                            self.set_status(SessionStatus::Error).await;
+                            let payload = model_error_payload(&e, provider.name());
+                            self.emit(EventKind::Error, &payload).await;
+                            error_msg = Some(
+                                payload
+                                    .get("error")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("模型调用失败")
+                                    .to_string(),
+                            );
+                            break 'rounds;
                         }
-                        // 侧向出口：自动恢复穷尽 → ERROR
+                    }
+                };
+                last_input_tokens = resp.usage.input_tokens;
+                let turn_cost_usd = self.record_usage(resp.usage, turn_duration_ms).await;
+                steps += 1;
+
+                // v2.9 运行仪表（design-v2.md §5③ / §6）：每轮发输入构成 breakdown +
+                // 本次 usage（含成本）+ 会话累计——审查面仪表卡消费；估算为字符近似。
+                let breakdown =
+                    context_breakdown(&messages, l1_tokens, l5_tokens, Some(task_user_index));
+                let totals = self
+                    .store
+                    .lock()
+                    .await
+                    .session_usage_totals(&self.session_id)
+                    .unwrap_or_default();
+                self.emit(
+                    EventKind::ContextUsage,
+                    &serde_json::json!({
+                        "breakdown": breakdown,
+                        "est_total": breakdown.system + breakdown.l1 + breakdown.history
+                            + breakdown.l5 + breakdown.tools,
+                        "usage": {
+                            "input_tokens": resp.usage.input_tokens,
+                            "output_tokens": resp.usage.output_tokens,
+                            "cached_input_tokens": resp.usage.cached_input_tokens,
+                            "duration_ms": turn_duration_ms,
+                            "cost_usd": turn_cost_usd,
+                        },
+                        "totals": {
+                            "input_tokens": totals.input_tokens,
+                            "output_tokens": totals.output_tokens,
+                            "cost_usd": totals.cost_usd,
+                        },
+                    }),
+                )
+                .await;
+
+                // 决策意图卡（payload.usage 供 UI 回合页脚缓存命中率 / 输出速度聚合，v1.129）
+                // payload.model 供 UI 气泡下回合模型标注（v1.131：热切换 / fallback 后各回合如实标注）
+                self.emit(
+                    EventKind::Decision,
+                    &serde_json::json!({
+                        "intent": resp.content,
+                        "model": request.model,
+                        "tool_calls": resp.tool_calls.len(),
+                        "usage": {
+                            "input_tokens": resp.usage.input_tokens,
+                            "output_tokens": resp.usage.output_tokens,
+                            "cached_input_tokens": resp.usage.cached_input_tokens,
+                            "duration_ms": turn_duration_ms,
+                        },
+                    }),
+                )
+                .await;
+
+                // v1.53：截断的回复（OpenAI finish_reason=length / Anthropic
+                // stop_reason=max_tokens，各 provider 原样透传）没有工具调用不等于
+                // 任务完成——推送已输出的部分并要求续写，避免长规划被 max_tokens
+                // 剪断后静默 Done。
+                if resp.tool_calls.is_empty()
+                    && matches!(
+                        resp.finish_reason.as_deref(),
+                        Some("length") | Some("max_tokens")
+                    )
+                {
+                    consecutive_truncations += 1;
+                    if consecutive_truncations >= 3 {
                         self.force_state(State::Error).await;
                         self.set_status(SessionStatus::Error).await;
                         self.emit(
-                            EventKind::Error,
-                            &serde_json::json!({"error": e.to_string()}),
-                        )
-                        .await;
-                        error_msg = Some(format!("模型调用失败: {e}"));
-                        break 'rounds;
-                    }
-                }
-            };
-            last_input_tokens = resp.usage.input_tokens;
-            let turn_cost_usd = self.record_usage(resp.usage, turn_duration_ms).await;
-            steps += 1;
-
-            // v2.9 运行仪表（design-v2.md §5③ / §6）：每轮发输入构成 breakdown +
-            // 本次 usage（含成本）+ 会话累计——审查面仪表卡消费；估算为字符近似。
-            let breakdown =
-                context_breakdown(&messages, l1_tokens, l5_tokens, Some(task_user_index));
-            let totals = self
-                .store
-                .lock()
-                .await
-                .session_usage_totals(&self.session_id)
-                .unwrap_or_default();
-            self.emit(
-                EventKind::ContextUsage,
-                &serde_json::json!({
-                    "breakdown": breakdown,
-                    "est_total": breakdown.system + breakdown.l1 + breakdown.history
-                        + breakdown.l5 + breakdown.tools,
-                    "usage": {
-                        "input_tokens": resp.usage.input_tokens,
-                        "output_tokens": resp.usage.output_tokens,
-                        "cached_input_tokens": resp.usage.cached_input_tokens,
-                        "duration_ms": turn_duration_ms,
-                        "cost_usd": turn_cost_usd,
-                    },
-                    "totals": {
-                        "input_tokens": totals.input_tokens,
-                        "output_tokens": totals.output_tokens,
-                        "cost_usd": totals.cost_usd,
-                    },
-                }),
-            )
-            .await;
-
-            // 决策意图卡（payload.usage 供 UI 回合页脚缓存命中率 / 输出速度聚合，v1.129）
-            // payload.model 供 UI 气泡下回合模型标注（v1.131：热切换 / fallback 后各回合如实标注）
-            self.emit(
-                EventKind::Decision,
-                &serde_json::json!({
-                    "intent": resp.content,
-                    "model": request.model,
-                    "tool_calls": resp.tool_calls.len(),
-                    "usage": {
-                        "input_tokens": resp.usage.input_tokens,
-                        "output_tokens": resp.usage.output_tokens,
-                        "cached_input_tokens": resp.usage.cached_input_tokens,
-                        "duration_ms": turn_duration_ms,
-                    },
-                }),
-            )
-            .await;
-
-            // v1.53：截断的回复（OpenAI finish_reason=length / Anthropic
-            // stop_reason=max_tokens，各 provider 原样透传）没有工具调用不等于
-            // 任务完成——推送已输出的部分并要求续写，避免长规划被 max_tokens
-            // 剪断后静默 Done。
-            if resp.tool_calls.is_empty()
-                && matches!(
-                    resp.finish_reason.as_deref(),
-                    Some("length") | Some("max_tokens")
-                )
-            {
-                consecutive_truncations += 1;
-                if consecutive_truncations >= 3 {
-                    self.force_state(State::Error).await;
-                    self.set_status(SessionStatus::Error).await;
-                    self.emit(
                         EventKind::Error,
                         &serde_json::json!({"error": "模型输出连续 3 次被截断（length/max_tokens）"}),
                     )
                     .await;
-                    error_msg = Some("模型输出连续截断（length/max_tokens）".into());
-                    break 'rounds;
-                }
-                messages.push(ChatMessage::assistant(resp.content.clone()));
-                messages.push(ChatMessage::user(
-                    "上一条回复因达到输出长度上限被截断。请从中断处直接继续：只输出剩余内容或发起工具调用，不要重复已输出的部分。",
-                ));
-                round += 1;
-                continue 'rounds;
-            }
-            consecutive_truncations = 0;
-
-            if resp.tool_calls.is_empty() && changed_files.is_empty() {
-                // ---- 纯回答（无需改动）：ANSWERING → SUMMARIZING → DONE ----
-                self.run_turn_hooks(crate::hooks::HookEvent::PostTurn).await;
-                self.force_state(State::Summarizing).await;
-                self.set_status(SessionStatus::Done).await;
-                self.force_state(State::Done).await;
-                return TaskOutcome::Done(EvidenceCard {
-                    answer: resp.content,
-                    changed_files: vec![],
-                    verification: String::new(),
-                    verification_strength: "none".into(),
-                    steps,
-                    rolled_back: false,
-                });
-            }
-            if resp.tool_calls.is_empty() {
-                // 有改动后的收尾回答：跳出循环进入验证（回答入证据卡）
-                messages.push(ChatMessage::assistant(resp.content.clone()));
-                final_answer = Some(resp.content.clone());
-                break 'rounds;
-            }
-
-            // ---- EXECUTING ----
-            self.force_state(State::Executing).await;
-            self.set_status(SessionStatus::Executing).await;
-
-            let mut assistant = ChatMessage::assistant(resp.content.clone());
-            assistant.tool_calls = resp.tool_calls.clone();
-            let mut tool_messages: Vec<ChatMessage> = Vec::new();
-
-            for call in &resp.tool_calls {
-                // Esc 暂停检查点
-                if let Some(cmd) = self.drain_control().await {
-                    match cmd {
-                        ControlCommand::Pause => {
-                            self.force_state(State::Paused).await;
-                            self.set_status(SessionStatus::Paused).await;
-                            // v1.93 真挂起：任务停在原地等 Resume 继续 / Stop 退出。
-                            // （此前直接 break 丢弃任务上下文，resume 命令为空操作。）
-                            loop {
-                                match self.drain_control().await {
-                                    Some(ControlCommand::Resume) => {
-                                        self.force_state(State::Executing).await;
-                                        self.set_status(SessionStatus::Executing).await;
-                                        break;
-                                    }
-                                    Some(ControlCommand::Stop) => {
-                                        paused_reason = Some("用户停止".into());
-                                        break 'rounds;
-                                    }
-                                    Some(ControlCommand::SetReadonly(v)) => {
-                                        self.tool_ctx.readonly.store(v, Ordering::SeqCst);
-                                    }
-                                    Some(ControlCommand::Compact) => {
-                                        self.force_compact.store(true, Ordering::SeqCst);
-                                    }
-                                    _ => tokio::time::sleep(Duration::from_millis(150)).await,
-                                }
-                            }
-                        }
-                        ControlCommand::Stop => {
-                            self.force_state(State::Paused).await;
-                            self.set_status(SessionStatus::Paused).await;
-                            paused_reason = Some("用户暂停".into());
-                            break 'rounds;
-                        }
-                        // 非暂停态收到 resume 无事可做
-                        ControlCommand::Resume => {}
-                        // v1.93 实装：工具步间即时切换只读（此前为空操作）
-                        ControlCommand::SetReadonly(v) => {
-                            self.tool_ctx.readonly.store(v, Ordering::SeqCst);
-                        }
-                        // v1.161 手动压缩：置位标志，下一模型回合跳过阈值强制省略陈旧工具输出
-                        ControlCommand::Compact => {
-                            self.force_compact.store(true, Ordering::SeqCst);
-                        }
-                    }
-                }
-                let tool = Tool::from_name(&call.name);
-                // §13.5 v1.145：MCP 工具分级查策略（默认 D，net:* 服务器工具 → C），
-                // 不落入未知工具的 C 兜底（§13.3：外部插件永不静默升 A/B）。
-                let level = if call.name.starts_with("mcp_") {
-                    match self.tool_ctx.mcp_policy.level_for(&call.name) {
-                        tenon_mcp::McpToolLevel::C => Level::C,
-                        tenon_mcp::McpToolLevel::D => Level::D,
-                    }
-                } else {
-                    tool.and_then(|t| t.level()).unwrap_or(Level::C)
-                };
-
-                let decision = if self.tool_ctx.readonly.load(Ordering::SeqCst) && level != Level::A
-                {
-                    Decision::Denied("readonly")
-                } else {
-                    self.config.policy.decide(Action { level })
-                };
-
-                match decision {
-                    Decision::Denied(reason) => {
-                        self.emit(
-                            EventKind::Error,
-                            &serde_json::json!({"denied": call.name, "reason": reason}),
-                        )
-                        .await;
-                        tool_messages.push(ChatMessage::tool_result(
-                            call.id.clone(),
-                            format!("拒绝（{reason}）：会话为只读，无法执行 {}", call.name),
-                        ));
-                        continue;
-                    }
-                    Decision::Auto => {
-                        // v1.89：C / D 直接执行；目标域等关键参数进入风险审计。
-                        if matches!(level, Level::C | Level::D | Level::Composite) {
-                            self.emit(
-                                EventKind::DirectAction,
-                                &serde_json::json!({
-                                    "direct_action": true,
-                                    "tool": call.name,
-                                    "level": level.as_str(),
-                                    "args": call.arguments,
-                                }),
-                            )
-                            .await;
-                        }
-                    }
-                }
-
-                // ---- v2.19 策略总线统一管线（design-v2.md §3.2 / design.md §12）----
-                // v2.37（ADR-19）四段判定：①分级（read_only 拒写）②命令评估
-                //（execpolicy Block 硬拦 / Hold 放行；install_policy 白名单）
-                // ③hooks（下一段）——单调拒绝：Deny 提前返回，后继段不可翻案。
-                // executor 层 readonly/Block/install 检查保留为防御纵深。
-                let decision = {
-                    let readonly = self.tool_ctx.readonly.load(Ordering::SeqCst);
-                    tenon_core::pipeline::decide(&tenon_core::pipeline::PolicyInput {
-                        tool: &call.name,
-                        level,
-                        args: &call.arguments,
-                        readonly,
-                        exec_rules: &self.config.exec_rules,
-                    })
-                };
-                if let tenon_core::pipeline::PolicyDecision::Deny { stage: _, reason } = &decision {
-                    tool_messages.push(ChatMessage::tool_result(call.id.clone(), reason.clone()));
-                    continue;
-                }
-                // ③ hooks 段（管线序：分级 / 命令评估后、执行前）：pre_tool block 即拒
-                //（v1.180 语义不变——v2.19 起前移至此，执行前已可阻断）
-                if !self.config.hooks.is_empty() {
-                    let hook_outcome = crate::hooks::run_hooks(
-                        &self.config.hooks,
-                        crate::hooks::HookEvent::PreTool,
-                        &crate::hooks::HookContext {
-                            session_id: &self.session_id,
-                            root: &self.tool_ctx.root,
-                            tool: Some(&call.name),
-                            tool_args: Some(&call.arguments.to_string()),
-                            tool_output: None,
-                        },
-                    )
-                    .await;
-                    self.emit_hook_run(&hook_outcome).await;
-                    if hook_outcome.blocked {
-                        tool_messages.push(ChatMessage::tool_result(
-                            call.id.clone(),
-                            format!(
-                                "被 pre_tool hook 阻断: {}",
-                                hook_outcome.block_reason.unwrap_or_default()
-                            ),
-                        ));
-                        continue;
-                    }
-                }
-                // ---- 首改缓冲（§9.3：首个 B 级前，Esc 可断）----
-                if level == Level::B && !self.first_edit_done.load(Ordering::SeqCst) {
-                    self.emit(
-                        EventKind::Decision,
-                        &serde_json::json!({"first_edit": true, "tool": call.name}),
-                    )
-                    .await;
-                    if self
-                        .wait_first_edit_buffer(self.config.first_edit_buffer_ms)
-                        .await
-                    {
-                        self.force_state(State::Paused).await;
-                        self.set_status(SessionStatus::Paused).await;
-                        paused_reason = Some("首改缓冲被打断（Esc）".into());
+                        error_msg = Some("模型输出连续截断（length/max_tokens）".into());
                         break 'rounds;
                     }
-                    self.first_edit_done.store(true, Ordering::SeqCst);
+                    messages.push(ChatMessage::assistant(resp.content.clone()));
+                    messages.push(ChatMessage::user(
+                    "上一条回复因达到输出长度上限被截断。请从中断处直接继续：只输出剩余内容或发起工具调用，不要重复已输出的部分。",
+                ));
+                    round += 1;
+                    continue 'rounds;
+                }
+                consecutive_truncations = 0;
+
+                if resp.tool_calls.is_empty() && changed_files.is_empty() {
+                    // ---- 纯回答（无需改动）：ANSWERING → SUMMARIZING → DONE ----
+                    self.run_turn_hooks(crate::hooks::HookEvent::PostTurn).await;
+                    self.force_state(State::Summarizing).await;
+                    self.set_status(SessionStatus::Done).await;
+                    self.force_state(State::Done).await;
+                    return TaskOutcome::Done(EvidenceCard {
+                        answer: resp.content,
+                        changed_files: vec![],
+                        verification: String::new(),
+                        verification_strength: "none".into(),
+                        steps,
+                        rolled_back: false,
+                    });
+                }
+                if resp.tool_calls.is_empty() {
+                    // 有改动后的收尾回答：跳出循环进入验证（回答入证据卡）
+                    messages.push(ChatMessage::assistant(resp.content.clone()));
+                    final_answer = Some(resp.content.clone());
+                    break 'rounds;
                 }
 
-                // ---- B 级写前：事件级快照（§10.3）----
-                let mut pre_tree: Option<String> = None;
-                if level == Level::B {
-                    match self.snapshots.snapshot() {
-                        Ok(t) => {
-                            let anticipated: Vec<String> = call
-                                .arguments
-                                .get("file")
-                                .and_then(|f| f.as_str())
-                                .map(|f| vec![f.to_string()])
-                                .unwrap_or_default();
-                            // 「先快照后写入，同事务」（§10.3）：checkpoint 行在写盘前
-                            // 落库——EXECUTING 中崩溃也能取到最近恢复点
-                            let mut st = self.store.lock().await;
-                            let _ = st.insert_checkpoint(
-                                &self.session_id,
-                                &t,
-                                &anticipated,
-                                None,
-                                None,
-                            );
-                            drop(st);
-                            pre_tree = Some(t.clone());
-                            last_pre_tree = Some(t);
+                // ---- EXECUTING ----
+                self.force_state(State::Executing).await;
+                self.set_status(SessionStatus::Executing).await;
+
+                let mut assistant = ChatMessage::assistant(resp.content.clone());
+                assistant.tool_calls = resp.tool_calls.clone();
+                let mut tool_messages: Vec<ChatMessage> = Vec::new();
+
+                for call in &resp.tool_calls {
+                    // Esc 暂停检查点
+                    if let Some(cmd) = self.drain_control().await {
+                        match cmd {
+                            ControlCommand::Pause => {
+                                self.force_state(State::Paused).await;
+                                self.set_status(SessionStatus::Paused).await;
+                                // v1.93 真挂起：任务停在原地等 Resume 继续 / Stop 退出。
+                                // （此前直接 break 丢弃任务上下文，resume 命令为空操作。）
+                                loop {
+                                    match self.drain_control().await {
+                                        Some(ControlCommand::Resume) => {
+                                            self.force_state(State::Executing).await;
+                                            self.set_status(SessionStatus::Executing).await;
+                                            break;
+                                        }
+                                        Some(ControlCommand::Stop) => {
+                                            paused_reason = Some("用户停止".into());
+                                            break 'rounds;
+                                        }
+                                        Some(ControlCommand::SetReadonly(v)) => {
+                                            self.tool_ctx.readonly.store(v, Ordering::SeqCst);
+                                        }
+                                        Some(ControlCommand::Compact) => {
+                                            self.force_compact.store(true, Ordering::SeqCst);
+                                        }
+                                        _ => tokio::time::sleep(Duration::from_millis(150)).await,
+                                    }
+                                }
+                            }
+                            ControlCommand::Stop => {
+                                self.force_state(State::Paused).await;
+                                self.set_status(SessionStatus::Paused).await;
+                                paused_reason = Some("用户暂停".into());
+                                break 'rounds;
+                            }
+                            // 非暂停态收到 resume 无事可做
+                            ControlCommand::Resume => {}
+                            // v1.93 实装：工具步间即时切换只读（此前为空操作）
+                            ControlCommand::SetReadonly(v) => {
+                                self.tool_ctx.readonly.store(v, Ordering::SeqCst);
+                            }
+                            // v1.161 手动压缩：置位标志，下一模型回合跳过阈值强制省略陈旧工具输出
+                            ControlCommand::Compact => {
+                                self.force_compact.store(true, Ordering::SeqCst);
+                            }
                         }
-                        Err(e) => return self.snapshot_unavailable(e).await,
                     }
-                }
+                    let tool = Tool::from_name(&call.name);
+                    // §13.5 v1.145：MCP 工具分级查策略（默认 D，net:* 服务器工具 → C），
+                    // 不落入未知工具的 C 兜底（§13.3：外部插件永不静默升 A/B）。
+                    let level = if call.name.starts_with("mcp_") {
+                        match self.tool_ctx.mcp_policy.level_for(&call.name) {
+                            tenon_mcp::McpToolLevel::C => Level::C,
+                            tenon_mcp::McpToolLevel::D => Level::D,
+                        }
+                    } else {
+                        tool.and_then(|t| t.level()).unwrap_or(Level::C)
+                    };
 
-                // ---- Laya 命令风险辅助（§9.8 集成点 #2）：规则引擎为主、
-                // Laya 补盲区；打分仅生成「建议人工确认」提示并入 Trace
-                //（decider_call），不改变 A/B/C/D 分级与档位语义 ----
-                let mut risk_hint: Option<String> = None;
-                if matches!(
-                    call.name.as_str(),
-                    "run_tests" | "run_build" | "install_deps" | "run_command"
-                ) {
-                    let cmd = call
-                        .arguments
-                        .get("command")
-                        .and_then(|c| c.as_str())
-                        .unwrap_or("");
-                    if !cmd.is_empty() {
-                        match tenon_core::risk::rule_risk(cmd) {
-                            Some(score) => {
+                    let decision =
+                        if self.tool_ctx.readonly.load(Ordering::SeqCst) && level != Level::A {
+                            Decision::Denied("readonly")
+                        } else {
+                            self.config.policy.decide(Action { level })
+                        };
+
+                    match decision {
+                        Decision::Denied(reason) => {
+                            self.emit(
+                                EventKind::Error,
+                                &serde_json::json!({"denied": call.name, "reason": reason}),
+                            )
+                            .await;
+                            tool_messages.push(ChatMessage::tool_result(
+                                call.id.clone(),
+                                format!("拒绝（{reason}）：会话为只读，无法执行 {}", call.name),
+                            ));
+                            continue;
+                        }
+                        Decision::Auto => {
+                            // v1.89：C / D 直接执行；目标域等关键参数进入风险审计。
+                            if matches!(level, Level::C | Level::D | Level::Composite) {
                                 self.emit(
-                                    EventKind::DeciderCall,
+                                    EventKind::DirectAction,
                                     &serde_json::json!({
-                                        "feature": "risk",
-                                        "kind": "score",
-                                        "result": (f64::from(score) * 100.0).round() / 100.0,
-                                        "rule": true,
+                                        "direct_action": true,
+                                        "tool": call.name,
+                                        "level": level.as_str(),
+                                        "args": call.arguments,
                                     }),
                                 )
                                 .await;
-                                if score >= 0.7 {
-                                    risk_hint = Some(format!(
+                            }
+                        }
+                    }
+
+                    // ---- v2.19 策略总线统一管线（design-v2.md §3.2 / design.md §12）----
+                    // v2.37（ADR-19）四段判定：①分级（read_only 拒写）②命令评估
+                    //（execpolicy Block 硬拦 / Hold 放行；install_policy 白名单）
+                    // ③hooks（下一段）——单调拒绝：Deny 提前返回，后继段不可翻案。
+                    // executor 层 readonly/Block/install 检查保留为防御纵深。
+                    let decision = {
+                        let readonly = self.tool_ctx.readonly.load(Ordering::SeqCst);
+                        tenon_core::pipeline::decide(&tenon_core::pipeline::PolicyInput {
+                            tool: &call.name,
+                            level,
+                            args: &call.arguments,
+                            readonly,
+                            exec_rules: &self.config.exec_rules,
+                        })
+                    };
+                    if let tenon_core::pipeline::PolicyDecision::Deny { stage: _, reason } =
+                        &decision
+                    {
+                        tool_messages
+                            .push(ChatMessage::tool_result(call.id.clone(), reason.clone()));
+                        continue;
+                    }
+                    // ③ hooks 段（管线序：分级 / 命令评估后、执行前）：pre_tool block 即拒
+                    //（v1.180 语义不变——v2.19 起前移至此，执行前已可阻断）
+                    if !self.config.hooks.is_empty() {
+                        let hook_outcome = crate::hooks::run_hooks(
+                            &self.config.hooks,
+                            crate::hooks::HookEvent::PreTool,
+                            &crate::hooks::HookContext {
+                                session_id: &self.session_id,
+                                root: &self.tool_ctx.root,
+                                tool: Some(&call.name),
+                                tool_args: Some(&call.arguments.to_string()),
+                                tool_output: None,
+                            },
+                        )
+                        .await;
+                        self.emit_hook_run(&hook_outcome).await;
+                        if hook_outcome.blocked {
+                            tool_messages.push(ChatMessage::tool_result(
+                                call.id.clone(),
+                                format!(
+                                    "被 pre_tool hook 阻断: {}",
+                                    hook_outcome.block_reason.unwrap_or_default()
+                                ),
+                            ));
+                            continue;
+                        }
+                    }
+                    // ---- 首改缓冲（§9.3：首个 B 级前，Esc 可断）----
+                    if level == Level::B && !self.first_edit_done.load(Ordering::SeqCst) {
+                        self.emit(
+                            EventKind::Decision,
+                            &serde_json::json!({"first_edit": true, "tool": call.name}),
+                        )
+                        .await;
+                        if self
+                            .wait_first_edit_buffer(self.config.first_edit_buffer_ms)
+                            .await
+                        {
+                            self.force_state(State::Paused).await;
+                            self.set_status(SessionStatus::Paused).await;
+                            paused_reason = Some("首改缓冲被打断（Esc）".into());
+                            break 'rounds;
+                        }
+                        self.first_edit_done.store(true, Ordering::SeqCst);
+                    }
+
+                    // ---- B 级写前：事件级快照（§10.3）----
+                    let mut pre_tree: Option<String> = None;
+                    if level == Level::B {
+                        match self.snapshots.snapshot() {
+                            Ok(t) => {
+                                let anticipated: Vec<String> = call
+                                    .arguments
+                                    .get("file")
+                                    .and_then(|f| f.as_str())
+                                    .map(|f| vec![f.to_string()])
+                                    .unwrap_or_default();
+                                // 「先快照后写入，同事务」（§10.3）：checkpoint 行在写盘前
+                                // 落库——EXECUTING 中崩溃也能取到最近恢复点
+                                let mut st = self.store.lock().await;
+                                let _ = st.insert_checkpoint(
+                                    &self.session_id,
+                                    &t,
+                                    &anticipated,
+                                    None,
+                                    None,
+                                );
+                                drop(st);
+                                pre_tree = Some(t.clone());
+                                last_pre_tree = Some(t);
+                            }
+                            Err(e) => return self.snapshot_unavailable(e).await,
+                        }
+                    }
+
+                    // ---- Laya 命令风险辅助（§9.8 集成点 #2）：规则引擎为主、
+                    // Laya 补盲区；打分仅生成「建议人工确认」提示并入 Trace
+                    //（decider_call），不改变 A/B/C/D 分级与档位语义 ----
+                    let mut risk_hint: Option<String> = None;
+                    if matches!(
+                        call.name.as_str(),
+                        "run_tests" | "run_build" | "install_deps" | "run_command"
+                    ) {
+                        let cmd = call
+                            .arguments
+                            .get("command")
+                            .and_then(|c| c.as_str())
+                            .unwrap_or("");
+                        if !cmd.is_empty() {
+                            match tenon_core::risk::rule_risk(cmd) {
+                                Some(score) => {
+                                    self.emit(
+                                        EventKind::DeciderCall,
+                                        &serde_json::json!({
+                                            "feature": "risk",
+                                            "kind": "score",
+                                            "result": (f64::from(score) * 100.0).round() / 100.0,
+                                            "rule": true,
+                                        }),
+                                    )
+                                    .await;
+                                    if score >= 0.7 {
+                                        risk_hint = Some(format!(
                                         "⚠️ [Laya] 命令风险 {score:.2}（规则命中）——建议人工确认"
                                     ));
+                                    }
                                 }
-                            }
-                            None => {
-                                if let Some(laya) = &self.config.laya {
-                                    match laya.risk(cmd).await {
-                                        tenon_laya::LayaOutcome::Success {
-                                            value,
-                                            duration_ms,
-                                            ..
-                                        } => {
-                                            let score = (f64::from(value) * 100.0).round() / 100.0;
-                                            self.emit(
-                                                EventKind::DeciderCall,
-                                                &serde_json::json!({
-                                                    "feature": "risk",
-                                                    "kind": "score",
-                                                    "result": score,
-                                                    "duration_ms": duration_ms,
-                                                    "rule": false,
-                                                }),
-                                            )
-                                            .await;
-                                            if score >= 0.7 {
-                                                risk_hint = Some(format!(
+                                None => {
+                                    if let Some(laya) = &self.config.laya {
+                                        match laya.risk(cmd).await {
+                                            tenon_laya::LayaOutcome::Success {
+                                                value,
+                                                duration_ms,
+                                                ..
+                                            } => {
+                                                let score =
+                                                    (f64::from(value) * 100.0).round() / 100.0;
+                                                self.emit(
+                                                    EventKind::DeciderCall,
+                                                    &serde_json::json!({
+                                                        "feature": "risk",
+                                                        "kind": "score",
+                                                        "result": score,
+                                                        "duration_ms": duration_ms,
+                                                        "rule": false,
+                                                    }),
+                                                )
+                                                .await;
+                                                if score >= 0.7 {
+                                                    risk_hint = Some(format!(
                                                     "⚠️ [Laya] 命令风险 {score:.2}——建议人工确认"
                                                 ));
+                                                }
                                             }
-                                        }
-                                        other => {
-                                            let reason = match &other {
-                                                tenon_laya::LayaOutcome::Unavailable(r) => {
-                                                    (*r).to_string()
-                                                }
-                                                tenon_laya::LayaOutcome::TimedOut => {
-                                                    "timeout".to_string()
-                                                }
-                                                _ => String::new(),
-                                            };
-                                            self.emit(
-                                                EventKind::DeciderCall,
-                                                &serde_json::json!({
-                                                    "feature": "risk",
-                                                    "kind": "score",
-                                                    "fallback": true,
-                                                    "reason": reason,
-                                                }),
-                                            )
-                                            .await;
+                                            other => {
+                                                let reason = match &other {
+                                                    tenon_laya::LayaOutcome::Unavailable(r) => {
+                                                        (*r).to_string()
+                                                    }
+                                                    tenon_laya::LayaOutcome::TimedOut => {
+                                                        "timeout".to_string()
+                                                    }
+                                                    _ => String::new(),
+                                                };
+                                                self.emit(
+                                                    EventKind::DeciderCall,
+                                                    &serde_json::json!({
+                                                        "feature": "risk",
+                                                        "kind": "score",
+                                                        "fallback": true,
+                                                        "reason": reason,
+                                                    }),
+                                                )
+                                                .await;
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
                     }
-                }
 
-                // ---- 执行 ----
-                // §9.8 #4（v1.124）：laya_decide 走会话循环内联分发（LayaRuntime
-                // 异步推理），不经 execute_tool 同步面；团队策略黑名单在
-                // exec_laya_decide 内同轨检查。
-                //（pre_tool hooks 已随 v2.19 策略总线前移至档位检查之前，见管线③段）
-                // §9.2（v1.146）：subtasks 子任务清单同走内联分发（会话内计划
-                // 状态，零工作区副作用），边界与 Trace 在 exec_subtasks 内同轨。
-                // §9.2（v1.179）：submit_plan 计划提交同轨（零副作用），提交过
-                // 即暂停待批准（plan_pause 在本回合工具循环结束后生效）。
-                let mut output = if call.name == "laya_decide" {
-                    self.exec_laya_decide(&call.arguments).await
-                } else if call.name == "subtasks" {
-                    self.exec_subtasks(&call.arguments).await
-                } else if call.name == "submit_plan" {
-                    let out = self.exec_submit_plan(&call.arguments).await;
-                    if out.ok {
-                        plan_pause = true;
-                    }
-                    out
-                } else if call.name == "spawn_subagents" {
-                    self.exec_spawn_subagents(&call.arguments).await
-                } else {
-                    execute_tool(&self.tool_ctx, &call.name, &call.arguments)
-                };
-                // 风险提示入工具输出（Trace 与模型可见；仅提示，不改分级）
-                if let Some(hint) = &risk_hint {
-                    output.content = format!("{hint}\n{}", output.content);
-                }
-                let output_json = serde_json::to_value(&output).unwrap_or_default();
-                let ev = self
-                    .emit(
-                        if output.changed_files.is_empty() {
-                            EventKind::CommandRun
-                        } else {
-                            EventKind::PatchApplied
-                        },
-                        &serde_json::json!({"tool": call.name, "output": output_json}),
-                    )
-                    .await;
-                // §13.6 v1.180 post_tool hooks（工具执行后；失败仅记 Trace）
-                if !self.config.hooks.is_empty() {
-                    let hook_outcome = crate::hooks::run_hooks(
-                        &self.config.hooks,
-                        crate::hooks::HookEvent::PostTool,
-                        &crate::hooks::HookContext {
-                            session_id: &self.session_id,
-                            root: &self.tool_ctx.root,
-                            tool: Some(&call.name),
-                            tool_args: None,
-                            tool_output: Some(&output.content),
-                        },
-                    )
-                    .await;
-                    self.emit_hook_run(&hook_outcome).await;
-                }
-                // 人机共编冲突（§8.6）：三栏预览事件（你的改动 / 代理改动 / base）
-                if let Some(view) = &output.dirty_conflict {
-                    self.emit(
-                        EventKind::Diagnostics,
-                        &serde_json::json!({
-                            "dirty_conflict": true,
-                            "path": view.path,
-                            "base": view.base,
-                            "ours": view.ours,
-                            "theirs": view.theirs,
-                        }),
-                    )
-                    .await;
-                }
-
-                // AgentTrace 明细（§14.2）
-                if let Some(ev) = &ev {
-                    let mut st = self.store.lock().await;
-                    let _ = st.insert_tool_call(
-                        &self.session_id,
-                        ev.id,
-                        &call.name,
-                        match level {
-                            Level::A => StoreLevel::A,
-                            Level::B => StoreLevel::B,
-                            Level::C => StoreLevel::C,
-                            Level::D => StoreLevel::D,
-                            Level::Composite => StoreLevel::Composite,
-                        },
-                        0,
-                    );
-                }
-
-                // 事件级快照链（B 级）
-                if level == Level::B {
-                    {
-                        let mut touched = self.touched_files.lock().await;
-                        for f in &output.changed_files {
-                            touched.insert(f.clone());
-                            if !changed_files.contains(f) {
-                                changed_files.push(f.clone());
-                            }
+                    // ---- 执行 ----
+                    // §9.8 #4（v1.124）：laya_decide 走会话循环内联分发（LayaRuntime
+                    // 异步推理），不经 execute_tool 同步面；团队策略黑名单在
+                    // exec_laya_decide 内同轨检查。
+                    //（pre_tool hooks 已随 v2.19 策略总线前移至档位检查之前，见管线③段）
+                    // §9.2（v1.146）：subtasks 子任务清单同走内联分发（会话内计划
+                    // 状态，零工作区副作用），边界与 Trace 在 exec_subtasks 内同轨。
+                    // §9.2（v1.179）：submit_plan 计划提交同轨（零副作用），提交过
+                    // 即暂停待批准（plan_pause 在本回合工具循环结束后生效）。
+                    let mut output = if call.name == "laya_decide" {
+                        self.exec_laya_decide(&call.arguments).await
+                    } else if call.name == "subtasks" {
+                        self.exec_subtasks(&call.arguments).await
+                    } else if call.name == "submit_plan" {
+                        let out = self.exec_submit_plan(&call.arguments).await;
+                        if out.ok {
+                            plan_pause = true;
                         }
+                        out
+                    } else if call.name == "spawn_subagents" {
+                        self.exec_spawn_subagents(&call.arguments).await
+                    } else {
+                        execute_tool(&self.tool_ctx, &call.name, &call.arguments)
+                    };
+                    // 风险提示入工具输出（Trace 与模型可见；仅提示，不改分级）
+                    if let Some(hint) = &risk_hint {
+                        output.content = format!("{hint}\n{}", output.content);
                     }
-                    let post_tree = self
-                        .snapshots
-                        .snapshot()
-                        .unwrap_or_else(|_| last_tree.clone());
-                    // 每步 checkpoint（该步快照点 + 改动文件集 + 事件后树，§10.3）：
-                    // tree_after 是「按事件撤销」的三方合并基（v2.84）——缺它则
-                    // revert 对已改文件退化为直接覆盖，用户手改保护失效。
+                    let output_json = serde_json::to_value(&output).unwrap_or_default();
+                    let ev = self
+                        .emit(
+                            if output.changed_files.is_empty() {
+                                EventKind::CommandRun
+                            } else {
+                                EventKind::PatchApplied
+                            },
+                            &serde_json::json!({"tool": call.name, "output": output_json}),
+                        )
+                        .await;
+                    // §13.6 v1.180 post_tool hooks（工具执行后；失败仅记 Trace）
+                    if !self.config.hooks.is_empty() {
+                        let hook_outcome = crate::hooks::run_hooks(
+                            &self.config.hooks,
+                            crate::hooks::HookEvent::PostTool,
+                            &crate::hooks::HookContext {
+                                session_id: &self.session_id,
+                                root: &self.tool_ctx.root,
+                                tool: Some(&call.name),
+                                tool_args: None,
+                                tool_output: Some(&output.content),
+                            },
+                        )
+                        .await;
+                        self.emit_hook_run(&hook_outcome).await;
+                    }
+                    // 人机共编冲突（§8.6）：三栏预览事件（你的改动 / 代理改动 / base）
+                    if let Some(view) = &output.dirty_conflict {
+                        self.emit(
+                            EventKind::Diagnostics,
+                            &serde_json::json!({
+                                "dirty_conflict": true,
+                                "path": view.path,
+                                "base": view.base,
+                                "ours": view.ours,
+                                "theirs": view.theirs,
+                            }),
+                        )
+                        .await;
+                    }
+
+                    // AgentTrace 明细（§14.2）
                     if let Some(ev) = &ev {
                         let mut st = self.store.lock().await;
-                        let _ = st.insert_checkpoint(
+                        let _ = st.insert_tool_call(
                             &self.session_id,
-                            &pre_tree.unwrap_or_else(|| post_tree.clone()),
-                            &output.changed_files,
-                            Some(ev.seq),
-                            Some(&post_tree),
+                            ev.id,
+                            &call.name,
+                            match level {
+                                Level::A => StoreLevel::A,
+                                Level::B => StoreLevel::B,
+                                Level::C => StoreLevel::C,
+                                Level::D => StoreLevel::D,
+                                Level::Composite => StoreLevel::Composite,
+                            },
+                            0,
                         );
                     }
-                    last_tree = post_tree;
+
+                    // 事件级快照链（B 级）
+                    if level == Level::B {
+                        {
+                            let mut touched = self.touched_files.lock().await;
+                            for f in &output.changed_files {
+                                touched.insert(f.clone());
+                                if !changed_files.contains(f) {
+                                    changed_files.push(f.clone());
+                                }
+                            }
+                        }
+                        let post_tree = self
+                            .snapshots
+                            .snapshot()
+                            .unwrap_or_else(|_| last_tree.clone());
+                        // 每步 checkpoint（该步快照点 + 改动文件集 + 事件后树，§10.3）：
+                        // tree_after 是「按事件撤销」的三方合并基（v2.84）——缺它则
+                        // revert 对已改文件退化为直接覆盖，用户手改保护失效。
+                        if let Some(ev) = &ev {
+                            let mut st = self.store.lock().await;
+                            let _ = st.insert_checkpoint(
+                                &self.session_id,
+                                &pre_tree.unwrap_or_else(|| post_tree.clone()),
+                                &output.changed_files,
+                                Some(ev.seq),
+                                Some(&post_tree),
+                            );
+                        }
+                        last_tree = post_tree;
+                    }
+
+                    tool_messages.push(ChatMessage::tool_result(
+                        call.id.clone(),
+                        if output.ok {
+                            output.content.clone()
+                        } else {
+                            format!("失败: {}", output.content)
+                        },
+                    ));
                 }
 
-                tool_messages.push(ChatMessage::tool_result(
-                    call.id.clone(),
-                    if output.ok {
-                        output.content.clone()
+                if !tool_messages.is_empty() {
+                    messages.push(assistant);
+                    messages.extend(tool_messages);
+                }
+
+                // §9.2 v1.179 计划模式：计划提交成功 → 会话转 PAUSED 等待用户批准
+                // （批准 = 发送新回合「按计划执行」，复用 v1.147 发送链路零新控制命令）。
+                // 在工具结果入上下文后暂停——批准后的新回合带完整计划上下文续跑。
+                if plan_pause {
+                    self.force_state(State::Paused).await;
+                    self.set_status(SessionStatus::Paused).await;
+                    paused_reason =
+                        Some("计划已提交，等待批准（批准 = 发送消息「按计划执行」）".into());
+                    break 'rounds;
+                }
+                round += 1;
+            }
+
+            // ---- 验证（VERIFYING，双通道 / 降级通道，§9.4）----
+            if paused_reason.is_none() && error_msg.is_none() && !changed_files.is_empty() {
+                self.force_state(State::Verifying).await;
+                self.set_status(SessionStatus::Verifying).await;
+                let (ok, detail, low) = self.verify(changed_files.clone()).await;
+                verification = format!("{}（{}）", if ok { "通过" } else { "失败" }, detail);
+                verification_strength = if low { "low" } else { "high" };
+                self.emit(
+                    EventKind::Diagnostics,
+                    &serde_json::json!({"verification": detail, "ok": ok, "low": low}),
+                )
+                .await;
+                // v2.89 §9.4：验证不通过 → 自动修复（预算内且本轮确有改动时才继续）
+                if !ok {
+                    let budget = if low {
+                        self.config.fix_rounds.min(1)
                     } else {
-                        format!("失败: {}", output.content)
-                    },
-                ));
+                        self.config.fix_rounds
+                    };
+                    let made_progress = changed_files.len() > fix_changed_before;
+                    if fix_round < budget && (fix_round == 0 || made_progress) {
+                        fix_round += 1;
+                        fix_changed_before = changed_files.len();
+                        self.force_state(State::Fixing).await;
+                        self.set_status(SessionStatus::Fixing).await;
+                        self.emit(
+                            EventKind::Diagnostics,
+                            &serde_json::json!({
+                                "fixing": true,
+                                "round": fix_round,
+                                "of": budget,
+                                "verification": detail,
+                            }),
+                        )
+                        .await;
+                        messages.push(ChatMessage::user(format!(
+                        "验证未通过：{detail}\n请修复上述问题后重新确认（只做必要改动，并用工具重新验证）。"
+                    )));
+                        final_answer = None;
+                        continue 'fix;
+                    }
+                }
             }
-
-            if !tool_messages.is_empty() {
-                messages.push(assistant);
-                messages.extend(tool_messages);
-            }
-
-            // §9.2 v1.179 计划模式：计划提交成功 → 会话转 PAUSED 等待用户批准
-            // （批准 = 发送新回合「按计划执行」，复用 v1.147 发送链路零新控制命令）。
-            // 在工具结果入上下文后暂停——批准后的新回合带完整计划上下文续跑。
-            if plan_pause {
-                self.force_state(State::Paused).await;
-                self.set_status(SessionStatus::Paused).await;
-                paused_reason =
-                    Some("计划已提交，等待批准（批准 = 发送消息「按计划执行」）".into());
-                break 'rounds;
-            }
-            round += 1;
-        }
-
-        // ---- 验证（VERIFYING，双通道 / 降级通道，§9.4）----
-        if paused_reason.is_none() && error_msg.is_none() && !changed_files.is_empty() {
-            self.force_state(State::Verifying).await;
-            self.set_status(SessionStatus::Verifying).await;
-            let (ok, detail, low) = self.verify(changed_files.clone()).await;
-            verification = format!("{}（{}）", if ok { "通过" } else { "失败" }, detail);
-            verification_strength = if low { "low" } else { "high" };
-            self.emit(
-                EventKind::Diagnostics,
-                &serde_json::json!({"verification": detail, "ok": ok, "low": low}),
-            )
-            .await;
+            break 'fix;
         }
 
         // ---- 收尾 ----
@@ -3487,6 +3602,72 @@ mod parallel_write_lock_tests {
         let root_again = lock.lock_for("root").await;
         let contended = tokio::time::timeout(Duration::from_millis(100), root_again.lock()).await;
         assert!(contended.is_err(), "同作用域写锁必须互斥");
+    }
+}
+
+#[cfg(test)]
+mod model_error_payload_tests {
+    use super::*;
+    use tenon_models::ProviderError;
+
+    /// v2.89 §9.1：模型错误分类——鉴权 / 限流 / 网络 / 解析各归其 code，
+    /// message 友好、hint 可行动、有时长 detail，且不裸传上游原始报文。
+    #[test]
+    fn classifies_provider_errors_for_friendly_display() {
+        let auth = model_error_payload(
+            &ProviderError::Http {
+                status: 401,
+                body: "{\"error\":{\"code\":\"1000\"}}".into(),
+            },
+            "glm",
+        );
+        assert_eq!(auth["code"], "model_auth");
+        assert!(!auth["hint"].as_str().unwrap().is_empty());
+        assert_eq!(auth["provider"], "glm");
+
+        let key = model_error_payload(&ProviderError::MissingKey("glm".into()), "glm");
+        assert_eq!(key["code"], "model_auth");
+
+        let rate = model_error_payload(
+            &ProviderError::RateLimited {
+                body: "too many".into(),
+                retry_after: None,
+            },
+            "glm",
+        );
+        assert_eq!(rate["code"], "model_rate_limited");
+
+        let net = model_error_payload(&ProviderError::Network("timeout".into()), "glm");
+        assert_eq!(net["code"], "model_network");
+
+        let parse = model_error_payload(&ProviderError::Parse("bad json".into()), "glm");
+        assert_eq!(parse["code"], "model_parse");
+
+        // 通用 5xx 落 model_http，message 不再等于上游原文拼接。
+        let http = model_error_payload(
+            &ProviderError::Http {
+                status: 500,
+                body: "boom".into(),
+            },
+            "glm",
+        );
+        assert_eq!(http["code"], "model_http");
+        assert!(http["error"].as_str().unwrap().contains("500"));
+    }
+
+    /// detail 截断：超长上游报文只留尾部，防污染对话。
+    #[test]
+    fn detail_is_truncated() {
+        let long = "x".repeat(5000);
+        let p = model_error_payload(
+            &ProviderError::Http {
+                status: 502,
+                body: long,
+            },
+            "glm",
+        );
+        let detail = p["detail"].as_str().unwrap();
+        assert!(detail.chars().count() <= 200, "detail 应截断至 ≤200 字符");
     }
 }
 

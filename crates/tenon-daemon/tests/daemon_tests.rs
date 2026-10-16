@@ -75,6 +75,24 @@ async fn start_daemon_with_project(
 }
 
 #[tokio::test]
+async fn parent_watchdog_shuts_down_when_parent_gone() {
+    // v2.88 §6.2 父进程看门狗：parent_pid 指向不存在的进程时，daemon 应在
+    // 数秒内收到 shutdown（桌面壳强杀 / 崩溃不留孤儿 daemon）。
+    let dir = tempfile::tempdir().unwrap();
+    let mut options = DaemonOptions::in_memory();
+    options.snapshots_root = Some(dir.path().join("snapshots"));
+    options.worktrees_root = Some(dir.path().join("worktrees"));
+    options.endpoint_path = Some(dir.path().join("daemon.endpoint"));
+    options.settings_path = Some(dir.path().join("settings.json"));
+    options.updates_staging_dir = Some(dir.path().join("updates/staged"));
+    options.parent_pid = Some(9_999_999); // 必然不存在的 pid
+    let handle = serve(options).await.unwrap();
+    let mut shutdown = handle.shutdown.clone();
+    let fired = tokio::time::timeout(Duration::from_secs(8), shutdown.wait_for(|v| *v)).await;
+    assert!(fired.is_ok(), "父进程消失后看门狗应触发 shutdown");
+}
+
+#[tokio::test]
 async fn resume_and_message_store_orphan_session_after_restart() {
     // v2.48 懒重建（§10.3）：daemon 重启后 sessions 内存表为空，store 里的会话
     // 列表 / 详情照常可读（直读 store），但恢复 / 发消息此前按内存表查找一律

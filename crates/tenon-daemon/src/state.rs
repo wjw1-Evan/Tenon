@@ -809,6 +809,10 @@ pub struct DaemonOptions {
     /// Chrome / Chromium 可执行文件路径覆盖（§7.6 v2.80 浏览器工具面）；
     /// None = 自动探测（环境变量 TENON_BROWSER_PATH → 平台常见路径）。
     pub browser_path: Option<std::path::PathBuf>,
+    /// 父进程 pid（§6.2 v2.88 看门狗）：桌面壳 spawn 时经 `--parent-pid` 传入，
+    /// 父进程消失即优雅停机退出（壳被强杀 / 崩溃不留孤儿 daemon）；
+    /// None = 无父进程监督（CLI / 无头 / 测试），常驻语义不变。
+    pub parent_pid: Option<i32>,
 }
 
 impl DaemonOptions {
@@ -842,6 +846,7 @@ impl DaemonOptions {
             market_base: None,
             watch_poll_interval: None,
             browser_path: None,
+            parent_pid: None,
         }
     }
 }

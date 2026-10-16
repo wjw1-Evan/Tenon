@@ -38,6 +38,8 @@ pub struct DaemonHandle {
 /// 启动 daemon（绑定 127.0.0.1 随机端口）。
 pub async fn serve(options: DaemonOptions) -> std::io::Result<DaemonHandle> {
     let lan_bind = options.lan_bind;
+    // v2.88 §6.2 父进程看门狗：须在 options 移入 DaemonState 前取出
+    let parent_pid = options.parent_pid;
     // 开发热重载 `--port`：须在 options 移入 DaemonState 前取出
     let port_fixed = options.bind_port.unwrap_or(0);
     let laya_registry_url = options.laya_registry_url.clone();
@@ -165,6 +167,35 @@ pub async fn serve(options: DaemonOptions) -> std::io::Result<DaemonHandle> {
     state.port.store(port, std::sync::atomic::Ordering::Relaxed);
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let shutdown_handle = shutdown_tx.subscribe();
+
+    // 父进程看门狗（§6.2 v2.88）：桌面壳被强杀 / 崩溃时其 on_window_event 清理
+    // 不执行，daemon 自持生命周期——每 2s 探测父进程存活（复用单实例锁同款
+    // pid_alive），消失即触发优雅停机（下面 axum graceful shutdown 收尾端点文件 /
+    // 浏览器子进程），不再在 0.0.0.0 上留下带局域网配对的孤儿 daemon。
+    if let Some(ppid) = parent_pid {
+        let watchdog_tx = shutdown_tx.clone();
+        let mut watchdog_rx = shutdown_handle.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => {
+                        if !pid_alive(ppid) {
+                            tracing::warn!(
+                                "父进程 {ppid} 已退出，daemon 收尾退出（§6.2 看门狗）"
+                            );
+                            // 触发优雅停机；进程退出由 main 侧 await shutdown 完成
+                            //（不在此 process::exit，保证进程内 serve 的测试可控）。
+                            let _ = watchdog_tx.send(true);
+                            return;
+                        }
+                    }
+                    _ = watchdog_rx.wait_for(|v| *v) => return,
+                }
+            }
+        });
+    }
 
     // 浏览器宿主停机回收（§7.6 v2.80）：杀无头 Chrome，不留孤儿进程。
     {

@@ -2045,6 +2045,14 @@ function EventNode({
       return <StepCard ev={ev} t={t} risk={true} />;
     case "diagnostics": {
       if ((ev.payload as { dirty_conflict?: boolean }).dirty_conflict) return null;
+      // v2.89 §9.4：验证失败自动修复——修复轮提示卡（非错误，模型继续工作中）
+      if ((ev.payload as { fixing?: boolean }).fixing) {
+        return (
+          <div className="turn-note" data-testid="turn-fixing">
+            🔧 {t("thread.fixing", { round: Number(ev.payload.round ?? 0), of: Number(ev.payload.of ?? 0) })}
+          </div>
+        );
+      }
       const verification = String(
         (ev.payload as { verification?: string }).verification ?? "",
       ).trim();
@@ -2072,21 +2080,39 @@ function EventNode({
       // 具体原因文案，error 键（模型调用失败等）仍直显上游原文。
       const p = ev.payload as {
         error?: unknown;
+        hint?: unknown;
+        interrupted?: unknown;
+        rollback_failed?: unknown;
         circuit_tripped?: unknown;
         rounds_exhausted?: unknown;
         snapshot_unavailable?: unknown;
       };
+      // v2.89 §6.2：daemon 重启中断不是错误——上下文已保留、可续跑，渲染为
+      // 中性提示（不出现红色错误样式，不再落「未知错误」兜底）。
+      if (p.interrupted !== undefined) {
+        return (
+          <div className="turn-note" data-testid="turn-interrupted">
+            ⏸ {t("thread.interrupted")}
+          </div>
+        );
+      }
+      // v2.89 §9.1：模型错误经 daemon 分类（code/hint），下面按键生成友好文案，
+      // hint 作为可行动指引随行展示；不再倾泻上游原始报文。
+      const hint = typeof p.hint === "string" ? p.hint.trim() : "";
       const detail =
-        p.circuit_tripped !== undefined
-          ? t("thread.error_circuit", { reason: String(p.circuit_tripped) })
-          : p.rounds_exhausted !== undefined
-            ? t("thread.error_rounds", { rounds: Number(p.rounds_exhausted) })
-            : p.snapshot_unavailable !== undefined
-              ? t("thread.error_snapshot", { detail: String(p.snapshot_unavailable) })
-              : String(p.error ?? "") || t("agent.error_fallback");
+        p.rollback_failed !== undefined
+          ? t("thread.rollback_failed", { detail: String(p.rollback_failed) })
+          : p.circuit_tripped !== undefined
+            ? t("thread.error_circuit", { reason: String(p.circuit_tripped) })
+            : p.rounds_exhausted !== undefined
+              ? t("thread.error_rounds", { rounds: Number(p.rounds_exhausted) })
+              : p.snapshot_unavailable !== undefined
+                ? t("thread.error_snapshot", { detail: String(p.snapshot_unavailable) })
+                : String(p.error ?? "") || t("agent.error_fallback");
       return (
         <div className="turn-error" data-testid="turn-error">
           ⚠ {detail}
+          {hint && <div className="turn-error-hint">{hint}</div>}
           {/* v1.204 一键重试：重发该回合原始任务文本（运行态经队列入队） */}
           {onRetry && (
             <button

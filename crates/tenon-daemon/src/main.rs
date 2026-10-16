@@ -5,6 +5,8 @@
 //!       `[--port <n>] [--token <t>]`（后两项开发热重载专用：固定端口 / token）
 //!       `[--web]`（Web 一键启动 v1.76：UI 产物预检 + URL 直出 + 自动开浏览器；
 //!       已有实例存活时复用 endpoint 直接打开浏览器后退出）
+//!       `[--parent-pid <pid>]`（v2.88 §6.2 父进程看门狗：桌面壳 spawn 时传入，
+//!       父进程消失即优雅停机退出，不留孤儿 daemon）
 //!       `[--exec "任务"]`（headless 一次性执行 v1.181：非交互跑完即退，
 //!       退出码 Done=0 / Paused=1 / Error=1；不取单实例锁、不起 HTTP）
 
@@ -35,6 +37,8 @@ async fn main() -> anyhow::Result<()> {
     let mut web = false;
     // v1.181 §6.2 headless：`--exec "任务"` 非交互跑完即退（缺省 cwd）
     let mut exec_task: Option<String> = None;
+    // v2.88 §6.2 父进程看门狗：桌面壳 spawn 时传入，父死即退（防孤儿 daemon）
+    let mut parent_pid: Option<i32> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -47,6 +51,14 @@ async fn main() -> anyhow::Result<()> {
             "--no-lock" => no_lock = true,
             "--lan" => lan_bind = true,
             "--web" => web = true,
+            // v2.88 §6.2：桌面壳 pid，父进程消失即优雅停机退出
+            "--parent-pid" => match args.next().and_then(|v| v.parse::<i32>().ok()) {
+                Some(p) => parent_pid = Some(p),
+                None => {
+                    eprintln!("--parent-pid 需要进程号");
+                    std::process::exit(2);
+                }
+            },
             "--exec" => match args.next() {
                 Some(t) if !t.is_empty() => exec_task = Some(t),
                 _ => {
@@ -180,6 +192,8 @@ async fn main() -> anyhow::Result<()> {
         // 浏览器工具面（§7.6 v2.80）：显式路径走环境变量 TENON_BROWSER_PATH，
         // 否则自动探测平台常见安装路径（见 browser::detect_chrome）。
         browser_path: None,
+        // v2.88 §6.2：桌面壳父进程 pid（无则 None，常驻语义不变）
+        parent_pid,
     };
     // --exec headless（v1.181 §6.2）：复用上面 options（含配置发现链），不取锁、
     // 不起 HTTP，与常驻 daemon 经 SQLite 多实例语义并存（§14.2）；stdout 仅事件行
@@ -219,6 +233,11 @@ async fn main() -> anyhow::Result<()> {
             "token": handle.token,
         })
     );
-    tokio::signal::ctrl_c().await?;
+    // v2.88 §6.2：Ctrl-C 或 shutdown 信号（父进程看门狗 / 优雅停机）均收尾退出
+    let mut shutdown = handle.shutdown.clone();
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = shutdown.wait_for(|v| *v) => {}
+    }
     Ok(())
 }
