@@ -59,14 +59,17 @@ describe("回底浮钮（v2.58 三件套①）", () => {
     fireEvent.scroll(feed);
     expect(screen.getByTestId("agent-jump")).toBeTruthy();
     expect(screen.queryByTestId("agent-jump-dot")).toBeNull();
-    // 离底期间事件流继续增长（下一轮 500ms 轮询拉到新事件）→ 未读徽点
+    // 离底期间事件流继续增长（下一轮 500ms 轮询拉到新事件）→ 未读徽点。
+    // 内容真增长：scrollHeight 同步抬高（组件以「内容超过已见基线」判定徽点，
+    // 防 status 等无内容变化的依赖更新误标未读——CI flake 根因修复的对应面）。
     grown = true;
+    Object.defineProperty(feed, "scrollHeight", { value: 1200, configurable: true });
     await waitFor(() => expect(screen.getByTestId("agent-jump-dot")).toBeTruthy(), {
       timeout: 3000,
     });
     // 点击回底：滚回底部 + 浮钮与徽点复位
     fireEvent.click(screen.getByTestId("agent-jump"));
-    expect(feed.scrollTop).toBe(1000);
+    expect(feed.scrollTop).toBe(1200);
     expect(screen.queryByTestId("agent-jump")).toBeNull();
   });
 

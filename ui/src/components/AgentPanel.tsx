@@ -298,6 +298,11 @@ export function AgentPanel({
   // 自动跟随阈值同源）；feedNew = 离底期间内容继续增长（流式增量 / 新事件）出徽点。
   const [feedAway, setFeedAway] = useState(false);
   const [feedNew, setFeedNew] = useState(false);
+  // 「已见」内容高度基线：徽点只在内容真增长（scrollHeight 超基线）时点亮——
+  // effect 的其它依赖（status 等无内容变化）重跑不得误标未读（CI flake 根因：
+  // getSession 首响应的 passive effect 延迟刷新落在用户滚动几何之后）。滚动 /
+  // 回底即把当前内容标记为已见。
+  const feedSeenHeightRef = useRef(0);
   // v2.60 图片回显：灯箱（全屏看图），Esc 关闭
   const [lightbox, setLightbox] = useState<string | null>(null);
   useEffect(() => {
@@ -478,11 +483,13 @@ export function AgentPanel({
   useEffect(() => {
     const feed = feedRef.current;
     if (!feed) return;
+    const grew = feed.scrollHeight > feedSeenHeightRef.current;
+    feedSeenHeightRef.current = feed.scrollHeight;
     if (feed.scrollHeight - feed.scrollTop - feed.clientHeight < 160) {
       feed.scrollTop = feed.scrollHeight;
       setFeedAway(false);
       setFeedNew(false);
-    } else {
+    } else if (grew) {
       setFeedAway(true);
       setFeedNew(true);
     }
@@ -493,6 +500,7 @@ export function AgentPanel({
   function handleFeedScroll() {
     const feed = feedRef.current;
     if (!feed) return;
+    feedSeenHeightRef.current = feed.scrollHeight;
     const away = feed.scrollHeight - feed.scrollTop - feed.clientHeight >= 160;
     setFeedAway(away);
     if (!away) setFeedNew(false);
@@ -1258,7 +1266,10 @@ export function AgentPanel({
             aria-label={t("thread.jump_bottom")}
             onClick={() => {
               const feed = feedRef.current;
-              if (feed) feed.scrollTop = feed.scrollHeight;
+              if (feed) {
+                feed.scrollTop = feed.scrollHeight;
+                feedSeenHeightRef.current = feed.scrollHeight;
+              }
               setFeedAway(false);
               setFeedNew(false);
             }}
