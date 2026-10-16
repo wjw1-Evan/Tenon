@@ -56,7 +56,10 @@ describe("发送/停止按钮状态化（v1.59；v2.50 互斥单钮）", () => {
     const api = mockApi("executing");
     render(<AgentPanel api={api} t={t} sessionId="s1" />);
     const stopBtn = await screen.findByTestId("stop");
-    expect(stopBtn).toHaveTextContent("message.stop_short");
+    // v2.79：单钮槽图标化——文字退居 aria-label，钮面只渲染图标。
+    expect(stopBtn).toHaveAttribute("aria-label", "message.stop_short");
+    expect(stopBtn.querySelector("svg")).toBeTruthy();
+    expect(stopBtn.textContent).toBe("");
     // v2.50 互斥单钮：空输入运行态仅「停止」，「发送」不并列。
     expect(screen.queryByTestId("send")).toBeNull();
     fireEvent.click(stopBtn);
@@ -68,7 +71,11 @@ describe("发送/停止按钮状态化（v1.59；v2.50 互斥单钮）", () => {
     const api = mockApi("idle");
     render(<AgentPanel api={api} t={t} sessionId="s1" />);
     const sendBtn = await screen.findByTestId("send");
-    expect(sendBtn).toHaveTextContent("message.send");
+    // v2.79：图标单钮——文字退居 aria-label / title（hover 可读），钮面只渲染图标。
+    expect(sendBtn).toHaveAttribute("aria-label", "message.send");
+    expect(sendBtn).toHaveAttribute("title", "message.send");
+    expect(sendBtn.querySelector("svg")).toBeTruthy();
+    expect(sendBtn.textContent).toBe("");
     expect(screen.queryByTestId("stop")).toBeNull();
     fireEvent.change(screen.getByTestId("task-input"), { target: { value: "hi" } });
     fireEvent.click(sendBtn);

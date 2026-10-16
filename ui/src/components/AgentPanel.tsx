@@ -1530,36 +1530,61 @@ export function AgentPanel({
           {/* v1.147（§9.1）：运行态「发送」保留入队语义；v2.50 互斥单钮——
               发送与停止永不并列：运行态有草稿文字仅「发送」（键入即现、
               发送清空后即隐，点击入队），空输入仅「停止」（v1.184 单钮形态延续，
-              v1.184-v2.49 并列补出形态废弃）；键盘入队路径不受影响。暂停仍单钮恢复。 */}
+              v1.184-v2.49 并列补出形态废弃）；键盘入队路径不受影响。暂停仍单钮恢复。
+              v2.79：槽内三态（发送 / 停止 / 恢复）统一图标形态——只渲染图标，文字退居
+              aria-label / title（读屏可达、hover 可读），钮形与尺寸三态一致不再随态变宽。 */}
           {paused ? (
             <button
-              className="agent-send"
+              className="agent-send agent-send-icon"
               onClick={resume}
               disabled={stopRequested || busy}
               data-testid="resume"
+              title={t("message.resume")}
+              aria-label={t("message.resume")}
             >
-              {t("message.resume")}
+              <svg width={12} height={12} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M7 4.5v15l13-7.5z" />
+              </svg>
             </button>
           ) : (
             <>
               {(!running || inputValue.trim() !== "") && (
                 <button
-                  className="agent-send"
+                  className="agent-send agent-send-icon"
                   onClick={send}
                   disabled={(!sessionId && !(draft && onDraftSend)) || busy}
                   data-testid="send"
+                  title={t("message.send")}
+                  aria-label={t("message.send")}
                 >
-                  {t("message.send")}
+                  <svg
+                    width={16}
+                    height={16}
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2.2}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M12 19V5" />
+                    <path d="m5 12 7-7 7 7" />
+                  </svg>
                 </button>
               )}
               {running && inputValue.trim() === "" && (
                 <button
-                  className="agent-send agent-send-stop"
+                  className="agent-send agent-send-stop agent-send-icon"
                   onClick={stop}
                   disabled={stopRequested}
                   data-testid="stop"
+                  title={t("message.stop_short")}
+                  aria-label={t("message.stop_short")}
                 >
-                  {t("message.stop_short")}
+                  <svg width={12} height={12} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <rect x="6" y="6" width="12" height="12" rx="2" />
+                  </svg>
                 </button>
               )}
             </>

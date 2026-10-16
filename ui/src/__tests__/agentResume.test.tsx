@@ -57,7 +57,11 @@ describe("恢复双语义（v2.35 §9.1）", () => {
     const control = vi.fn().mockResolvedValue({ ok: true });
     render(<AgentPanel api={mockApi([], "paused", control)} t={t} sessionId="s1" />);
     const btn = await screen.findByTestId("resume");
-    expect(btn.textContent).toBe("恢复");
+    // v2.79：单钮槽图标化——文字退居 aria-label / title，钮面只渲染图标。
+    expect(btn.getAttribute("aria-label")).toBe("恢复");
+    expect(btn.getAttribute("title")).toBe("恢复");
+    expect(btn.querySelector("svg")).toBeTruthy();
+    expect(btn.textContent).toBe("");
     fireEvent.click(btn);
     await waitFor(() => expect(control).toHaveBeenCalled());
     expect(control.mock.calls[0][0]).toBe("s1");

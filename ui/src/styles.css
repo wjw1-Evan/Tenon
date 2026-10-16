@@ -2164,6 +2164,17 @@ button:disabled { opacity: 0.45; cursor: default; }
   min-width: 0;
 }
 .agent-input .agent-send { margin-left: auto; padding: 5px 15px; flex-shrink: 0; }
+/* v2.79：输入区单钮槽图标化（发送 / 停止 / 恢复）——方形图标钮、三态等宽等高，
+   文字退居 aria-label / title；覆盖上面文字钮的横向 padding 与自然宽度。 */
+.agent-input .agent-send.agent-send-icon {
+  padding: 0;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.agent-input .agent-send.agent-send-icon svg { display: block; }
 .agent-input .model-panel { min-width: 0; }
 .agent-input .model-trigger {
   background: transparent;

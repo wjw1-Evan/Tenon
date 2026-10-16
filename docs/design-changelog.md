@@ -309,3 +309,4 @@
 | v2.76 | 快照种子对象库解析修复——linked worktree 经 commondir 取公共 objects（§10.3 隐性缺陷：alternates 静默不写致首快照 write-tree invalid object，Linux CI 并行子代理 paused） |
 | v2.77 | 内嵌浏览器预览——daemon 回环反代（剥去嵌入限制 + 根绝对 URL 重写 + 控制台桥）+ 底部面板「预览」tab（§7.6：调试本地 dev server 的与人同屏的窗口） |
 | v2.78 | 命令环境工具链白名单透传——修复 env_clear 只给 PATH/HOME/LANG 致 cargo/JAVA_HOME/ssh-agent 全失效（§9.2——浏览器真机实测：定制 rustup 下 cargo 不可用、agent 被迫重装工具链） |
+| v2.79 | 输入区单钮槽图标化——发送 / 停止 / 恢复三态文字转图标（§9.1 v1.147/v2.50：文字退居 aria-label / title，三态等宽方形钮） |
