@@ -9,6 +9,7 @@ mod auth;
 pub mod exec;
 mod lsp_edit;
 mod pairing;
+mod preview;
 mod routes;
 mod state;
 pub mod subagents;

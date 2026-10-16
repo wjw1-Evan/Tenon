@@ -551,5 +551,18 @@
   "palette.flag_on": "기능 켜기",
   "palette.flag_off": "기능 끄기",
   "settings.flags.title": "실험적 기능",
-  "settings.flags.note": "원클릭 롤백——즉시 적용, 재시작 불필요"
+  "settings.flags.note": "원클릭 롤백——즉시 적용, 재시작 불필요",
+  "panel.preview": "브라우저 미리보기",
+  "preview.url_placeholder": "http://localhost:3000",
+  "preview.open": "미리보기",
+  "preview.reload": "새로고침",
+  "preview.external": "브라우저에서 열기",
+  "preview.width": "뷰포트",
+  "preview.width_fit": "자동",
+  "preview.console": "콘솔",
+  "preview.clear": "지우기",
+  "preview.empty": "로컬 dev 서버 주소를 입력하면 여기서 미리볼 수 있습니다(루프백 전용: 127.0.0.1 / localhost).",
+  "preview.invalid": "주소가 잘못되었습니다 — 루프백(127.0.0.1 / localhost)과 명시적 포트가 필요합니다.",
+  "preview.unavailable": "미리보기 프록시를 사용할 수 없습니다 — daemon이 미리보기 토큰을 발급하지 않았습니다.",
+  "preview.logs_empty": "콘솔 출력이 없습니다"
 }

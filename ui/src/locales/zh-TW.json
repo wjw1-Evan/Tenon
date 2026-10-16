@@ -551,5 +551,18 @@
   "palette.flag_on": "開啟特性",
   "palette.flag_off": "關閉特性",
   "settings.flags.title": "實驗特性",
-  "settings.flags.note": "一鍵回退——即時生效，無需重啟"
+  "settings.flags.note": "一鍵回退——即時生效，無需重啟",
+  "panel.preview": "瀏覽器預覽",
+  "preview.url_placeholder": "http://localhost:3000",
+  "preview.open": "預覽",
+  "preview.reload": "重新整理",
+  "preview.external": "在瀏覽器開啟",
+  "preview.width": "視窗",
+  "preview.width_fit": "自適應",
+  "preview.console": "主控台",
+  "preview.clear": "清除",
+  "preview.empty": "填入本機 dev server 位址即可在此預覽（僅回環：127.0.0.1 / localhost）。",
+  "preview.invalid": "位址無效——須為回環主機（127.0.0.1 / localhost）且明確帶埠號。",
+  "preview.unavailable": "預覽代理無法使用——daemon 未下發預覽權杖。",
+  "preview.logs_empty": "尚無主控台輸出"
 }

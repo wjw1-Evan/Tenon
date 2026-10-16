@@ -551,5 +551,18 @@
   "palette.flag_on": "Activer la fonction",
   "palette.flag_off": "Désactiver la fonction",
   "settings.flags.title": "Fonctions expérimentales",
-  "settings.flags.note": "Retour en un clic — effet immédiat, sans redémarrage"
+  "settings.flags.note": "Retour en un clic — effet immédiat, sans redémarrage",
+  "panel.preview": "Aperçu navigateur",
+  "preview.url_placeholder": "http://localhost:3000",
+  "preview.open": "Aperçu",
+  "preview.reload": "Recharger",
+  "preview.external": "Ouvrir dans le navigateur",
+  "preview.width": "Fenêtre",
+  "preview.width_fit": "Ajuster",
+  "preview.console": "Console",
+  "preview.clear": "Effacer",
+  "preview.empty": "Saisissez l'adresse de votre serveur de dev local pour l'apercevoir ici (loopback uniquement : 127.0.0.1 / localhost).",
+  "preview.invalid": "Adresse invalide — hôte loopback (127.0.0.1 / localhost) et port explicite requis.",
+  "preview.unavailable": "Proxy d'aperçu indisponible — le daemon n'a pas émis de jeton.",
+  "preview.logs_empty": "Aucune sortie console pour l'instant"
 }

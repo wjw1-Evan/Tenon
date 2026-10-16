@@ -551,5 +551,18 @@
   "palette.flag_on": "开启特性",
   "palette.flag_off": "关闭特性",
   "settings.flags.title": "实验特性",
-  "settings.flags.note": "一键回退——即时生效，无需重启"
+  "settings.flags.note": "一键回退——即时生效，无需重启",
+  "panel.preview": "浏览器预览",
+  "preview.url_placeholder": "http://localhost:3000",
+  "preview.open": "预览",
+  "preview.reload": "刷新",
+  "preview.external": "在浏览器打开",
+  "preview.width": "视口",
+  "preview.width_fit": "自适应",
+  "preview.console": "控制台",
+  "preview.clear": "清空",
+  "preview.empty": "填写本地 dev server 地址即可在此预览（仅回环：127.0.0.1 / localhost）。",
+  "preview.invalid": "地址无效——须为回环主机（127.0.0.1 / localhost）且显式带端口。",
+  "preview.unavailable": "预览代理不可用——daemon 未下发预览口令。",
+  "preview.logs_empty": "暂无控制台输出"
 }

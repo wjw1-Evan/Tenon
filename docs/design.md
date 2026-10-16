@@ -430,6 +430,19 @@ GlobalScheduler（全局并发 / 成本 / 通知）
 - **Fuzzy finder**：Cmd/Ctrl+P 打开 project-scoped 文件查找；120ms 防抖调用 `/files/fuzzy`（gitignore-aware + fuzzy score），方向键 / Enter 全键盘可达；`path:line` 解析行号并由 Monaco `revealLineInCenter` 定位；
 - **Workspace symbols**：`@query` 切换符号模式；以 active file 选择共享 LSP provider，请求 `workspace_symbol`；LSP URI 归一为项目相对路径 + 1-based line 后直接跳转；无 active file 时不猜测 provider，明确提示；
 
+### 7.6 内嵌浏览器预览（v2.77）
+
+底部面板第五 tab「预览」（`bottomTab` 枚举 timeline / trace / evals / terminal / preview，随项目 ui-state 记忆，Cmd/Ctrl+Alt+J 循环含 preview）——用户在输入框填本地 dev server 地址（`3000` / `localhost:3000` / `http://127.0.0.1:3000/x`），面板经 daemon 反代把页面嵌入 iframe，并把该页控制台汇入面板侧栏。工具条：地址输入 + 预览 / 刷新 / 在浏览器打开（直连 dev server，用系统真 DevTools）/ 视口档（自适应 / 375 / 768 / 1024）/ 控制台开合与清空；地址按项目记忆于 `localStorage("tenon:preview:<project_id>")`，重挂载即自动重开。
+
+**daemon 反代（`crates/tenon-daemon/src/preview.rs`）**：`GET /preview/token`（须鉴权）下发随机 32 字节预览口令与代理前缀 `/preview/<secret>/proxy/`；`/preview/<secret>/proxy/<port>/<path…>`（任意方法）转发到 `http://127.0.0.1:<port>/<path…>`。要点：
+
+- **口令走路径**：iframe 及其子资源（JS / CSS / 图片）都带不了 `X-Tenon-Token`，UI 在 vite dev 下与 daemon 跨源、SameSite cookie 在跨源 iframe 中不可靠——路径前缀对相对 URL 天然继承，根绝对 URL 由反代重写补齐。`/preview/*` 在鉴权中间件豁免，唯一鉴权即路径口令（常时比较）；响应统一 `Referrer-Policy: no-referrer`，防口令随 Referer 外泄给预览页引入的第三方资源；
+- **去嵌入限制**：剥 `X-Frame-Options`、删 CSP 的 `frame-ancestors` 指令（其余 CSP 指令保留）——「拒绝被嵌入」的 dev server 同样可预览；
+- **URL 重写**：HTML 属性（href / src / action / poster）、JS 模块说明符（`from` / `import` / `import(`）、CSS `url()` 补代理前缀；`Location` 指向同端口时改写；协议相对（`//host/x`）与绝对 URL 不动；
+- **控制台桥**：HTML `<head>` 后注入脚本，console 五级 + `error` 事件 + `unhandledrejection` 经 `postMessage` 上报，按 `?__tenon=<频道>` 归户到对应面板实例（异频道与非桥负载一律忽略）；
+- **安全边界**：目标**只允许回环 + 显式端口**（1-65535，拒 0）——放开 host 即把反代变成任意 URL 代理（SSRF 面）；请求体上限 32MB、上游超时 60s、上游不压缩（响应体需就地改写）；上游连不上如实 502（面板据此提示 dev server 未启动）；
+- **已知边界**：HMR WebSocket 不代理（vite 客户端连不上时自行降级轮询 `/__vite_ping`，走代理可达）；`fetch("/api/x")` 这类运行时根绝对请求不在重写面，需 dev server 侧配代理或改用相对路径。
+
 ---
 
 ## 8. 编辑器与文件管理
@@ -814,7 +827,7 @@ A/B/C/D 仅是风险与执行边界标记，不再是审批门槛；去 Plan 安
 
 ### 12.6 本地服务与浏览器访问
 
-默认仅绑 127.0.0.1 + 随机端口（`--lan` 显式开启后绑 0.0.0.0；桌面壳 v1.157 起 spawn 即 `--lan`）；HTTP 用 `X-Tenon-Token` 头；**WS 用一次性 ticket**（浏览器 WebSocket 无法自定义请求头：`POST /ws-ticket` 换 60 秒一次性票据，连接首帧携带，重放即拒）；校验 Origin/Host；**CORS 仅白名单放行应用自身 origin（Tauri WebView 源）与同源请求，其余拒绝**——同源判定为「Origin host == Host host 且 Host 为 IP 字面量」（局域网设备经 IP 直访的必然形态；Host 为域名的请求不在放行之列，DNS rebinding 防线保持：域名 Host 一律按未配对局域网请求 403）；白名单源跨源 dev server 的 `OPTIONS` 预检由本地服务直接 2xx，并显式 `Allow-Headers` / `Allow-Methods` / `Max-Age`；**局域网访问：显式开启（`--lan`）+ 一次性配对 + 可吊销（v1.157 全链落地）**——`lan_bind` 启动即自动启用配对，Host 非回环的请求须持已配对设备令牌 `X-Tenon-Paired`（PairingStore 校验，吊销即失效），免令牌的仅 `POST /lan/pair`（一次性 6 位配对码自证，5 分钟有效）与 `GET /ws`、终端 WS 升级（v1.197 §7.2 `/projects/:id/terminal/ws`，同首帧一次性票据）（浏览器 WebSocket 无法自定义请求头，真实鉴权在首帧一次性票据——票据仅经带鉴权的 `POST /ws-ticket` 签发，未配对设备拿不到）；静态 UI 资产挂载于鉴权层之外（前端代码本身公开，未配对设备可加载 UI、全部 API 仍被拦，据此渲染配对屏）；局域网管理端点：`POST /lan/enable`（重新生成配对码，主 token）、`GET /lan/status`（enabled / 当前码 / 局域网地址 / 已配对设备，主 token，v1.157）、`POST /lan/pair`（`{device, code}` → 设备令牌，免令牌）、`POST /lan/revoke`（`{device}` 吊销，主 token）；登记新项目 / 传本地路径：UI 添加项目模态提交本地绝对路径（v1.43，本机浏览器与桌面壳同权），v1.133 增 `GET /fs/dirs` 目录浏览端点（列任意绝对路径的直接子目录，驱动浏览器模式目录选择器）——其目录名枚举面与 `/projects/open` 同一信任级别：token 鉴权 + Host/Origin 校验之下，能传路径登记项目者本就可读该项目全部文件，列子目录名是严格更小的披露面，未配对局域网请求被中间件 403 挡住；UI 打开项目即静默信任（v1.67），信任仅作为项目作用域元数据保留；公网访问非目标。
+默认仅绑 127.0.0.1 + 随机端口（`--lan` 显式开启后绑 0.0.0.0；桌面壳 v1.157 起 spawn 即 `--lan`）；HTTP 用 `X-Tenon-Token` 头；**WS 用一次性 ticket**（浏览器 WebSocket 无法自定义请求头：`POST /ws-ticket` 换 60 秒一次性票据，连接首帧携带，重放即拒）；校验 Origin/Host；**CORS 仅白名单放行应用自身 origin（Tauri WebView 源）与同源请求，其余拒绝**——同源判定为「Origin host == Host host 且 Host 为 IP 字面量」（局域网设备经 IP 直访的必然形态；Host 为域名的请求不在放行之列，DNS rebinding 防线保持：域名 Host 一律按未配对局域网请求 403）；白名单源跨源 dev server 的 `OPTIONS` 预检由本地服务直接 2xx，并显式 `Allow-Headers` / `Allow-Methods` / `Max-Age`；**局域网访问：显式开启（`--lan`）+ 一次性配对 + 可吊销（v1.157 全链落地）**——`lan_bind` 启动即自动启用配对，Host 非回环的请求须持已配对设备令牌 `X-Tenon-Paired`（PairingStore 校验，吊销即失效），免令牌的仅 `POST /lan/pair`（一次性 6 位配对码自证，5 分钟有效）与 `GET /ws`、终端 WS 升级（v1.197 §7.2 `/projects/:id/terminal/ws`，同首帧一次性票据）、预览反代（v2.77 §7.6 `/preview/<secret>/proxy/...`，路径口令自证）（浏览器 WebSocket 无法自定义请求头，真实鉴权在首帧一次性票据——票据仅经带鉴权的 `POST /ws-ticket` 签发，未配对设备拿不到）；静态 UI 资产挂载于鉴权层之外（前端代码本身公开，未配对设备可加载 UI、全部 API 仍被拦，据此渲染配对屏）；局域网管理端点：`POST /lan/enable`（重新生成配对码，主 token）、`GET /lan/status`（enabled / 当前码 / 局域网地址 / 已配对设备，主 token，v1.157）、`POST /lan/pair`（`{device, code}` → 设备令牌，免令牌）、`POST /lan/revoke`（`{device}` 吊销，主 token）；登记新项目 / 传本地路径：UI 添加项目模态提交本地绝对路径（v1.43，本机浏览器与桌面壳同权），v1.133 增 `GET /fs/dirs` 目录浏览端点（列任意绝对路径的直接子目录，驱动浏览器模式目录选择器）——其目录名枚举面与 `/projects/open` 同一信任级别：token 鉴权 + Host/Origin 校验之下，能传路径登记项目者本就可读该项目全部文件，列子目录名是严格更小的披露面，未配对局域网请求被中间件 403 挡住；UI 打开项目即静默信任（v1.67），信任仅作为项目作用域元数据保留；公网访问非目标。
 
 ### 12.7 仓库信任（TOFU）
 
@@ -1065,6 +1078,8 @@ signature: "<sig>"
 | POST | `/models/verify` | 引导向导试连验证（v1.163）：`{kind?, base_url, model, api_key}`，daemon 以 35s 超时构建临时 provider 发一次极小测试请求（max_tokens=16、GLM 目标 thinking disabled；v1.176 自 15s 上调——glm-4.5-flash 免费档实测响应 14-25s，超时单独文案「上游响应超时」），返回 `{ok:true, model, latency_ms}` 或 4xx `{ok:false, error}`；base_url 须 http(s)；请求体不打日志 |
 | GET | `/costs` | 成本归因（会话级；`?session=` 必带，v1.92 收敛——月度聚合无消费方）；返回体含 `cached_tokens` / `duration_ms`（v1.129，命中率与均速由消费方派生） |
 | POST | `/ws-ticket` | 一次性 WS 票据 |
+| GET | `/preview/token` | 内嵌浏览器预览口令（v2.77 §7.6）：返回 `{secret, prefix}`——须 token / 设备令牌；`prefix` = `/preview/<secret>/proxy/` |
+| ANY | `/preview/{secret}/proxy/{port}/{*path}` | dev server 反代（v2.77 §7.6）：**仅回环目标**（127.0.0.1 + 端口 1-65535）；剥 `X-Frame-Options` / CSP `frame-ancestors`；HTML / JS / CSS 根绝对 URL 重写进代理前缀并注入控制台桥；`Location` 同端口改写；上游不通 502；鉴权中间件豁免（iframe 子资源带不了自定义头），唯一鉴权 = 路径口令（常时比较）+ `Referrer-Policy: no-referrer` |
 | POST | `/lan/enable` | 启用局域网配对 / 重新生成一次性配对码（主 token）；`--lan` 启动即自动启用（§12.6 v1.157） |
 | GET | `/lan/status` | 局域网访问状态 `{enabled, code, ttl_s, lan_url, devices}`（主 token；设置面板「局域网」分类数据源，v1.157） |
 | POST | `/lan/pair` | 设备配对 `{device, code}` → `{paired_token}`（免令牌——一次性 6 位配对码自证，5 分钟有效；令牌经 `X-Tenon-Paired` 携带，吊销即失效） |

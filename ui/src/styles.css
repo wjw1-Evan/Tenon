@@ -3505,6 +3505,189 @@ button:disabled { opacity: 0.45; cursor: default; }
   overflow: hidden;
 }
 
+/* §7.6 v2.77 浏览器预览面板（底部面板第五 tab） */
+.preview-panel {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+}
+.preview-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.preview-toolbar .preview-url {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--fg);
+  font-size: 12px;
+  padding: 4px 8px;
+}
+.preview-toolbar .preview-url:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.preview-toolbar button {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--fg);
+  border-radius: 5px;
+  font-size: 12px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+.preview-toolbar button:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  color: var(--fg-strong);
+}
+.preview-toolbar button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.preview-toolbar button.active {
+  border-color: var(--accent);
+  color: var(--accent-text);
+  background: var(--accent-soft);
+}
+.preview-width {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.preview-width select {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--fg);
+  font-size: 11px;
+  padding: 3px 4px;
+}
+.preview-error {
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  color: var(--error-text);
+  background: var(--error-soft);
+  border: 1px solid var(--error);
+  border-radius: 5px;
+  padding: 4px 8px;
+}
+.preview-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  gap: 8px;
+}
+.preview-stage {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  justify-content: center;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: auto;
+}
+.preview-frame {
+  border: none;
+  height: 100%;
+  min-height: 100%;
+  max-width: 100%;
+  flex: 0 0 auto;
+  background: #ffffff;
+}
+.preview-empty {
+  align-self: center;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 12px 18px;
+  text-align: center;
+  line-height: 1.6;
+  max-width: 46em;
+}
+.preview-console {
+  flex: 0 0 340px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.preview-console-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--muted);
+}
+.preview-console-head span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: ltr;
+}
+.preview-console-head button {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.preview-console-head button:hover {
+  color: var(--fg-strong);
+}
+.preview-console-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.preview-console-empty {
+  color: var(--muted);
+}
+.preview-log {
+  display: flex;
+  gap: 6px;
+  padding: 1px 0;
+  border-bottom: 1px solid var(--border);
+  word-break: break-word;
+}
+.preview-log-level {
+  flex: 0 0 auto;
+  color: var(--muted);
+  min-width: 34px;
+}
+.preview-log-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: pre-wrap;
+  color: var(--fg);
+}
+.preview-log-warn .preview-log-text {
+  color: #d9a514;
+}
+.preview-log-error .preview-log-text {
+  color: var(--error-text);
+}
+
 
 /* §7.2 v1.210 思考过程折叠卡（Codex 形态：正文开始后收起，可展开回看） */
 .turn-thinking {

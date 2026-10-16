@@ -551,5 +551,18 @@
   "palette.flag_on": "Enable feature",
   "palette.flag_off": "Disable feature",
   "settings.flags.title": "Experimental features",
-  "settings.flags.note": "One-click rollback—takes effect immediately, no restart needed"
+  "settings.flags.note": "One-click rollback—takes effect immediately, no restart needed",
+  "panel.preview": "Browser preview",
+  "preview.url_placeholder": "http://localhost:3000",
+  "preview.open": "Preview",
+  "preview.reload": "Reload",
+  "preview.external": "Open in browser",
+  "preview.width": "Viewport",
+  "preview.width_fit": "Fit",
+  "preview.console": "Console",
+  "preview.clear": "Clear",
+  "preview.empty": "Enter a local dev server address to preview it here (loopback only: 127.0.0.1 / localhost).",
+  "preview.invalid": "Invalid address — use 127.0.0.1 / localhost with an explicit port.",
+  "preview.unavailable": "Preview proxy unavailable — no preview token from the daemon.",
+  "preview.logs_empty": "No console output yet"
 }

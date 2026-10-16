@@ -126,7 +126,7 @@ export interface ProjectUiState {
   bottomHeight?: number;
   sidebarOpen?: boolean;
   timelineOpen?: boolean;
-  bottomTab?: "source" | "timeline" | "trace" | "evals" | "terminal";
+  bottomTab?: "source" | "timeline" | "trace" | "evals" | "terminal" | "preview";
 }
 
 export interface OpenedProject {
@@ -928,6 +928,13 @@ export class TenonApi {
   }
 
   /** 换取一次性 WS 票据（§12.6）。 */
+  /** v2.77 §7.6：预览反代信息（须鉴权）——前缀含预览口令，仅经此端点下发。
+   *  origin 为 daemon 地址（vite dev 下与 UI 跨源，iframe 需绝对地址）。 */
+  async previewInfo(): Promise<{ origin: string; prefix: string }> {
+    const r = await this.request<{ secret: string; prefix: string }>("/preview/token");
+    return { origin: this.base, prefix: r.prefix };
+  }
+
   /** v1.197 §7.2：项目终端——取既有或新开（项目级单实例）。 */
   async openTerminal(projectId: string): Promise<{ shell: string }> {
     return this.request<{ shell: string }>(`/projects/${projectId}/terminal`, {

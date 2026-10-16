@@ -551,5 +551,18 @@
   "palette.flag_on": "Activar función",
   "palette.flag_off": "Desactivar función",
   "settings.flags.title": "Funciones experimentales",
-  "settings.flags.note": "Reversión con un clic: efecto inmediato, sin reiniciar"
+  "settings.flags.note": "Reversión con un clic: efecto inmediato, sin reiniciar",
+  "panel.preview": "Vista previa del navegador",
+  "preview.url_placeholder": "http://localhost:3000",
+  "preview.open": "Previsualizar",
+  "preview.reload": "Recargar",
+  "preview.external": "Abrir en el navegador",
+  "preview.width": "Viewport",
+  "preview.width_fit": "Ajustar",
+  "preview.console": "Consola",
+  "preview.clear": "Limpiar",
+  "preview.empty": "Introduce la dirección de tu dev server local para previsualizarlo aquí (solo loopback: 127.0.0.1 / localhost).",
+  "preview.invalid": "Dirección no válida: se requiere host de loopback (127.0.0.1 / localhost) y puerto explícito.",
+  "preview.unavailable": "Proxy de vista previa no disponible: el daemon no emitió el token.",
+  "preview.logs_empty": "Aún no hay salida de consola"
 }

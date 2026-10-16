@@ -551,5 +551,18 @@
   "palette.flag_on": "機能を有効化",
   "palette.flag_off": "機能を無効化",
   "settings.flags.title": "実験的機能",
-  "settings.flags.note": "ワンクリックで戻せます——即時反映、再起動不要"
+  "settings.flags.note": "ワンクリックで戻せます——即時反映、再起動不要",
+  "panel.preview": "ブラウザプレビュー",
+  "preview.url_placeholder": "http://localhost:3000",
+  "preview.open": "プレビュー",
+  "preview.reload": "再読み込み",
+  "preview.external": "ブラウザで開く",
+  "preview.width": "ビューポート",
+  "preview.width_fit": "自動",
+  "preview.console": "コンソール",
+  "preview.clear": "クリア",
+  "preview.empty": "ローカル dev サーバーのアドレスを入力するとここでプレビューできます（ループバックのみ：127.0.0.1 / localhost）。",
+  "preview.invalid": "アドレスが無効です——ループバック（127.0.0.1 / localhost）と明示的なポートが必要です。",
+  "preview.unavailable": "プレビュープロキシが利用できません——daemon がプレビュートークンを発行しませんでした。",
+  "preview.logs_empty": "コンソール出力はまだありません"
 }

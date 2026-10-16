@@ -7,7 +7,7 @@ use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{Path, Query, State, WebSocketUpgrade};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post, put};
+use axum::routing::{any, delete, get, post, put};
 use axum::{Json, Router};
 use futures::SinkExt;
 use serde::Deserialize;
@@ -40,6 +40,18 @@ pub fn build_router(state: Arc<DaemonState>) -> Router {
         )
         .route("/projects/{id}/terminal/ws", get(terminal_ws_upgrade))
         .route("/ws", get(ws_upgrade))
+        // ---------- 内嵌浏览器预览（§7.6 v2.77） ----------
+        // token 端点须鉴权；proxy 路径在中间件豁免（iframe 子资源带不了
+        // X-Tenon-Token），其唯一鉴权即路径中的预览口令，见 preview.rs。
+        .route("/preview/token", get(crate::preview::preview_token))
+        .route(
+            "/preview/{secret}/proxy",
+            any(crate::preview::preview_proxy),
+        )
+        .route(
+            "/preview/{secret}/proxy/{*rest}",
+            any(crate::preview::preview_proxy),
+        )
         // ---------- 会话与回滚（§15） ----------
         .route("/session", post(create_session))
         .route("/session/{id}/message", post(send_message))

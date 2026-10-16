@@ -551,5 +551,18 @@
   "palette.flag_on": "تمكين الميزة",
   "palette.flag_off": "تعطيل الميزة",
   "settings.flags.title": "ميزات تجريبية",
-  "settings.flags.note": "تراجع بنقرة واحدة — فعّال فورًا دون إعادة تشغيل"
+  "settings.flags.note": "تراجع بنقرة واحدة — فعّال فورًا دون إعادة تشغيل",
+  "panel.preview": "معاينة المتصفح",
+  "preview.url_placeholder": "http://localhost:3000",
+  "preview.open": "معاينة",
+  "preview.reload": "إعادة تحميل",
+  "preview.external": "فتح في المتصفح",
+  "preview.width": "منطقة العرض",
+  "preview.width_fit": "ملاءمة",
+  "preview.console": "وحدة التحكم",
+  "preview.clear": "مسح",
+  "preview.empty": "أدخل عنوان خادم التطوير المحلي لمعاينته هنا (حلقة الرجوع فقط: 127.0.0.1 / localhost).",
+  "preview.invalid": "عنوان غير صالح — يلزم مضيف حلقة الرجوع (127.0.0.1 / localhost) ومنفذ صريح.",
+  "preview.unavailable": "وكيل المعاينة غير متاح — لم يصدر الـ daemon رمز المعاينة.",
+  "preview.logs_empty": "لا يوجد إخراج من وحدة التحكم بعد"
 }

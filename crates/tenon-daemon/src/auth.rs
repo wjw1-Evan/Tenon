@@ -157,7 +157,11 @@ pub async fn auth_middleware(
     // 与终端 WS（v1.197，/projects/:id/terminal/ws）同规——后者中间件豁免
     // 名单此前遗漏，升级请求被 401 挡死、终端永远打不开（v2.42 修复）。
     let ws_ticket_auth = path == "/ws" || path.ends_with("/terminal/ws");
-    if lan_request && path != "/lan/pair" && !ws_ticket_auth {
+    // 预览反代（v2.77 §7.6）：iframe 与它的子资源请求都带不了自定义头
+    //（浏览器导航 / img / script 标签），与 WS 同因；该路径的真实鉴权是
+    // 路径中的预览口令（preview.rs 常时比较），故同样豁免 HTTP 层令牌。
+    let preview_proxy = crate::preview::is_proxy_path(path);
+    if lan_request && path != "/lan/pair" && !ws_ticket_auth && !preview_proxy {
         // 局域网访问（--lan 绑定后）：须持已配对设备令牌（X-Tenon-Paired，
         // 经 PairingStore 校验；吊销即失效，§12.6 可吊销）。主 token 同样
         // 放行——持有者本就是全权，不因来源是局域网而收窄；/pairing 的
@@ -220,7 +224,8 @@ pub async fn auth_middleware(
         || path == "/pairing"
         || path == "/lan/pair"
         || path == "/ws"
-        || path.ends_with("/terminal/ws");
+        || path.ends_with("/terminal/ws")
+        || preview_proxy;
     if !auth_exempt {
         let master = headers.get("X-Tenon-Token").and_then(|t| t.to_str().ok());
         let paired = headers

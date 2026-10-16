@@ -551,5 +551,18 @@
   "palette.flag_on": "Включить функцию",
   "palette.flag_off": "Отключить функцию",
   "settings.flags.title": "Экспериментальные функции",
-  "settings.flags.note": "Откат в один клик — мгновенно, без перезапуска"
+  "settings.flags.note": "Откат в один клик — мгновенно, без перезапуска",
+  "panel.preview": "Предпросмотр в браузере",
+  "preview.url_placeholder": "http://localhost:3000",
+  "preview.open": "Предпросмотр",
+  "preview.reload": "Обновить",
+  "preview.external": "Открыть в браузере",
+  "preview.width": "Область просмотра",
+  "preview.width_fit": "По ширине",
+  "preview.console": "Консоль",
+  "preview.clear": "Очистить",
+  "preview.empty": "Укажите адрес локального dev-сервера, чтобы увидеть его здесь (только loopback: 127.0.0.1 / localhost).",
+  "preview.invalid": "Неверный адрес — нужен loopback-хост (127.0.0.1 / localhost) и явный порт.",
+  "preview.unavailable": "Прокси предпросмотра недоступен — демон не выдал токен.",
+  "preview.logs_empty": "Вывод консоли пуст"
 }
