@@ -135,23 +135,29 @@ describe("审查面 diff 级反馈 App 接线（v2.7）", () => {
       { timeout: 5000 }
     );
     fireEvent.click(screen.getAllByTestId("diff-line")[6]);
-    await waitFor(() => expect(screen.getByTestId("review-feedback")).toBeTruthy());
+    // timeout 显式化：CI 慢环境下 500ms trace 轮询→状态→渲染链可能超默认 1s（假红）
+    await waitFor(() => expect(screen.getByTestId("review-feedback")).toBeTruthy(), {
+      timeout: 5000,
+    });
     fireEvent.change(screen.getByTestId("review-fb-input"), {
       target: { value: "变量命名改成更明确的形式" },
     });
     fireEvent.click(screen.getByTestId("review-fb-send"));
-    await waitFor(() => {
-      const call = fetchMock.mock.calls.find(([u, i]) => {
-        const init = i as RequestInit | undefined;
-        return String(u).endsWith("/session/s-a/message") && (init?.method ?? "").toUpperCase() === "POST";
-      });
-      expect(call).toBeTruthy();
-      const body = JSON.parse(String((call![1] as RequestInit).body));
-      // 任务组装：反馈标记 + 摘录（默认英文源语言文案）
-      expect(body.text).toContain("Review feedback");
-      expect(body.text).toContain("src/app.ts");
-      expect(body.text).toContain("+new");
-    });
+    await waitFor(
+      () => {
+        const call = fetchMock.mock.calls.find(([u, i]) => {
+          const init = i as RequestInit | undefined;
+          return String(u).endsWith("/session/s-a/message") && (init?.method ?? "").toUpperCase() === "POST";
+        });
+        expect(call).toBeTruthy();
+        const body = JSON.parse(String((call![1] as RequestInit).body));
+        // 任务组装：反馈标记 + 摘录（默认英文源语言文案）
+        expect(body.text).toContain("Review feedback");
+        expect(body.text).toContain("src/app.ts");
+        expect(body.text).toContain("+new");
+      },
+      { timeout: 5000 }
+    );
   });
 
   it("v2.8 审查摘要卡：事件流上提渲染子任务 / 产物 / 证据", async () => {
