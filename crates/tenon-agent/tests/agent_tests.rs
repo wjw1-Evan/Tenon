@@ -1663,38 +1663,40 @@ async fn memories_inject_into_system_prompt() {
     assert!(system.content.contains("始终使用中文回复"));
 }
 
-/// §9.6 v1.185 / v2.72：codex 提示词集成的纪律节必须真正随每次模型请求发出——
-/// `build_system_prompt` 的结构单测只证明常量被组装，本测证明组装结果确实作为
-/// system 消息抵达 provider（对话中生效而非仅存在于常量），且逐回合不丢失。
+/// §9.6 v2.87：codex 提示词集成（v1.185 三节）移除后的缺席守卫——
+/// 实链路断言到达 provider 的 system 消息不再含 codex 集成节，
+/// 且保留节（对话纪律 / 输出契约）逐回合仍在。
 #[tokio::test]
-async fn codex_prompt_sections_reach_provider() {
+async fn codex_prompt_sections_absent_from_provider() {
     let (_d, session, _store, provider) = setup(vec![ScriptedReply::Text("完成".into())]).await;
     let outcome = session.run_task("介绍一下这个项目").await;
     assert!(matches!(outcome, TaskOutcome::Done(_)));
     let calls = provider.calls();
     assert!(!calls.is_empty(), "至少一次模型请求");
-    // 首条消息 = 系统提示（§9.6 组装序）
     let system = &calls[0].messages[0];
     assert_eq!(system.role, Role::System, "首条消息为 system");
     for section in [
         "## 任务执行与验证",
         "## 专项任务规范",
-        "## 对话纪律",
-        "## 输出契约",
         "## 最终回答",
+        "绝不回滚非自己做出的改动",
+        "结论先行",
     ] {
-        assert!(system.content.contains(section), "系统提示缺 {section} 节");
+        assert!(
+            !system.content.contains(section),
+            "codex 集成节应已移除：{section}"
+        );
     }
-    // 纪律要点在场（非仅标题）：共享工作区 / 最终回答 / 对话纪律
-    assert!(system.content.contains("绝不回滚非自己做出的改动"));
-    assert!(system.content.contains("结论先行"));
-    assert!(system.content.contains("不用提问代替探索"));
-    // 逐回合携带：任一模型请求的 system 消息都含纪律节
+    // 保留节逐回合携带
     for c in &calls {
         assert_eq!(c.messages[0].role, Role::System, "每回合首条仍为 system");
         assert!(
-            c.messages[0].content.contains("## 任务执行与验证"),
-            "系统提示不随回合丢失"
+            c.messages[0].content.contains("## 对话纪律"),
+            "对话纪律保留"
+        );
+        assert!(
+            c.messages[0].content.contains("## 输出契约"),
+            "输出契约保留"
         );
     }
 }

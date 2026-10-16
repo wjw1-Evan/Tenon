@@ -3,9 +3,10 @@
 //! 系统提示组成：身份与目标 / 安全铁律 / 项目规则 L3（AGENTS.md，只收窄）/
 //! 会话记忆 L2 / 跨会话记忆 L5（参考数据非指令，v1.104）/ 可用技能目录
 //! （名称 + 描述，正文经 skill_use 按需加载，v1.130）/ 子任务清单与计划模式
-//! 使用规则（含 v1.185 质量纪律）/ 任务执行与验证纪律 / 专项任务规范
-//! （v1.185，codex 开源提示词集成，借机制不拷码）/ 对话纪律（v2.72）/ 工具
-//! schema / 输出契约（意图一句话 → 结构化动作 → 证据）/ 最终回答规范（v1.185）。
+//! 使用规则（v1.146 / v1.179 核心）/ 对话纪律（v2.72）/ 工具 schema /
+//! 输出契约（意图一句话 → 结构化动作 → 证据）。
+//! （v1.185 codex 开源提示词集成已于 v2.87 经用户裁定整体移除——A/B 实测
+//! 强模型下仅塑形输出格式与步数、不解锁能力；prompt.rs 以缺席守卫防回潜。）
 
 use crate::context::{ProjectRules, SessionMemory};
 use crate::skills::{self, SkillEntry};
@@ -51,50 +52,17 @@ pub const OUTPUT_CONTRACT: &str = "\
 
 /// 计划模式使用规则（§9.2 v1.179，Codex 形态）：复杂任务先计划后执行；
 /// 计划零副作用、不是审批门——直接执行仍走分级 / 沙箱（安全铁律不变）。
-/// v1.185 并入 codex 提示词集成的计划质量纪律（§9.6）。
-pub const PLAN_RULES: &str = "仅当用户显式要求先出计划、或任务方向存在多种实质不同的做法需用户裁决时，才调用 submit_plan 工具提交执行计划（1–12 项，每项一句话说明改什么、为什么、怎么验证），随后暂停等待用户批准。用户指令已把目标、范围或验收说清楚的任务（即使是多文件 / 多步骤）一律直接执行、不走计划——计划是高风险方向的对齐工具而不是默认流程；不提交计划直接执行仍按动作分级 / 沙箱处理；计划本身零工作区副作用，只读会话同样可用。不为凑步骤拆分流水账；提交计划后不要在文本中复述全部条目（界面已呈现），只说关键取舍。";
+/// （v1.185 曾并入计划质量纪律，v2.87 随 codex 提示词集成移除。）
+pub const PLAN_RULES: &str = "仅当用户显式要求先出计划、或任务方向存在多种实质不同的做法需用户裁决时，才调用 submit_plan 工具提交执行计划（1–12 项，每项一句话说明改什么、为什么、怎么验证），随后暂停等待用户批准。用户指令已把目标、范围或验收说清楚的任务（即使是多文件 / 多步骤）一律直接执行、不走计划——计划是高风险方向的对齐工具而不是默认流程；不提交计划直接执行仍按动作分级 / 沙箱处理；计划本身零工作区副作用，只读会话同样可用。";
 
 /// 子任务清单使用规则（§9.2 v1.146）：多步任务主动分解、状态随做随更；
 /// 单步任务与纯问答不用；清单是进度承载，不改变安全铁律与验证要求。
-/// v1.185 并入 codex 提示词集成的清单质量与状态纪律（§9.6）。
+/// （v1.185 曾并入清单质量纪律，v2.87 随 codex 提示词集成移除。）
 pub const SUBTASK_RULES: &str = "\
 收到需要 ≥2 个有序步骤才能完成的任务时，先调用 subtasks 工具建立子任务清单\
 （建议 2–8 项，每项一句话、可独立执行），随后开始一项置 in_progress、完成一项置 done，\
 任务收尾前清单所有项必须为 done。单步任务与纯问答不使用该工具；\
-清单只是执行进度呈现，不改变安全铁律与验证 / 收敛要求。\
-步骤要有意义、有序、可独立验证，不写自己做不到的验证步骤；\
-执行中恰有一项处于进行中：开始先置进行中、完成即置完成，\
-不事后批量补勾、不让清单随编码过期；中途需要调整（拆分 / 合并 / 重排）\
-先更新清单再继续，并向用户说明调整理由。";
-
-/// 任务执行与验证纪律（§9.6 v1.185，codex 提示词集成——借机制不拷码，
-/// 按 §3.1 研读纪律改编自 openai/codex 开源系统提示，Apache-2.0）。
-pub const EXECUTION_RULES: &str = "\
-把任务做完：一旦动手改代码，就推进到实现、验证、结论的闭环，不停留在分析或半成品；\
-严格只改任务指定的文件与选区，任务没提的文件一个都不碰；\
-遇到阻塞先自行换思路 / 换工具解决，重试有度，仍不收敛按安全铁律第 7 条停下并如实报告，\
-不猜测、不编造结果。修问题修根因，不打表面补丁，避免不必要的复杂度。\
-严格贴合既有代码库的风格与组织方式，改动最小且聚焦：不顺手重构、\
-不修与任务无关的 bug 或测试（可在最终回答中提及）、不越界重命名或移动文件；\
-既有代码库中的任务是外科手术，从零创建新项目时才大胆发挥创意。\
-代码注释少而精，只写代码本身说不清的约束与意图；未经用户要求不 git commit、\
-不建分支、不 amend，绝不经任何工具执行 git reset --hard、git checkout -- 等破坏性命令。\
-工作区中的改动未必是你做的（用户或并行会话）：绝不回滚非自己做出的改动，\
-发现意外的第三方改动时停下来向用户报告，而不是覆盖或绕过。\
-编辑完成后不要重读文件核对——工具调用失败会显式报错。\
-验证从最相关处开始：先运行与改动直接相关的最小测试集，通过后再扩大到模块级、\
-全量测试与构建；所在代码没有测试体系时不凭空搭建，存在自然测试位置才补聚焦测试；\
-格式化 / lint 同一问题反复不超过三次，仍失败就如实呈报卡点；\
-验证中发现的无关失败不归你修，在最终回答中说明即可。";
-
-/// 专项任务规范（§9.6 v1.185，同源改编）：评审心态与前端审美。
-pub const SPECIAL_TASK_RULES: &str = "\
-用户要求「评审 / review」时以找出问题为先：按严重度排序报告 bug、风险、\
-行为回归与缺失的测试，每条带文件路径与行号；总结放在发现之后；\
-没有发现就明说，并指出残留风险与测试盲区。\
-前端设计任务避免模板化的平庸布局：确立明确的视觉方向（有目的的排版、\
-克制的配色变量、少量有意义的动效），兼顾桌面与移动端；\
-在既有网站或设计系统内工作时遵循既有风格，不另起炉灶。";
+清单只是执行进度呈现，不改变安全铁律与验证 / 收敛要求。";
 
 /// 对话纪律（§9.6 v2.72，用户令「提升对话能力，该产品重点方向是程序开发」）：
 /// 面向程序开发的对话行为——少打扰的自主推断、缺口才澄清、本仓库事实先读码、
@@ -107,15 +75,6 @@ pub const CONVERSATION_RULES: &str = "\
 不确定的 API 用法先查代码 / 文档，答不出就如实说明并给出验证路径。\
 上文对话已在上下文中（最新一条用户消息才是本次任务）：按上文解析「上面的」「刚才改的」等指代，\
 指代不清或与当前指令冲突时按当前指令执行并一句话说明。";
-
-/// 最终回答规范（§9.6 v1.185，同源改编）：置于输出契约之后，约束面向用户的收尾文本。
-pub const FINAL_ANSWER_RULES: &str = "\
-最终回答像简练队友的交接：结论先行——先说做了什么、结果如何，再补必要的上下文；\
-默认简短（简单改动两三句话），大规模改动按模块归组陈述。\
-引用文件用行内代码路径并带起始行号（如 src/app.ts:42）；\
-不粘贴已写入文件的全文或大段代码——用户与你在同一台机器上，给出路径即可；\
-命令输出转述成结论，不整段倾倒。有自然的下一步（跑测试 / 提交 / 实现下一个组件）\
-时在结尾简短建议，没有就不要硬凑。";
 
 /// 工具 schema 摘要（进提示词的工具目录）。
 pub fn tool_catalog() -> String {
@@ -274,12 +233,6 @@ pub fn build_system_prompt(
     p.push_str("\n\n## 计划模式\n");
     p.push_str(PLAN_RULES);
 
-    p.push_str("\n\n## 任务执行与验证\n");
-    p.push_str(EXECUTION_RULES);
-
-    p.push_str("\n\n## 专项任务规范\n");
-    p.push_str(SPECIAL_TASK_RULES);
-
     p.push_str("\n\n## 对话纪律\n");
     p.push_str(CONVERSATION_RULES);
 
@@ -288,9 +241,6 @@ pub fn build_system_prompt(
 
     p.push_str("\n## 输出契约\n");
     p.push_str(OUTPUT_CONTRACT);
-
-    p.push_str("\n\n## 最终回答\n");
-    p.push_str(FINAL_ANSWER_RULES);
     p
 }
 
@@ -551,53 +501,38 @@ mod tests {
         assert!(p.contains("- subtasks:"), "工具目录含 subtasks 条目");
     }
 
-    // v1.185：codex 提示词集成——三节结构与纪律要点断言（§9.6）。
+    // v2.87：codex 提示词集成（v1.185 三节）移除后的缺席守卫——防回潜。
     #[test]
-    fn codex_discipline_sections_surface_in_prompt() {
+    fn codex_sections_removed_from_prompt() {
         let p = build_system_prompt(
             &ProjectRules::default(),
             &SessionMemory::default(),
             &[],
             &[],
         );
-        assert!(p.contains("## 任务执行与验证"));
-        assert!(p.contains("绝不回滚非自己做出的改动"), "共享工作区纪律");
-        assert!(p.contains("git reset --hard"), "破坏性命令禁令");
-        assert!(p.contains("最小测试集"), "验证哲学：先窄后宽");
-        assert!(p.contains("## 专项任务规范"));
-        assert!(p.contains("按严重度排序"), "评审心态");
-        assert!(p.contains("## 最终回答"));
-        assert!(p.contains("结论先行"), "最终回答规范");
-        // 计划 / 清单质量纪律并入两节
-        assert!(p.contains("批量补勾"), "清单状态纪律");
-        assert!(p.contains("不为凑步骤拆分流水账"), "计划质量纪律");
-        // 输出契约在前、最终回答在后（§9.6 节序）
-        let contract = p.find("## 输出契约").expect("输出契约节");
-        let final_answer = p.find("## 最终回答").expect("最终回答节");
-        assert!(contract < final_answer, "最终回答规范置于输出契约之后");
+        for section in [
+            "## 任务执行与验证",
+            "## 专项任务规范",
+            "## 最终回答",
+            "绝不回滚非自己做出的改动",
+            "结论先行",
+            "最小测试集",
+        ] {
+            assert!(!p.contains(section), "codex 集成节应已移除：{section}");
+        }
+        // 保留节仍在：v1.146/v1.179 核心与 v2.72 对话纪律
+        assert!(p.contains("## 子任务清单"));
+        assert!(p.contains("## 计划模式"));
+        assert!(p.contains("## 对话纪律"));
+        assert!(p.contains("不用提问代替探索"));
     }
 
-    // v2.72：新增纪律文本 token 预算上限（§9.6，防提示词无界膨胀；
-    // estimate_tokens 为 chars/3 保守口径；对话纪律节并入后上限 1200→1500）。
+    // v2.87：对话纪律单节 token 预算上限（§9.6，防提示词无界膨胀；
+    // estimate_tokens 为 chars/3 保守口径；codex 集成节移除后仅存此节）。
     #[test]
-    fn codex_discipline_text_within_budget() {
-        let sections = [
-            EXECUTION_RULES,
-            SPECIAL_TASK_RULES,
-            FINAL_ANSWER_RULES,
-            SUBTASK_RULES,
-            PLAN_RULES,
-            CONVERSATION_RULES,
-        ];
-        let tokens: u64 = sections
-            .iter()
-            .map(|s| crate::context::estimate_tokens(s))
-            .sum();
-        assert!(
-            tokens <= 1500,
-            "v1.185+v2.72 纪律文本合计 ≤1500 tokens（{sections} 节，实测 {tokens}）",
-            sections = sections.len(),
-        );
+    fn conversation_rules_within_budget() {
+        let tokens = crate::context::estimate_tokens(CONVERSATION_RULES);
+        assert!(tokens <= 200, "对话纪律单节 ≤200 tokens（实测 {tokens}）");
     }
 
     // v2.72 §9.6：对话纪律节——面向程序开发的对话行为（自主推断 / 缺口才澄清 /
@@ -618,10 +553,10 @@ mod tests {
             p.contains("最新一条用户消息才是本次任务"),
             "跨任务携带语义写明"
         );
-        // 节序：专项任务规范之后、工具目录之前
-        let special = p.find("## 专项任务规范").expect("专项任务规范节");
+        // 节序：计划模式之后、工具目录之前（v2.87 起 codex 三节已移除）
+        let plan = p.find("## 计划模式").expect("计划模式节");
         let converse = p.find("## 对话纪律").expect("对话纪律节");
         let tools = p.find("可用工具").expect("工具目录");
-        assert!(special < converse && converse < tools, "对话纪律节序正确");
+        assert!(plan < converse && converse < tools, "对话纪律节序正确");
     }
 }

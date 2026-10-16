@@ -317,3 +317,4 @@
 | v2.84 | 回滚双粒度接通——按事件撤销 revert 自设计定稿起零生产调用的空接修复（§7.3/§10.3：checkpoint 增记事件后树 tree_after 作三方合并基 + revert 默认粒度接线 + granularity 显式化，用户手改保护从承诺变行为） |
 | v2.85 | 系统提示工具目录补 browser 四工具——v2.80 工具整体漏目录的静默漂移修复（§9.2：schema/分级/handler 齐备唯目录缺失，模型无从得知工具存在；含目录完整性守卫 + v2.82 schema 守卫枚举补列） |
 | v2.86 | 白名单外环境变量按名透传接通——`execpolicy.env_passthrough` 自 v2.78 设计预留起零实现的空接修复（§9.2：settings 变量名名单（validate_env_name 密钥类拒绝、整体替换语义）→ AgentConfig/ToolContext → executor 四命令调用点 + 后台任务注册表；值取自 daemon 环境、settings 只存名不存值，审计不落密钥不变式保留） |
+| v2.87 | 删除 codex 开源提示词集成（§9.6——v1.185 六节纪律整体移除，用户裁定：真实端点 A/B 实测强模型下仅塑形输出格式与步数、不解锁能力，成本收益不匹配；EXECUTION_RULES / SPECIAL_TASK_RULES / FINAL_ANSWER_RULES 三节删除，PLAN_RULES / SUBTASK_RULES 剥离 v1.185 质量纪律尾巴、v1.146/v1.179 核心保留，对话纪律 v2.72 非 codex 来源保留；prompt.rs 结构断言改缺席守卫 + 单节 token 预算 ≤200，A/B 探针 codex_prompt_probe 随实验收尾删除） |
