@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | **v2.74** |
+| 版本 | **v2.75** |
 | 日期 | 2026-10-16 |
 | 状态 | 定稿，M0 已验收（附录 D 基线 v2.68 起 glm-5.3-flash **10/10=100%**，violation=0；历史最高），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
@@ -1125,7 +1125,7 @@ WS 事件与会话 events 表一一对应，均含 `project_id`；断线重连�
 |---|---|---|
 | Rust 单元 / 集成 | cargo test | 权限判定、sandbox profile、checkpoint、LSP 宿主、ProjectRegistry/Runtime、跨项目路径隔离 |
 | 前端 | vitest + Playwright | 组件、四区布局、项目切换器、直接执行、键盘全可达 |
-| 端到端 | Playwright（真 daemon） | 打开项目 → 任务 → 写盘 → 回滚全链路；A 执行中登记 / 切换 B 并完成任务；runtime 逐出 / 回收不影响登记与会话；v1.87：同项目受管 worktree 并行会话与 merge / discard 收尾（全局活动计数与跳转一致性断言已随 v1.98 移除） | **v1.41 harness 已落地**：`ui/e2e/multiproject.spec.ts` 覆盖 A 写入/回滚/撤销回滚 + B 隔离；mock 模型服务按会话上下文返回 apply_patch / answer，E2E 全部本地无外网；浏览器二进制由 CI `playwright install chromium` 提供。
+| 端到端 | Playwright（真 daemon） | 打开项目 → 任务 → 写盘 → 回滚全链路；A 执行中登记 / 切换 B 并完成任务；runtime 逐出 / 回收不影响登记与会话；v1.87：同项目受管 worktree 并行会话与 merge / discard 收尾（全局活动计数与跳转一致性断言已随 v1.98 移除） | **v1.41 harness 已落地**：`ui/e2e/multiproject.spec.ts` 覆盖 A 写入/回滚/撤销回滚 + B 隔离；mock 模型服务按会话上下文返回 apply_patch / answer，E2E 全部本地无外网；浏览器二进制由 CI `playwright install chromium` 提供。**v2.75 E2E 扩面（17 例：12 存量 + 5 新增）**：`conversation-carry.spec.ts`（§9.1 v2.72——同会话第二个任务携带对话文本与终答、不携带工具历史；mock 按 `role` 统计 messages 回报 `CARRY user/answer/tools`，system 的 L2 goals 注入不计，防误判）；`dev-tools.spec.ts`（§9.2——后台任务三件套真链 run_command `background=true` 启真子进程 → task_output 列表模式枚举 → task_kill 终止；run_code PTC 单回合内层 `tool()` 真读文件）；`thread-actions.spec.ts`（§7.5——已结束回合「编辑」回填重发且不截断历史；审查模板回合「修复以上发现」注入自包含修复任务＝模板 + 审查回复全文）。
 
 ### 18.2 安全测试
 

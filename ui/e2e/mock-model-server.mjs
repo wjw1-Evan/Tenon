@@ -90,7 +90,65 @@ const server = createServer(async (request, response) => {
         }
         planCall = loopPhase === "plan";
       }
-      if (!match && !commitMatch && !wantSubtasks && !(planCall || writtenLeg)) {
+      // ── v2.75 E2E 新指令 ────────────────────────────────────────────────
+      // E2E_REPLY\n<文本>：固定终答（跨任务携带用例的第一轮）。
+      // E2E_CARRY_CHECK\n<锚点>：回报 messages 携带实况——历史 user（含锚点）与
+      //   历史 assistant 终答是否前置进来、tool 消息计数（携带不带工具输出＝0）。
+      // E2E_BG：后台任务三件套状态机（run_command background → task_output 列表
+      //   → task_kill），按本回合已累积的工具结果数推进。
+      // E2E_RUNCODE：PTC 单回合内层 tool() 调用（run_code → 文本收尾）。
+      let overrideTool = null; // { name, arguments }
+      if (!isMetaCall) {
+        const replyMatch = task.match(/E2E_REPLY\n([\s\S]+)/);
+        const carryCheck = task.match(/E2E_CARRY_CHECK\n(\S+)/);
+        if (replyMatch) {
+          finalText = replyMatch[1].trim();
+        } else if (carryCheck) {
+          const anchor = carryCheck[1];
+          const userMsgs = messages.filter((m) => m.role === "user");
+          const priorUser = userMsgs
+            .slice(0, -1)
+            .some((m) => String(m.content ?? "").includes(anchor));
+          const priorAnswer = messages.some(
+            (m) =>
+              m.role === "assistant" &&
+              String(m.content ?? "").includes("E2E_CARRY_REPLY"),
+          );
+          const toolMsgs = messages.filter((m) => m.role === "tool").length;
+          finalText = `CARRY user=${priorUser ? "yes" : "no"} answer=${priorAnswer ? "yes" : "no"} tools=${toolMsgs}`;
+        } else if (task.includes("E2E_BG")) {
+          if (toolResultCount === 0) {
+            overrideTool = {
+              name: "run_command",
+              arguments: JSON.stringify({ command: "sleep 30", background: true }),
+            };
+          } else if (toolResultCount === 1) {
+            overrideTool = { name: "task_output", arguments: "{}" };
+          } else if (toolResultCount === 2) {
+            overrideTool = { name: "task_kill", arguments: JSON.stringify({ id: 1 }) };
+          } else {
+            finalText = "E2E background task flow complete";
+          }
+        } else if (task.includes("E2E_RUNCODE")) {
+          if (toolResultCount === 0) {
+            overrideTool = {
+              name: "run_code",
+              arguments: JSON.stringify({
+                code: 'log("PTC " + tool("read_file", "a.txt").trim())',
+              }),
+            };
+          } else {
+            finalText = "E2E PTC flow complete";
+          }
+        }
+      }
+      if (
+        !match &&
+        !commitMatch &&
+        !wantSubtasks &&
+        !(planCall || writtenLeg) &&
+        !overrideTool
+      ) {
         if (payload.stream) {
           const turnWait = hasToolResult ? afterToolDelay : turnDelay;
       if (turnWait) await new Promise((r) => setTimeout(r, turnWait));
@@ -122,21 +180,25 @@ const server = createServer(async (request, response) => {
       const content = match ? Buffer.from(encoded, "base64").toString("utf8") : "";
       // 计划相 / 写入相必须发工具调用——既有 hasToolResult「有结果即收尾」
       // 启发式会让下一请求直出文本
-      const forceToolCall = planCall || writtenLeg;
-      const toolName = planCall
-        ? "submit_plan"
-        : wantSubtasks
-          ? "subtasks"
-          : commitMatch
-            ? "git_commit"
-            : "apply_patch";
-      const toolArguments = planCall
-        ? JSON.stringify({ items: ["改 A 文件支持 X", "补测试并跑通"] })
-        : wantSubtasks
-          ? JSON.stringify({ items: JSON.parse(subtasksMatch[1]) })
-          : commitMatch
-            ? JSON.stringify({ message: commitMatch[1] })
-            : JSON.stringify({ file, range: null, content });
+      const forceToolCall = planCall || writtenLeg || Boolean(overrideTool);
+      const toolName = overrideTool
+        ? overrideTool.name
+        : planCall
+          ? "submit_plan"
+          : wantSubtasks
+            ? "subtasks"
+            : commitMatch
+              ? "git_commit"
+              : "apply_patch";
+      const toolArguments = overrideTool
+        ? overrideTool.arguments
+        : planCall
+          ? JSON.stringify({ items: ["改 A 文件支持 X", "补测试并跑通"] })
+          : wantSubtasks
+            ? JSON.stringify({ items: JSON.parse(subtasksMatch[1]) })
+            : commitMatch
+              ? JSON.stringify({ message: commitMatch[1] })
+              : JSON.stringify({ file, range: null, content });
       const turnWait = hasToolResult ? afterToolDelay : turnDelay;
       if (turnWait) await new Promise((r) => setTimeout(r, turnWait));
       if (!payload.stream) {
