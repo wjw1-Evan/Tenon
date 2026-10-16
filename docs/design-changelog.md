@@ -307,3 +307,4 @@
 | v2.74 | LSP 网络逐语言包收紧——tsserver/pyright offline、rust-analyzer open（design-v2 §4.3 余项清偿） |
 | v2.75 | E2E 扩面 17 例 + 工具步骤卡标签补全（§18.1——新增携带/后台任务+PTC/回合操作三 spec；顺手修 run_command 等四个工具缺 KNOWN_TOOLS 与九语言标签缺陷） |
 | v2.76 | 快照种子对象库解析修复——linked worktree 经 commondir 取公共 objects（§10.3 隐性缺陷：alternates 静默不写致首快照 write-tree invalid object，Linux CI 并行子代理 paused） |
+| v2.78 | 命令环境工具链白名单透传——修复 env_clear 只给 PATH/HOME/LANG 致 cargo/JAVA_HOME/ssh-agent 全失效（§9.2——浏览器真机实测：定制 rustup 下 cargo 不可用、agent 被迫重装工具链） |

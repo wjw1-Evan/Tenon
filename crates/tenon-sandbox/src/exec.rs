@@ -116,14 +116,8 @@ pub fn exec_command(
     };
     built.cmd.current_dir(cwd);
     built.cmd.env_clear();
-    // 最小环境：命令工具链需要 PATH / HOME / LANG
-    built
-        .cmd
-        .env("PATH", std::env::var("PATH").unwrap_or_default());
-    built
-        .cmd
-        .env("HOME", std::env::var("HOME").unwrap_or_default());
-    built.cmd.env("LANG", "C.UTF-8");
+    // 最小环境（PATH / HOME / LANG）+ 工具链白名单透传（v2.78）
+    apply_base_env(&mut built.cmd);
     // v2.0 域过滤（design-v2.md §4.4）：镜像态注入本地代理环境——沙箱内命令
     // 唯一出网通路（大小写双写，覆盖 npm / pip / cargo / go / git 等主流客户端）
     if let SandboxSpec::MirrorProxy {
@@ -156,18 +150,91 @@ pub fn exec_command(
     })
 }
 
-/// 后台启动 shell 命令（§9.2 v2.64）：与 exec_command 同 shell 与最小环境
-/// （`/bin/sh -c` + PATH/HOME/LANG），不等待——stdout/stderr 各自管道，
+/// 命令子进程透传的开发工具链环境白名单（v2.78，§9.2）。
+///
+/// 背景：v2.2 起命令子进程走 `env_clear` + 仅 PATH/HOME/LANG「最小环境」——
+/// 定制工具链（`RUSTUP_HOME` / `CARGO_HOME`）、构建期依赖的 `JAVA_HOME`、
+/// 虚拟环境（`VIRTUAL_ENV` / `CONDA_PREFIX`）、版本管理器与 ssh-agent 推送
+/// 所需变量全部被剥离，实测在定制 rustup 安装下 `cargo` 直接不可用（agent
+/// 被迫自排查，甚至下载安装整套工具链）。
+///
+/// 取向：只透传**工具链 / 工具目录类**变量（无凭证语义）；`*_TOKEN` /
+/// `*_SECRET` / `AWS_*` 等密钥类变量仍不进子进程——命令输出会进会话上下文
+/// 与审计，避免密钥落盘落档。白名单外变量经 settings `execpolicy.env_passthrough`
+/// 追加（余项，未实现）。
+pub const DEV_ENV_PASSTHROUGH: &[&str] = &[
+    // Rust
+    "RUSTUP_HOME",
+    "CARGO_HOME",
+    "RUSTUP_TOOLCHAIN",
+    "RUSTC_WRAPPER",
+    "CARGO_TARGET_DIR",
+    // Go
+    "GOROOT",
+    "GOPATH",
+    "GOBIN",
+    // JVM / .NET
+    "JAVA_HOME",
+    "GRADLE_USER_HOME",
+    "MAVEN_HOME",
+    "DOTNET_ROOT",
+    "DOTNET_CLI_HOME",
+    "NUGET_PACKAGES",
+    // Node
+    "NVM_DIR",
+    "NVM_BIN",
+    "NODE_PATH",
+    "VOLTA_HOME",
+    "PNPM_HOME",
+    "COREPACK_HOME",
+    "NPM_CONFIG_PREFIX",
+    // Python
+    "PYENV_ROOT",
+    "PYTHONPATH",
+    "VIRTUAL_ENV",
+    "CONDA_PREFIX",
+    "CONDA_DEFAULT_ENV",
+    "PIP_CACHE_DIR",
+    // Ruby / 版本管理器 / 移动端 SDK
+    "GEM_HOME",
+    "GEM_PATH",
+    "SDKMAN_DIR",
+    "MISE_DATA_DIR",
+    "MISE_SHELL",
+    "ASDF_DIR",
+    "ASDF_DATA_DIR",
+    "ANDROID_HOME",
+    "ANDROID_SDK_ROOT",
+    // 开发工作流：ssh-agent（git push over ssh）、时区与 XDG 缓存/配置根
+    "SSH_AUTH_SOCK",
+    "TZ",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+];
+
+/// 注入命令子进程的基础环境：最小环境（PATH / HOME / LANG）+ 工具链白名单透传。
+fn apply_base_env(cmd: &mut std::process::Command) {
+    cmd.env("PATH", std::env::var("PATH").unwrap_or_default());
+    cmd.env("HOME", std::env::var("HOME").unwrap_or_default());
+    cmd.env("LANG", "C.UTF-8");
+    for key in DEV_ENV_PASSTHROUGH {
+        // 白名单键一律覆盖注入（父进程未设置则跳过，避免注入空串改变工具语义）
+        if let Ok(value) = std::env::var(key) {
+            cmd.env(key, value);
+        }
+    }
+}
+
+/// 后台启动 shell 命令（§9.2 v2.64）：与 exec_command 同 shell 与环境
+/// （`/bin/sh -c` + 基础环境 + 工具链白名单，v2.78），不等待——stdout/stderr 各自管道，
 /// 由调用方（agent bgtask 注册表）托管读取、终止与生命周期。
 pub fn spawn_command_background(command: &str, cwd: &Path) -> std::io::Result<std::process::Child> {
     let mut c = std::process::Command::new("/bin/sh");
     c.arg("-c").arg(command);
     c.current_dir(cwd);
     c.env_clear();
-    // 与 exec_command 同最小环境：命令工具链需要 PATH / HOME / LANG
-    c.env("PATH", std::env::var("PATH").unwrap_or_default());
-    c.env("HOME", std::env::var("HOME").unwrap_or_default());
-    c.env("LANG", "C.UTF-8");
+    apply_base_env(&mut c);
     c.stdin(Stdio::null());
     c.stdout(Stdio::piped());
     c.stderr(Stdio::piped());
@@ -191,9 +258,7 @@ pub fn exec_argv(
     let mut built = std::process::Command::new(program);
     built.args(args).current_dir(cwd);
     built.env_clear();
-    built.env("PATH", std::env::var("PATH").unwrap_or_default());
-    built.env("HOME", std::env::var("HOME").unwrap_or_default());
-    built.env("LANG", "C.UTF-8");
+    apply_base_env(&mut built);
     built.env("GH_NO_UPDATE_NOTIFIER", "1");
     built.env("NO_COLOR", "1");
     built.env("GIT_TERMINAL_PROMPT", "0");
@@ -366,6 +431,62 @@ fn write_profile_file(profile: &str) -> std::io::Result<tempfile::TempPath> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// v2.78 回归：命令子进程透传开发工具链环境（RUSTUP_HOME 等），
+    /// 但**不**透传密钥类变量——而 v2.2 起只注入 PATH/HOME/LANG，
+    /// 定制 rustup 安装下 `cargo` 直接不可用（实测 agent 被迫重装工具链）。
+    #[test]
+    fn command_env_passes_dev_toolchain_but_not_secrets() {
+        // 父进程注入：一个白名单变量 + 一个密钥类变量
+        std::env::set_var("RUSTUP_HOME", "/tmp/tenon-env-test-rustup");
+        std::env::set_var("TENON_ENV_TEST_SECRET", "super-secret-value");
+        let out = exec_command(
+            "printf 'rustup=%s secret=%s home=%s\\n' \"$RUSTUP_HOME\" \"$TENON_ENV_TEST_SECRET\" \"$HOME\"",
+            Path::new("/tmp"),
+            Duration::from_secs(10),
+            &SandboxSpec::None,
+        )
+        .unwrap();
+        std::env::remove_var("RUSTUP_HOME");
+        std::env::remove_var("TENON_ENV_TEST_SECRET");
+        assert!(
+            out.stdout.contains("rustup=/tmp/tenon-env-test-rustup"),
+            "白名单变量须透传: {}",
+            out.stdout
+        );
+        assert!(
+            !out.stdout.contains("super-secret-value"),
+            "密钥类变量不得进子进程: {}",
+            out.stdout
+        );
+        assert!(
+            !out.stdout.contains("home=\n"),
+            "HOME 须注入: {}",
+            out.stdout
+        );
+    }
+
+    #[test]
+    fn argv_exec_passes_dev_toolchain_env() {
+        std::env::set_var("CARGO_HOME", "/tmp/tenon-env-test-cargo");
+        let out = exec_argv(
+            "/bin/sh",
+            &[
+                "-c".to_string(),
+                "printf 'cargo=%s\\n' \"$CARGO_HOME\"".to_string(),
+            ],
+            Path::new("/tmp"),
+            Duration::from_secs(10),
+            &[],
+        )
+        .unwrap();
+        std::env::remove_var("CARGO_HOME");
+        assert!(
+            out.stdout.contains("cargo=/tmp/tenon-env-test-cargo"),
+            "exec_argv 同样透传白名单: {}",
+            out.stdout
+        );
+    }
 
     #[test]
     fn captures_output_and_exit_code() {
