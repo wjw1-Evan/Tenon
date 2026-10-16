@@ -9,6 +9,7 @@
 
 use notify::{PollWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::Duration;
@@ -199,17 +200,26 @@ impl FileWatcher {
                 Err(RecvTimeoutError::Disconnected) => break,
             }
         }
-        // 去重：同路径保留最后一个状态
-        let mut dedup: Vec<ChangeEvent> = Vec::new();
-        for e in out {
-            if let Some(existing) = dedup.iter_mut().find(|x| x.path == e.path) {
-                existing.kind = e.kind;
-            } else {
+        dedup_events(out)
+    }
+}
+
+/// 去重：同路径保留最后一个状态，顺序保持首次出现位置。
+/// 哈希索引替代 Vec 线性查找——风暴硬上限 10,000 事件时
+/// 旧实现最坏 O(n²)≈5×10⁷ 次路径比较，纯为去重白烧 CPU。
+fn dedup_events(events: Vec<ChangeEvent>) -> Vec<ChangeEvent> {
+    let mut index: HashMap<String, usize> = HashMap::with_capacity(events.len());
+    let mut dedup: Vec<ChangeEvent> = Vec::with_capacity(events.len());
+    for e in events {
+        match index.get(&e.path) {
+            Some(&i) => dedup[i].kind = e.kind,
+            None => {
+                index.insert(e.path.clone(), dedup.len());
                 dedup.push(e);
             }
         }
-        dedup
     }
+    dedup
 }
 
 fn should_ignore(rel: &str) -> bool {
@@ -312,5 +322,26 @@ mod tests {
             FileWatcher::watch_with_poll_interval(dir.path(), Duration::from_millis(100)).unwrap();
         let events = watcher.next_batch(Duration::from_millis(200));
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn dedup_keeps_last_kind_and_first_position() {
+        let mk = |path: &str, kind: ChangeKind| ChangeEvent {
+            path: path.to_string(),
+            kind,
+        };
+        let events = vec![
+            mk("a.rs", ChangeKind::Created),
+            mk("b.rs", ChangeKind::Modified),
+            mk("a.rs", ChangeKind::Removed), // 同路径后到覆盖先到
+        ];
+        let deduped = dedup_events(events);
+        assert_eq!(
+            deduped,
+            vec![
+                mk("a.rs", ChangeKind::Removed),
+                mk("b.rs", ChangeKind::Modified),
+            ]
+        );
     }
 }

@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use tokio::sync::Mutex;
 
@@ -20,6 +20,10 @@ const DIAGNOSTICS_WAIT: Duration = Duration::from_secs(15);
 // 已有 full 拉取结果兜底时，等待推送补优的短窗口（防 didOpen 空推竞态即可，
 // 拉不到推送的服务器不值得每调白等 15s）
 const DIAGNOSTICS_PUSH_PREFER: Duration = Duration::from_secs(2);
+/// 诊断缓存容量上限：宿主常驻整个项目会话，缓存只增不淘汰会无界增长
+/// （每个 entry 是整份 publishDiagnostics params，大文件 + 大量诊断可观）。
+/// 超限淘汰最久未更新的文件——最久没动静的文件最不可能马上被查询。
+const DIAGNOSTICS_CACHE_CAP: usize = 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum LspManagerError {
@@ -31,10 +35,24 @@ pub enum LspManagerError {
     BadPath(String),
 }
 
+/// 磁盘 stat 签名：mtime + len 双因子，任一变化即视为可能变更。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DiskSig {
+    mtime: Option<SystemTime>,
+    len: u64,
+}
+
+/// 已 didOpen 文档缓存：version + 最近一次同步的磁盘内容与 stat 签名。
+struct OpenDoc {
+    version: i64,
+    text: String,
+    disk: Option<DiskSig>,
+}
+
 struct HostEntry {
     host: Arc<LspHost>,
-    /// 已 didOpen 的 URI → (version, 内容缓存)
-    open_docs: HashMap<String, (i64, String)>,
+    /// 已 didOpen 的 URI → 文档缓存
+    open_docs: HashMap<String, OpenDoc>,
     /// 诊断缓存：URI → (收到时刻, publishDiagnostics params)
     diagnostics: Arc<std::sync::Mutex<HashMap<String, (Instant, serde_json::Value)>>>,
 }
@@ -158,10 +176,19 @@ impl LspManager {
                 if note.method == "textDocument/publishDiagnostics" {
                     if let Some(uri) = note.params.get("uri").and_then(|u| u.as_str()) {
                         let key = normalize_uri_key(uri);
-                        diag_cache
-                            .lock()
-                            .expect("diag lock")
-                            .insert(key, (Instant::now(), note.params.clone()));
+                        let mut cache = diag_cache.lock().expect("diag lock");
+                        if cache.len() >= DIAGNOSTICS_CACHE_CAP && !cache.contains_key(&key) {
+                            // 容量上限：淘汰收到时刻最早的 entry（O(n) 仅发生在
+                            // 触顶时，n ≤ 上限，非热路径）
+                            if let Some(oldest) = cache
+                                .iter()
+                                .min_by_key(|(_, (t, _))| *t)
+                                .map(|(k, _)| k.clone())
+                            {
+                                cache.remove(&oldest);
+                            }
+                        }
+                        cache.insert(key, (Instant::now(), note.params.clone()));
                     }
                 }
             }
@@ -202,43 +229,112 @@ impl LspManager {
         let entry = self.entry(project_root, file).await?;
         let host = entry.lock().expect("host entry lock").host.clone();
 
-        // didOpen / didChange 同步：磁盘内容与缓存不一致 → 全量变更（version+1）。
-        // 锁内只做决策，阻塞 IO 在锁外执行（std Mutex 不得跨 await）
-        let disk = std::fs::read_to_string(project_root.join(file))
-            .map_err(|err| LspManagerError::Request(format!("读取 {file} 失败: {err}")))?;
+        // didOpen / didChange 同步：先 stat（mtime + len）比对缓存签名，未变
+        // 免整读——旧实现每次语义请求都全量 read_to_string，hover / 补全在
+        // 每次键入都白付一次文件 IO（文件越大越疼）。签名变了才全量读 + 全量
+        // 比对（同刻同长重写的漏检由「内容比对仍在」兜住，最多多读一次）。
+        // 阻塞 IO 全部在锁外 + spawn_blocking（std Mutex 不得跨 await）。
+        let (sig, disk): (Option<DiskSig>, Option<String>) = {
+            let cached_sig = entry
+                .lock()
+                .expect("host entry lock")
+                .open_docs
+                .get(&uri)
+                .and_then(|d| d.disk);
+            let stat_path = project_root.join(file);
+            let stat = tokio::task::spawn_blocking(move || {
+                std::fs::metadata(&stat_path).map(|m| DiskSig {
+                    mtime: m.modified().ok(),
+                    len: m.len(),
+                })
+            })
+            .await
+            .map_err(|e| LspManagerError::Request(format!("join 失败: {e}")))?
+            .ok();
+            match stat {
+                Some(s) if cached_sig == Some(s) => (Some(s), None),
+                _ => {
+                    let read_path = project_root.join(file);
+                    let text =
+                        tokio::task::spawn_blocking(move || std::fs::read_to_string(&read_path))
+                            .await
+                            .map_err(|e| LspManagerError::Request(format!("join 失败: {e}")))?
+                            .map_err(|err| {
+                                LspManagerError::Request(format!("读取 {file} 失败: {err}"))
+                            })?;
+                    (stat, Some(text))
+                }
+            }
+        };
         enum Sync {
             Open(serde_json::Value),
             Change { ver: i64, params: serde_json::Value },
             None { ver: i64 },
         }
+        // 锁内只做决策与缓存更新，无 IO
         let sync = {
             let mut e = entry.lock().expect("host entry lock");
-            match e.open_docs.get(&uri) {
-                None => {
-                    let params = serde_json::json!({
-                        "textDocument": {
-                            "uri": uri,
-                            "languageId": language_id_for(file),
-                            "version": 1,
-                            "text": disk,
+            match disk {
+                Some(text) => {
+                    let state = e
+                        .open_docs
+                        .get(&uri)
+                        .map(|d| (d.version, d.text.clone() != text));
+                    match state {
+                        None => {
+                            let params = serde_json::json!({
+                                "textDocument": {
+                                    "uri": uri,
+                                    "languageId": language_id_for(file),
+                                    "version": 1,
+                                    "text": text,
+                                }
+                            });
+                            e.open_docs.insert(
+                                uri.clone(),
+                                OpenDoc {
+                                    version: 1,
+                                    text,
+                                    disk: sig,
+                                },
+                            );
+                            Sync::Open(params)
                         }
-                    });
-                    e.open_docs.insert(uri.clone(), (1, disk));
-                    Sync::Open(params)
-                }
-                Some((ver, cached)) if *cached != disk => {
-                    let new_ver = ver + 1;
-                    let params = serde_json::json!({
-                        "textDocument": { "uri": uri, "version": new_ver },
-                        "contentChanges": [{ "text": disk }],
-                    });
-                    e.open_docs.insert(uri.clone(), (new_ver, disk));
-                    Sync::Change {
-                        ver: new_ver,
-                        params,
+                        Some((ver, changed)) => {
+                            if changed {
+                                let new_ver = ver + 1;
+                                let params = serde_json::json!({
+                                    "textDocument": { "uri": uri, "version": new_ver },
+                                    "contentChanges": [{ "text": text }],
+                                });
+                                e.open_docs.insert(
+                                    uri.clone(),
+                                    OpenDoc {
+                                        version: new_ver,
+                                        text,
+                                        disk: sig,
+                                    },
+                                );
+                                Sync::Change {
+                                    ver: new_ver,
+                                    params,
+                                }
+                            } else {
+                                // 内容没变（stat 签名漂移仅因同内容重写）：刷新
+                                // 签名，让后续请求吃到免读短路
+                                if let Some(doc) = e.open_docs.get_mut(&uri) {
+                                    doc.disk = sig;
+                                }
+                                Sync::None { ver }
+                            }
+                        }
                     }
                 }
-                Some((ver, _)) => Sync::None { ver: *ver },
+                None => {
+                    // stat 短路命中：磁盘与缓存一致，免读免通知
+                    let ver = e.open_docs.get(&uri).map(|d| d.version).unwrap_or(1);
+                    Sync::None { ver }
+                }
             }
         };
         let version = match sync {

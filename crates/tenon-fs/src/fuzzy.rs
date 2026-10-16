@@ -22,35 +22,41 @@ pub fn fuzzy_score(text: &str, query: &str) -> Option<i64> {
     if query.is_empty() {
         return Some(0);
     }
-    let t: Vec<char> = text.chars().collect();
+    let t_len = text.chars().count() as i64;
     let q: Vec<char> = query.chars().flat_map(|c| c.to_lowercase()).collect();
     let mut score = 0i64;
-    let mut search_from = 0usize;
     let mut last_hit: Option<usize> = None;
-    for qc in &q {
-        let found = t
-            .iter()
-            .enumerate()
-            .skip(search_from)
-            .find(|(_, tc)| tc.to_lowercase().next() == Some(*qc))
-            .map(|(i, _)| i)?;
-        score += BASE;
-        if found > 0 && last_hit == Some(found - 1) {
-            score += CONSECUTIVE_BONUS;
+    let mut prev: char = '\0'; // found>0 时必已被覆盖（见下）
+    let mut qi = 0usize;
+    // 流式扫描：不 collect text（旧实现对每候选堆分配一个 Vec<char>，
+    // 万级候选 × 每次键入全是白付的分配）；qi == q.len() 即提前收工。
+    for (found, tc) in text.chars().enumerate() {
+        if qi >= q.len() {
+            break;
         }
-        if found == 0 {
-            score += STRING_START_BONUS;
-        } else if matches!(t[found - 1], '/' | '_' | '-' | '.' | ' ') {
-            score += WORD_START_BONUS;
+        if tc.to_lowercase().next() == Some(q[qi]) {
+            score += BASE;
+            if found > 0 && last_hit == Some(found - 1) {
+                score += CONSECUTIVE_BONUS;
+            }
+            if found == 0 {
+                score += STRING_START_BONUS;
+            } else if matches!(prev, '/' | '_' | '-' | '.' | ' ') {
+                score += WORD_START_BONUS;
+            }
+            if let Some(l) = last_hit {
+                let gap = found.saturating_sub(l + 1) as i64;
+                score -= gap.min(GAP_PENALTY_CAP);
+            }
+            last_hit = Some(found);
+            qi += 1;
         }
-        if let Some(l) = last_hit {
-            let gap = found.saturating_sub(l + 1) as i64;
-            score -= gap.min(GAP_PENALTY_CAP);
-        }
-        last_hit = Some(found);
-        search_from = found + 1;
+        prev = tc;
     }
-    score -= (t.len() as i64 / 16).min(LENGTH_PENALTY_CAP);
+    if qi < q.len() {
+        return None;
+    }
+    score -= (t_len / 16).min(LENGTH_PENALTY_CAP);
     Some(score)
 }
 

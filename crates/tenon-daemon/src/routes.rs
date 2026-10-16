@@ -2005,22 +2005,32 @@ async fn fuzzy_files(
         return api_err(StatusCode::NOT_FOUND, "project not found");
     };
     let limit = query.limit.clamp(1, 500);
-    let statuses = tenon_fs::git::status_map(&project_path);
     let result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        // git 子进程 + 全树遍历都是阻塞 IO：必须留在阻塞线程池（status_map
+        // 此前跑在 async 上下文，每次模糊查找都把 tokio worker 卡满 git status 时长）
+        let statuses = tenon_fs::git::status_map(&project_path);
         let tree = tenon_fs::tree::full_tree(&project_path).map_err(|e| e.to_string())?;
         let candidates: Vec<&str> = tree
             .iter()
             .filter(|entry| entry.kind == tenon_fs::tree::EntryKind::File)
             .map(|entry| entry.path.as_str())
             .collect();
+        // 命中回查走哈希索引：旧实现每命中 tree.iter().find 是 O(n)，
+        // 500 个命中 × 10 万条目全在重复线性扫描
+        let by_path: std::collections::HashMap<&str, usize> = tree
+            .iter()
+            .enumerate()
+            .map(|(i, entry)| (entry.path.as_str(), i))
+            .collect();
         let hits = tenon_fs::fuzzy::fuzzy_filter(candidates, &query.q)
             .into_iter()
             .take(limit)
             .map(|hit| {
-                let entry = tree
-                    .iter()
-                    .find(|entry| entry.path == hit.text)
+                let index = by_path
+                    .get(hit.text.as_str())
+                    .copied()
                     .expect("candidate comes from tree");
+                let entry = &tree[index];
                 let status = statuses
                     .get(&entry.path)
                     .copied()
@@ -2069,9 +2079,16 @@ async fn project_tree(
             }
         }
     };
-    let statuses = tenon_fs::git::status_map(&project_path);
-    match tenon_fs::tree::list_dir(&project_path, &rel, &statuses) {
-        Ok(entries) => Json(json!({"entries": entries})).into_response(),
+    // git 子进程 + 目录读取都是阻塞 IO：挪进阻塞线程池，不卡 tokio worker
+    //（此前每次文件树请求都同步跑一遍 git status）
+    let entries = tokio::task::spawn_blocking(move || {
+        let statuses = tenon_fs::git::status_map(&project_path);
+        tenon_fs::tree::list_dir(&project_path, &rel, &statuses)
+    })
+    .await;
+    match entries {
+        Ok(Ok(entries)) => Json(json!({"entries": entries})).into_response(),
+        Ok(Err(e)) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
         Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }
@@ -2310,23 +2327,28 @@ async fn search(
         return api_err(StatusCode::NOT_FOUND, "project not found");
     };
     let opts = tenon_fs::SearchOptions::default();
-    match q.replace {
+    // 全仓扫描是秒级阻塞操作：挪进阻塞线程池——同步跑在 async 上下文会让
+    // 大仓库搜索期间整个 daemon 的 tokio worker 无响应
+    let pattern = q.q;
+    let result = tokio::task::spawn_blocking(move || match q.replace {
         Some(replacement) => {
-            match tenon_fs::search::replace_preview(&root, &q.q, &replacement, &opts) {
-                Ok(previews) => {
+            tenon_fs::search::replace_preview(&root, &pattern, &replacement, &opts).map(
+                |previews| {
                     let items: Vec<Value> = previews
                         .into_iter()
                         .map(|(path, diff)| json!({"path": path, "diff": diff}))
                         .collect();
-                    Json(json!({"previews": items})).into_response()
-                }
-                Err(e) => api_err(StatusCode::BAD_REQUEST, e.to_string()),
-            }
+                    json!({"previews": items})
+                },
+            )
         }
-        None => match tenon_fs::search::search(&root, &q.q, &opts) {
-            Ok(hits) => Json(json!({"hits": hits})).into_response(),
-            Err(e) => api_err(StatusCode::BAD_REQUEST, e.to_string()),
-        },
+        None => tenon_fs::search::search(&root, &pattern, &opts).map(|hits| json!({"hits": hits})),
+    })
+    .await;
+    match result {
+        Ok(Ok(value)) => Json(value).into_response(),
+        Ok(Err(e)) => api_err(StatusCode::BAD_REQUEST, e.to_string()),
+        Err(e) => api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }
 

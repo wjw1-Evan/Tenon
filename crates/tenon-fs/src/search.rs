@@ -3,10 +3,13 @@
 use crate::{FsError, Result};
 use grep_regex::RegexMatcher;
 use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkMatch};
+use ignore::WalkState;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use similar::TextDiff;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchHit {
@@ -65,57 +68,107 @@ impl Sink for LineSink<'_> {
 }
 
 /// 正则全局搜索（尊重 .gitignore；跳过二进制 / 大文件）。
+///
+/// 并行遍历（rg 同款 `WalkParallel`）：文件扫描本就是各文件独立的 CPU +
+/// IO 混合负载，单线程 walker 在多核机上把搜索时长钉死在核数之外。命中
+/// 达上限即全局退出。结果按（路径，行，列）稳定排序：组内行序升序是
+/// UI「打开首个命中」跳转的语义前提，全局顺序从目录枚举序收敛为路径
+/// 字典序（并行下枚举序本就不可依赖，排序后跨平台可复现）。
 pub fn search(root: &Path, pattern: &str, opts: &SearchOptions) -> Result<Vec<SearchHit>> {
-    let matcher = RegexMatcher::new(pattern)
-        .map_err(|e| FsError::Io(std::io::Error::other(e.to_string())))?;
-    let line_regex = Regex::new(pattern).ok();
-    let mut hits: Vec<SearchHit> = Vec::new();
-    let mut searcher = SearcherBuilder::new()
-        .binary_detection(BinaryDetection::quit(0))
-        .line_number(true)
-        .build();
+    let matcher = Arc::new(
+        RegexMatcher::new(pattern)
+            .map_err(|e| FsError::Io(std::io::Error::other(e.to_string())))?,
+    );
+    let line_regex = Arc::new(
+        Regex::new(pattern)
+            .ok()
+            .unwrap_or_else(|| NEVER_REGEX.clone()),
+    );
+    let hits = Mutex::new(Vec::new());
+    let matched = AtomicUsize::new(0);
+    // 外层 FnMut 会被多次调用：共享状态以引用形式进闭包（move 内层只复制引用）
+    let hits_shared = &hits;
+    let matched_shared = &matched;
 
-    let walker = ignore::WalkBuilder::new(root)
+    ignore::WalkBuilder::new(root)
         .hidden(false)
         .require_git(false)
         .filter_entry(|e| !within_dot_git(e.path()))
-        .build();
-    for item in walker {
-        let entry = item.map_err(|e| FsError::Io(std::io::Error::other(e.to_string())))?;
-        if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
-            continue;
-        }
-        if let Ok(meta) = entry.metadata() {
-            if meta.len() > opts.max_file_bytes {
-                continue;
-            }
-        }
-        let path = entry.path();
-        let rel = path
-            .strip_prefix(root)
-            .map(|p| p.to_string_lossy().replace('\\', "/"))
-            .unwrap_or_else(|_| path.to_string_lossy().into_owned());
-        let mut file_hits: Vec<(u64, u64, String)> = Vec::new();
-        {
-            let mut sink = LineSink {
-                regex: line_regex.as_ref().unwrap_or(&NEVER_REGEX),
-                hits: &mut file_hits,
-                cap: opts.max_hits - hits.len(),
-            };
-            let _ = searcher.search_path(&matcher, path, &mut sink);
-        }
-        for (line, column, text) in file_hits {
-            hits.push(SearchHit {
-                path: rel.clone(),
-                line,
-                column,
-                text,
-            });
-        }
-        if hits.len() >= opts.max_hits {
-            break;
-        }
-    }
+        .max_filesize(Some(opts.max_file_bytes))
+        .build_parallel()
+        .run(|| {
+            let matcher = matcher.clone();
+            let line_regex = line_regex.clone();
+            let mut searcher = SearcherBuilder::new()
+                .binary_detection(BinaryDetection::quit(0))
+                .line_number(true)
+                .build();
+            Box::new(move |entry| {
+                if matched_shared.load(Ordering::Relaxed) >= opts.max_hits {
+                    return WalkState::Quit;
+                }
+                // 逐条目错误（权限等）跳过不中断：并行 walker 的错误本就是
+                // 单条目粒度，整场搜索不因单个不可读目录报废。
+                let Ok(entry) = entry else {
+                    return WalkState::Continue;
+                };
+                if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                    return WalkState::Continue;
+                }
+                let path = entry.path();
+                let mut file_hits: Vec<(u64, u64, String)> = Vec::new();
+                {
+                    let mut sink = LineSink {
+                        regex: &line_regex,
+                        hits: &mut file_hits,
+                        // 单文件上限给足（LineSink 内部到量即停）；全局上限在
+                        // 合并时统一收敛，单文件不可能贡献超过全局上限的有效命中
+                        cap: opts.max_hits,
+                    };
+                    let _ = searcher.search_path(&*matcher, path, &mut sink);
+                }
+                if file_hits.is_empty() {
+                    return WalkState::Continue;
+                }
+                let rel = path
+                    .strip_prefix(root)
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_else(|_| path.to_string_lossy().into_owned());
+                let mut all = hits_shared.lock().expect("hits lock");
+                if all.len() >= opts.max_hits {
+                    return WalkState::Quit;
+                }
+                let remaining = opts.max_hits - all.len();
+                all.extend(
+                    file_hits
+                        .into_iter()
+                        .take(remaining)
+                        .map(|(line, column, text)| SearchHit {
+                            path: rel.clone(),
+                            line,
+                            column,
+                            text,
+                        }),
+                );
+                let total = all.len();
+                drop(all);
+                matched_shared.store(total, Ordering::Relaxed);
+                if total >= opts.max_hits {
+                    WalkState::Quit
+                } else {
+                    WalkState::Continue
+                }
+            })
+        });
+
+    let mut hits = hits.into_inner().expect("hits lock");
+    hits.sort_by(|a, b| {
+        a.path
+            .cmp(&b.path)
+            .then(a.line.cmp(&b.line))
+            .then(a.column.cmp(&b.column))
+    });
+    hits.truncate(opts.max_hits);
     Ok(hits)
 }
 
@@ -362,6 +415,29 @@ mod tests {
         };
         let hits = search(d.path(), "beta", &opts).unwrap();
         assert_eq!(hits.len(), 1);
+    }
+
+    /// 并行遍历下枚举序不可依赖：结果必须收敛为（路径，行，列）稳定序。
+    /// 组内行序升序是 UI「打开首个命中」跳转的语义前提。
+    #[test]
+    fn hits_are_stable_sorted_by_path_line_column() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("z")).unwrap();
+        std::fs::write(dir.path().join("z/second.txt"), "hit\nfiller\nhit\nhit\n").unwrap();
+        std::fs::write(dir.path().join("a_first.txt"), "hit\n").unwrap();
+        let hits = search(dir.path(), "hit", &SearchOptions::default()).unwrap();
+        let paths: Vec<&str> = hits.iter().map(|h| h.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec![
+                "a_first.txt",
+                "z/second.txt",
+                "z/second.txt",
+                "z/second.txt"
+            ]
+        );
+        let lines: Vec<u64> = hits.iter().map(|h| h.line).collect();
+        assert_eq!(lines, vec![1, 1, 3, 4]);
     }
 
     /// v2.61 §9.2：glob_files——模式匹配、.gitignore 生效、排序、空模式拒绝。
