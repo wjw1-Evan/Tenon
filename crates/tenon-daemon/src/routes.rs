@@ -3859,6 +3859,16 @@ async fn get_settings(State(state): State<Arc<DaemonState>>) -> Response {
             }
         }
     }
+    // fallback 链随合并视图回显（§11 v1.171 设计明定「GET /settings 回显」）。
+    // 此前仅 settings.json 持久化路径（SettingsOverrides::to_json）回显，API
+    // 合并视图漏掉该键——ModelsConfig 无 fallback 字段、apply_models_to 无从
+    // 叠加，设置面板重开即「丢」已生效的备用链显示（E2E 实录，v1.174 面板
+    // 回填 fallbackText 自此处取值）。
+    if let Some(fallback) = ov.models_fallback.clone() {
+        if let Some(obj) = models.as_object_mut() {
+            obj.insert("fallback".into(), serde_json::json!(fallback));
+        }
+    }
     let mut exec = serde_json::to_value(&state.config.agent.exec).unwrap_or_default();
     if let Some(obj) = exec.as_object_mut() {
         if let Some(v) = ov.command_timeout_s {
