@@ -297,6 +297,10 @@ pub(crate) async fn create_agent_session(
                 })
                 .collect();
         }
+        // v2.86 §9.2：透传环境变量名（settings 校验名单；新会话生效）。
+        if let Some(env) = ov.env_passthrough {
+            agent_cfg.env_passthrough = env;
+        }
     }
     // §9.8 v1.92 接线：enabled 时把 Laya 运行时注入会话配置（#1 意图预判 /
     // #2 命令风险补盲区随之生效；未下载 / 未加载由运行时内部回退现状）。

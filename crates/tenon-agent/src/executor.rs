@@ -11,7 +11,7 @@ use std::time::Duration;
 use tenon_core::tools::PatchOp;
 use tenon_fs::{FileOps, FileService};
 use tenon_sandbox::WriteGuard;
-use tenon_sandbox::{exec_argv, exec_command};
+use tenon_sandbox::{exec_argv, exec_command_with_env};
 
 /// v1.172 存储治理（§14.2 / §9.2）：shell / 直执类工具输出统一截断上限。
 /// 与 http_fetch / MCP 既有口径一致（20k 字符）——双上限中的模型上下文侧，
@@ -245,6 +245,9 @@ pub struct ToolContext {
     pub skills_global_dir: Option<PathBuf>,
     /// 停用技能名单（settings.json `skills.disabled`，会话创建时快照）。
     pub skills_disabled: Vec<String>,
+    /// 透传环境变量名（v2.86 §9.2 settings `execpolicy.env_passthrough`，
+    /// settings 层校验名单合法性）：命令子进程在工具链白名单外按名透传父进程值。
+    pub env_passthrough: std::sync::Arc<Vec<String>>,
     /// 后台任务注册表（§9.2 v2.64：run_command background + task_output /
     /// task_kill）；会话作用域，Drop 兜底清杀存活子进程。
     pub background: Arc<crate::bgtask::BgRegistry>,
@@ -310,6 +313,7 @@ impl ToolContext {
             browser: None,
             skills_global_dir: None,
             skills_disabled: Vec::new(),
+            env_passthrough: std::sync::Arc::new(Vec::new()),
             background: Arc::new(crate::bgtask::BgRegistry::new()),
             freshness: std::sync::Mutex::new(HashMap::new()),
         }
@@ -1146,7 +1150,12 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                     .and_then(|t| t.as_u64())
                     .map(|s| Duration::from_secs(s.clamp(1, 3600)))
                     .unwrap_or(Duration::from_secs(3600));
-                match ctx.background.spawn(cmd, &ctx.command_cwd, timeout) {
+                match ctx.background.spawn_with_env(
+                    cmd,
+                    &ctx.command_cwd,
+                    timeout,
+                    &ctx.env_passthrough,
+                ) {
                     Ok(id) => {
                         return ToolOutput::ok(format!(
                             "后台任务 #{id} 已启动: {cmd}\n用 task_output 查询输出（wait_s 可等待完成）、task_kill 终止"
@@ -1160,11 +1169,12 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                 .and_then(|t| t.as_u64())
                 .map(|s| Duration::from_secs(s.clamp(1, 3600)))
                 .unwrap_or(ctx.command_timeout);
-            match exec_command(
+            match exec_command_with_env(
                 cmd,
                 &ctx.command_cwd,
                 timeout,
                 &tenon_sandbox::SandboxSpec::None,
+                &ctx.env_passthrough,
             ) {
                 Ok(out) => ToolOutput {
                     ok: out.success(),
@@ -1202,11 +1212,12 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
                 return ToolOutput::ok("（无可识别的测试/构建命令——走降级验证通道）");
             };
             // v2.37（ADR-19）：命令沙箱恒降级为无（全对话完整权限，用户显式信任）
-            match exec_command(
+            match exec_command_with_env(
                 &cmd,
                 &ctx.command_cwd,
                 ctx.command_timeout,
                 &tenon_sandbox::SandboxSpec::None,
+                &ctx.env_passthrough,
             ) {
                 Ok(out) => ToolOutput {
                     ok: out.success(),
@@ -1256,11 +1267,12 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
             // 唯一命令级收窄。
             // 与 run_tests/run_build 同口径：在会话 working_dir 执行——
             // monorepo 会话装错工作区（根 lockfile）比失败更糟
-            match exec_command(
+            match exec_command_with_env(
                 cmd,
                 &ctx.command_cwd,
                 ctx.command_timeout,
                 &tenon_sandbox::SandboxSpec::None,
+                &ctx.env_passthrough,
             ) {
                 Ok(out) => ToolOutput {
                     ok: out.success(),
@@ -1598,7 +1610,13 @@ pub fn execute_tool(ctx: &ToolContext, tool: &str, args: &serde_json::Value) -> 
             // 直接参数拼接（无 shell 注入面），并禁用交互式凭据提示。
             let command = format!("git push --porcelain{upstream} {remote} {branch}");
             let spec = tenon_sandbox::SandboxSpec::None;
-            match exec_command(&command, &ctx.root, ctx.command_timeout, &spec) {
+            match exec_command_with_env(
+                &command,
+                &ctx.root,
+                ctx.command_timeout,
+                &spec,
+                &ctx.env_passthrough,
+            ) {
                 Ok(out) => ToolOutput {
                     ok: out.success(),
                     content: truncate_output(&tenon_core::redact::redact(&format!(
@@ -1753,6 +1771,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let c = ToolContext::new(dir.path(), Duration::from_secs(30));
         (dir, c)
+    }
+
+    // v2.86 §9.2：settings execpolicy.env_passthrough 经 ToolContext 接通
+    // run_command——名单内变量进子进程（前端值经父进程环境）。
+    #[test]
+    fn run_command_passes_through_configured_env_names() {
+        std::env::set_var("TENON_TEST_PASSTHROUGH", "marker-286");
+        let (_dir, mut c) = ctx();
+        c.env_passthrough = Arc::new(vec!["TENON_TEST_PASSTHROUGH".to_string()]);
+        let out = execute_tool(
+            &c,
+            "run_command",
+            &serde_json::json!({"command": "echo v=$TENON_TEST_PASSTHROUGH"}),
+        );
+        assert!(out.ok, "{}", out.content);
+        assert!(out.content.contains("v=marker-286"), "{}", out.content);
+        std::env::remove_var("TENON_TEST_PASSTHROUGH");
     }
 
     #[test]

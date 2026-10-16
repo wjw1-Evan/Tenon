@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tenon_sandbox::spawn_command_background;
+use tenon_sandbox::spawn_command_background_with_env;
 
 /// 单任务输出缓冲上限（超出截留，读取面注明）。
 const BUFFER_CAP: usize = 512 * 1024;
@@ -93,8 +93,20 @@ impl BgRegistry {
         cwd: &std::path::Path,
         timeout: Duration,
     ) -> Result<u32, String> {
-        let mut child =
-            spawn_command_background(cmd, cwd).map_err(|e| format!("后台启动失败: {e}"))?;
+        self.spawn_with_env(cmd, cwd, timeout, &[])
+    }
+
+    /// 同 [`Self::spawn`]，追加按名透传父进程环境（v2.86 settings
+    /// `execpolicy.env_passthrough`）。
+    pub fn spawn_with_env(
+        &self,
+        cmd: &str,
+        cwd: &std::path::Path,
+        timeout: Duration,
+        env_passthrough: &[String],
+    ) -> Result<u32, String> {
+        let mut child = spawn_command_background_with_env(cmd, cwd, env_passthrough)
+            .map_err(|e| format!("后台启动失败: {e}"))?;
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
         let id = self.next_id.fetch_add(1, Ordering::SeqCst) + 1;

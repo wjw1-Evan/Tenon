@@ -99,6 +99,19 @@ pub fn exec_command(
     timeout: Duration,
     sandbox: &SandboxSpec,
 ) -> std::io::Result<ExecOutcome> {
+    exec_command_with_env(command, cwd, timeout, sandbox, &[])
+}
+
+/// 同 [`exec_command`]，追加透传指定环境变量（v2.86 §9.2 settings
+/// `execpolicy.env_passthrough`——名单经 daemon settings 层校验，此处只做
+/// 机制：父进程有值则注入，未设置跳过）。
+pub fn exec_command_with_env(
+    command: &str,
+    cwd: &Path,
+    timeout: Duration,
+    sandbox: &SandboxSpec,
+    env_passthrough: &[String],
+) -> std::io::Result<ExecOutcome> {
     let tmp = tempfile::tempdir()?;
     let out_path = tmp.path().join("stdout");
     let err_path = tmp.path().join("stderr");
@@ -116,8 +129,9 @@ pub fn exec_command(
     };
     built.cmd.current_dir(cwd);
     built.cmd.env_clear();
-    // 最小环境（PATH / HOME / LANG）+ 工具链白名单透传（v2.78）
-    apply_base_env(&mut built.cmd);
+    // 最小环境（PATH / HOME / LANG）+ 工具链白名单透传（v2.78）+ 用户自定义
+    // 透传（v2.86）
+    apply_base_env_with(&mut built.cmd, env_passthrough);
     // v2.0 域过滤（design-v2.md §4.4）：镜像态注入本地代理环境——沙箱内命令
     // 唯一出网通路（大小写双写，覆盖 npm / pip / cargo / go / git 等主流客户端）
     if let SandboxSpec::MirrorProxy {
@@ -161,7 +175,7 @@ pub fn exec_command(
 /// 取向：只透传**工具链 / 工具目录类**变量（无凭证语义）；`*_TOKEN` /
 /// `*_SECRET` / `AWS_*` 等密钥类变量仍不进子进程——命令输出会进会话上下文
 /// 与审计，避免密钥落盘落档。白名单外变量经 settings `execpolicy.env_passthrough`
-/// 追加（余项，未实现）。
+/// 按名追加（v2.86 接线，名单校验见 `tenon_core::execpolicy::validate_env_name`）。
 pub const DEV_ENV_PASSTHROUGH: &[&str] = &[
     // Rust
     "RUSTUP_HOME",
@@ -215,11 +229,22 @@ pub const DEV_ENV_PASSTHROUGH: &[&str] = &[
 
 /// 注入命令子进程的基础环境：最小环境（PATH / HOME / LANG）+ 工具链白名单透传。
 fn apply_base_env(cmd: &mut std::process::Command) {
+    apply_base_env_with(cmd, &[])
+}
+
+/// 同 [`apply_base_env`]，追加按名透传父进程环境（v2.86 settings
+/// `execpolicy.env_passthrough`；名单合法性由 settings 层把关）。
+fn apply_base_env_with(cmd: &mut std::process::Command, extra: &[String]) {
     cmd.env("PATH", std::env::var("PATH").unwrap_or_default());
     cmd.env("HOME", std::env::var("HOME").unwrap_or_default());
     cmd.env("LANG", "C.UTF-8");
     for key in DEV_ENV_PASSTHROUGH {
         // 白名单键一律覆盖注入（父进程未设置则跳过，避免注入空串改变工具语义）
+        if let Ok(value) = std::env::var(key) {
+            cmd.env(key, value);
+        }
+    }
+    for key in extra {
         if let Ok(value) = std::env::var(key) {
             cmd.env(key, value);
         }
@@ -230,11 +255,20 @@ fn apply_base_env(cmd: &mut std::process::Command) {
 /// （`/bin/sh -c` + 基础环境 + 工具链白名单，v2.78），不等待——stdout/stderr 各自管道，
 /// 由调用方（agent bgtask 注册表）托管读取、终止与生命周期。
 pub fn spawn_command_background(command: &str, cwd: &Path) -> std::io::Result<std::process::Child> {
+    spawn_command_background_with_env(command, cwd, &[])
+}
+
+/// 同 [`spawn_command_background`]，追加按名透传父进程环境（v2.86）。
+pub fn spawn_command_background_with_env(
+    command: &str,
+    cwd: &Path,
+    env_passthrough: &[String],
+) -> std::io::Result<std::process::Child> {
     let mut c = std::process::Command::new("/bin/sh");
     c.arg("-c").arg(command);
     c.current_dir(cwd);
     c.env_clear();
-    apply_base_env(&mut c);
+    apply_base_env_with(&mut c, env_passthrough);
     c.stdin(Stdio::null());
     c.stdout(Stdio::piped());
     c.stderr(Stdio::piped());
@@ -561,6 +595,30 @@ mod tests {
         .unwrap();
         assert!(out.timed_out);
         assert!(start.elapsed() < Duration::from_secs(5));
+    }
+
+    // v2.86 §9.2：按名透传父进程环境（settings execpolicy.env_passthrough）——
+    // 名单内可见、名单外仍剥离；父进程未设置的名单项不注入空串。
+    #[test]
+    fn exec_command_with_env_passthrough_names() {
+        std::env::set_var("TENON_TEST_PASSTHROUGH", "marker-286");
+        std::env::remove_var("TENON_TEST_NOT_LISTED");
+        let out = exec_command_with_env(
+            "echo \"v=$TENON_TEST_PASSTHROUGH listed=$TENON_TEST_NOT_LISTED_set\"",
+            Path::new("/tmp"),
+            Duration::from_secs(10),
+            &SandboxSpec::None,
+            &["TENON_TEST_PASSTHROUGH".to_string()],
+        )
+        .unwrap();
+        assert!(out.success(), "{}{}", out.stdout, out.stderr);
+        assert!(out.stdout.contains("v=marker-286"), "{}", out.stdout);
+        assert!(
+            out.stdout.contains("listed="),
+            "名单外变量不注入（空串视为未设置）: {}",
+            out.stdout
+        );
+        std::env::remove_var("TENON_TEST_PASSTHROUGH");
     }
 
     #[test]

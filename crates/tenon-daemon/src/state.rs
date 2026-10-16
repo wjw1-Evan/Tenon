@@ -221,6 +221,9 @@ pub struct SettingsOverrides {
     pub command_timeout_s: Option<u64>,
     /// v2.20 §9.2 execpolicy 自定义规则（整体替换；新会话生效；缺省 None = 空集）。
     pub execpolicy_rules: Option<Vec<ExecRuleJson>>,
+    /// v2.86 §9.2 透传环境变量名（整体替换；新会话生效；缺省 None = 空集）——
+    /// 名单经 validate_env_name 校验（格式 + 密钥类拒绝，审计不落密钥）。
+    pub env_passthrough: Option<Vec<String>>,
     /// v2.23 §13.3 ACP 外部 agent（整体替换；命令白名单同 MCP 启动器约束）。
     pub acp_agents: Option<Vec<AcpAgentJson>>,
     /// v1.40 模型分区：默认 provider 名与 provider 覆盖表（整体替换语义）。
@@ -351,6 +354,26 @@ impl SettingsOverrides {
                     });
                 }
                 self.execpolicy_rules = Some(parsed);
+            }
+            // v2.86 §9.2：白名单外自定义环境变量按名透传（整体替换；新会话生效）
+            // ——格式 + 密钥类名校验（审计不落密钥），上限 64 条。
+            if let Some(env) = ep.get("env_passthrough") {
+                let arr = env
+                    .as_array()
+                    .ok_or("execpolicy.env_passthrough 须为字符串数组（变量名）")?;
+                if arr.len() > 64 {
+                    return Err("execpolicy.env_passthrough 上限 64 条".into());
+                }
+                let mut names = Vec::with_capacity(arr.len());
+                for (i, v) in arr.iter().enumerate() {
+                    let name = v
+                        .as_str()
+                        .ok_or_else(|| format!("execpolicy.env_passthrough[{i}] 须为字符串"))?;
+                    tenon_core::execpolicy::validate_env_name(name)
+                        .map_err(|e| format!("execpolicy.env_passthrough[{i}].{e}"))?;
+                    names.push(name.to_string());
+                }
+                self.env_passthrough = Some(names);
             }
         }
         // v2.23 §13.3 ACP agents：name/command 必填 + 命令白名单（MCP 同源）+ ≤8 个
@@ -577,6 +600,10 @@ impl SettingsOverrides {
         let mut execpolicy = serde_json::Map::new();
         if let Some(rules) = &self.execpolicy_rules {
             execpolicy.insert("rules".into(), serde_json::json!(rules));
+        }
+        if let Some(env) = &self.env_passthrough {
+            // 只回显变量名（从不存值——值留在父进程环境，密钥不落盘不落档）
+            execpolicy.insert("env_passthrough".into(), serde_json::json!(env));
         }
         let mut acp = serde_json::Map::new();
         if let Some(agents) = &self.acp_agents {
@@ -2153,6 +2180,55 @@ mod execpolicy_rules_settings_tests {
             let mut o2 = SettingsOverrides::default();
             assert!(o2.merge_json(&bad).is_err(), "应拒收: {bad}");
         }
+    }
+
+    /// v2.86 settings execpolicy.env_passthrough：合法名单收下并回显（只回显
+    /// 变量名，从不存值）；格式 / 密钥类名 / 超上限拒收（整体不发请求）。
+    #[test]
+    fn env_passthrough_validate_echo_and_reject() {
+        let mut ov = SettingsOverrides::default();
+        ov.merge_json(&serde_json::json!({
+            "execpolicy": { "env_passthrough": ["DOCKER_HOST", "BUILDKITE_BUILD_PATH", "MIX_ENV"] }
+        }))
+        .unwrap();
+        let echo = ov.to_json()["execpolicy"]["env_passthrough"].clone();
+        assert_eq!(
+            echo,
+            serde_json::json!(["DOCKER_HOST", "BUILDKITE_BUILD_PATH", "MIX_ENV"])
+        );
+
+        // 拒收：非字符串项 / 格式非法 / 密钥类名 / 超上限
+        let too_many = serde_json::json!({"execpolicy": {"env_passthrough":
+            std::iter::repeat_n(serde_json::json!("SOME_VAR"), 65).collect::<Vec<_>>()
+        }});
+        let cases = [
+            serde_json::json!({"execpolicy": {"env_passthrough": ["OK_VAR", 42]}}),
+            serde_json::json!({"execpolicy": {"env_passthrough": ["HAS SPACE"]}}),
+            serde_json::json!({"execpolicy": {"env_passthrough": ["1BAD"]}}),
+            serde_json::json!({"execpolicy": {"env_passthrough": ["GITHUB_TOKEN"]}}),
+            serde_json::json!({"execpolicy": {"env_passthrough": ["MY_SECRET_VALUE"]}}),
+            serde_json::json!({"execpolicy": {"env_passthrough": ["DEPLOY_KEY"]}}),
+            serde_json::json!({"execpolicy": {"env_passthrough": ["AWS_REGION"]}}),
+            too_many,
+        ];
+        for bad in cases {
+            let mut o2 = SettingsOverrides::default();
+            assert!(o2.merge_json(&bad).is_err(), "应拒收: {bad}");
+        }
+        // 拒收后 state 不被半改（整体替换语义：Err 即整体丢弃）
+        let mut o3 = SettingsOverrides {
+            env_passthrough: Some(vec!["KEEP".into()]),
+            ..Default::default()
+        };
+        assert!(o3
+            .merge_json(&serde_json::json!({
+                "execpolicy": {"env_passthrough": ["BAD NAME"]}
+            }))
+            .is_err());
+        assert_eq!(
+            o3.env_passthrough.as_deref(),
+            Some(&["KEEP".to_string()][..])
+        );
     }
 }
 

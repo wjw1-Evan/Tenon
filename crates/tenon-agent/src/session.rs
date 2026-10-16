@@ -55,6 +55,9 @@ pub struct AgentConfig {
     /// v2.20 execpolicy 自定义规则（design-v2.md §4.2 / Claude Code permissions
     /// 形态）：settings 注入新会话；策略总线②段 evaluate_with_rules 消费。
     pub exec_rules: Vec<tenon_core::execpolicy::CustomRule>,
+    /// v2.86 透传环境变量名（§9.2 settings `execpolicy.env_passthrough`，
+    /// settings 层已校验名单）：命令子进程在工具链白名单外按名透传父进程值。
+    pub env_passthrough: Vec<String>,
     /// Laya 本地决策模型（§9.8；None = 未启用，各集成点回退现状）。
     pub laya: Option<Arc<tenon_laya::LayaRuntime>>,
     /// daemon 共享 LSP 宿主（§8.5 / §9.2：编辑器与代理同实例）。
@@ -128,6 +131,7 @@ impl AgentConfig {
             command_timeout_s: 120,
             compaction_input_tokens: tenon_core::context::MIN_COMPACTION_INPUT_TOKENS,
             exec_rules: Vec::new(),
+            env_passthrough: Vec::new(),
             laya: None,
             lsp: None,
             browser: None,
@@ -1086,6 +1090,9 @@ impl AgentSession {
         // §13.4 v1.130：技能全局目录与停用名单（停用经 settings 快照，新会话生效）。
         tool_ctx.skills_global_dir = Some(config.skills_global_dir.clone());
         tool_ctx.skills_disabled = config.skills_disabled.clone();
+        // §9.2 v2.86：透传环境变量名（settings execpolicy.env_passthrough，
+        // 新会话生效）——命令子进程在工具链白名单外按名透传父进程值。
+        tool_ctx.env_passthrough = std::sync::Arc::new(config.env_passthrough.clone());
         // §13.5 v1.145：MCP 宿主注入 + 会话创建时 tools/list 快照进工具目录。
         tool_ctx.mcp = config.mcp.clone();
         let mcp_specs = match &config.mcp {

@@ -320,6 +320,32 @@ pub fn validate_rule_pattern(pattern: &str) -> Result<(), String> {
         .map_err(|e| format!("pattern 非法 regex: {e}"))
 }
 
+/// 校验透传环境变量名（v2.86 §9.2 settings `execpolicy.env_passthrough`）：
+/// 格式须为 `^[A-Za-z_][A-Za-z0-9_]*$`；密钥类名字一律拒绝（大小写无关含
+/// `TOKEN` / `SECRET` / `KEY` / `PASSWORD` 子串，或 `AWS_` 前缀）——命令输出
+/// 会进会话上下文与审计，「审计不落密钥」不变式优先于用户便利（子串匹配刻意
+/// 保守：`GPG_KEY` 这类边缘名宁可误拒，不留密钥进子进程环境的口子）。
+pub fn validate_env_name(name: &str) -> Result<(), String> {
+    let mut chars = name.chars();
+    let first_ok = matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_');
+    if !first_ok || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(format!(
+            "env 名 {name:?} 非法（须为 [A-Za-z_][A-Za-z0-9_]*）"
+        ));
+    }
+    let upper = name.to_ascii_uppercase();
+    if upper.starts_with("AWS_")
+        || ["TOKEN", "SECRET", "PASSWORD", "KEY"]
+            .iter()
+            .any(|m| upper.contains(m))
+    {
+        return Err(format!(
+            "env 名 {name:?} 疑似密钥类变量，拒绝透传（命令输出与审计不落密钥）"
+        ));
+    }
+    Ok(())
+}
+
 /// 带自定义规则的评估（策略总线②段消费）：内置规则先行为基线，自定义规则
 /// 按优先级覆盖——**deny 优先于一切**（含内置 Block——团队只收窄不可放宽的
 /// 例外：显式 deny 是收紧方向，永远生效）；**allow 可覆盖内置 Hold**（用户
@@ -442,5 +468,29 @@ mod custom_rules_tests {
         assert!(validate_rule_pattern("(unclosed").is_err());
         assert!(validate_rule_pattern("pnpm .*").is_ok());
         assert!(validate_rule_pattern("rm -rf /usr/.*").is_ok());
+    }
+
+    // v2.86 §9.2：透传环境变量名校验——格式 + 密钥类拒绝（审计不落密钥）。
+    #[test]
+    fn env_name_validation_rejects_secrets() {
+        // 合法：工具链 / 目录类变量名
+        assert!(validate_env_name("DOCKER_HOST").is_ok());
+        assert!(validate_env_name("_PRIVATE_CACHE").is_ok());
+        assert!(validate_env_name("x").is_ok());
+        assert!(validate_env_name("BUILDKITE_BUILD_PATH").is_ok());
+        // 格式非法
+        assert!(validate_env_name("").is_err());
+        assert!(validate_env_name("1ABC").is_err());
+        assert!(validate_env_name("HAS SPACE").is_err());
+        assert!(validate_env_name("A-B").is_err());
+        // 密钥类（大小写无关子串 / 前缀）
+        assert!(validate_env_name("GITHUB_TOKEN").is_err());
+        assert!(validate_env_name("MY_SECRET").is_err());
+        assert!(validate_env_name("API_KEY").is_err());
+        assert!(validate_env_name("DB_PASSWORD").is_err());
+        assert!(validate_env_name("AWS_ACCESS_KEY_ID").is_err());
+        assert!(validate_env_name("gpg_key").is_err());
+        assert!(validate_env_name("SERVICE_ACCOUNT_KEYFILE").is_err());
+        assert!(validate_env_name("aws_profile").is_err());
     }
 }
