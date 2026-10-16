@@ -470,7 +470,9 @@ impl Conn {
     /// 事件只在「与某次请求同批到达」时才被读到（`call` 内联排空），因此读控制台
     /// 之前必须先往返一次，否则 browser_open 之后新产生的事件会滞留在 socket 里。
     async fn flush_events(&mut self) -> Result<(), CdpError> {
-        self.call("Browser.getVersion", json!({}), None).await.map(|_| ())
+        self.call("Browser.getVersion", json!({}), None)
+            .await
+            .map(|_| ())
     }
 
     /// 解析页面句柄（省略 = 最近打开的页面）。
