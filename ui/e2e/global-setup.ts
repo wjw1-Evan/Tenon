@@ -1,7 +1,7 @@
 // Playwright 真 daemon 环境（§18.1）：本地 mock OpenAI server + 隔离 SQLite +
 // 静态 UI 由 daemon 托管；不访问外网、不使用全局 ~/.tenon 状态。
 import { execSync, spawn, type ChildProcess } from "node:child_process";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,10 +25,36 @@ async function waitForHttp(url: string, timeoutMs = 20_000) {
   throw new Error(`daemon did not become ready: ${url}`);
 }
 
-function startModelServer() {
-  return new Promise<{ port: number; pid: number }>((resolve, reject) => {
+/** 硬杀残留清扫：tenon-e2e-* 工作区超过 1 小时即回收（进程看守门狗，目录无
+ *  人收；并行会话的当轮工作区是新的，不会被扫）。 */
+async function sweepStaleWorkspaces() {
+  try {
+    const dir = tmpdir();
+    const entries = await readdir(dir);
+    const cutoff = Date.now() - 60 * 60 * 1000;
+    for (const entry of entries) {
+      if (!entry.startsWith("tenon-e2e-")) continue;
+      const full = path.join(dir, entry);
+      try {
+        const info = await stat(full);
+        if (info.isDirectory() && info.mtimeMs < cutoff) {
+          await rm(full, { recursive: true, force: true });
+        }
+      } catch {
+        // 竞态删除：忽略
+      }
+    }
+  } catch {
+    // tmpdir 不可读：跳过清扫（不影响本套件）
+  }
+}
+
+function startModelServer() {  return new Promise<{ port: number; pid: number }>((resolve, reject) => {
     const child = spawn(process.execPath, [path.resolve(__dirname, "mock-model-server.mjs")], {
       stdio: ["ignore", "pipe", "pipe"],
+      // 父进程看门狗（§6.2 同款）：Playwright 主进程被强杀 / 崩溃时 teardown
+      // 不执行，mock 自持生命周期退出，不留孤儿端口（见 mock-model-server.mjs）。
+      env: { ...process.env, TENON_E2E_PARENT_PID: String(process.pid) },
     });
     let buffered = "";
     const timeout = setTimeout(() => reject(new Error("model server startup timeout")), 10_000);
@@ -56,6 +82,7 @@ function startModelServer() {
 
 export default async function setup() {
   try {
+  await sweepStaleWorkspaces();
   const workspace = await mkdtemp(path.join(tmpdir(), "tenon-e2e-"));
   const projectA = path.join(workspace, "project-a");
   const projectB = path.join(workspace, "project-b");
@@ -126,6 +153,10 @@ model = "mock-1"
     "--config", configPath,
     "--settings", path.join(workspace, "settings.json"),
     "--no-lock",
+    // v2.88 §6.2 父进程看门狗：Playwright 主进程被强杀 / 崩溃（teardown 不
+    // 执行）时 daemon 自行优雅收尾退出——不留孤儿 daemon（连同其无头 Chrome
+    // 子进程，§7.6）；正常退出由 global-teardown 先行 SIGTERM。
+    "--parent-pid", String(process.pid),
   ], {
     env: { ...process.env, TENON_UI_DIST: path.resolve(__dirname, "../dist"), RUST_LOG: "error" },
     stdio: ["ignore", "pipe", "pipe"],

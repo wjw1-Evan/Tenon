@@ -14,6 +14,24 @@ let loopPhase = null; // null | "loop" | "written"
 let loopFile = null;
 let loopContent = null;
 
+// 父进程看门狗（与 tenon-daemon `--parent-pid` 同款，§6.2 v2.88）：Playwright
+// 主进程被强杀 / 崩溃时 global-teardown 不执行，mock 会成孤儿常驻端口——按
+// 启动方传入的 pid 判定存活，消失即自退。未设时不自保（手动起用于调试）。
+// 判定双路：process.ppid 变化（父死瞬间内核即 reparent，无僵尸窗口）或
+// kill(pid,0) 失败（kill 对僵尸父进程仍返回存活，单靠它会在父未被回收时漏判）。
+const parentPid = Number(process.env.TENON_E2E_PARENT_PID ?? "");
+if (Number.isInteger(parentPid) && parentPid > 0) {
+  const birthPpid = process.ppid;
+  setInterval(() => {
+    if (process.ppid !== birthPpid) process.exit(0);
+    try {
+      process.kill(parentPid, 0);
+    } catch {
+      process.exit(0);
+    }
+  }, 2000).unref();
+}
+
 const server = createServer(async (request, response) => {
   if (request.method !== "POST" || !request.url?.endsWith("/chat/completions")) {
     response.statusCode = 404;

@@ -10,10 +10,14 @@ cd "$(dirname "$0")/.."
 sh scripts/dev-daemon.sh &
 watcher=$!
 cleanup() {
+    # 幂等：显式收尾与 EXIT trap 可能都走一次
+    trap - EXIT INT TERM HUP
     kill "$watcher" 2>/dev/null
+    watcher=""
     exit 0
 }
-trap cleanup INT TERM HUP
+# EXIT 兜底：vite 异常退出 / set -u 报错等路径同样不留后台 watcher
+trap cleanup EXIT INT TERM HUP
 
 pnpm --filter tenon-ui dev
 cleanup

@@ -35,7 +35,10 @@ clean_build_cache() {
 }
 cleanup() {
     trap - EXIT INT TERM HUP
-    [ -n "$child" ] && kill "$child" 2>/dev/null
+    if [ -n "$child" ]; then
+        kill "$child" 2>/dev/null
+        wait "$child" 2>/dev/null
+    fi
     clean_build_cache
     exit 0
 }
@@ -49,8 +52,10 @@ build_and_start() {
     fi
     echo "[dev-daemon] cargo build -p tenon-daemon ..."
     if cargo build -p tenon-daemon --bin tenon-daemon; then
+        # --parent-pid：本脚本被强杀（trap 不执行）时 daemon 看门狗自持退出
+        # （§6.2 v2.88），不留孤儿——与桌面壳 / E2E harness 同款。
         HOME="$DEV_HOME" "$ROOT/target/debug/tenon-daemon" \
-            --project . --no-lock --port "$PORT" --token "$TOKEN" "$@" &
+            --project . --no-lock --port "$PORT" --token "$TOKEN" --parent-pid $$ "$@" &
         child=$!
         echo "[dev-daemon] 运行中 http://127.0.0.1:${PORT}（token=${TOKEN}，pid ${child}）"
     else
