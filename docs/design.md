@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | **v2.89** |
-| 日期 | 2026-10-16 |
+| 版本 | **v2.90** |
+| 日期 | 2026-10-17 |
 | 状态 | 定稿，M0 已验收（附录 D 基线 v2.68 起 glm-5.3-flash **10/10=100%**，violation=0；历史最高），M1-M3 主体已实现（见 README 状态节） |
 | 许可 | Apache-2.0 |
 
@@ -267,7 +267,7 @@ DeepSeek 开源的通用 agent harness（`dsh`，pnpm/TS monorepo，Cordis 插�
 
 **生命周期规则**：动态端口 + 握手；单实例锁（多窗口 / 多项目共享，daemon 不是“单项目进程”）；`--project` 仅作为首屏种子，运行中可通过项目 API 追加打开；退出时清理全部子进程；UI 崩溃不丢会话（状态全在 daemon + 磁盘）。
 
-**父进程看门狗（v2.88，桌面壳强杀 / 崩溃实测暴露）**：桌面壳 spawn sidecar 时追加 `--parent-pid <壳 pid>`；daemon 起后台看门狗每 2s 探测父进程存活（复用单实例锁的同款 `pid_alive`），父进程消失即触发优雅停机（axum graceful shutdown → 端点文件清理 / 浏览器子进程回收）并退出。此前只在壳的 `on_window_event(Destroyed)` 挂清理——仅覆盖正常关窗 / Cmd+Q；壳被 `kill`(SIGTERM/SIGKILL) / Activity Monitor 强杀 / 自身崩溃时该回调不执行，sidecar 沦为孤儿并继续 `0.0.0.0` 监听且局域网配对开启。看门狗把生命周期收归 daemon 自持：父死即退，不依赖壳的清理时机；无 `--parent-pid`（CLI / 无头 / 测试）时不启动，常驻语义不变。
+**父进程看门狗（v2.88，桌面壳强杀 / 崩溃实测暴露）**：桌面壳 spawn sidecar 时追加 `--parent-pid <壳 pid>`；daemon 起后台看门狗每 2s 判定父进程存活（v2.90：reparent 判定 + `pid_alive` 双路——`kill(pid,0)` 对**僵尸**父进程返回存活，父被强杀而其自身父未回收时长期为僵尸、单靠探活漏判；内核在父退出的瞬间即 reparent 子进程，`getppid` 变化无此窗口），父进程消失即触发优雅停机（axum graceful shutdown → 端点文件清理 / 浏览器子进程回收）并退出；v2.90 加两条收尾保障——**停机信号先于日志发出**（父被强杀时本进程 stdout/stderr 管道读端消失，实测日志写会卡死而非返回 EPIPE，先记日志则信号永不发出＝孤儿常驻，正是 v2.90 实测根因），并起 **3s 硬退兜底**定时（收尾被日志阻塞 / in-flight 连接不收敛时强制退出），保证「父死即退」不被收尾路径阻塞打破。此前只在壳的 `on_window_event(Destroyed)` 挂清理——仅覆盖正常关窗 / Cmd+Q；壳被 `kill`(SIGTERM/SIGKILL) / Activity Monitor 强杀 / 自身崩溃时该回调不执行，sidecar 沦为孤儿并继续 `0.0.0.0` 监听且局域网配对开启。看门狗把生命周期收归 daemon 自持：父死即退，不依赖壳的清理时机；无 `--parent-pid`（CLI / 无头 / 测试）时不启动，常驻语义不变。
 
 **GitHub 发布与桌面更新（v1.90，参考 Codex 桌面端后台更新体验）**：tag `v*` 推送触发 GitHub Actions 的 macOS arm64 / macOS x86_64 / Linux x86_64 / Windows x86_64 矩阵。每个构建先按目标三件套产出 release daemon + `ui/dist` + Tauri 包，Tauri Updater 私钥只在 Actions Secret 中出现，构建器生成安装包与其 minisign `.sig`；发布任务聚合为静态 `latest.json`（`version` / `notes` / `pub_date` / `platforms.<os-arch>.{url,signature}`），连同安装包和签名上传到当前 GitHub Release。客户端固定消费该仓库 `releases/latest/download/latest.json`：GitHub 的 HTTPS 保证传输完整性，Tauri minisign 公钥内置于桌面壳保证发布者真实性；任一签名失败即中止且不触达安装器。桌面壳启动即检查、每 6 小时至多一次（v1.90 起 5 分钟读 daemon `/settings` 判 `update.channel` 的出网门槛随 v1.154 通道移除一并删除）。发现新版本后后台下载校验，**下载完成后不自动重启**——由 UI 通知卡提示、用户单击「立即更新」才安装重启（v1.154，见下）。发布 tag 必须与 Cargo workspace / `tauri.conf.json` 语义化版本一致。v1.86 的 daemon-only 执行器继续服务无壳 Web / headless；桌面壳 spawn 时设置 `TENON_UPDATE_SURFACE=shell`，daemon auto 循环在该表面让位给完整包更新，避免同时下载 sidecar 与完整包。
 

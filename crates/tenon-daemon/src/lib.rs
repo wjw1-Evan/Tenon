@@ -169,25 +169,38 @@ pub async fn serve(options: DaemonOptions) -> std::io::Result<DaemonHandle> {
     let shutdown_handle = shutdown_tx.subscribe();
 
     // 父进程看门狗（§6.2 v2.88）：桌面壳被强杀 / 崩溃时其 on_window_event 清理
-    // 不执行，daemon 自持生命周期——每 2s 探测父进程存活（复用单实例锁同款
-    // pid_alive），消失即触发优雅停机（下面 axum graceful shutdown 收尾端点文件 /
-    // 浏览器子进程），不再在 0.0.0.0 上留下带局域网配对的孤儿 daemon。
+    // 不执行，daemon 自持生命周期——每 2s 判定父进程存活（parent_gone：reparent
+    // + pid 探活双路，见其文档），消失即触发优雅停机（下面 axum graceful shutdown
+    // 收尾端点文件 / 浏览器子进程），不再在 0.0.0.0 上留下带局域网配对的孤儿 daemon。
     if let Some(ppid) = parent_pid {
         let watchdog_tx = shutdown_tx.clone();
         let mut watchdog_rx = shutdown_handle.clone();
+        #[cfg(unix)]
+        let birth_ppid = unsafe { libc::getppid() } as i32;
+        #[cfg(windows)]
+        let birth_ppid = ppid;
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 tokio::select! {
                     _ = tick.tick() => {
-                        if !pid_alive(ppid) {
+                        if parent_gone(ppid, birth_ppid) {
+                            // 先发停机信号再做日志：父进程被强杀时本进程 stdout/stderr
+                            // 管道读端已消失，实测 tracing 的写会卡死（不返回 EPIPE）——
+                            // 若先记日志，send 永远不发、收尾永不开始，正是「退出残留
+                            // 孤儿」的根因。信号先出，日志失败也只影响可观测性。
+                            let _ = watchdog_tx.send(true);
+                            // 兜底硬退：优雅收尾若被卡住（日志写端失读阻塞 / in-flight
+                            // 连接不收敛），3s 后强制退出——父死即退是硬语义（§6.2），
+                            // 孤儿进程比硬退的代价高得多。此任务不写日志，避免同一坑。
+                            tokio::spawn(async {
+                                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                                std::process::exit(0);
+                            });
                             tracing::warn!(
                                 "父进程 {ppid} 已退出，daemon 收尾退出（§6.2 看门狗）"
                             );
-                            // 触发优雅停机；进程退出由 main 侧 await shutdown 完成
-                            //（不在此 process::exit，保证进程内 serve 的测试可控）。
-                            let _ = watchdog_tx.send(true);
                             return;
                         }
                     }
@@ -565,6 +578,25 @@ fn pid_alive(pid: i32) -> bool {
         windows_sys::Win32::Foundation::CloseHandle(handle);
         true
     }
+}
+
+/// 父进程是否已消失（§6.2 看门狗判定）。两路互补：
+/// - **reparent 判定（启动时记录一次，unix）**：内核在父进程退出的瞬间就把子
+///   进程 reparent 到 init/subreaper——比 pid 探活更早且无窗口；`kill(pid,0)`
+///   对**僵尸**父进程仍返回存活（父被强杀但未被其自身父回收时长期为僵尸，实测
+///   e2e harness 强杀后 daemon 常驻不复位），仅靠探活会漏判。
+/// - **pid 探活**：覆盖 windows（无 reparent 语义，主路径 WSL2 走 unix 分支）
+///   与父进程 pid 复用前的兜底。
+fn parent_gone(parent_pid: i32, birth_ppid: i32) -> bool {
+    #[cfg(unix)]
+    {
+        if unsafe { libc::getppid() } as i32 != birth_ppid {
+            return true;
+        }
+    }
+    #[cfg(windows)]
+    let _ = birth_ppid;
+    !pid_alive(parent_pid)
 }
 
 /// 生成 ed25519 签名密钥对（M0：签名与 updater 密钥，§17）。

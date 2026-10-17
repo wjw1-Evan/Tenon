@@ -320,3 +320,4 @@
 | v2.87 | 删除 codex 开源提示词集成（§9.6——v1.185 六节纪律整体移除，用户裁定：真实端点 A/B 实测强模型下仅塑形输出格式与步数、不解锁能力，成本收益不匹配；EXECUTION_RULES / SPECIAL_TASK_RULES / FINAL_ANSWER_RULES 三节删除，PLAN_RULES / SUBTASK_RULES 剥离 v1.185 质量纪律尾巴、v1.146/v1.179 核心保留，对话纪律 v2.72 非 codex 来源保留；prompt.rs 结构断言改缺席守卫 + 单节 token 预算 ≤200，A/B 探针 codex_prompt_probe 随实验收尾删除） |
 | v2.88 | 父进程看门狗——桌面壳强杀 / 崩溃遗留孤儿 daemon 修复（§6.2：壳 spawn 追加 `--parent-pid`，daemon 每 2s 探测父进程，父死即优雅停机退出；补桌面版测试暴露的清理缺口） |
 | v2.89 | 对话错误友好化 + 验证失败自动修复（§9.1/§9.4——用户令「用户对话中不允许出现任何错误，有问题应该产品自动解决而不是发给用户」：①模型错误分类化载荷 code/error/hint/provider/detail 替代上游原始报文直显；②UI 补 interrupted 中性提示与 rollback_failed 识别（消灭「未知错误」兜底）+ hint 指引行 + 自动修复提示卡；③`fix_rounds`/`Fixing` 自设计定稿起零生产调用的空接修复——验证失败自动回灌模型修复（预算 max_rounds / 低强度 ≤1，零改动即停）；④headless 事件行补全非 error 键） |
+| v2.90 | 父进程看门狗加固——僵尸父进程漏判修正 + 日志写端失读致收尾卡死修复（§6.2：reparent 判定补 `pid_alive` 盲区、停机信号先于日志、3s 硬退兜底，父死即退不被阻塞打破） |
